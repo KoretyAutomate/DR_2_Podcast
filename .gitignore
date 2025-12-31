@@ -1,20 +1,3 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Environments
 .env
-.venv
-env/
-venv/
-ENV/
-
-# Project Specific
 *.mp3
-*.wav
-outputs/
-
-# OS generated files
-.DS_Store
-Thumbs.db
+__pycache__/
