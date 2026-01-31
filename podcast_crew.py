@@ -9,8 +9,35 @@ from pathlib import Path
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, LLM
 from crewai.tools import tool
-from gtts import gTTS
 from fpdf import FPDF
+from pydantic import BaseModel, HttpUrl, Field
+from typing import List, Optional, Literal
+import ChatTTS
+import torch
+import numpy as np
+import wave
+
+# --- SOURCE TRACKING MODELS ---
+class ScientificSource(BaseModel):
+    """Structured scientific source."""
+    title: str
+    url: HttpUrl
+    journal: Optional[str] = None
+    publication_year: Optional[int] = None
+    source_type: Literal["peer_reviewed", "preprint", "review", "meta_analysis", "web_article"]
+    trust_level: Literal["high", "medium", "low"] = "medium"
+    cited_by: str  # Which agent cited this
+    key_finding: Optional[str] = None
+
+class SourceBibliography(BaseModel):
+    """Complete bibliography with categorization."""
+    supporting_sources: List[ScientificSource] = []
+    contradicting_sources: List[ScientificSource] = []
+
+    def get_high_trust_sources(self) -> List[ScientificSource]:
+        """Filter for high-trust peer-reviewed sources."""
+        all_sources = self.supporting_sources + self.contradicting_sources
+        return [s for s in all_sources if s.trust_level == "high" and s.source_type == "peer_reviewed"]
 
 # --- INITIALIZATION ---
 load_dotenv()
@@ -19,6 +46,63 @@ output_dir = script_dir / "research_outputs"
 output_dir.mkdir(exist_ok=True)
 
 topic_name = 'scientific benefit of coffee intake to increase productivity during the day'
+
+# --- CHARACTER CONFIGURATION ---
+CHARACTERS = {
+    "Kaz": {
+        "gender": "male",
+        "voice_model": "male_voice",  # TTS-specific, will update in #3
+        "base_personality": "Enthusiastic science advocate, optimistic, data-driven"
+    },
+    "Erika": {
+        "gender": "female",
+        "voice_model": "female_voice",  # TTS-specific, will update in #3
+        "base_personality": "Skeptical analyst, cautious, evidence-focused"
+    }
+}
+
+# --- ROLE ASSIGNMENT (Dynamic per session) ---
+def assign_roles() -> dict:
+    """Randomly assign Kaz and Erika to pro/con roles for this session."""
+    characters = list(CHARACTERS.keys())
+    random.shuffle(characters)
+
+    role_assignment = {
+        "pro": {
+            "character": characters[0],
+            "stance": "supporting",
+            "personality": CHARACTERS[characters[0]]["base_personality"]
+        },
+        "con": {
+            "character": characters[1],
+            "stance": "critical",
+            "personality": CHARACTERS[characters[1]]["base_personality"]
+        }
+    }
+
+    print(f"\n{'='*60}")
+    print(f"SESSION ROLE ASSIGNMENT:")
+    print(f"  Supporting: {role_assignment['pro']['character']} ({CHARACTERS[characters[0]]['gender']})")
+    print(f"  Critical: {role_assignment['con']['character']} ({CHARACTERS[characters[1]]['gender']})")
+    print(f"{'='*60}\n")
+
+    return role_assignment
+
+SESSION_ROLES = assign_roles()
+
+# --- TTS DEPENDENCY CHECK ---
+def check_tts_dependencies():
+    """Verify ChatTTS is installed and working."""
+    try:
+        import ChatTTS
+        import torch
+        print("✓ ChatTTS dependencies verified")
+    except ImportError as e:
+        print(f"ERROR: ChatTTS dependencies missing: {e}")
+        print("Install with: pip install ChatTTS torch numpy")
+        sys.exit(1)
+
+check_tts_dependencies()
 
 # --- MODEL DETECTION & CONFIG ---
 def get_final_model_string():
@@ -59,7 +143,16 @@ dgx_llm = LLM(
 
 @tool("BraveSearch")
 def search_tool(search_query: str):
-    """Search the web for real-time scientific data and peer-reviewed studies."""
+    """
+    Search for scientific data. ONLY use when you need:
+    1. Recent data published after 2024 (your knowledge cutoff)
+    2. Specific study citations not in your training
+    3. Real-time statistics or ongoing clinical trials
+    4. Verification of controversial claims
+
+    DO NOT search for well-established concepts (e.g., caffeine metabolism).
+    Use internal knowledge first. Search is expensive - last resort only.
+    """
     api_key = os.getenv("BRAVE_API_KEY")
     if not api_key:
         return "Brave API Key missing. Use internal knowledge."
@@ -112,7 +205,12 @@ def create_pdf(title, content, filename):
 researcher = Agent(
     role='Lead Research Scientist',
     goal=f'Produce a high-impact scientific paper supporting {topic_name}',
-    backstory='Senior researcher specializing in neurobiology and metabolic efficiency.',
+    backstory=(
+        f'Senior researcher specializing in neurobiology and metabolic efficiency. '
+        f'Relies on deep scientific knowledge. Only searches for recent publications (2025+) or specific citations. '
+        f'In this podcast, you will be portrayed by "{SESSION_ROLES["pro"]["character"]}" '
+        f'who has a {SESSION_ROLES["pro"]["personality"]} approach.'
+    ),
     tools=[search_tool],
     llm=dgx_llm,
     verbose=True
@@ -129,7 +227,12 @@ auditor = Agent(
 counter_researcher = Agent(
     role='Adversarial Researcher',
     goal=f'Produce a scientific paper challenging {topic_name} by debunking specific claims.',
-    backstory='Skeptical meta-analyst who specializes in identifying methodology flaws.',
+    backstory=(
+        f'Skeptical meta-analyst specializing in methodology flaws. '
+        f'Leverages extensive knowledge. Only searches for recent contradictory evidence or specific debunking studies. '
+        f'In this podcast, you will be portrayed by "{SESSION_ROLES["con"]["character"]}" '
+        f'who has a {SESSION_ROLES["con"]["personality"]} approach.'
+    ),
     tools=[search_tool],
     llm=dgx_llm,
     verbose=True
@@ -151,12 +254,26 @@ personality = Agent(
     verbose=True
 )
 
+source_verifier = Agent(
+    role='Scientific Source Verifier',
+    goal='Extract, validate, and categorize all scientific sources from research papers.',
+    backstory=(
+        'Librarian and bibliometrics expert specializing in source verification. '
+        'Ensures citations come from reputable peer-reviewed journals. '
+        'Prioritizes high-impact publications (Nature, Science, Lancet, Cell, PNAS).'
+    ),
+    llm=dgx_llm,
+    verbose=True
+)
+
 # --- TASKS ---
 research_task = Task(
     description=(
-        f"Conduct an exhaustive deep dive into {topic_name}. "
-        "Draft a condensed scientific paper (Nature style). "
-        "Include: Abstract, Introduction, 3 Biochemical Mechanisms, Bibliography with URLs."
+        f"Conduct exhaustive deep dive into {topic_name}. "
+        "Draft condensed scientific paper (Nature style). "
+        "IMPORTANT: Use existing scientific knowledge as primary source. "
+        "Only use BraveSearch for recent studies (2025+) or specific citations. "
+        "Include: Abstract, Introduction, 3 Mechanisms, Bibliography with URLs."
     ),
     expected_output="A formal, condensed scientific paper with citations supporting the benefits.",
     agent=researcher
@@ -174,42 +291,104 @@ gap_analysis_task = Task(
 
 adversarial_task = Task(
     description=(
-        f"Based on the 'Supporting Paper' and 'Gap Analysis', draft an 'Anti-Thesis' paper. "
-        "Address and debunk the mechanisms proposed in the initial research. Include Bibliography with URLs."
+        f"Based on 'Supporting Paper' and 'Gap Analysis', draft 'Anti-Thesis' paper. "
+        "Address and debunk mechanisms proposed in initial research. "
+        "IMPORTANT: Use existing knowledge as primary source. "
+        "Only use BraveSearch for recent contradictory studies (2025+) or specific citations. "
+        "Include Bibliography with URLs."
     ),
     expected_output="A formal, condensed scientific paper challenging the findings.",
     agent=counter_researcher,
     context=[research_task, gap_analysis_task]
 )
 
-audit_task = Task(
+source_verification_task = Task(
     description=(
-        "Review both the Supporting and Anti-Thesis papers. Validate sources. "
-        "Prepare a Final Meta-Audit Report weighing evidence from both sides."
+        "Extract ALL sources from Supporting and Anti-Thesis papers. "
+        "For each source verify:\n"
+        "1. URL points to scientific content\n"
+        "2. Source type (peer-reviewed, preprint, review, meta-analysis)\n"
+        "3. Trust level: HIGH (Nature/Science/Lancet/Cell/PNAS), "
+        "MEDIUM (PubMed/arXiv), LOW (news/blogs)\n"
+        "4. Journal name and year if available\n\n"
+        "Create structured bibliography JSON:\n"
+        '{"supporting_sources": [{title, url, journal, year, trust_level, source_type}],\n'
+        ' "contradicting_sources": [...],\n'
+        ' "summary": "X high-trust, Y medium-trust sources"}\n\n'
+        "REJECT non-scientific sources. Flag if <3 high-trust sources."
     ),
-    expected_output="A high-level synthesis report providing a definitive verdict.",
-    agent=auditor,
+    expected_output="JSON bibliography with categorized, verified sources and quality summary.",
+    agent=source_verifier,
     context=[research_task, adversarial_task]
 )
 
+audit_task = Task(
+    description=(
+        "Review Supporting, Anti-Thesis papers AND verified source bibliography. "
+        "PRIORITIZE findings from HIGH-TRUST peer-reviewed sources. "
+        "Validate key claims are backed by reputable journals. "
+        "Prepare Final Meta-Audit Report weighing evidence quality and source credibility."
+    ),
+    expected_output=(
+        "Synthesis report with:\n"
+        "1. Verdict based on evidence quality\n"
+        "2. Source assessment (high-trust vs low-trust count)\n"
+        "3. Confidence level in conclusions"
+    ),
+    agent=auditor,
+    context=[research_task, adversarial_task, source_verification_task]
+)
+
 script_task = Task(
-    description="Write a technical podcast script based on the meta-report (Dr. Data vs Dr. Doubt).",
-    expected_output="A conversational but technical dialogue script.",
+    description=(
+        f"Write a technical podcast script featuring {SESSION_ROLES['pro']['character']} "
+        f"vs {SESSION_ROLES['con']['character']}. "
+        f"\n\nCHARACTER ROLES:\n"
+        f"  - {SESSION_ROLES['pro']['character']}: SUPPORTING perspective, "
+        f"{SESSION_ROLES['pro']['personality']}\n"
+        f"  - {SESSION_ROLES['con']['character']}: CRITICAL perspective, "
+        f"{SESSION_ROLES['con']['personality']}\n\n"
+        f"Format STRICTLY as:\n"
+        f"{SESSION_ROLES['pro']['character']}: [dialogue]\n"
+        f"{SESSION_ROLES['con']['character']}: [dialogue]\n\n"
+        f"Maintain consistent roles throughout. NO role switching mid-conversation."
+    ),
+    expected_output=(
+        f"Conversational dialogue between {SESSION_ROLES['pro']['character']} (supporting) "
+        f"and {SESSION_ROLES['con']['character']} (critical)."
+    ),
     agent=scriptwriter,
     context=[audit_task]
 )
 
 natural_language_task = Task(
-    description="Rewrite for verbal delivery. Ensure natural flow and remove meta-tags.",
-    expected_output="A final dialogue-only script.",
+    description=(
+        f"Rewrite {SESSION_ROLES['pro']['character']} vs {SESSION_ROLES['con']['character']} "
+        f"dialogue for natural verbal delivery.\n\n"
+        f"MAINTAIN ROLES:\n"
+        f"  - {SESSION_ROLES['pro']['character']}: SUPPORTING, {SESSION_ROLES['pro']['personality']}\n"
+        f"  - {SESSION_ROLES['con']['character']}: CRITICAL, {SESSION_ROLES['con']['personality']}\n\n"
+        f"Format:\n{SESSION_ROLES['pro']['character']}: [dialogue]\n"
+        f"{SESSION_ROLES['con']['character']}: [dialogue]\n\n"
+        f"Remove meta-tags, markdown, stage directions. Dialogue only."
+    ),
+    expected_output=f"Final dialogue between {SESSION_ROLES['pro']['character']} and {SESSION_ROLES['con']['character']}.",
     agent=personality,
     context=[script_task]
 )
 
 # --- EXECUTION ---
 crew = Crew(
-    agents=[researcher, auditor, counter_researcher, scriptwriter, personality],
-    tasks=[research_task, gap_analysis_task, adversarial_task, audit_task, script_task, natural_language_task],
+    agents=[researcher, auditor, counter_researcher, source_verifier, scriptwriter, personality],
+    tasks=[
+        research_task,
+        gap_analysis_task,
+        adversarial_task,
+        source_verification_task,
+        audit_task,
+        script_task,
+        natural_language_task
+    ],
     verbose=True,
     process='sequential'
 )
@@ -223,25 +402,188 @@ try:
     # Use task_outputs to get specific results
     create_pdf("Supporting Scientific Paper", research_task.output.raw, "supporting_paper.pdf")
     create_pdf("Adversarial Anti-Thesis Paper", adversarial_task.output.raw, "adversarial_paper.pdf")
+    create_pdf("Verified Source Bibliography", source_verification_task.output.raw, "verified_sources_bibliography.pdf")
     create_pdf("Final Meta-Audit Verdict", audit_task.output.raw, "final_audit_report.pdf")
 except Exception as e:
     print(f"Warning: PDF generation failed, but research is complete: {e}")
 
-# --- AUDIO GENERATION ---
-def generate_audio(crew_output):
-    filename = output_dir / "podcast_final_audio.mp3"
-    clean_text = re.sub(r'<think>.*?</think>', '', str(crew_output), flags=re.DOTALL)
-    clean_text = re.sub(r'[*#_]', '', clean_text)
-    
-    print(f"Synthesizing speech to {filename}...")
-    try:
-        tts = gTTS(text=clean_text, lang='en')
-        tts.save(str(filename))
-        
-        if platform.system() == "Darwin": os.system(f"open '{filename}'")
-        elif platform.system() == "Windows": os.startfile(str(filename))
-        else: os.system(f"xdg-open '{filename}' &")
-    except Exception as e:
-        print(f"Audio failed: {e}")
+# --- SESSION METADATA ---
+print("\n--- Documenting Session Metadata ---")
+session_metadata = (
+    f"PODCAST SESSION METADATA\n{'='*60}\n\n"
+    f"Topic: {topic_name}\n\n"
+    f"Character Assignments:\n"
+    f"  {SESSION_ROLES['pro']['character']}: Supporting ({SESSION_ROLES['pro']['personality']})\n"
+    f"  {SESSION_ROLES['con']['character']}: Critical ({SESSION_ROLES['con']['personality']})\n"
+)
+metadata_file = output_dir / "session_metadata.txt"
+with open(metadata_file, 'w') as f:
+    f.write(session_metadata)
+print(f"Session metadata: {metadata_file}")
 
-generate_audio(result)
+# --- SCRIPT PARSING ---
+def parse_script_to_segments(script_text: str, character_mapping: dict = None) -> list:
+    """
+    Parse podcast script into dialogue segments with character attribution.
+
+    Handles: "Kaz: dialogue text" format
+
+    Returns: List of {'character': 'Kaz', 'text': 'dialogue...'} dicts
+    """
+    if character_mapping is None:
+        character_mapping = {}
+
+    # Clean script
+    clean_script = re.sub(r'<think>.*?</think>', '', str(script_text), flags=re.DOTALL)
+    clean_script = re.sub(r'\*\*.*?\*\*', '', clean_script)  # Remove bold
+    clean_script = re.sub(r'[*#_]', '', clean_script)
+
+    # Pattern: "CharacterName: dialogue"
+    dialogue_pattern = r'^([A-Z][a-z\s\.]+?):\s*(.+?)(?=^[A-Z][a-z\s\.]+?:|$)'
+
+    segments = []
+    matches = re.finditer(dialogue_pattern, clean_script, flags=re.MULTILINE | re.DOTALL)
+
+    for match in matches:
+        speaker_raw = match.group(1).strip()
+        dialogue = match.group(2).strip()
+
+        # Map old names to new
+        speaker = character_mapping.get(speaker_raw, speaker_raw)
+
+        if dialogue and len(dialogue) >= 3:
+            segments.append({
+                'character': speaker,
+                'text': re.sub(r'\s+', ' ', dialogue).strip()
+            })
+
+    if not segments:
+        # Fallback
+        print("Warning: No dialogue segments found. Using full text as narrator.")
+        return [{'character': 'Narrator', 'text': clean_script}]
+
+    print(f"Parsed {len(segments)} dialogue segments")
+    return segments
+
+
+def save_parsed_segments(segments: list):
+    """Save parsed segments for verification."""
+    parsed_file = output_dir / "parsed_dialogue_segments.txt"
+    with open(parsed_file, 'w') as f:
+        for idx, seg in enumerate(segments):
+            f.write(f"[{idx+1}] {seg['character']}: {seg['text']}\n\n")
+    print(f"Parsed script: {parsed_file}")
+
+
+# --- AUDIO GENERATION ---
+# Initialize ChatTTS once
+_chattts_model = None
+
+def get_chattts_model():
+    """Lazy load ChatTTS model."""
+    global _chattts_model
+    if _chattts_model is None:
+        print("Loading ChatTTS model...")
+        _chattts_model = ChatTTS.Chat()
+        _chattts_model.load(compile=False)  # compile=True for GPU speedup
+        print("✓ ChatTTS model loaded")
+    return _chattts_model
+
+def generate_audio_chattts(dialogue_segments: list, output_filename: str = "podcast_final_audio.wav"):
+    """
+    Generate multi-speaker audio using ChatTTS.
+
+    Args:
+        dialogue_segments: List of {'character': 'Kaz'|'Erika', 'text': '...'}
+        output_filename: Output WAV file
+    """
+    chat = get_chattts_model()
+    temp_dir = output_dir / "temp_audio"
+    temp_dir.mkdir(exist_ok=True)
+
+    # Assign speakers (ChatTTS supports multiple speakers via rand_spk)
+    torch.manual_seed(42)  # Kaz seed
+    kaz_spk = chat.sample_random_speaker()
+
+    torch.manual_seed(84)  # Erika seed (different seed = different voice)
+    erika_spk = chat.sample_random_speaker()
+
+    speakers = {"Kaz": kaz_spk, "Erika": erika_spk}
+
+    print(f"\nGenerating {len(dialogue_segments)} segments with ChatTTS...")
+
+    audio_segments = []
+
+    for idx, segment in enumerate(dialogue_segments):
+        character = segment['character']
+        text = segment['text']
+
+        if not text.strip():
+            continue
+
+        # Clean text
+        clean_text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        clean_text = re.sub(r'[*#_]', '', clean_text).strip()
+
+        if not clean_text:
+            continue
+
+        # Generate with character-specific speaker
+        spk_emb = speakers.get(character, kaz_spk)
+
+        try:
+            wavs = chat.infer(
+                [clean_text],
+                params_infer_code={'spk_emb': spk_emb}
+            )
+
+            audio_segments.append(wavs[0])
+            print(f"  [{idx+1}/{len(dialogue_segments)}] {character}: {clean_text[:50]}...")
+
+        except Exception as e:
+            print(f"Error generating segment {idx}: {e}")
+
+    if not audio_segments:
+        print("Error: No audio generated")
+        return None
+
+    # Concatenate audio
+    combined_audio = np.concatenate(audio_segments)
+
+    # Save as WAV
+    output_path = output_dir / output_filename
+
+    # ChatTTS outputs at 24kHz
+    with wave.open(str(output_path), 'w') as wav_file:
+        wav_file.setnchannels(1)  # Mono
+        wav_file.setsampwidth(2)  # 16-bit
+        wav_file.setframerate(24000)  # ChatTTS sample rate
+        wav_file.writeframes((combined_audio * 32767).astype(np.int16).tobytes())
+
+    print(f"\n✓ Audio generated: {output_path}")
+
+    # Auto-play
+    try:
+        if platform.system() == "Darwin":
+            os.system(f"open '{output_path}'")
+        elif platform.system() == "Windows":
+            os.startfile(str(output_path))
+        else:
+            os.system(f"xdg-open '{output_path}' &")
+    except Exception as e:
+        print(f"Could not auto-play: {e}")
+
+    return output_path
+
+# Parse script and generate audio with ChatTTS
+print("\n--- Generating Multi-Voice Podcast Audio ---")
+character_mapping = {
+    "Dr. Data": SESSION_ROLES["pro"]["character"],
+    "Dr. Doubt": SESSION_ROLES["con"]["character"],
+    "Dr Data": SESSION_ROLES["pro"]["character"],
+    "Dr Doubt": SESSION_ROLES["con"]["character"]
+}
+
+dialogue_segments = parse_script_to_segments(result.raw, character_mapping)
+save_parsed_segments(dialogue_segments)  # Debug output
+generate_audio_chattts(dialogue_segments)
