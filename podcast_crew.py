@@ -147,6 +147,73 @@ def check_tts_dependencies():
 
 check_tts_dependencies()
 
+# --- LANGUAGE CONFIGURATION ---
+SUPPORTED_LANGUAGES = {
+    'en': {
+        'name': 'English',
+        'tts_code': 'en',
+        'instruction': 'Write all content in English.',
+        'pdf_font': 'Helvetica'  # Latin-1 compatible
+    },
+    'ja': {
+        'name': '日本語 (Japanese)',
+        'tts_code': 'ja',
+        'instruction': 'すべてのコンテンツを日本語で書いてください。(Write all content in Japanese.)',
+        'pdf_font': 'Arial Unicode MS'  # Unicode compatible for Japanese
+    }
+}
+
+def get_language():
+    """
+    Get podcast language from multiple sources (priority order):
+    1. Command-line argument (--language)
+    2. Environment variable (PODCAST_LANGUAGE)
+    3. Default language (English)
+    """
+    parser = argparse.ArgumentParser(
+        description='Generate a research-driven debate podcast in English or Japanese.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Language Options:
+  en    English (default)
+  ja    日本語 (Japanese)
+
+Examples:
+  python podcast_crew.py --language ja
+  python podcast_crew.py --language en
+
+Environment variable:
+  export PODCAST_LANGUAGE=ja
+  python podcast_crew.py
+        """
+    )
+    parser.add_argument(
+        '--language',
+        type=str,
+        choices=['en', 'ja'],
+        help='Language for podcast generation (en=English, ja=Japanese)'
+    )
+
+    # Parse known args to avoid conflicts with other argument parsers
+    args, _ = parser.parse_known_args()
+
+    # Priority: CLI arg > env var > default
+    if args.language:
+        lang_code = args.language
+        print(f"Using language from command-line: {SUPPORTED_LANGUAGES[lang_code]['name']}")
+    elif os.getenv("PODCAST_LANGUAGE") and os.getenv("PODCAST_LANGUAGE") in SUPPORTED_LANGUAGES:
+        lang_code = os.getenv("PODCAST_LANGUAGE")
+        print(f"Using language from environment: {SUPPORTED_LANGUAGES[lang_code]['name']}")
+    else:
+        lang_code = 'en'
+        print(f"Using default language: {SUPPORTED_LANGUAGES[lang_code]['name']}")
+
+    return lang_code
+
+language = get_language()
+language_config = SUPPORTED_LANGUAGES[language]
+language_instruction = language_config['instruction']
+
 # --- MODEL DETECTION & CONFIG ---
 def get_final_model_string():
     env_model = os.getenv("MODEL_NAME")
@@ -226,19 +293,32 @@ class SciencePDF(FPDF):
         self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
 
 def create_pdf(title, content, filename):
+    """Create PDF with language-appropriate encoding"""
     pdf = SciencePDF()
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, title, 0, 1, 'L')
-    pdf.ln(5)
-    
+
     # Clean up markdown for PDF
     clean_content = re.sub(r'<think>.*?</think>', '', str(content), flags=re.DOTALL)
-    clean_content = clean_content.encode('latin-1', 'ignore').decode('latin-1')
-    
+
+    # Handle encoding based on language
+    if language == 'ja':
+        # For Japanese, keep UTF-8 characters but warn about PDF limitations
+        # FPDF has limited Unicode support - ideally would use fpdf2 or ReportLab
+        clean_title = title.encode('latin-1', 'ignore').decode('latin-1')
+        clean_content = clean_content.encode('latin-1', 'ignore').decode('latin-1')
+        print("Warning: Japanese characters may not display correctly in PDF. Consider upgrading to fpdf2 for full Unicode support.")
+    else:
+        # English - use latin-1 encoding
+        clean_title = title.encode('latin-1', 'ignore').decode('latin-1')
+        clean_content = clean_content.encode('latin-1', 'ignore').decode('latin-1')
+
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, clean_title, 0, 1, 'L')
+    pdf.ln(5)
+
     pdf.set_font("Helvetica", size=11)
     pdf.multi_cell(0, 10, clean_content)
-    
+
     file_path = output_dir / filename
     pdf.output(str(file_path))
     print(f"PDF Generated: {file_path}")
@@ -247,12 +327,13 @@ def create_pdf(title, content, filename):
 # --- AGENTS ---
 researcher = Agent(
     role='Lead Research Scientist',
-    goal=f'Produce a high-impact scientific paper supporting {topic_name}',
+    goal=f'Produce a high-impact scientific paper supporting {topic_name}. {language_instruction}',
     backstory=(
         f'Senior researcher specializing in neurobiology and metabolic efficiency. '
         f'Relies on deep scientific knowledge. Only searches for recent publications (2025+) or specific citations. '
         f'In this podcast, you will be portrayed by "{SESSION_ROLES["pro"]["character"]}" '
-        f'who has a {SESSION_ROLES["pro"]["personality"]} approach.'
+        f'who has a {SESSION_ROLES["pro"]["personality"]} approach. '
+        f'{language_instruction}'
     ),
     tools=[search_tool],
     llm=dgx_llm,
@@ -261,20 +342,21 @@ researcher = Agent(
 
 auditor = Agent(
     role='Scientific Auditor',
-    goal='Critically evaluate research, identify gaps, and synthesize a final verdict.',
-    backstory='Meticulous chief editor specializing in resolving scientific conflicts.',
+    goal=f'Critically evaluate research, identify gaps, and synthesize a final verdict. {language_instruction}',
+    backstory=f'Meticulous chief editor specializing in resolving scientific conflicts. {language_instruction}',
     llm=dgx_llm,
     verbose=True
 )
 
 counter_researcher = Agent(
     role='Adversarial Researcher',
-    goal=f'Produce a scientific paper challenging {topic_name} by debunking specific claims.',
+    goal=f'Produce a scientific paper challenging {topic_name} by debunking specific claims. {language_instruction}',
     backstory=(
         f'Skeptical meta-analyst specializing in methodology flaws. '
         f'Leverages extensive knowledge. Only searches for recent contradictory evidence or specific debunking studies. '
         f'In this podcast, you will be portrayed by "{SESSION_ROLES["con"]["character"]}" '
-        f'who has a {SESSION_ROLES["con"]["personality"]} approach.'
+        f'who has a {SESSION_ROLES["con"]["personality"]} approach. '
+        f'{language_instruction}'
     ),
     tools=[search_tool],
     llm=dgx_llm,
@@ -283,16 +365,16 @@ counter_researcher = Agent(
 
 scriptwriter = Agent(
     role='Podcast Producer',
-    goal='Translate audited papers into a balanced dialogue.',
-    backstory='Award-winning science communicator.',
+    goal=f'Translate audited papers into a balanced dialogue. {language_instruction}',
+    backstory=f'Award-winning science communicator. {language_instruction}',
     llm=dgx_llm,
     verbose=True
 )
 
 personality = Agent(
     role='Podcast Personality',
-    goal='Polish the script for natural verbal delivery.',
-    backstory='Radio host expert in humanizing technical data.',
+    goal=f'Polish the script for natural verbal delivery. {language_instruction}',
+    backstory=f'Radio host expert in humanizing technical data. {language_instruction}',
     llm=dgx_llm,
     verbose=True
 )
@@ -313,21 +395,23 @@ source_verifier = Agent(
 research_task = Task(
     description=(
         f"Conduct exhaustive deep dive into {topic_name}. "
-        "Draft condensed scientific paper (Nature style). "
-        "IMPORTANT: Use existing scientific knowledge as primary source. "
-        "Only use BraveSearch for recent studies (2025+) or specific citations. "
-        "Include: Abstract, Introduction, 3 Mechanisms, Bibliography with URLs."
+        f"Draft condensed scientific paper (Nature style). "
+        f"IMPORTANT: Use existing scientific knowledge as primary source. "
+        f"Only use BraveSearch for recent studies (2025+) or specific citations. "
+        f"Include: Abstract, Introduction, 3 Biochemical Mechanisms, Bibliography with URLs. "
+        f"{language_instruction}"
     ),
-    expected_output="A formal, condensed scientific paper with citations supporting the benefits.",
+    expected_output=f"A formal, condensed scientific paper with citations supporting the benefits. {language_instruction}",
     agent=researcher
 )
 
 gap_analysis_task = Task(
     description=(
-        "Review the Lead Scientist's Supporting Paper. Identify potential weaknesses "
-        "and suggest specific topics for the Adversarial Researcher to investigate."
+        f"Review the Lead Scientist's Supporting Paper. Identify potential weaknesses "
+        f"and suggest specific topics for the Adversarial Researcher to investigate. "
+        f"{language_instruction}"
     ),
-    expected_output="A list of 3-5 specific scientific 'weak points'.",
+    expected_output=f"A list of 3-5 specific scientific 'weak points'. {language_instruction}",
     agent=auditor,
     context=[research_task]
 )
@@ -335,48 +419,52 @@ gap_analysis_task = Task(
 adversarial_task = Task(
     description=(
         f"Based on 'Supporting Paper' and 'Gap Analysis', draft 'Anti-Thesis' paper. "
-        "Address and debunk mechanisms proposed in initial research. "
-        "IMPORTANT: Use existing knowledge as primary source. "
-        "Only use BraveSearch for recent contradictory studies (2025+) or specific citations. "
-        "Include Bibliography with URLs."
+        f"Address and debunk mechanisms proposed in initial research. "
+        f"IMPORTANT: Use existing knowledge as primary source. "
+        f"Only use BraveSearch for recent contradictory studies (2025+) or specific citations. "
+        f"Include Bibliography with URLs. "
+        f"{language_instruction}"
     ),
-    expected_output="A formal, condensed scientific paper challenging the findings.",
+    expected_output=f"A formal, condensed scientific paper challenging the findings. {language_instruction}",
     agent=counter_researcher,
     context=[research_task, gap_analysis_task]
 )
 
 source_verification_task = Task(
     description=(
-        "Extract ALL sources from Supporting and Anti-Thesis papers. "
-        "For each source verify:\n"
-        "1. URL points to scientific content\n"
-        "2. Source type (peer-reviewed, preprint, review, meta-analysis)\n"
-        "3. Trust level: HIGH (Nature/Science/Lancet/Cell/PNAS), "
-        "MEDIUM (PubMed/arXiv), LOW (news/blogs)\n"
-        "4. Journal name and year if available\n\n"
-        "Create structured bibliography JSON:\n"
-        '{"supporting_sources": [{title, url, journal, year, trust_level, source_type}],\n'
-        ' "contradicting_sources": [...],\n'
-        ' "summary": "X high-trust, Y medium-trust sources"}\n\n'
-        "REJECT non-scientific sources. Flag if <3 high-trust sources."
+        f"Extract ALL sources from Supporting and Anti-Thesis papers. "
+        f"For each source verify:\n"
+        f"1. URL points to scientific content\n"
+        f"2. Source type (peer-reviewed, preprint, review, meta-analysis)\n"
+        f"3. Trust level: HIGH (Nature/Science/Lancet/Cell/PNAS), "
+        f"MEDIUM (PubMed/arXiv), LOW (news/blogs)\n"
+        f"4. Journal name and year if available\n\n"
+        f"Create structured bibliography JSON:\n"
+        f'{{"supporting_sources": [{{title, url, journal, year, trust_level, source_type}}],\n'
+        f' "contradicting_sources": [...],\n'
+        f' "summary": "X high-trust, Y medium-trust sources"}}\n\n'
+        f"REJECT non-scientific sources. Flag if <3 high-trust sources. "
+        f"{language_instruction}"
     ),
-    expected_output="JSON bibliography with categorized, verified sources and quality summary.",
+    expected_output=f"JSON bibliography with categorized, verified sources and quality summary. {language_instruction}",
     agent=source_verifier,
     context=[research_task, adversarial_task]
 )
 
 audit_task = Task(
     description=(
-        "Review Supporting, Anti-Thesis papers AND verified source bibliography. "
-        "PRIORITIZE findings from HIGH-TRUST peer-reviewed sources. "
-        "Validate key claims are backed by reputable journals. "
-        "Prepare Final Meta-Audit Report weighing evidence quality and source credibility."
+        f"Review Supporting, Anti-Thesis papers AND verified source bibliography. "
+        f"PRIORITIZE findings from HIGH-TRUST peer-reviewed sources. "
+        f"Validate key claims are backed by reputable journals. "
+        f"Prepare Final Meta-Audit Report weighing evidence quality and source credibility. "
+        f"{language_instruction}"
     ),
     expected_output=(
-        "Synthesis report with:\n"
-        "1. Verdict based on evidence quality\n"
-        "2. Source assessment (high-trust vs low-trust count)\n"
-        "3. Confidence level in conclusions"
+        f"Synthesis report with:\n"
+        f"1. Verdict based on evidence quality\n"
+        f"2. Source assessment (high-trust vs low-trust count)\n"
+        f"3. Confidence level in conclusions\n"
+        f"{language_instruction}"
     ),
     agent=auditor,
     context=[research_task, adversarial_task, source_verification_task]
@@ -394,11 +482,13 @@ script_task = Task(
         f"Format STRICTLY as:\n"
         f"{SESSION_ROLES['pro']['character']}: [dialogue]\n"
         f"{SESSION_ROLES['con']['character']}: [dialogue]\n\n"
-        f"Maintain consistent roles throughout. NO role switching mid-conversation."
+        f"Maintain consistent roles throughout. NO role switching mid-conversation. "
+        f"{language_instruction}"
     ),
     expected_output=(
         f"Conversational dialogue between {SESSION_ROLES['pro']['character']} (supporting) "
-        f"and {SESSION_ROLES['con']['character']} (critical)."
+        f"and {SESSION_ROLES['con']['character']} (critical). "
+        f"{language_instruction}"
     ),
     agent=scriptwriter,
     context=[audit_task]
@@ -413,9 +503,10 @@ natural_language_task = Task(
         f"  - {SESSION_ROLES['con']['character']}: CRITICAL, {SESSION_ROLES['con']['personality']}\n\n"
         f"Format:\n{SESSION_ROLES['pro']['character']}: [dialogue]\n"
         f"{SESSION_ROLES['con']['character']}: [dialogue]\n\n"
-        f"Remove meta-tags, markdown, stage directions. Dialogue only."
+        f"Remove meta-tags, markdown, stage directions. Dialogue only. "
+        f"{language_instruction}"
     ),
-    expected_output=f"Final dialogue between {SESSION_ROLES['pro']['character']} and {SESSION_ROLES['con']['character']}.",
+    expected_output=f"Final dialogue between {SESSION_ROLES['pro']['character']} and {SESSION_ROLES['con']['character']}. {language_instruction}",
     agent=personality,
     context=[script_task]
 )
@@ -436,7 +527,10 @@ crew = Crew(
     process='sequential'
 )
 
-print(f"\n--- Initiating Scientific Research Pipeline on DGX Spark ---\n")
+print(f"\n--- Initiating Scientific Research Pipeline on DGX Spark ---")
+print(f"Topic: {topic_name}")
+print(f"Language: {language_config['name']} ({language})")
+print("---\n")
 result = crew.kickoff()
 
 # --- PDF GENERATION STEP ---
@@ -455,6 +549,7 @@ print("\n--- Documenting Session Metadata ---")
 session_metadata = (
     f"PODCAST SESSION METADATA\n{'='*60}\n\n"
     f"Topic: {topic_name}\n\n"
+    f"Language: {language_config['name']} ({language})\n\n"
     f"Character Assignments:\n"
     f"  {SESSION_ROLES['pro']['character']}: Supporting ({SESSION_ROLES['pro']['personality']})\n"
     f"  {SESSION_ROLES['con']['character']}: Critical ({SESSION_ROLES['con']['personality']})\n"
