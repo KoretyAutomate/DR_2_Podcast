@@ -6,6 +6,7 @@ import time
 import random
 import sys
 import argparse
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, LLM
@@ -39,6 +40,27 @@ class SourceBibliography(BaseModel):
         """Filter for high-trust peer-reviewed sources."""
         all_sources = self.supporting_sources + self.contradicting_sources
         return [s for s in all_sources if s.trust_level == "high" and s.source_type == "peer_reviewed"]
+
+# Audio generation imports
+try:
+    import ChatTTS
+    import torch
+    import numpy as np
+    import wave
+    CHATTTS_AVAILABLE = True
+except ImportError:
+    CHATTTS_AVAILABLE = False
+    print("Warning: ChatTTS not available. Install with: pip install ChatTTS torch numpy")
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('research_outputs/podcast_generation.log'),
+        logging.StreamHandler()
+    ]
+)
 
 # --- INITIALIZATION ---
 load_dotenv()
