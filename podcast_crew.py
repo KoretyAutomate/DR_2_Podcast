@@ -416,8 +416,13 @@ scriptwriter = Agent(
 
 personality = Agent(
     role='Podcast Personality',
-    goal=f'Polish the script for natural verbal delivery. {language_instruction}',
-    backstory=f'Radio host expert in humanizing technical data. {language_instruction}',
+    goal=f'Polish the script for natural verbal delivery with precise 10-minute duration (±1 min). {language_instruction}',
+    backstory=(
+        f'Radio host expert in humanizing technical data and timing content perfectly. '
+        f'Target: 1350-1650 words for 9-11 minute duration (150 words/min speaking rate). '
+        f'Skilled at condensing or expanding content while maintaining quality. '
+        f'{language_instruction}'
+    ),
     llm=dgx_llm,
     verbose=True
 )
@@ -551,6 +556,17 @@ natural_language_task = Task(
     description=(
         f"Rewrite {SESSION_ROLES['pro']['character']} vs {SESSION_ROLES['con']['character']} "
         f"dialogue for natural verbal delivery.\n\n"
+        f"CRITICAL DURATION REQUIREMENT:\n"
+        f"TARGET: 10 minutes (±1 minute acceptable = 9-11 minutes)\n"
+        f"WORD COUNT: 1350-1650 words (assuming 150 words/minute speaking rate)\n\n"
+        f"IF SCRIPT TOO LONG (>1650 words):\n"
+        f"- Condense verbose explanations\n"
+        f"- Remove redundant examples\n"
+        f"- Tighten dialogue while keeping key points\n\n"
+        f"IF SCRIPT TOO SHORT (<1350 words):\n"
+        f"- Add relevant examples or analogies\n"
+        f"- Expand on key mechanisms\n"
+        f"- Include additional context where helpful\n\n"
         f"MAINTAIN ROLES:\n"
         f"  - {SESSION_ROLES['pro']['character']}: SUPPORTING, {SESSION_ROLES['pro']['personality']}\n"
         f"  - {SESSION_ROLES['con']['character']}: CRITICAL, {SESSION_ROLES['con']['personality']}\n\n"
@@ -559,7 +575,10 @@ natural_language_task = Task(
         f"Remove meta-tags, markdown, stage directions. Dialogue only. "
         f"{language_instruction}"
     ),
-    expected_output=f"Final dialogue between {SESSION_ROLES['pro']['character']} and {SESSION_ROLES['con']['character']}. {language_instruction}",
+    expected_output=(
+        f"Final dialogue between {SESSION_ROLES['pro']['character']} and {SESSION_ROLES['con']['character']} "
+        f"with 1350-1650 words for 9-11 minute duration. {language_instruction}"
+    ),
     agent=personality,
     context=[script_task]
 )
@@ -768,6 +787,32 @@ def generate_audio_chattts(dialogue_segments: list, output_filename: str = "podc
 
 # Parse script and generate audio with ChatTTS
 print("\n--- Generating Multi-Voice Podcast Audio ---")
+
+# Check script length before generation
+script_text = result.raw
+word_count = len(script_text.split())
+estimated_duration_min = word_count / 150  # 150 words per minute
+
+print(f"\n{'='*60}")
+print(f"DURATION CHECK")
+print(f"{'='*60}")
+print(f"Script word count: {word_count}")
+print(f"Estimated duration: {estimated_duration_min:.1f} minutes")
+print(f"Target range: 9-11 minutes (1350-1650 words)")
+
+if word_count < 1350:
+    print(f"⚠ WARNING: Script is SHORT ({word_count} words < 1350)")
+    print(f"  Estimated {estimated_duration_min:.1f} min < 9 min target")
+    print(f"  Consider running again with expanded content")
+elif word_count > 1650:
+    print(f"⚠ WARNING: Script is LONG ({word_count} words > 1650)")
+    print(f"  Estimated {estimated_duration_min:.1f} min > 11 min target")
+    print(f"  Consider running again with condensed content")
+else:
+    print(f"✓ Script length ACCEPTABLE ({word_count} words)")
+    print(f"  Estimated {estimated_duration_min:.1f} min within 9-11 min range")
+print(f"{'='*60}\n")
+
 character_mapping = {
     "Dr. Data": SESSION_ROLES["pro"]["character"],
     "Dr. Doubt": SESSION_ROLES["con"]["character"],
@@ -777,4 +822,31 @@ character_mapping = {
 
 dialogue_segments = parse_script_to_segments(result.raw, character_mapping)
 save_parsed_segments(dialogue_segments)  # Debug output
-generate_audio_chattts(dialogue_segments)
+audio_file = generate_audio_chattts(dialogue_segments)
+
+# Check actual audio duration
+if audio_file and audio_file.exists():
+    try:
+        with wave.open(str(audio_file), 'r') as wav:
+            frames = wav.getnframes()
+            rate = wav.getframerate()
+            duration_seconds = frames / float(rate)
+            duration_minutes = duration_seconds / 60
+
+        print(f"\n{'='*60}")
+        print(f"AUDIO DURATION VERIFICATION")
+        print(f"{'='*60}")
+        print(f"Actual audio duration: {duration_minutes:.2f} minutes ({duration_seconds:.1f} seconds)")
+        print(f"Target range: 9-11 minutes")
+
+        if duration_minutes < 9.0:
+            print(f"✗ FAILED: Audio is TOO SHORT ({duration_minutes:.2f} min < 9 min)")
+            print(f"  ACTION: Re-run with longer script")
+        elif duration_minutes > 11.0:
+            print(f"✗ FAILED: Audio is TOO LONG ({duration_minutes:.2f} min > 11 min)")
+            print(f"  ACTION: Re-run with shorter script")
+        else:
+            print(f"✓ SUCCESS: Audio duration within acceptable range")
+        print(f"{'='*60}\n")
+    except Exception as e:
+        print(f"Warning: Could not verify audio duration: {e}")
