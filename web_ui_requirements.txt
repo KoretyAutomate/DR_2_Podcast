@@ -1,0 +1,6 @@
+# Web UI Additional Dependencies
+# Install with: pip install -r web_ui_requirements.txt
+
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
