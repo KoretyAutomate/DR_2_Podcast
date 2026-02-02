@@ -276,14 +276,31 @@ dgx_llm = LLM(
 @tool("BraveSearch")
 def search_tool(search_query: str):
     """
-    Search for scientific data. ONLY use when you need:
-    1. Recent data published after 2024 (your knowledge cutoff)
-    2. Specific study citations not in your training
-    3. Real-time statistics or ongoing clinical trials
-    4. Verification of controversial claims
+    Search for scientific evidence with hierarchical strategy:
 
-    DO NOT search for well-established concepts (e.g., caffeine metabolism).
-    Use internal knowledge first. Search is expensive - last resort only.
+    PRIMARY SOURCES (Search First):
+    1. Peer-reviewed journals: Nature, Science, Lancet, Cell, PNAS
+    2. Recent data published after 2024
+    3. RCTs and meta-analyses
+
+    SECONDARY SOURCES (If primary insufficient):
+    4. Observatory studies and cohort studies
+    5. Cross-sectional population studies
+    6. Epidemiological data
+
+    SUPPLEMENTARY EVIDENCE (To verify logic):
+    7. Non-human RCTs (animal studies, in vitro)
+    8. Mechanistic studies
+    9. Preclinical research
+
+    SEARCH STRATEGY:
+    - Start with "[topic] RCT" or "[topic] meta-analysis"
+    - If no strong evidence, expand to "[topic] observatory study"
+    - Supplement with "[topic] animal study" or "[topic] mechanism"
+    - Always prioritize peer-reviewed > preprint > news
+
+    DO NOT search for well-established concepts.
+    Use internal knowledge first. Search is last resort.
     """
     api_key = os.getenv("BRAVE_API_KEY")
     if not api_key:
@@ -352,7 +369,9 @@ researcher = Agent(
     goal=f'Produce a high-impact scientific paper supporting {topic_name}. {language_instruction}',
     backstory=(
         f'Senior researcher specializing in neurobiology and metabolic efficiency. '
-        f'Relies on deep scientific knowledge. Only searches for recent publications (2025+) or specific citations. '
+        f'Evidence hierarchy: (1) RCTs/meta-analyses from top journals, (2) Observatory/cohort studies when RCTs unavailable, '
+        f'(3) Non-human RCTs (animal/in vitro) to verify mechanisms. '
+        f'Searches strategically - starts with peer-reviewed, expands to observatory if needed, supplements with preclinical. '
         f'In this podcast, you will be portrayed by "{SESSION_ROLES["pro"]["character"]}" '
         f'who has a {SESSION_ROLES["pro"]["personality"]} approach. '
         f'{language_instruction}'
@@ -375,7 +394,9 @@ counter_researcher = Agent(
     goal=f'Produce a scientific paper challenging {topic_name} by debunking specific claims. {language_instruction}',
     backstory=(
         f'Skeptical meta-analyst specializing in methodology flaws. '
-        f'Leverages extensive knowledge. Only searches for recent contradictory evidence or specific debunking studies. '
+        f'Evidence hierarchy: (1) Contradictory RCTs/systematic reviews, (2) Observatory studies showing null/negative effects, '
+        f'(3) Animal studies contradicting proposed mechanisms. '
+        f'Searches for contradictory evidence - prioritizes peer-reviewed, includes observatory/cohort when needed. '
         f'In this podcast, you will be portrayed by "{SESSION_ROLES["con"]["character"]}" '
         f'who has a {SESSION_ROLES["con"]["personality"]} approach. '
         f'{language_instruction}'
@@ -418,12 +439,17 @@ research_task = Task(
     description=(
         f"Conduct exhaustive deep dive into {topic_name}. "
         f"Draft condensed scientific paper (Nature style). "
-        f"IMPORTANT: Use existing scientific knowledge as primary source. "
-        f"Only use BraveSearch for recent studies (2025+) or specific citations. "
-        f"Include: Abstract, Introduction, 3 Biochemical Mechanisms, Bibliography with URLs. "
+        f"\n\nEVIDENCE HIERARCHY:\n"
+        f"1. PRIMARY: RCTs and meta-analyses from Nature/Science/Lancet/Cell/PNAS\n"
+        f"2. SECONDARY: Observatory studies, cohort studies, epidemiological data (when RCTs unavailable)\n"
+        f"3. SUPPLEMENTARY: Non-human RCTs (animal studies, in vitro) to verify proposed mechanisms\n\n"
+        f"SEARCH STRATEGY: Start with RCT/meta-analysis search. If no strong evidence, "
+        f"expand to observatory studies. Supplement with animal/mechanistic studies to validate logic.\n\n"
+        f"Use internal knowledge first. Search only for recent (2025+) or specific citations needed.\n"
+        f"Include: Abstract, Introduction, 3 Biochemical Mechanisms, Bibliography with study types noted. "
         f"{language_instruction}"
     ),
-    expected_output=f"A formal, condensed scientific paper with citations supporting the benefits. {language_instruction}",
+    expected_output=f"Scientific paper with citations from RCTs, observatory studies, and non-human studies as needed. {language_instruction}",
     agent=researcher
 )
 
@@ -442,12 +468,17 @@ adversarial_task = Task(
     description=(
         f"Based on 'Supporting Paper' and 'Gap Analysis', draft 'Anti-Thesis' paper. "
         f"Address and debunk mechanisms proposed in initial research. "
-        f"IMPORTANT: Use existing knowledge as primary source. "
-        f"Only use BraveSearch for recent contradictory studies (2025+) or specific citations. "
-        f"Include Bibliography with URLs. "
+        f"\n\nCOUNTER-EVIDENCE HIERARCHY:\n"
+        f"1. PRIMARY: Contradictory RCTs, systematic reviews showing null/negative effects\n"
+        f"2. SECONDARY: Observatory/cohort studies with null findings or adverse outcomes\n"
+        f"3. SUPPLEMENTARY: Animal studies contradicting proposed mechanisms\n\n"
+        f"SEARCH STRATEGY: Find contradictory RCTs first. If limited, use observatory studies showing "
+        f"no effect or harm. Include animal studies that disprove the mechanism.\n\n"
+        f"Use internal knowledge first. Search only for recent (2025+) contradictory evidence.\n"
+        f"Include Bibliography with study types noted. "
         f"{language_instruction}"
     ),
-    expected_output=f"A formal, condensed scientific paper challenging the findings. {language_instruction}",
+    expected_output=f"Scientific paper with contradictory evidence from RCTs, observatory studies, and animal studies as needed. {language_instruction}",
     agent=counter_researcher,
     context=[research_task, gap_analysis_task]
 )
