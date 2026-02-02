@@ -5,6 +5,7 @@ import httpx
 import time
 import random
 import sys
+import argparse
 from pathlib import Path
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, LLM
@@ -18,7 +19,49 @@ script_dir = Path(__file__).parent.absolute()
 output_dir = script_dir / "research_outputs"
 output_dir.mkdir(exist_ok=True)
 
-topic_name = 'scientific benefit of coffee intake to increase productivity during the day'
+# --- TOPIC CONFIGURATION ---
+def get_topic():
+    """
+    Get podcast topic from multiple sources (priority order):
+    1. Command-line argument (--topic)
+    2. Environment variable (PODCAST_TOPIC)
+    3. Default topic (for backward compatibility)
+    """
+    parser = argparse.ArgumentParser(
+        description='Generate a research-driven debate podcast on any scientific topic.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python podcast_crew.py --topic "effects of meditation on brain plasticity"
+  python podcast_crew.py --topic "climate change impact on marine ecosystems"
+
+Environment variable:
+  export PODCAST_TOPIC="your topic here"
+  python podcast_crew.py
+        """
+    )
+    parser.add_argument(
+        '--topic',
+        type=str,
+        help='Scientific topic for podcast research and debate'
+    )
+
+    args = parser.parse_args()
+
+    # Priority: CLI arg > env var > default
+    if args.topic:
+        topic = args.topic
+        print(f"Using topic from command-line: {topic}")
+    elif os.getenv("PODCAST_TOPIC"):
+        topic = os.getenv("PODCAST_TOPIC")
+        print(f"Using topic from environment: {topic}")
+    else:
+        topic = 'scientific benefit of coffee intake to increase productivity during the day'
+        print(f"Using default topic: {topic}")
+
+    return topic
+
+topic_name = get_topic()
 
 # --- MODEL DETECTION & CONFIG ---
 def get_final_model_string():
