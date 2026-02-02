@@ -408,8 +408,14 @@ counter_researcher = Agent(
 
 scriptwriter = Agent(
     role='Podcast Producer',
-    goal=f'Translate audited papers into a balanced dialogue. {language_instruction}',
-    backstory=f'Award-winning science communicator. {language_instruction}',
+    goal=f'Translate audited papers into a balanced, accessible dialogue for general audience. {language_instruction}',
+    backstory=(
+        f'Award-winning science communicator specializing in making complex topics accessible. '
+        f'TARGET AUDIENCE: Curious non-experts with high school science background. '
+        f'STYLE: Avoid jargon, explain technical terms, use real-world analogies, conversational tone. '
+        f'Maintains scientific accuracy while ensuring comprehension for general public. '
+        f'{language_instruction}'
+    ),
     llm=dgx_llm,
     verbose=True
 )
@@ -421,6 +427,8 @@ personality = Agent(
         f'Radio host expert in humanizing technical data and timing content perfectly. '
         f'Target: 1350-1650 words for 9-11 minute duration (150 words/min speaking rate). '
         f'Skilled at condensing or expanding content while maintaining quality. '
+        f'ACCESSIBILITY: Simplifies complex terms, adds clarifying examples, ensures anyone can follow. '
+        f'TONE: Warm, engaging, explains "like talking to a curious friend". '
         f'{language_instruction}'
     ),
     llm=dgx_llm,
@@ -530,9 +538,20 @@ audit_task = Task(
 
 script_task = Task(
     description=(
-        f"Write a technical podcast script featuring {SESSION_ROLES['pro']['character']} "
+        f"Write an accessible podcast script for general audience featuring {SESSION_ROLES['pro']['character']} "
         f"vs {SESSION_ROLES['con']['character']}. "
-        f"\n\nCHARACTER ROLES:\n"
+        f"\n\nAUDIENCE: Non-experts with basic science background (high school level)\n"
+        f"ACCESSIBILITY REQUIREMENTS:\n"
+        f"- Avoid jargon or define technical terms immediately\n"
+        f"- Use real-world analogies and everyday examples\n"
+        f"- Explain complex concepts in simple language\n"
+        f"- Make it conversational and engaging\n"
+        f"- Assume curiosity but no specialized knowledge\n\n"
+        f"EXAMPLES OF GOOD EXPLANATIONS:\n"
+        f"- Instead of 'adenosine receptor antagonist' → 'blocks the chemical that makes you sleepy'\n"
+        f"- Instead of 'hepatic metabolism' → 'how your liver processes it'\n"
+        f"- Instead of 'correlation coefficient' → 'how strongly these things are connected'\n\n"
+        f"CHARACTER ROLES:\n"
         f"  - {SESSION_ROLES['pro']['character']}: SUPPORTING perspective, "
         f"{SESSION_ROLES['pro']['personality']}\n"
         f"  - {SESSION_ROLES['con']['character']}: CRITICAL perspective, "
@@ -544,8 +563,8 @@ script_task = Task(
         f"{language_instruction}"
     ),
     expected_output=(
-        f"Conversational dialogue between {SESSION_ROLES['pro']['character']} (supporting) "
-        f"and {SESSION_ROLES['con']['character']} (critical). "
+        f"Accessible conversational dialogue between {SESSION_ROLES['pro']['character']} (supporting) "
+        f"and {SESSION_ROLES['con']['character']} (critical) that non-experts can easily understand. "
         f"{language_instruction}"
     ),
     agent=scriptwriter,
@@ -573,11 +592,16 @@ natural_language_task = Task(
         f"Format:\n{SESSION_ROLES['pro']['character']}: [dialogue]\n"
         f"{SESSION_ROLES['con']['character']}: [dialogue]\n\n"
         f"Remove meta-tags, markdown, stage directions. Dialogue only. "
+        f"\n\nACCESSIBILITY FINAL CHECK:\n"
+        f"- Replace any remaining jargon with simple terms\n"
+        f"- Ensure all concepts are explained clearly\n"
+        f"- Add brief clarifications where needed\n"
+        f"- Make it sound like two knowledgeable friends explaining to you\n"
         f"{language_instruction}"
     ),
     expected_output=(
-        f"Final dialogue between {SESSION_ROLES['pro']['character']} and {SESSION_ROLES['con']['character']} "
-        f"with 1350-1650 words for 9-11 minute duration. {language_instruction}"
+        f"Final accessible dialogue between {SESSION_ROLES['pro']['character']} and {SESSION_ROLES['con']['character']} "
+        f"with 1350-1650 words for 9-11 minute duration, understandable by non-experts. {language_instruction}"
     ),
     agent=personality,
     context=[script_task]
