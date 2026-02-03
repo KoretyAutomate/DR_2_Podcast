@@ -759,24 +759,64 @@ def save_parsed_segments(segments: list):
 
 # --- AUDIO GENERATION ---
 def clean_text_for_tts(text):
-    """Sanitise text so ChatTTS does not choke on non-ASCII characters."""
+    """Sanitise text so ChatTTS does not choke on unsupported characters.
+
+    ChatTTS only reliably handles: letters, spaces, commas, and periods.
+    Everything else is converted to a spoken equivalent or stripped.
+    """
     clean = re.sub(r'<think>.*?</think>', '', str(text), flags=re.DOTALL)
     clean = re.sub(r'\*\*.*?\*\*', '', clean)
     clean = re.sub(r'[*#_\[\]]', '', clean)
 
-    replacements = {
-        '\u2018': "'", '\u2019': "'",          # smart single quotes
-        '\u201c': '"', '\u201d': '"',          # smart double quotes
-        '\u2014': '-', '\u2013': '-',          # em-dash / en-dash
-        '\u2026': '...', '\u2212': '-',        # ellipsis / minus sign
-        '\u2039': '<', '\u203a': '>',          # single guillemets
-        '\u00ab': '"', '\u00bb': '"',          # double guillemets
-        '\u201e': '"', '\u201a': "'", '\u201f': '"',
-    }
-    for old, new in replacements.items():
+    # --- Unicode → ASCII equivalents ---
+    for old, new in {
+        '\u2018': "'", '\u2019': "'", '\u201c': '"', '\u201d': '"',
+        '\u2014': ' ', '\u2013': ' ', '\u2026': '.', '\u2212': ' ',
+        '\u2039': '', '\u203a': '', '\u00ab': '', '\u00bb': '',
+        '\u201e': '', '\u201a': '', '\u201f': '',
+    }.items():
         clean = clean.replace(old, new)
 
-    clean = clean.encode('ascii', 'ignore').decode('ascii')
+    # --- Expand contractions before stripping apostrophes ---
+    for c, e in [
+        ("don't","do not"),("doesn't","does not"),("didn't","did not"),
+        ("won't","will not"),("wouldn't","would not"),("can't","cannot"),
+        ("couldn't","could not"),("shouldn't","should not"),
+        ("isn't","is not"),("aren't","are not"),("wasn't","was not"),
+        ("weren't","were not"),("haven't","have not"),("hasn't","has not"),
+        ("hadn't","had not"),("it's","it is"),("that's","that is"),
+        ("what's","what is"),("there's","there is"),("here's","here is"),
+        ("let's","let us"),("they're","they are"),("we're","we are"),
+        ("you're","you are"),("I'm","I am"),("he's","he is"),("she's","she is"),
+        ("I'll","I will"),("you'll","you will"),("he'll","he will"),
+        ("she'll","she will"),("they'll","they will"),("we'll","we will"),
+        ("it'll","it will"),("that'll","that will"),
+        ("I've","I have"),("you've","you have"),("they've","they have"),
+        ("we've","we have"),
+        ("I'd","I would"),("you'd","you would"),("they'd","they would"),
+        ("we'd","we would"),("he'd","he would"),("she'd","she would"),
+    ]:
+        clean = clean.replace(c, e)
+        clean = clean.replace(c.capitalize(), e.capitalize())
+
+    # --- Punctuation ChatTTS cannot handle ---
+    for old, new in {
+        '?': '.', '!': '.', ':': ',', ';': ',', '-': ' ',
+        "'": '', '"': '', '(': '', ')': '',
+        '/': ' ', '&': 'and', '+': 'plus', '@': 'at',
+        '#': '', '$': 'dollars', '%': ' percent ', '=': 'equals',
+    }.items():
+        clean = clean.replace(old, new)
+
+    # --- Digits → words (ChatTTS crashes on numeric sequences) ---
+    _dw = {'0':'zero','1':'one','2':'two','3':'three','4':'four',
+           '5':'five','6':'six','7':'seven','8':'eight','9':'nine'}
+    clean = re.sub(r'\d+', lambda m: ' '.join(_dw[d] for d in m.group()), clean)
+
+    # --- Final: keep only letters, spaces, commas, periods ---
+    clean = re.sub(r'[^a-zA-Z ,.]', '', clean)
+    clean = re.sub(r'\.{2,}', '.', clean)
+    clean = re.sub(r',{2,}', ',', clean)
     return re.sub(r'\s+', ' ', clean).strip()
 
 # Initialize ChatTTS once
@@ -880,6 +920,33 @@ def generate_audio_chattts(dialogue_segments: list, output_filename: str = "podc
 
     return output_path
 
+def generate_audio_gtts_fallback(dialogue_segments: list, output_filename: str = "podcast_final_audio.mp3"):
+    """Single-voice gTTS fallback when ChatTTS is unavailable or crashes."""
+    try:
+        from gtts import gTTS
+    except ImportError:
+        print("Error: gTTS not installed. Run: pip install gtts")
+        return None
+
+    # Build full text with speaker labels for clarity
+    parts = []
+    for seg in dialogue_segments:
+        text = re.sub(r'<think>.*?</think>', '', seg['text'], flags=re.DOTALL)
+        text = re.sub(r'\s+', ' ', text).strip()
+        if text:
+            parts.append(f"{seg['character']} says, {text}")
+
+    full_text = " ... ".join(parts)
+    output_path = output_dir / output_filename
+
+    print(f"Generating audio with gTTS ({len(full_text)} chars)...")
+    tts = gTTS(text=full_text, lang=language_config.get('tts_code', 'en'), slow=False)
+    tts.save(str(output_path))
+
+    file_size = output_path.stat().st_size
+    print(f"✓ Audio generated (gTTS fallback): {output_path} ({file_size} bytes)")
+    return output_path
+
 # Parse script and generate audio with ChatTTS
 print("\n--- Generating Multi-Voice Podcast Audio ---")
 
@@ -917,7 +984,16 @@ character_mapping = {
 
 dialogue_segments = parse_script_to_segments(result.raw, character_mapping)
 save_parsed_segments(dialogue_segments)  # Debug output
-audio_file = generate_audio_chattts(dialogue_segments)
+
+audio_file = None
+try:
+    audio_file = generate_audio_chattts(dialogue_segments)
+except Exception as e:
+    print(f"ChatTTS failed ({e}), falling back to gTTS...")
+
+if not audio_file:
+    print("Attempting gTTS fallback...")
+    audio_file = generate_audio_gtts_fallback(dialogue_segments)
 
 # Check actual audio duration
 if audio_file and audio_file.exists():
