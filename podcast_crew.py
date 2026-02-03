@@ -236,6 +236,36 @@ language = get_language()
 language_config = SUPPORTED_LANGUAGES[language]
 language_instruction = language_config['instruction']
 
+# --- ACCESSIBILITY LEVEL CONFIG ---
+# Controls how aggressively scientific terms are simplified.
+#   simple  – define every term inline, heavy use of analogies (default)
+#   moderate – define key terms once, then use them normally
+#   technical – minimal simplification, assume some science literacy
+ACCESSIBILITY_LEVEL = os.getenv("ACCESSIBILITY_LEVEL", "simple").lower()
+if ACCESSIBILITY_LEVEL not in ("simple", "moderate", "technical"):
+    print(f"Warning: Unknown ACCESSIBILITY_LEVEL '{ACCESSIBILITY_LEVEL}', falling back to 'simple'")
+    ACCESSIBILITY_LEVEL = "simple"
+print(f"Accessibility level: {ACCESSIBILITY_LEVEL}")
+
+ACCESSIBILITY_INSTRUCTIONS = {
+    "simple": (
+        "Explain every scientific term the first time it appears using a one-line plain-English definition. "
+        "Use everyday analogies (e.g. 'blood sugar is like fuel in a car'). "
+        "After defining a term once, you may use it freely."
+    ),
+    "moderate": (
+        "Define key domain terms once when first introduced, then use them normally. "
+        "Assume the listener can follow a simple cause-and-effect explanation. "
+        "Use analogies sparingly — only for the most abstract concepts."
+    ),
+    "technical": (
+        "Use standard scientific terminology without extensive definitions. "
+        "Assume the listener has basic biology knowledge (high school AP level). "
+        "Focus on depth and nuance rather than simplification."
+    ),
+}
+accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL]
+
 # --- MODEL DETECTION & CONFIG ---
 def get_final_model_string():
     env_model = os.getenv("MODEL_NAME")
@@ -408,12 +438,18 @@ counter_researcher = Agent(
 
 scriptwriter = Agent(
     role='Podcast Producer',
-    goal=f'Translate audited papers into a balanced, accessible dialogue for general audience. {language_instruction}',
+    goal=(
+        f'Turn the audited research on "{topic_name}" into a debate-style dialogue that a general audience can follow. '
+        f'The dialogue MUST be about the topic itself — the health effects, risks, and science behind {topic_name}. '
+        f'{language_instruction}'
+    ),
     backstory=(
-        f'Award-winning science communicator specializing in making complex topics accessible. '
-        f'TARGET AUDIENCE: Curious non-experts with high school science background. '
-        f'STYLE: Avoid jargon, explain technical terms, use real-world analogies, conversational tone. '
-        f'Maintains scientific accuracy while ensuring comprehension for general public. '
+        f'Award-winning science communicator. Your job is to explain the TOPIC, not the research process. '
+        f'When the audience tunes in they want to learn about {topic_name} — not about how journals work. '
+        f'Simplify the SCIENCE (e.g. what glycemic index means, how blood sugar works) using everyday analogies. '
+        f'DO NOT explain peer review, journal rankings, or source trustworthiness. '
+        f'If the upstream audit report talks about source quality, extract the health conclusions from it and ignore the methodology commentary. '
+        f'Accessibility guidance: {accessibility_instruction} '
         f'{language_instruction}'
     ),
     llm=dgx_llm,
@@ -422,13 +458,17 @@ scriptwriter = Agent(
 
 personality = Agent(
     role='Podcast Personality',
-    goal=f'Polish the script for natural verbal delivery with precise 10-minute duration (±1 min). {language_instruction}',
+    goal=(
+        f'Polish the "{topic_name}" script for natural verbal delivery, targeting 10 minutes (±1 min). '
+        f'Every sentence must contribute information about the topic. '
+        f'{language_instruction}'
+    ),
     backstory=(
-        f'Radio host expert in humanizing technical data and timing content perfectly. '
+        f'Radio host who makes science feel like a conversation between friends. '
         f'Target: 1350-1650 words for 9-11 minute duration (150 words/min speaking rate). '
-        f'Skilled at condensing or expanding content while maintaining quality. '
-        f'ACCESSIBILITY: Simplifies complex terms, adds clarifying examples, ensures anyone can follow. '
-        f'TONE: Warm, engaging, explains "like talking to a curious friend". '
+        f'Your role is to tighten language and make it sound natural — NOT to change the subject. '
+        f'If the script drifts into talking about research quality or journal prestige, cut it and replace with more topic-relevant content. '
+        f'When expanding a short script, add MORE DETAIL about the health topic (extra examples, statistics, edge cases). '
         f'{language_instruction}'
     ),
     llm=dgx_llm,
@@ -452,17 +492,22 @@ research_task = Task(
     description=(
         f"Conduct exhaustive deep dive into {topic_name}. "
         f"Draft condensed scientific paper (Nature style). "
-        f"\n\nEVIDENCE HIERARCHY:\n"
+        f"\n\nCRITICAL: Focus ONLY on the health topic itself. Include:\n"
+        f"- Specific health effects and mechanisms\n"
+        f"- Biochemical pathways and physiological impacts\n"
+        f"- Clinical outcomes and disease relationships\n"
+        f"- Concrete examples of health consequences\n\n"
+        f"EVIDENCE HIERARCHY:\n"
         f"1. PRIMARY: RCTs and meta-analyses from Nature/Science/Lancet/Cell/PNAS\n"
         f"2. SECONDARY: Observatory studies, cohort studies, epidemiological data (when RCTs unavailable)\n"
         f"3. SUPPLEMENTARY: Non-human RCTs (animal studies, in vitro) to verify proposed mechanisms\n\n"
         f"SEARCH STRATEGY: Start with RCT/meta-analysis search. If no strong evidence, "
         f"expand to observatory studies. Supplement with animal/mechanistic studies to validate logic.\n\n"
         f"Use internal knowledge first. Search only for recent (2025+) or specific citations needed.\n"
-        f"Include: Abstract, Introduction, 3 Biochemical Mechanisms, Bibliography with study types noted. "
+        f"Include: Abstract, Introduction, 3 Biochemical Mechanisms with CONCRETE health impacts, Bibliography with study types noted. "
         f"{language_instruction}"
     ),
-    expected_output=f"Scientific paper with citations from RCTs, observatory studies, and non-human studies as needed. {language_instruction}",
+    expected_output=f"Scientific paper with SPECIFIC health mechanisms and effects, citations from RCTs, observatory studies, and non-human studies as needed. {language_instruction}",
     agent=researcher
 )
 
@@ -479,9 +524,11 @@ gap_analysis_task = Task(
 
 adversarial_task = Task(
     description=(
-        f"Based on 'Supporting Paper' and 'Gap Analysis', draft 'Anti-Thesis' paper. "
-        f"Address and debunk mechanisms proposed in initial research. "
-        f"\n\nCOUNTER-EVIDENCE HIERARCHY:\n"
+        f"Based on 'Supporting Paper' and 'Gap Analysis', draft 'Anti-Thesis' paper on {topic_name}. "
+        f"Address and debunk the SPECIFIC health mechanisms proposed in initial research. "
+        f"\n\nCRITICAL: Stay focused on the health topic. Debunk the specific biological and clinical claims. "
+        f"Do NOT discuss research methodology or journal quality — challenge the SCIENCE ITSELF.\n\n"
+        f"COUNTER-EVIDENCE HIERARCHY:\n"
         f"1. PRIMARY: Contradictory RCTs, systematic reviews showing null/negative effects\n"
         f"2. SECONDARY: Observatory/cohort studies with null findings or adverse outcomes\n"
         f"3. SUPPLEMENTARY: Animal studies contradicting proposed mechanisms\n\n"
@@ -491,7 +538,7 @@ adversarial_task = Task(
         f"Include Bibliography with study types noted. "
         f"{language_instruction}"
     ),
-    expected_output=f"Scientific paper with contradictory evidence from RCTs, observatory studies, and animal studies as needed. {language_instruction}",
+    expected_output=f"Scientific paper challenging SPECIFIC health claims with contradictory evidence from RCTs, observatory studies, and animal studies as needed. {language_instruction}",
     agent=counter_researcher,
     context=[research_task, gap_analysis_task]
 )
@@ -519,17 +566,19 @@ source_verification_task = Task(
 
 audit_task = Task(
     description=(
-        f"Review Supporting, Anti-Thesis papers AND verified source bibliography. "
+        f"Review Supporting, Anti-Thesis papers on {topic_name} AND verified source bibliography. "
         f"PRIORITIZE findings from HIGH-TRUST peer-reviewed sources. "
         f"Validate key claims are backed by reputable journals. "
-        f"Prepare Final Meta-Audit Report weighing evidence quality and source credibility. "
+        f"Prepare Final Meta-Audit Report summarising the KEY HEALTH FINDINGS — "
+        f"what are the actual risks, mechanisms, and disagreements about {topic_name}? "
+        f"The output MUST contain concrete health information, NOT a discussion about source quality. "
         f"{language_instruction}"
     ),
     expected_output=(
         f"Synthesis report with:\n"
-        f"1. Verdict based on evidence quality\n"
-        f"2. Source assessment (high-trust vs low-trust count)\n"
-        f"3. Confidence level in conclusions\n"
+        f"1. Verdict: concrete summary of confirmed vs contested health risks of {topic_name}\n"
+        f"2. Key mechanisms that ARE supported vs those that are disputed\n"
+        f"3. Confidence level in each specific health claim\n"
         f"{language_instruction}"
     ),
     agent=auditor,
@@ -538,23 +587,23 @@ audit_task = Task(
 
 script_task = Task(
     description=(
-        f"Write an accessible podcast script for general audience featuring {SESSION_ROLES['pro']['character']} "
-        f"vs {SESSION_ROLES['con']['character']}. "
-        f"\n\nAUDIENCE: Non-experts with basic science background (high school level)\n"
-        f"ACCESSIBILITY REQUIREMENTS:\n"
-        f"- Avoid jargon or define technical terms immediately\n"
-        f"- Use real-world analogies and everyday examples\n"
-        f"- Explain complex concepts in simple language\n"
-        f"- Make it conversational and engaging\n"
-        f"- Assume curiosity but no specialized knowledge\n\n"
-        f"EXAMPLES OF GOOD EXPLANATIONS:\n"
-        f"- Instead of 'adenosine receptor antagonist' → 'blocks the chemical that makes you sleepy'\n"
-        f"- Instead of 'hepatic metabolism' → 'how your liver processes it'\n"
-        f"- Instead of 'correlation coefficient' → 'how strongly these things are connected'\n\n"
+        f"Using the audit report, write a podcast dialogue about \"{topic_name}\" "
+        f"featuring {SESSION_ROLES['pro']['character']} vs {SESSION_ROLES['con']['character']}.\n\n"
+        f"TOPIC FOCUS — every exchange must be about the health topic. Suggested structure:\n"
+        f"  1. Open: What high GI food means in plain terms and why it matters\n"
+        f"  2. Body: The main health risks (blood sugar spikes, insulin resistance, cardiovascular, etc.)\n"
+        f"  3. Disagreement: Which risks are proven vs still debated\n"
+        f"  4. Close: Practical takeaway for listeners\n\n"
+        f"DO NOT discuss: peer review, journal quality, source trustworthiness, research methodology.\n"
+        f"If the audit report contains that commentary, skip it. Extract only the health conclusions.\n\n"
+        f"SIMPLIFY THE SCIENCE (not the research process):\n"
+        f"- 'Glycemic index' → 'a score that measures how fast a food raises blood sugar'\n"
+        f"- 'Insulin resistance' → 'when your body stops responding properly to insulin'\n"
+        f"- 'Postprandial glucose spike' → 'a sharp rise in blood sugar after eating'\n\n"
         f"CHARACTER ROLES:\n"
-        f"  - {SESSION_ROLES['pro']['character']}: SUPPORTING perspective, "
+        f"  - {SESSION_ROLES['pro']['character']}: argues the health risks ARE significant, "
         f"{SESSION_ROLES['pro']['personality']}\n"
-        f"  - {SESSION_ROLES['con']['character']}: CRITICAL perspective, "
+        f"  - {SESSION_ROLES['con']['character']}: argues some risks are overstated or context-dependent, "
         f"{SESSION_ROLES['con']['personality']}\n\n"
         f"Format STRICTLY as:\n"
         f"{SESSION_ROLES['pro']['character']}: [dialogue]\n"
@@ -563,8 +612,8 @@ script_task = Task(
         f"{language_instruction}"
     ),
     expected_output=(
-        f"Accessible conversational dialogue between {SESSION_ROLES['pro']['character']} (supporting) "
-        f"and {SESSION_ROLES['con']['character']} (critical) that non-experts can easily understand. "
+        f"Dialogue about the health risks of {topic_name} between {SESSION_ROLES['pro']['character']} (risks are real) "
+        f"and {SESSION_ROLES['con']['character']} (some risks are overstated). Every line discusses the topic. "
         f"{language_instruction}"
     ),
     agent=scriptwriter,
@@ -573,8 +622,11 @@ script_task = Task(
 
 natural_language_task = Task(
     description=(
-        f"Rewrite {SESSION_ROLES['pro']['character']} vs {SESSION_ROLES['con']['character']} "
-        f"dialogue for natural verbal delivery.\n\n"
+        f"Polish the \"{topic_name}\" dialogue for natural spoken delivery.\n\n"
+        f"TOPIC GUARD: Read through the script first. If any exchange is about research methodology, "
+        f"journal prestige, or peer review instead of the actual health topic, replace it with "
+        f"additional content about {topic_name} (e.g. another health risk, a real-world example, "
+        f"a practical eating scenario).\n\n"
         f"CRITICAL DURATION REQUIREMENT:\n"
         f"TARGET: 10 minutes (±1 minute acceptable = 9-11 minutes)\n"
         f"WORD COUNT: 1350-1650 words (assuming 150 words/minute speaking rate)\n\n"
@@ -583,25 +635,21 @@ natural_language_task = Task(
         f"- Remove redundant examples\n"
         f"- Tighten dialogue while keeping key points\n\n"
         f"IF SCRIPT TOO SHORT (<1350 words):\n"
-        f"- Add relevant examples or analogies\n"
-        f"- Expand on key mechanisms\n"
-        f"- Include additional context where helpful\n\n"
+        f"- Add more detail about specific health effects\n"
+        f"- Include real-world food examples (white rice, white bread, sugary drinks, etc.)\n"
+        f"- Expand on disputed vs confirmed risks\n\n"
         f"MAINTAIN ROLES:\n"
-        f"  - {SESSION_ROLES['pro']['character']}: SUPPORTING, {SESSION_ROLES['pro']['personality']}\n"
-        f"  - {SESSION_ROLES['con']['character']}: CRITICAL, {SESSION_ROLES['con']['personality']}\n\n"
+        f"  - {SESSION_ROLES['pro']['character']}: risks are significant, {SESSION_ROLES['pro']['personality']}\n"
+        f"  - {SESSION_ROLES['con']['character']}: some risks are overstated, {SESSION_ROLES['con']['personality']}\n\n"
         f"Format:\n{SESSION_ROLES['pro']['character']}: [dialogue]\n"
         f"{SESSION_ROLES['con']['character']}: [dialogue]\n\n"
         f"Remove meta-tags, markdown, stage directions. Dialogue only. "
-        f"\n\nACCESSIBILITY FINAL CHECK:\n"
-        f"- Replace any remaining jargon with simple terms\n"
-        f"- Ensure all concepts are explained clearly\n"
-        f"- Add brief clarifications where needed\n"
-        f"- Make it sound like two knowledgeable friends explaining to you\n"
         f"{language_instruction}"
     ),
     expected_output=(
-        f"Final accessible dialogue between {SESSION_ROLES['pro']['character']} and {SESSION_ROLES['con']['character']} "
-        f"with 1350-1650 words for 9-11 minute duration, understandable by non-experts. {language_instruction}"
+        f"Final dialogue entirely about {topic_name}, 1350-1650 words, natural spoken tone. "
+        f"No lines about research methodology or journal quality. "
+        f"{language_instruction}"
     ),
     agent=personality,
     context=[script_task]
@@ -710,6 +758,27 @@ def save_parsed_segments(segments: list):
 
 
 # --- AUDIO GENERATION ---
+def clean_text_for_tts(text):
+    """Sanitise text so ChatTTS does not choke on non-ASCII characters."""
+    clean = re.sub(r'<think>.*?</think>', '', str(text), flags=re.DOTALL)
+    clean = re.sub(r'\*\*.*?\*\*', '', clean)
+    clean = re.sub(r'[*#_\[\]]', '', clean)
+
+    replacements = {
+        '\u2018': "'", '\u2019': "'",          # smart single quotes
+        '\u201c': '"', '\u201d': '"',          # smart double quotes
+        '\u2014': '-', '\u2013': '-',          # em-dash / en-dash
+        '\u2026': '...', '\u2212': '-',        # ellipsis / minus sign
+        '\u2039': '<', '\u203a': '>',          # single guillemets
+        '\u00ab': '"', '\u00bb': '"',          # double guillemets
+        '\u201e': '"', '\u201a': "'", '\u201f': '"',
+    }
+    for old, new in replacements.items():
+        clean = clean.replace(old, new)
+
+    clean = clean.encode('ascii', 'ignore').decode('ascii')
+    return re.sub(r'\s+', ' ', clean).strip()
+
 # Initialize ChatTTS once
 _chattts_model = None
 
@@ -755,10 +824,7 @@ def generate_audio_chattts(dialogue_segments: list, output_filename: str = "podc
         if not text.strip():
             continue
 
-        # Clean text
-        clean_text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-        clean_text = re.sub(r'[*#_]', '', clean_text).strip()
-
+        clean_text = clean_text_for_tts(text)
         if not clean_text:
             continue
 
@@ -794,7 +860,12 @@ def generate_audio_chattts(dialogue_segments: list, output_filename: str = "podc
         wav_file.setframerate(24000)  # ChatTTS sample rate
         wav_file.writeframes((combined_audio * 32767).astype(np.int16).tobytes())
 
-    print(f"\n✓ Audio generated: {output_path}")
+    file_size = output_path.stat().st_size
+    if file_size < 1000:
+        print(f"Error: Audio file is suspiciously small ({file_size} bytes)")
+        return None
+
+    print(f"\n✓ Audio generated: {output_path} ({file_size} bytes)")
 
     # Auto-play
     try:
