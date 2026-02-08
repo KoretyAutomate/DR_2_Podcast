@@ -20,10 +20,17 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 import uvicorn
 
+from upload_utils import validate_upload_config, upload_to_buzzsprout, upload_to_youtube
+
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.absolute()
 OUTPUT_DIR = SCRIPT_DIR / "research_outputs"
 TASKS_FILE = SCRIPT_DIR / "podcast_tasks.json"
+
+# Use podcast_env Python interpreter if available
+PODCAST_ENV_PYTHON = Path.home() / "miniconda3" / "envs" / "podcast_env" / "bin" / "python3"
+if not PODCAST_ENV_PYTHON.exists():
+    PODCAST_ENV_PYTHON = sys.executable  # Fallback to current Python
 
 # Simple authentication (optional - can be disabled)
 USERNAME = os.getenv("PODCAST_WEB_USER", "admin")
@@ -63,6 +70,8 @@ load_tasks()
 class PodcastRequest(BaseModel):
     topic: str
     language: str = "en"
+    upload_to_buzzsprout: bool = False
+    upload_to_youtube: bool = False
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     """Simple authentication"""
@@ -312,6 +321,21 @@ def home(username: str = Depends(verify_credentials)):
                         <option value="ja">日本語 (Japanese)</option>
                     </select>
 
+                    <div style="margin-bottom: 20px;">
+                        <label style="font-weight: 500; color: #555; font-size: 14px; margin-bottom: 10px;">Auto-upload (as draft)</label>
+                        <div style="display: flex; gap: 24px;">
+                            <label style="font-weight: normal; display: flex; align-items: center; gap: 8px; cursor: pointer;" id="buzzsproutLabel">
+                                <input type="checkbox" id="uploadBuzzsprout" style="width: 18px; height: 18px; cursor: pointer;" />
+                                Buzzsprout (podcast)
+                            </label>
+                            <label style="font-weight: normal; display: flex; align-items: center; gap: 8px; cursor: pointer;" id="youtubeLabel">
+                                <input type="checkbox" id="uploadYoutube" style="width: 18px; height: 18px; cursor: pointer;" />
+                                YouTube (private)
+                                <button type="button" id="ytAuthBtn" style="display: none; background: #fff; color: #667eea; border: 1px solid #667eea; padding: 2px 8px; border-radius: 4px; font-size: 12px; cursor: pointer; width: auto;">Authorize</button>
+                            </label>
+                        </div>
+                    </div>
+
                     <button type="submit" id="generateBtn">Generate Podcast</button>
                 </form>
 
@@ -343,6 +367,53 @@ def home(username: str = Depends(verify_credentials)):
             // Load history on page load
             loadHistory();
 
+            // Check which upload platforms are configured; grey out if not
+            (async () => {{
+                try {{
+                    const cfg = await (await fetch('/api/upload_config')).json();
+                    if (!cfg.buzzsprout_configured) {{
+                        document.getElementById('uploadBuzzsprout').disabled = true;
+                        document.getElementById('buzzsproutLabel').style.opacity = '0.4';
+                        document.getElementById('buzzsproutLabel').title = 'Set BUZZSPROUT_API_KEY and BUZZSPROUT_ACCOUNT_ID in .env';
+                    }}
+                    if (!cfg.youtube_configured) {{
+                        document.getElementById('uploadYoutube').disabled = true;
+                        document.getElementById('youtubeLabel').style.opacity = '0.4';
+                        document.getElementById('youtubeLabel').title = 'Set up YouTube credentials — see upload_utils.py';
+                    }}
+                }} catch(e) {{ console.warn('upload_config check failed', e); }}
+            }})();
+
+            // Show "Authorize" button when YouTube checkbox is ticked
+            document.getElementById('uploadYoutube').addEventListener('change', function() {{
+                document.getElementById('ytAuthBtn').style.display = this.checked ? 'inline-block' : 'none';
+            }});
+
+            // YouTube OAuth preflight
+            document.getElementById('ytAuthBtn').addEventListener('click', async function() {{
+                this.textContent = 'Authorizing...';
+                this.disabled = true;
+                try {{
+                    const res = await fetch('/api/youtube/preflight', {{ method: 'POST' }});
+                    const data = await res.json();
+                    if (data.ready) {{
+                        this.textContent = 'Authorized';
+                        this.style.background = '#10b981';
+                        this.style.color = 'white';
+                        this.style.borderColor = '#10b981';
+                    }} else {{
+                        this.textContent = 'Failed';
+                        this.style.background = '#ef4444';
+                        this.style.color = 'white';
+                        alert('YouTube auth failed: ' + data.error);
+                    }}
+                }} catch(e) {{
+                    this.textContent = 'Error';
+                    alert('Network error: ' + e.message);
+                }}
+                this.disabled = false;
+            }});
+
             // Form submission
             document.getElementById('podcastForm').addEventListener('submit', async (e) => {{
                 e.preventDefault();
@@ -361,7 +432,11 @@ def home(username: str = Depends(verify_credentials)):
                     const response = await fetch('/api/generate', {{
                         method: 'POST',
                         headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{ topic, language }})
+                        body: JSON.stringify({{
+                            topic, language,
+                            upload_to_buzzsprout: document.getElementById('uploadBuzzsprout').checked,
+                            upload_to_youtube: document.getElementById('uploadYoutube').checked
+                        }})
                     }});
 
                     if (!response.ok) {{
@@ -396,6 +471,7 @@ def home(username: str = Depends(verify_credentials)):
                         document.getElementById('generateBtn').textContent = 'Generate Podcast';
                         loadHistory();
                     }}
+                    // "uploading" keeps the interval alive — do nothing here
                 }} catch (error) {{
                     console.error('Status check failed:', error);
                 }}
@@ -413,17 +489,37 @@ def home(username: str = Depends(verify_credentials)):
                 if (data.status === 'running') {{
                     progressBar.style.width = '50%';
                     statusDetails.textContent = 'Agents are researching and debating...';
+                }} else if (data.status === 'uploading') {{
+                    progressBar.style.width = '75%';
+                    statusDetails.textContent = 'Uploading to platforms...';
                 }} else if (data.status === 'completed') {{
                     progressBar.style.width = '100%';
                     statusDetails.textContent = 'Podcast generated successfully!';
 
                     // Show download links
+                    let uploadsHtml = '';
+                    if (data.upload_results) {{
+                        if (data.upload_results.buzzsprout) {{
+                            const bs = data.upload_results.buzzsprout;
+                            uploadsHtml += bs.success
+                                ? `<a href="${{bs.url}}" target="_blank" class="download-link" style="background:#f59e0b;">🎙️ Buzzsprout Draft (ep #${{bs.episode_id}})</a>`
+                                : `<span style="color:#ef4444; font-size:14px;">Buzzsprout upload failed: ${{bs.error}}</span>`;
+                        }}
+                        if (data.upload_results.youtube) {{
+                            const yt = data.upload_results.youtube;
+                            uploadsHtml += yt.success
+                                ? `<a href="${{yt.url}}" target="_blank" class="download-link" style="background:#dc2626;">▶️ YouTube (private)</a>`
+                                : `<span style="color:#ef4444; font-size:14px;">YouTube upload failed: ${{yt.error}}</span>`;
+                        }}
+                    }}
+
                     downloads.innerHTML = `
                         <h3>Download Results:</h3>
                         <a href="/api/download/${{data.task_id}}/podcast_final_audio.mp3" class="download-link">🎵 Audio (MP3)</a>
                         <a href="/api/download/${{data.task_id}}/supporting_paper.pdf" class="download-link">📄 Supporting Paper</a>
                         <a href="/api/download/${{data.task_id}}/adversarial_paper.pdf" class="download-link">📄 Adversarial Paper</a>
                         <a href="/api/download/${{data.task_id}}/final_audit_report.pdf" class="download-link">📄 Final Report</a>
+                        ${{uploadsHtml}}
                     `;
                 }} else if (data.status === 'failed') {{
                     progressBar.style.width = '100%';
@@ -485,40 +581,72 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
         "language": request.language,
         "status": "pending",
         "created_at": datetime.now().isoformat(),
-        "error": None
+        "error": None,
+        "upload_buzzsprout": request.upload_to_buzzsprout,
+        "upload_youtube": request.upload_to_youtube,
+        "upload_results": {}
     }
 
     tasks_db[task_id] = task
     save_tasks()
 
     # Start generation in background thread
-    thread = threading.Thread(target=run_podcast_generation, args=(task_id, request.topic, request.language))
+    thread = threading.Thread(
+        target=run_podcast_generation,
+        args=(task_id, request.topic, request.language,
+              request.upload_to_buzzsprout, request.upload_to_youtube)
+    )
     thread.daemon = True
     thread.start()
 
     return {"task_id": task_id, "status": "pending"}
 
-def run_podcast_generation(task_id: str, topic: str, language: str):
-    """Run podcast_crew.py in background"""
+def run_podcast_generation(task_id: str, topic: str, language: str,
+                           upload_buzzsprout: bool = False, upload_youtube: bool = False):
+    """Run podcast_crew.py in background, then optionally upload."""
     try:
         tasks_db[task_id]["status"] = "running"
         save_tasks()
 
         # Run podcast_crew.py with topic and language
         result = subprocess.run(
-            [sys.executable, "podcast_crew.py", "--topic", topic, "--language", language],
+            [str(PODCAST_ENV_PYTHON), "podcast_crew.py", "--topic", topic, "--language", language],
             cwd=SCRIPT_DIR,
             capture_output=True,
             text=True,
             timeout=1800  # 30 minute timeout
         )
 
-        if result.returncode == 0:
-            tasks_db[task_id]["status"] = "completed"
-            tasks_db[task_id]["completed_at"] = datetime.now().isoformat()
-        else:
+        if result.returncode != 0:
             tasks_db[task_id]["status"] = "failed"
-            tasks_db[task_id]["error"] = result.stderr or "Unknown error"
+            # Capture both stdout and stderr for better error reporting
+            error_msg = ""
+            if result.stderr:
+                error_msg = result.stderr
+            if result.stdout:
+                error_msg = error_msg + "\n" + result.stdout if error_msg else result.stdout
+            tasks_db[task_id]["error"] = error_msg or f"Process exited with code {result.returncode}"
+            save_tasks()
+            return
+
+        # Generation succeeded — run uploads if requested
+        audio_path = str(OUTPUT_DIR / "podcast_final_audio.mp3")
+        title = topic.strip()
+
+        if upload_buzzsprout or upload_youtube:
+            tasks_db[task_id]["status"] = "uploading"
+            save_tasks()
+
+            if upload_buzzsprout:
+                tasks_db[task_id]["upload_results"]["buzzsprout"] = upload_to_buzzsprout(audio_path, title)
+                save_tasks()
+
+            if upload_youtube:
+                tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(audio_path, title)
+                save_tasks()
+
+        tasks_db[task_id]["status"] = "completed"
+        tasks_db[task_id]["completed_at"] = datetime.now().isoformat()
 
     except subprocess.TimeoutExpired:
         tasks_db[task_id]["status"] = "failed"
@@ -564,6 +692,26 @@ def download_file(task_id: str, filename: str, username: str = Depends(verify_cr
         filename=filename,
         media_type='application/octet-stream'
     )
+
+@app.post("/api/youtube/preflight")
+async def youtube_preflight(username: str = Depends(verify_credentials)):
+    """Run YouTube OAuth consent flow (may open browser). Must be called before generation."""
+    from upload_utils import get_youtube_credentials
+    try:
+        get_youtube_credentials()
+        return {"ready": True}
+    except Exception as e:
+        return {"ready": False, "error": str(e)}
+
+@app.get("/api/upload_config")
+async def upload_config(username: str = Depends(verify_credentials)):
+    """Report which upload platforms have valid credentials configured."""
+    buzzsprout_ok = bool(os.getenv("BUZZSPROUT_API_KEY")) and bool(os.getenv("BUZZSPROUT_ACCOUNT_ID"))
+
+    secret_path = os.getenv("YOUTUBE_CLIENT_SECRET_PATH", "./client_secret.json")
+    youtube_ok = (SCRIPT_DIR / secret_path).exists()
+
+    return {"buzzsprout_configured": buzzsprout_ok, "youtube_configured": youtube_ok}
 
 if __name__ == "__main__":
     port = int(os.getenv("PODCAST_WEB_PORT", 8000))

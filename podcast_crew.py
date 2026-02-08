@@ -7,17 +7,20 @@ import random
 import sys
 import argparse
 import logging
+import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, LLM
 from crewai.tools import tool
 from fpdf import FPDF
+from link_validator_tool import LinkValidatorTool
 from pydantic import BaseModel, HttpUrl, Field
 from typing import List, Optional, Literal
-import ChatTTS
-import torch
+import soundfile as sf
 import numpy as np
 import wave
+from audio_engine import generate_audio_from_script, clean_script_for_tts
+from search_agent import SearxngClient, DeepResearch
 
 # --- SOURCE TRACKING MODELS ---
 class ScientificSource(BaseModel):
@@ -41,16 +44,8 @@ class SourceBibliography(BaseModel):
         all_sources = self.supporting_sources + self.contradicting_sources
         return [s for s in all_sources if s.trust_level == "high" and s.source_type == "peer_reviewed"]
 
-# Audio generation imports
-try:
-    import ChatTTS
-    import torch
-    import numpy as np
-    import wave
-    CHATTTS_AVAILABLE = True
-except ImportError:
-    CHATTTS_AVAILABLE = False
-    print("Warning: ChatTTS not available. Install with: pip install ChatTTS torch numpy")
+# Audio generation now uses Kokoro TTS (local, high-quality)
+# MetaVoice-1B has been deprecated in favor of Kokoro-82M
 
 # Setup logging
 logging.basicConfig(
@@ -95,7 +90,8 @@ Environment variable:
         help='Scientific topic for podcast research and debate'
     )
 
-    args = parser.parse_args()
+    # Parse known args to avoid conflicts with other argument parsers (e.g., --language)
+    args, _ = parser.parse_known_args()
 
     # Priority: CLI arg > env var > default
     if args.topic:
@@ -157,15 +153,15 @@ SESSION_ROLES = assign_roles()
 
 # --- TTS DEPENDENCY CHECK ---
 def check_tts_dependencies():
-    """Verify ChatTTS is installed and working."""
+    """Verify Kokoro TTS is installed."""
     try:
-        import ChatTTS
-        import torch
-        print("✓ ChatTTS dependencies verified")
+        import kokoro
+        print("✓ Kokoro TTS dependencies verified")
     except ImportError as e:
-        print(f"ERROR: ChatTTS dependencies missing: {e}")
-        print("Install with: pip install ChatTTS torch numpy")
-        sys.exit(1)
+        print(f"WARNING: Kokoro TTS not installed: {e}")
+        print("Install with: pip install kokoro>=0.9")
+        print("Audio generation will fail without Kokoro.")
+        # Don't exit - let it fail gracefully during audio generation
 
 check_tts_dependencies()
 
@@ -267,41 +263,52 @@ ACCESSIBILITY_INSTRUCTIONS = {
 accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL]
 
 # --- MODEL DETECTION & CONFIG ---
-def get_final_model_string():
-    env_model = os.getenv("MODEL_NAME")
-    if env_model:
-        print(f"Using model from .env: {env_model}")
-        return f"openai/{env_model}"
+DEFAULT_MODEL = "hf.co/bartowski/Qwen_Qwen3-32B-GGUF:Q4_K_M"
 
-    base_url = os.getenv("LLM_BASE_URL", "http://localhost:8000/v1")
-    print(f"Connecting to DGX Brain at {base_url}...")
-    
+def get_final_model_string():
+    model = os.getenv("MODEL_NAME", DEFAULT_MODEL)
+    base_url = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
+    print(f"Connecting to Ollama at {base_url}...")
+
     for i in range(10):
         try:
             response = httpx.get(f"{base_url}/models", timeout=5.0)
             if response.status_code == 200:
-                data = response.json()
-                model_id = data['data'][0]['id']
-                print(f"Brain online! Auto-detected: {model_id}")
-                return f"openai/{model_id}"
+                print(f"Ollama online! Using model: {model}")
+                return f"openai/{model}"
         except Exception:
             if i % 5 == 0:
-                print(f"Waiting for LLM server... ({i*5}s)")
+                print(f"Waiting for Ollama server... ({i*5}s)")
             time.sleep(5)
-            
-    print("Error: Could not detect model. Check if your DGX container is running.")
+
+    print("Error: Could not connect to Ollama. Check if it is running.")
     sys.exit(1)
 
 final_model_string = get_final_model_string()
 
-dgx_llm = LLM(
+# LLM Configuration for Qwen 32B (32k context window optimization)
+dgx_llm_strict = LLM(
     model=final_model_string,
-    base_url=os.getenv("LLM_BASE_URL", "http://localhost:8000/v1"),
+    base_url=os.getenv("LLM_BASE_URL", "http://localhost:11434/v1"),
     api_key="NA",
     timeout=600,
-    temperature=0.1,
+    temperature=0.1,  # Strict mode for Researcher/Auditor
+    max_tokens=32000,  # Prevent KV cache overflow on consumer GPUs
     stop=["<|im_end|>", "<|endoftext|>", "Observation:", "Thought:"]
 )
+
+dgx_llm_creative = LLM(
+    model=final_model_string,
+    base_url=os.getenv("LLM_BASE_URL", "http://localhost:11434/v1"),
+    api_key="NA",
+    timeout=600,
+    temperature=0.7,  # Creative mode for Producer/Personality
+    max_tokens=32000,  # Prevent KV cache overflow on consumer GPUs
+    stop=["<|im_end|>", "<|endoftext|>", "Observation:", "Thought:"]
+)
+
+# Legacy alias for backward compatibility
+dgx_llm = dgx_llm_strict
 
 @tool("BraveSearch")
 def search_tool(search_query: str):
@@ -349,6 +356,103 @@ def search_tool(search_query: str):
     except Exception as e:
         return f"Search failed: {e}"
 
+@tool("DeepSearch")
+def deep_search_tool(search_query: str) -> str:
+    """
+    Deep research using self-hosted SearXNG with full content extraction.
+
+    Search for scientific evidence with hierarchical strategy:
+
+    PRIMARY SOURCES (Search First):
+    1. Peer-reviewed journals: Nature, Science, Lancet, Cell, PNAS
+    2. Recent data published after 2024
+    3. RCTs and meta-analyses
+
+    SECONDARY SOURCES (If primary insufficient):
+    4. Observatory studies and cohort studies
+    5. Cross-sectional population studies
+    6. Epidemiological data
+
+    SUPPLEMENTARY EVIDENCE (To verify logic):
+    7. Non-human RCTs (animal studies, in vitro)
+    8. Mechanistic studies
+    9. Preclinical research
+
+    SEARCH STRATEGY:
+    - Start with "[topic] RCT" or "[topic] meta-analysis"
+    - If no strong evidence, expand to "[topic] observatory study"
+    - Supplement with "[topic] animal study" or "[topic] mechanism"
+    - Always prioritize peer-reviewed > preprint > news
+
+    ADVANTAGE: Provides FULL PAGE CONTENT (not just snippets) from top 5 results.
+    Uses local SearXNG (no API key required).
+
+    DO NOT search for well-established concepts.
+    Use internal knowledge first. Search is last resort.
+    """
+
+    async def perform_deep_search():
+        """Async wrapper for deep search."""
+        try:
+            async with SearxngClient() as client:
+                # Validate connection
+                if not await client.validate_connection():
+                    return (
+                        "❌ SearXNG not accessible at http://localhost:8080\n"
+                        "Start with: docker run -d -p 8080:8080 searxng/searxng:latest\n"
+                        "Falling back to internal knowledge or use BraveSearch."
+                    )
+
+                async with DeepResearch(client) as research:
+                    # Perform deep research
+                    results = await research.deep_dive(
+                        query=search_query,
+                        top_n=5,
+                        engines=['google', 'bing', 'brave']
+                    )
+
+                    if not results.scraped_pages:
+                        return "No results found. Use internal knowledge."
+
+                    # Format results for scientific research
+                    output = f"=== Deep Research Results for: {search_query} ===\n\n"
+
+                    for i, content in enumerate(results.scraped_pages, 1):
+                        if not content.error:
+                            output += f"--- SOURCE {i}: {content.title} ---\n"
+                            output += f"URL: {content.url}\n"
+                            output += f"Content Length: {content.word_count} words\n\n"
+                            output += f"{content.content}\n\n"
+                            output += "=" * 80 + "\n\n"
+                        else:
+                            # Include failed URLs but mark them
+                            output += f"--- SOURCE {i}: [FAILED] {content.url} ---\n"
+                            output += f"Error: {content.error}\n\n"
+
+                    if results.errors:
+                        output += f"\n⚠️ Some sources failed to load ({len(results.errors)} errors)\n"
+
+                    return output
+
+        except Exception as e:
+            return (
+                f"Deep search failed: {e}\n"
+                f"Try BraveSearch as fallback or use internal knowledge."
+            )
+
+    # Run async function in sync context (CrewAI uses sync tools)
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If event loop is already running, create a new one
+            import nest_asyncio
+            nest_asyncio.apply()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    return loop.run_until_complete(perform_deep_search())
+
 # --- PDF GENERATOR UTILITY ---
 class SciencePDF(FPDF):
     def header(self):
@@ -393,85 +497,128 @@ def create_pdf(title, content, filename):
     print(f"PDF Generated: {file_path}")
     return file_path
 
-# --- AGENTS ---
+# --- AGENTS (Masters-Degree Level) ---
+# Initialize Link Validator Tool
+link_validator = LinkValidatorTool()
+
 researcher = Agent(
-    role='Lead Research Scientist',
-    goal=f'Produce a high-impact scientific paper supporting {topic_name}. {language_instruction}',
+    role='Principal Investigator (Lead Researcher)',
+    goal=f'Find and document credible scientific signals about {topic_name}, organized by mechanism of action. {language_instruction}',
     backstory=(
-        f'Senior researcher specializing in neurobiology and metabolic efficiency. '
-        f'Evidence hierarchy: (1) RCTs/meta-analyses from top journals, (2) Observatory/cohort studies when RCTs unavailable, '
-        f'(3) Non-human RCTs (animal/in vitro) to verify mechanisms. '
-        f'Searches strategically - starts with peer-reviewed, expands to observatory if needed, supplements with preclinical. '
+        f'You are a desperate scientist looking for signals in the noise. '
+        f'CONSTRAINT: If Human RCTs are unavailable, you are AUTHORIZED to use Animal Models or Mechanistic Studies, '
+        f'but you MUST label them as "Early Signal" or "Animal Model". '
+        f'\n\n'
+        f'OUTPUT REQUIREMENT: Do not just summarize. Group findings by:\n'
+        f'  1. "Mechanism of Action" (HOW it works biologically)\n'
+        f'  2. "Clinical Evidence" (WHAT human studies show)\n'
+        f'\n'
+        f'Evidence hierarchy: (1) Human RCTs/meta-analyses from Nature/Science/Lancet, '
+        f'(2) Observatory/cohort studies (label as "Observational"), '
+        f'(3) Animal/in vitro studies (label as "Animal Model" or "Early Signal"). '
+        f'\n'
         f'In this podcast, you will be portrayed by "{SESSION_ROLES["pro"]["character"]}" '
         f'who has a {SESSION_ROLES["pro"]["personality"]} approach. '
         f'{language_instruction}'
     ),
-    tools=[search_tool],
-    llm=dgx_llm,
+    tools=[deep_search_tool, search_tool],
+    llm=dgx_llm_strict,
     verbose=True
 )
 
 auditor = Agent(
-    role='Scientific Auditor',
-    goal=f'Critically evaluate research, identify gaps, and synthesize a final verdict. {language_instruction}',
-    backstory=f'Meticulous chief editor specializing in resolving scientific conflicts. {language_instruction}',
-    llm=dgx_llm,
+    role='Scientific Auditor (The Grader)',
+    goal=f'Grade the research quality with a Reliability Scorecard. Do NOT write content - GRADE it. {language_instruction}',
+    backstory=(
+        f'You are a harsh peer reviewer. You do not write content; you GRADE it.\n\n'
+        f'YOUR TASKS:\n'
+        f'  1. Link Check: If a claim has no URL or a broken URL, REJECT it.\n'
+        f'  2. Strength Rating: Assign a score (1-10) to the main claims:\n'
+        f'       10 = Meta-analysis from top journal\n'
+        f'       7-9 = Human RCT with good sample size\n'
+        f'       4-6 = Observational/cohort study\n'
+        f'       1-3 = Animal model or speculation\n'
+        f'  3. The Caveat Box: Explicitly list why the findings might be wrong:\n'
+        f'       (e.g., "Mouse study only", "Sample size n=12", "Conflicts of interest")\n'
+        f'  4. Consensus Check: Search specifically for "criticism of [topic]" or "limitations of [study]".\n'
+        f'\n'
+        f'OUTPUT: A structured Markdown report with a "Reliability Scorecard". '
+        f'{language_instruction}'
+    ),
+    tools=[deep_search_tool, search_tool, link_validator],
+    llm=dgx_llm_strict,
     verbose=True
 )
 
 counter_researcher = Agent(
-    role='Adversarial Researcher',
-    goal=f'Produce a scientific paper challenging {topic_name} by debunking specific claims. {language_instruction}',
+    role='Adversarial Researcher (The Skeptic)',
+    goal=f'Systematically challenge and debunk specific claims about {topic_name}. {language_instruction}',
     backstory=(
-        f'Skeptical meta-analyst specializing in methodology flaws. '
-        f'Evidence hierarchy: (1) Contradictory RCTs/systematic reviews, (2) Observatory studies showing null/negative effects, '
-        f'(3) Animal studies contradicting proposed mechanisms. '
-        f'Searches for contradictory evidence - prioritizes peer-reviewed, includes observatory/cohort when needed. '
+        f'Skeptical meta-analyst who hunts for contradictory evidence and methodology flaws. '
+        f'You actively search for "criticism of {topic_name}" and "limitations of [specific studies]".\n\n'
+        f'COUNTER-EVIDENCE HIERARCHY:\n'
+        f'  1. PRIMARY: Contradictory RCTs, systematic reviews showing null/negative effects\n'
+        f'  2. SECONDARY: Observatory/cohort studies with null findings or adverse outcomes\n'
+        f'  3. SUPPLEMENTARY: Animal studies contradicting proposed mechanisms\n'
+        f'\n'
+        f'Label all evidence appropriately (RCT, Observational, Animal Model). '
+        f'Focus on WHY the original claims might be wrong (confounders, bias, small samples). '
+        f'\n'
         f'In this podcast, you will be portrayed by "{SESSION_ROLES["con"]["character"]}" '
         f'who has a {SESSION_ROLES["con"]["personality"]} approach. '
         f'{language_instruction}'
     ),
-    tools=[search_tool],
-    llm=dgx_llm,
+    tools=[deep_search_tool, search_tool],
+    llm=dgx_llm_strict,
     verbose=True
 )
 
 scriptwriter = Agent(
-    role='Podcast Producer',
+    role='Podcast Producer (The Showrunner)',
     goal=(
-        f'Turn the audited research on "{topic_name}" into a debate-style dialogue that a general audience can follow. '
-        f'The dialogue MUST be about the topic itself — the health effects, risks, and science behind {topic_name}. '
-        f'{language_instruction}'
+        f'Transform research into a Masters/PhD-level debate on "{topic_name}". '
+        f'Target: Intellectual, curious, slightly skeptical professionals. {language_instruction}'
     ),
     backstory=(
-        f'Award-winning science communicator. Your job is to explain the TOPIC, not the research process. '
-        f'When the audience tunes in they want to learn about {topic_name} — not about how journals work. '
-        f'Simplify the SCIENCE (e.g. what glycemic index means, how blood sugar works) using everyday analogies. '
-        f'DO NOT explain peer review, journal rankings, or source trustworthiness. '
-        f'If the upstream audit report talks about source quality, extract the health conclusions from it and ignore the methodology commentary. '
-        f'Accessibility guidance: {accessibility_instruction} '
+        f'Science Communicator targeting Post-Graduate Professionals (Masters/PhD level). '
+        f'Tone: Think "The Economist" or "Huberman Lab" - intellectual, curious, slightly skeptical.\n\n'
+        f'CRITICAL RULES:\n'
+        f'  1. NO BASICS: Do NOT define basic terms like "DNA", "inflation", "supply chain", '
+        f'     "peer review", "RCT", or "meta-analysis". Assume the listener knows them.\n'
+        f'  2. LENGTH: Generate exactly 1,500 words (approx 10 minutes).\n'
+        f'  3. FORMAT: Script MUST use "Host 1:" (The Expert) and "Host 2:" (The Skeptic).\n'
+        f'  4. DYNAMIC: Host 2 must ask hard questions based on the "Caveat Box" from the Auditor. '
+        f'     Host 2 represents the listener\'s doubts.\n'
+        f'\n'
+        f'Your dialogue should dive into nuance, trade-offs, and disputed evidence. '
+        f'The audience wants intellectual depth, not simplified explanations. '
         f'{language_instruction}'
     ),
-    llm=dgx_llm,
+    llm=dgx_llm_creative,
     verbose=True
 )
 
 personality = Agent(
-    role='Podcast Personality',
+    role='Podcast Personality (The Editor)',
     goal=(
-        f'Polish the "{topic_name}" script for natural verbal delivery, targeting 10 minutes (±1 min). '
-        f'Every sentence must contribute information about the topic. '
+        f'Polish the "{topic_name}" script for natural verbal delivery at Masters-level. '
+        f'Target: Exactly 1,500 words (10 minutes). '
         f'{language_instruction}'
     ),
     backstory=(
-        f'Radio host who makes science feel like a conversation between friends. '
-        f'Target: 1350-1650 words for 9-11 minute duration (150 words/min speaking rate). '
-        f'Your role is to tighten language and make it sound natural — NOT to change the subject. '
-        f'If the script drifts into talking about research quality or journal prestige, cut it and replace with more topic-relevant content. '
-        f'When expanding a short script, add MORE DETAIL about the health topic (extra examples, statistics, edge cases). '
+        f'Editor for high-end intellectual podcasts (Huberman Lab, The Economist Audio). '
+        f'Your audience has advanced degrees - they want depth, not hand-holding.\n\n'
+        f'EDITING RULES:\n'
+        f'  - Remove any definitions of basic scientific concepts\n'
+        f'  - Ensure Host 2 challenges Host 1 on weak evidence (from Caveat Box)\n'
+        f'  - Keep technical language intact (no dumbing down)\n'
+        f'  - Target exactly 1,500 words for 10-minute runtime\n'
+        f'\n'
+        f'If script is too short, add nuance and disputed evidence. '
+        f'If too long, cut repetition while preserving technical depth. '
         f'{language_instruction}'
     ),
-    llm=dgx_llm,
+    llm=dgx_llm_creative,
     verbose=True
 )
 
@@ -480,10 +627,12 @@ source_verifier = Agent(
     goal='Extract, validate, and categorize all scientific sources from research papers.',
     backstory=(
         'Librarian and bibliometrics expert specializing in source verification. '
+        'Uses LinkValidatorTool to check every URL. '
         'Ensures citations come from reputable peer-reviewed journals. '
         'Prioritizes high-impact publications (Nature, Science, Lancet, Cell, PNAS).'
     ),
-    llm=dgx_llm,
+    tools=[link_validator],
+    llm=dgx_llm_strict,
     verbose=True
 )
 
@@ -567,22 +716,42 @@ source_verification_task = Task(
 audit_task = Task(
     description=(
         f"Review Supporting, Anti-Thesis papers on {topic_name} AND verified source bibliography. "
-        f"PRIORITIZE findings from HIGH-TRUST peer-reviewed sources. "
-        f"Validate key claims are backed by reputable journals. "
-        f"Prepare Final Meta-Audit Report summarising the KEY HEALTH FINDINGS — "
-        f"what are the actual risks, mechanisms, and disagreements about {topic_name}? "
+        f"Use LinkValidatorTool to verify every URL cited. If a URL is broken, REJECT that citation.\n\n"
+        f"GRADING REQUIREMENTS:\n"
+        f"1. Assign strength ratings (1-10) to each main claim\n"
+        f"2. Create a 'Reliability Scorecard' with scores and justifications\n"
+        f"3. Build 'The Caveat Box' - list why findings might be wrong:\n"
+        f"   - Sample size issues (e.g., 'n=12 only')\n"
+        f"   - Study limitations (e.g., 'Mouse study only')\n"
+        f"   - Conflicts of interest\n"
+        f"   - Contradictory findings from other studies\n"
+        f"4. Search for criticism: 'criticism of {topic_name}' and 'limitations of [study]'\n\n"
+        f"OUTPUT FORMAT (Markdown):\n"
+        f"# Research Audit Report: {topic_name}\n\n"
+        f"## Abstract\n"
+        f"[Brief summary of findings]\n\n"
+        f"## Evidence Block\n"
+        f"[Key findings grouped by mechanism]\n\n"
+        f"## Reliability Scorecard\n"
+        f"| Claim | Strength (1-10) | Evidence Type | Justification |\n"
+        f"| --- | --- | --- | --- |\n\n"
+        f"## The Caveat Box\n"
+        f"### Why These Findings Might Be Wrong:\n"
+        f"- [List of limitations and concerns]\n\n"
         f"The output MUST contain concrete health information, NOT a discussion about source quality. "
         f"{language_instruction}"
     ),
     expected_output=(
-        f"Synthesis report with:\n"
-        f"1. Verdict: concrete summary of confirmed vs contested health risks of {topic_name}\n"
-        f"2. Key mechanisms that ARE supported vs those that are disputed\n"
-        f"3. Confidence level in each specific health claim\n"
+        f"Structured Markdown report (RESEARCH_REPORT.md format) with:\n"
+        f"- Abstract\n"
+        f"- Evidence Block (mechanisms grouped)\n"
+        f"- Reliability Scorecard (table with 1-10 ratings)\n"
+        f"- Caveat Box (limitations list)\n"
         f"{language_instruction}"
     ),
     agent=auditor,
-    context=[research_task, adversarial_task, source_verification_task]
+    context=[research_task, adversarial_task, source_verification_task],
+    output_file=str(output_dir / "RESEARCH_REPORT.md")
 )
 
 script_task = Task(
@@ -622,37 +791,61 @@ script_task = Task(
 
 natural_language_task = Task(
     description=(
-        f"Polish the \"{topic_name}\" dialogue for natural spoken delivery.\n\n"
-        f"TOPIC GUARD: Read through the script first. If any exchange is about research methodology, "
-        f"journal prestige, or peer review instead of the actual health topic, replace it with "
-        f"additional content about {topic_name} (e.g. another health risk, a real-world example, "
-        f"a practical eating scenario).\n\n"
-        f"CRITICAL DURATION REQUIREMENT:\n"
-        f"TARGET: 10 minutes (±1 minute acceptable = 9-11 minutes)\n"
-        f"WORD COUNT: 1350-1650 words (assuming 150 words/minute speaking rate)\n\n"
-        f"IF SCRIPT TOO LONG (>1650 words):\n"
-        f"- Condense verbose explanations\n"
-        f"- Remove redundant examples\n"
-        f"- Tighten dialogue while keeping key points\n\n"
-        f"IF SCRIPT TOO SHORT (<1350 words):\n"
-        f"- Add more detail about specific health effects\n"
-        f"- Include real-world food examples (white rice, white bread, sugary drinks, etc.)\n"
-        f"- Expand on disputed vs confirmed risks\n\n"
+        f"Polish the \"{topic_name}\" dialogue for natural spoken delivery at Masters-level.\n\n"
+        f"MASTERS-LEVEL REQUIREMENTS:\n"
+        f"- Remove ALL definitions of basic scientific concepts (DNA, peer review, RCT, meta-analysis)\n"
+        f"- Ensure Host 2 challenges Host 1 on weak evidence (refer to Caveat Box from audit)\n"
+        f"- Keep technical language intact - NO dumbing down\n"
+        f"- Target exactly 1,500 words (10 minutes at 150 wpm)\n\n"
         f"MAINTAIN ROLES:\n"
-        f"  - {SESSION_ROLES['pro']['character']}: risks are significant, {SESSION_ROLES['pro']['personality']}\n"
-        f"  - {SESSION_ROLES['con']['character']}: some risks are overstated, {SESSION_ROLES['con']['personality']}\n\n"
-        f"Format:\n{SESSION_ROLES['pro']['character']}: [dialogue]\n"
-        f"{SESSION_ROLES['con']['character']}: [dialogue]\n\n"
+        f"  - Host 1 ({SESSION_ROLES['pro']['character']}): The Expert - presents evidence\n"
+        f"  - Host 2 ({SESSION_ROLES['con']['character']}): The Skeptic - challenges weak claims\n\n"
+        f"Format:\nHost 1: [dialogue]\n"
+        f"Host 2: [dialogue]\n\n"
         f"Remove meta-tags, markdown, stage directions. Dialogue only. "
         f"{language_instruction}"
     ),
     expected_output=(
-        f"Final dialogue entirely about {topic_name}, 1350-1650 words, natural spoken tone. "
-        f"No lines about research methodology or journal quality. "
+        f"Final Masters-level dialogue about {topic_name}, exactly 1,500 words. "
+        f"No basic definitions. Host 2 challenges weak evidence. "
         f"{language_instruction}"
     ),
     agent=personality,
-    context=[script_task]
+    context=[script_task, audit_task]
+)
+
+show_notes_task = Task(
+    description=(
+        f"Generate comprehensive show notes (SHOW_NOTES.md) for the podcast episode on {topic_name}.\n\n"
+        f"Using the Research Report and verified sources, create a bulleted list with:\n"
+        f"1. Episode title and topic\n"
+        f"2. Key takeaways (3-5 bullet points)\n"
+        f"3. Full citation list with validity ratings:\n\n"
+        f"FORMAT:\n"
+        f"## Citations\n\n"
+        f"### Supporting Evidence\n"
+        f"- [Study Title] (Journal, Year) - [URL] - **Validity: ✓ High/Medium/Low**\n"
+        f"  - Evidence Type: [RCT/Observational/Animal Model]\n"
+        f"  - Key Finding: [One sentence summary]\n\n"
+        f"### Contradicting Evidence\n"
+        f"- [Study Title] (Journal, Year) - [URL] - **Validity: ✓ High/Medium/Low**\n"
+        f"  - Evidence Type: [RCT/Observational/Animal Model]\n"
+        f"  - Key Finding: [One sentence summary]\n\n"
+        f"Include validity ratings from the Reliability Scorecard. "
+        f"Mark broken links as '✗ Broken Link'. "
+        f"{language_instruction}"
+    ),
+    expected_output=(
+        f"Markdown show notes with:\n"
+        f"- Episode title\n"
+        f"- Key takeaways (3-5 bullets)\n"
+        f"- Full citation list with validity ratings (✓ High/Medium/Low)\n"
+        f"- Evidence type labels (RCT/Observational/Animal Model)\n"
+        f"{language_instruction}"
+    ),
+    agent=scriptwriter,
+    context=[audit_task, source_verification_task],
+    output_file=str(output_dir / "SHOW_NOTES.md")
 )
 
 # --- EXECUTION ---
@@ -665,7 +858,8 @@ crew = Crew(
         source_verification_task,
         audit_task,
         script_task,
-        natural_language_task
+        natural_language_task,
+        show_notes_task
     ],
     verbose=True,
     process='sequential'
@@ -703,252 +897,33 @@ with open(metadata_file, 'w') as f:
     f.write(session_metadata)
 print(f"Session metadata: {metadata_file}")
 
-# --- SCRIPT PARSING ---
-def parse_script_to_segments(script_text: str, character_mapping: dict = None) -> list:
-    """
-    Parse podcast script into dialogue segments with character attribution.
+# --- SCRIPT PARSING (Deprecated - now handled by audio_engine.py) ---
+# These functions are no longer needed as Kokoro's audio_engine handles
+# script parsing internally
 
-    Handles: "Kaz: dialogue text" format
+# def parse_script_to_segments(script_text: str, character_mapping: dict = None) -> list:
+#     """DEPRECATED: Use audio_engine.generate_audio_from_script() instead"""
+#     pass
 
-    Returns: List of {'character': 'Kaz', 'text': 'dialogue...'} dicts
-    """
-    if character_mapping is None:
-        character_mapping = {}
-
-    # Clean script
-    clean_script = re.sub(r'<think>.*?</think>', '', str(script_text), flags=re.DOTALL)
-    clean_script = re.sub(r'\*\*.*?\*\*', '', clean_script)  # Remove bold
-    clean_script = re.sub(r'[*#_]', '', clean_script)
-
-    # Pattern: "CharacterName: dialogue"
-    dialogue_pattern = r'^([A-Z][a-z\s\.]+?):\s*(.+?)(?=^[A-Z][a-z\s\.]+?:|$)'
-
-    segments = []
-    matches = re.finditer(dialogue_pattern, clean_script, flags=re.MULTILINE | re.DOTALL)
-
-    for match in matches:
-        speaker_raw = match.group(1).strip()
-        dialogue = match.group(2).strip()
-
-        # Map old names to new
-        speaker = character_mapping.get(speaker_raw, speaker_raw)
-
-        if dialogue and len(dialogue) >= 3:
-            segments.append({
-                'character': speaker,
-                'text': re.sub(r'\s+', ' ', dialogue).strip()
-            })
-
-    if not segments:
-        # Fallback
-        print("Warning: No dialogue segments found. Using full text as narrator.")
-        return [{'character': 'Narrator', 'text': clean_script}]
-
-    print(f"Parsed {len(segments)} dialogue segments")
-    return segments
+# def save_parsed_segments(segments: list):
+#     """DEPRECATED: No longer needed"""
+#     pass
 
 
-def save_parsed_segments(segments: list):
-    """Save parsed segments for verification."""
-    parsed_file = output_dir / "parsed_dialogue_segments.txt"
-    with open(parsed_file, 'w') as f:
-        for idx, seg in enumerate(segments):
-            f.write(f"[{idx+1}] {seg['character']}: {seg['text']}\n\n")
-    print(f"Parsed script: {parsed_file}")
+# --- LEGACY AUDIO GENERATION (Deprecated - kept for reference) ---
+# MetaVoice-1B has been replaced by Kokoro TTS (audio_engine.py)
+# The old functions below are commented out but kept for reference
 
+# def generate_audio_metavoice(dialogue_segments: list, output_filename: str = "podcast_final_audio.wav"):
+#     """DEPRECATED: Use audio_engine.generate_audio_from_script() instead"""
+#     pass
 
-# --- AUDIO GENERATION ---
-def clean_text_for_tts(text):
-    """Sanitise text so ChatTTS does not choke on unsupported characters.
+# def generate_audio_gtts_fallback(dialogue_segments: list, output_filename: str = "podcast_final_audio.mp3"):
+#     """DEPRECATED: No longer needed with Kokoro TTS"""
+#     pass
 
-    ChatTTS only reliably handles: letters, spaces, commas, and periods.
-    Everything else is converted to a spoken equivalent or stripped.
-    """
-    clean = re.sub(r'<think>.*?</think>', '', str(text), flags=re.DOTALL)
-    clean = re.sub(r'\*\*.*?\*\*', '', clean)
-    clean = re.sub(r'[*#_\[\]]', '', clean)
-
-    # --- Unicode → ASCII equivalents ---
-    for old, new in {
-        '\u2018': "'", '\u2019': "'", '\u201c': '"', '\u201d': '"',
-        '\u2014': ' ', '\u2013': ' ', '\u2026': '.', '\u2212': ' ',
-        '\u2039': '', '\u203a': '', '\u00ab': '', '\u00bb': '',
-        '\u201e': '', '\u201a': '', '\u201f': '',
-    }.items():
-        clean = clean.replace(old, new)
-
-    # --- Expand contractions before stripping apostrophes ---
-    for c, e in [
-        ("don't","do not"),("doesn't","does not"),("didn't","did not"),
-        ("won't","will not"),("wouldn't","would not"),("can't","cannot"),
-        ("couldn't","could not"),("shouldn't","should not"),
-        ("isn't","is not"),("aren't","are not"),("wasn't","was not"),
-        ("weren't","were not"),("haven't","have not"),("hasn't","has not"),
-        ("hadn't","had not"),("it's","it is"),("that's","that is"),
-        ("what's","what is"),("there's","there is"),("here's","here is"),
-        ("let's","let us"),("they're","they are"),("we're","we are"),
-        ("you're","you are"),("I'm","I am"),("he's","he is"),("she's","she is"),
-        ("I'll","I will"),("you'll","you will"),("he'll","he will"),
-        ("she'll","she will"),("they'll","they will"),("we'll","we will"),
-        ("it'll","it will"),("that'll","that will"),
-        ("I've","I have"),("you've","you have"),("they've","they have"),
-        ("we've","we have"),
-        ("I'd","I would"),("you'd","you would"),("they'd","they would"),
-        ("we'd","we would"),("he'd","he would"),("she'd","she would"),
-    ]:
-        clean = clean.replace(c, e)
-        clean = clean.replace(c.capitalize(), e.capitalize())
-
-    # --- Punctuation ChatTTS cannot handle ---
-    for old, new in {
-        '?': '.', '!': '.', ':': ',', ';': ',', '-': ' ',
-        "'": '', '"': '', '(': '', ')': '',
-        '/': ' ', '&': 'and', '+': 'plus', '@': 'at',
-        '#': '', '$': 'dollars', '%': ' percent ', '=': 'equals',
-    }.items():
-        clean = clean.replace(old, new)
-
-    # --- Digits → words (ChatTTS crashes on numeric sequences) ---
-    _dw = {'0':'zero','1':'one','2':'two','3':'three','4':'four',
-           '5':'five','6':'six','7':'seven','8':'eight','9':'nine'}
-    clean = re.sub(r'\d+', lambda m: ' '.join(_dw[d] for d in m.group()), clean)
-
-    # --- Final: keep only letters, spaces, commas, periods ---
-    clean = re.sub(r'[^a-zA-Z ,.]', '', clean)
-    clean = re.sub(r'\.{2,}', '.', clean)
-    clean = re.sub(r',{2,}', ',', clean)
-    return re.sub(r'\s+', ' ', clean).strip()
-
-# Initialize ChatTTS once
-_chattts_model = None
-
-def get_chattts_model():
-    """Lazy load ChatTTS model."""
-    global _chattts_model
-    if _chattts_model is None:
-        print("Loading ChatTTS model...")
-        _chattts_model = ChatTTS.Chat()
-        _chattts_model.load(compile=False)  # compile=True for GPU speedup
-        print("✓ ChatTTS model loaded")
-    return _chattts_model
-
-def generate_audio_chattts(dialogue_segments: list, output_filename: str = "podcast_final_audio.wav"):
-    """
-    Generate multi-speaker audio using ChatTTS.
-
-    Args:
-        dialogue_segments: List of {'character': 'Kaz'|'Erika', 'text': '...'}
-        output_filename: Output WAV file
-    """
-    chat = get_chattts_model()
-    temp_dir = output_dir / "temp_audio"
-    temp_dir.mkdir(exist_ok=True)
-
-    # Assign speakers (ChatTTS supports multiple speakers via rand_spk)
-    torch.manual_seed(42)  # Kaz seed
-    kaz_spk = chat.sample_random_speaker()
-
-    torch.manual_seed(84)  # Erika seed (different seed = different voice)
-    erika_spk = chat.sample_random_speaker()
-
-    speakers = {"Kaz": kaz_spk, "Erika": erika_spk}
-
-    print(f"\nGenerating {len(dialogue_segments)} segments with ChatTTS...")
-
-    audio_segments = []
-
-    for idx, segment in enumerate(dialogue_segments):
-        character = segment['character']
-        text = segment['text']
-
-        if not text.strip():
-            continue
-
-        clean_text = clean_text_for_tts(text)
-        if not clean_text:
-            continue
-
-        # Generate with character-specific speaker
-        spk_emb = speakers.get(character, kaz_spk)
-
-        try:
-            wavs = chat.infer(
-                [clean_text],
-                params_infer_code={'spk_emb': spk_emb}
-            )
-
-            audio_segments.append(wavs[0])
-            print(f"  [{idx+1}/{len(dialogue_segments)}] {character}: {clean_text[:50]}...")
-
-        except Exception as e:
-            print(f"Error generating segment {idx}: {e}")
-
-    if not audio_segments:
-        print("Error: No audio generated")
-        return None
-
-    # Concatenate audio
-    combined_audio = np.concatenate(audio_segments)
-
-    # Save as WAV
-    output_path = output_dir / output_filename
-
-    # ChatTTS outputs at 24kHz
-    with wave.open(str(output_path), 'w') as wav_file:
-        wav_file.setnchannels(1)  # Mono
-        wav_file.setsampwidth(2)  # 16-bit
-        wav_file.setframerate(24000)  # ChatTTS sample rate
-        wav_file.writeframes((combined_audio * 32767).astype(np.int16).tobytes())
-
-    file_size = output_path.stat().st_size
-    if file_size < 1000:
-        print(f"Error: Audio file is suspiciously small ({file_size} bytes)")
-        return None
-
-    print(f"\n✓ Audio generated: {output_path} ({file_size} bytes)")
-
-    # Auto-play
-    try:
-        if platform.system() == "Darwin":
-            os.system(f"open '{output_path}'")
-        elif platform.system() == "Windows":
-            os.startfile(str(output_path))
-        else:
-            os.system(f"xdg-open '{output_path}' &")
-    except Exception as e:
-        print(f"Could not auto-play: {e}")
-
-    return output_path
-
-def generate_audio_gtts_fallback(dialogue_segments: list, output_filename: str = "podcast_final_audio.mp3"):
-    """Single-voice gTTS fallback when ChatTTS is unavailable or crashes."""
-    try:
-        from gtts import gTTS
-    except ImportError:
-        print("Error: gTTS not installed. Run: pip install gtts")
-        return None
-
-    # Build full text with speaker labels for clarity
-    parts = []
-    for seg in dialogue_segments:
-        text = re.sub(r'<think>.*?</think>', '', seg['text'], flags=re.DOTALL)
-        text = re.sub(r'\s+', ' ', text).strip()
-        if text:
-            parts.append(f"{seg['character']} says, {text}")
-
-    full_text = " ... ".join(parts)
-    output_path = output_dir / output_filename
-
-    print(f"Generating audio with gTTS ({len(full_text)} chars)...")
-    tts = gTTS(text=full_text, lang=language_config.get('tts_code', 'en'), slow=False)
-    tts.save(str(output_path))
-
-    file_size = output_path.stat().st_size
-    print(f"✓ Audio generated (gTTS fallback): {output_path} ({file_size} bytes)")
-    return output_path
-
-# Parse script and generate audio with ChatTTS
-print("\n--- Generating Multi-Voice Podcast Audio ---")
+# Generate audio with Kokoro TTS
+print("\n--- Generating Multi-Voice Podcast Audio (Kokoro TTS) ---")
 
 # Check script length before generation
 script_text = result.raw
@@ -960,40 +935,32 @@ print(f"DURATION CHECK")
 print(f"{'='*60}")
 print(f"Script word count: {word_count}")
 print(f"Estimated duration: {estimated_duration_min:.1f} minutes")
-print(f"Target range: 9-11 minutes (1350-1650 words)")
+print(f"Target: 10 minutes (1,500 words)")
 
 if word_count < 1350:
-    print(f"⚠ WARNING: Script is SHORT ({word_count} words < 1350)")
-    print(f"  Estimated {estimated_duration_min:.1f} min < 9 min target")
-    print(f"  Consider running again with expanded content")
+    print(f"⚠ WARNING: Script is SHORT ({word_count} words < 1,500 target)")
+    print(f"  Estimated {estimated_duration_min:.1f} min")
 elif word_count > 1650:
-    print(f"⚠ WARNING: Script is LONG ({word_count} words > 1650)")
-    print(f"  Estimated {estimated_duration_min:.1f} min > 11 min target")
-    print(f"  Consider running again with condensed content")
+    print(f"⚠ WARNING: Script is LONG ({word_count} words > 1,500 target)")
+    print(f"  Estimated {estimated_duration_min:.1f} min")
 else:
-    print(f"✓ Script length ACCEPTABLE ({word_count} words)")
-    print(f"  Estimated {estimated_duration_min:.1f} min within 9-11 min range")
+    print(f"✓ Script length GOOD ({word_count} words)")
+    print(f"  Estimated {estimated_duration_min:.1f} min")
 print(f"{'='*60}\n")
 
-character_mapping = {
-    "Dr. Data": SESSION_ROLES["pro"]["character"],
-    "Dr. Doubt": SESSION_ROLES["con"]["character"],
-    "Dr Data": SESSION_ROLES["pro"]["character"],
-    "Dr Doubt": SESSION_ROLES["con"]["character"]
-}
-
-dialogue_segments = parse_script_to_segments(result.raw, character_mapping)
-save_parsed_segments(dialogue_segments)  # Debug output
+# Clean script and generate audio with Kokoro
+cleaned_script = clean_script_for_tts(script_text)
+output_path = output_dir / "podcast_final_audio.wav"
 
 audio_file = None
 try:
-    audio_file = generate_audio_chattts(dialogue_segments)
+    audio_file = generate_audio_from_script(cleaned_script, str(output_path))
+    if audio_file:
+        audio_file = Path(audio_file)
 except Exception as e:
-    print(f"ChatTTS failed ({e}), falling back to gTTS...")
-
-if not audio_file:
-    print("Attempting gTTS fallback...")
-    audio_file = generate_audio_gtts_fallback(dialogue_segments)
+    print(f"✗ ERROR: Kokoro TTS failed: {e}")
+    print("  Ensure Kokoro is installed: pip install kokoro>=0.9")
+    audio_file = None
 
 # Check actual audio duration
 if audio_file and audio_file.exists():
