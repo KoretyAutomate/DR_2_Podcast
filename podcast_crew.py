@@ -9,6 +9,7 @@ import argparse
 import logging
 import asyncio
 from pathlib import Path
+from datetime import datetime
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, LLM
 from crewai.tools import tool
@@ -47,21 +48,55 @@ class SourceBibliography(BaseModel):
 # Audio generation now uses Kokoro TTS (local, high-quality)
 # MetaVoice-1B has been deprecated in favor of Kokoro-82M
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('research_outputs/podcast_generation.log'),
-        logging.StreamHandler()
-    ]
-)
+# Setup logging (will be reconfigured after output_dir is created)
+def setup_logging(output_dir: Path):
+    """Configure logging with timestamped output directory"""
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(output_dir / 'podcast_generation.log'),
+            logging.StreamHandler()
+        ],
+        force=True
+    )
 
 # --- INITIALIZATION ---
 load_dotenv()
 script_dir = Path(__file__).parent.absolute()
-output_dir = script_dir / "research_outputs"
-output_dir.mkdir(exist_ok=True)
+base_output_dir = script_dir / "research_outputs"
+base_output_dir.mkdir(exist_ok=True)
+
+# --- TIMESTAMPED OUTPUT DIRECTORY ---
+def create_timestamped_output_dir(base_dir: Path) -> Path:
+    """
+    Create a timestamped subfolder for this podcast generation run.
+    Format: research_outputs/YYYY-MM-DD_HH-MM-SS/
+
+    Args:
+        base_dir: Base output directory (research_outputs)
+
+    Returns:
+        Path to timestamped directory
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    timestamped_dir = base_dir / timestamp
+    timestamped_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"OUTPUT DIRECTORY: {timestamped_dir}")
+    print(f"{'='*60}\n")
+
+    return timestamped_dir
+
+# Create timestamped directory for this run
+output_dir = create_timestamped_output_dir(base_output_dir)
+
+# Configure logging with new output directory
+setup_logging(output_dir)
 
 # --- TOPIC CONFIGURATION ---
 def get_topic():
@@ -848,6 +883,207 @@ show_notes_task = Task(
     output_file=str(output_dir / "SHOW_NOTES.md")
 )
 
+# --- TASK METADATA & WORKFLOW PLANNING ---
+TASK_METADATA = {
+    'research_task': {
+        'name': 'Initial Research & Evidence Gathering',
+        'phase': 1,
+        'estimated_duration_min': 8,
+        'description': 'Lead Researcher conducts deep dive into topic',
+        'agent': 'Principal Investigator',
+        'dependencies': []
+    },
+    'gap_analysis_task': {
+        'name': 'Research Quality Assessment',
+        'phase': 2,
+        'estimated_duration_min': 3,
+        'description': 'Scientific Auditor identifies weak points',
+        'agent': 'Scientific Auditor',
+        'dependencies': ['research_task']
+    },
+    'adversarial_task': {
+        'name': 'Counter-Evidence Research',
+        'phase': 3,
+        'estimated_duration_min': 8,
+        'description': 'Counter-Researcher challenges findings',
+        'agent': 'Adversarial Researcher',
+        'dependencies': ['research_task', 'gap_analysis_task']
+    },
+    'source_verification_task': {
+        'name': 'Source Validation & Bibliography',
+        'phase': 4,
+        'estimated_duration_min': 5,
+        'description': 'Source Verifier validates all citations',
+        'agent': 'Scientific Source Verifier',
+        'dependencies': ['research_task', 'adversarial_task']
+    },
+    'audit_task': {
+        'name': 'Final Meta-Audit & Grading',
+        'phase': 5,
+        'estimated_duration_min': 5,
+        'description': 'Scientific Auditor grades research quality',
+        'agent': 'Scientific Auditor',
+        'dependencies': ['research_task', 'adversarial_task', 'source_verification_task']
+    },
+    'script_task': {
+        'name': 'Podcast Script Generation',
+        'phase': 6,
+        'estimated_duration_min': 6,
+        'description': 'Scriptwriter creates debate dialogue',
+        'agent': 'Podcast Producer',
+        'dependencies': ['audit_task']
+    },
+    'natural_language_task': {
+        'name': 'Script Polishing & Editing',
+        'phase': 7,
+        'estimated_duration_min': 4,
+        'description': 'Personality Agent refines for natural delivery',
+        'agent': 'Podcast Personality',
+        'dependencies': ['script_task', 'audit_task']
+    },
+    'show_notes_task': {
+        'name': 'Show Notes & Citations',
+        'phase': 8,
+        'estimated_duration_min': 3,
+        'description': 'Scriptwriter generates comprehensive show notes',
+        'agent': 'Podcast Producer',
+        'dependencies': ['audit_task', 'source_verification_task']
+    }
+}
+
+def display_workflow_plan():
+    """
+    Display detailed workflow plan before execution.
+    Shows all 8 phases with durations, dependencies, and total time estimate.
+    """
+    print("\n" + "="*70)
+    print(" "*20 + "PODCAST GENERATION WORKFLOW")
+    print("="*70)
+    print(f"\nTopic: {topic_name}")
+    print(f"Language: {language_config['name']}")
+    print(f"Output Directory: {output_dir}")
+    print("\n" + "-"*70)
+    print(f"{'PHASE':<6} {'TASK NAME':<35} {'EST TIME':<12} {'AGENT':<20}")
+    print("-"*70)
+
+    total_duration = 0
+    for task_name, metadata in TASK_METADATA.items():
+        phase = metadata['phase']
+        name = metadata['name']
+        duration = metadata['estimated_duration_min']
+        agent = metadata['agent']
+
+        total_duration += duration
+
+        print(f"{phase:<6} {name:<35} {duration:>3} min{'':<6} {agent:<20}")
+        print(f"{'':6} └─ {metadata['description']}")
+        if metadata['dependencies']:
+            deps_str = ', '.join([f"Phase {TASK_METADATA[d]['phase']}" for d in metadata['dependencies']])
+            print(f"{'':6}    Dependencies: {deps_str}")
+        print()
+
+    print("-"*70)
+    print(f"TOTAL ESTIMATED TIME: {total_duration} minutes (~{total_duration//60}h {total_duration%60}m)")
+    print("="*70 + "\n")
+
+class ProgressTracker:
+    """
+    Real-time progress tracking for CrewAI task execution.
+    Tracks current phase, elapsed time, and estimated remaining time.
+    """
+    def __init__(self, task_metadata: dict):
+        self.task_metadata = task_metadata
+        self.task_names = list(task_metadata.keys())
+        self.current_task_index = 0
+        self.total_phases = len(task_metadata)
+        self.start_time = None
+        self.task_start_time = None
+        self.completed_tasks = []
+
+    def start_workflow(self):
+        """Mark workflow start time"""
+        self.start_time = time.time()
+        print(f"\n{'='*70}")
+        print("WORKFLOW EXECUTION STARTED")
+        print(f"{'='*70}\n")
+
+    def task_started(self, task_index: int):
+        """Called when a task begins"""
+        if task_index >= len(self.task_names):
+            return
+
+        task_name = self.task_names[task_index]
+        self.current_task_index = task_index
+        self.task_start_time = time.time()
+
+        metadata = self.task_metadata[task_name]
+
+        print(f"\n{'='*70}")
+        print(f"PHASE {metadata['phase']}/{self.total_phases}: {metadata['name'].upper()}")
+        print(f"{'='*70}")
+        print(f"Agent: {metadata['agent']}")
+        print(f"Description: {metadata['description']}")
+        print(f"Estimated Duration: {metadata['estimated_duration_min']} minutes")
+        if metadata['dependencies']:
+            deps_str = ', '.join([self.task_metadata[d]['name'] for d in metadata['dependencies']])
+            print(f"Dependencies: {deps_str}")
+        print("-"*70)
+
+    def task_completed(self, task_index: int):
+        """Called when a task completes"""
+        if task_index >= len(self.task_names):
+            return
+
+        task_name = self.task_names[task_index]
+        elapsed_task = time.time() - self.task_start_time
+        self.completed_tasks.append({
+            'name': task_name,
+            'duration': elapsed_task
+        })
+
+        # Calculate progress
+        progress_pct = (len(self.completed_tasks) / self.total_phases) * 100
+
+        # Calculate time estimates
+        elapsed_total = time.time() - self.start_time
+        avg_time_per_task = elapsed_total / len(self.completed_tasks)
+        remaining_tasks = self.total_phases - len(self.completed_tasks)
+        estimated_remaining = avg_time_per_task * remaining_tasks
+
+        metadata = self.task_metadata[task_name]
+
+        print(f"\n{'='*70}")
+        print(f"✓ PHASE {metadata['phase']}/{self.total_phases} COMPLETED")
+        print(f"{'='*70}")
+        print(f"Task Duration: {elapsed_task/60:.1f} minutes ({elapsed_task:.0f} seconds)")
+        print(f"Total Elapsed: {elapsed_total/60:.1f} minutes")
+        print(f"Progress: {progress_pct:.1f}% complete ({len(self.completed_tasks)}/{self.total_phases} tasks)")
+        print(f"Estimated Remaining: {estimated_remaining/60:.1f} minutes")
+        print(f"{'='*70}\n")
+
+    def workflow_completed(self):
+        """Called when entire workflow finishes"""
+        total_time = time.time() - self.start_time
+
+        print(f"\n{'='*70}")
+        print(" "*22 + "WORKFLOW COMPLETED")
+        print(f"{'='*70}")
+        print(f"\nTotal Execution Time: {total_time/60:.1f} minutes ({total_time/3600:.2f} hours)")
+        print(f"Tasks Completed: {len(self.completed_tasks)}/{self.total_phases}")
+
+        print(f"\n{'Task Performance Summary':^70}")
+        print("-"*70)
+        for i, task_info in enumerate(self.completed_tasks, 1):
+            task_name = task_info['name']
+            duration = task_info['duration']
+            estimated = self.task_metadata[task_name]['estimated_duration_min'] * 60
+            variance = ((duration - estimated) / estimated) * 100 if estimated > 0 else 0
+
+            print(f"{i}. {self.task_metadata[task_name]['name']:<40} "
+                  f"{duration/60:>6.1f} min (est: {estimated/60:.1f} min, {variance:+.0f}%)")
+
+        print(f"{'='*70}\n")
+
 # --- EXECUTION ---
 crew = Crew(
     agents=[researcher, auditor, counter_researcher, source_verifier, scriptwriter, personality],
@@ -865,11 +1101,94 @@ crew = Crew(
     process='sequential'
 )
 
+# Display workflow plan before execution
+display_workflow_plan()
+
+# Initialize progress tracker
+progress_tracker = ProgressTracker(TASK_METADATA)
+progress_tracker.start_workflow()
+
+# Get task list for tracking
+task_list = [
+    research_task,
+    gap_analysis_task,
+    adversarial_task,
+    source_verification_task,
+    audit_task,
+    script_task,
+    natural_language_task,
+    show_notes_task
+]
+
 print(f"\n--- Initiating Scientific Research Pipeline on DGX Spark ---")
 print(f"Topic: {topic_name}")
 print(f"Language: {language_config['name']} ({language})")
 print("---\n")
-result = crew.kickoff()
+
+# Start progress monitoring in background thread
+import threading
+
+class CrewMonitor(threading.Thread):
+    """Background thread that monitors crew execution progress"""
+    def __init__(self, task_list, progress_tracker):
+        super().__init__(daemon=True)
+        self.task_list = task_list
+        self.progress_tracker = progress_tracker
+        self.running = True
+        self.last_completed = -1
+
+    def run(self):
+        """Monitor crew tasks in background"""
+        while self.running:
+            try:
+                # Check how many tasks have outputs (completed)
+                completed_count = 0
+                for task in self.task_list:
+                    if hasattr(task, 'output') and task.output is not None:
+                        completed_count += 1
+                    else:
+                        break  # Tasks complete sequentially
+
+                # New task started or completed
+                if completed_count > self.last_completed:
+                    # If we detected completion of previous task
+                    if self.last_completed >= 0:
+                        self.progress_tracker.task_completed(self.last_completed)
+
+                    # New task has started
+                    if completed_count < len(self.task_list):
+                        self.progress_tracker.task_started(completed_count)
+
+                    self.last_completed = completed_count
+
+                time.sleep(3)  # Check every 3 seconds
+            except Exception:
+                pass  # Silently continue monitoring
+
+    def stop(self):
+        """Stop monitoring"""
+        self.running = False
+
+# Start background monitor
+monitor = CrewMonitor(task_list, progress_tracker)
+monitor.start()
+
+# Execute crew
+try:
+    result = crew.kickoff()
+except Exception as e:
+    print(f"\n{'='*70}")
+    print("WORKFLOW FAILED")
+    print(f"{'='*70}")
+    print(f"Error: {e}")
+    print(f"{'='*70}\n")
+    monitor.stop()
+    raise
+finally:
+    # Stop monitor and show final summary
+    monitor.stop()
+    monitor.join(timeout=2)
+    progress_tracker.workflow_completed()
 
 # --- PDF GENERATION STEP ---
 print("\n--- Generating Documentation PDFs ---")
