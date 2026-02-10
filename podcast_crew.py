@@ -22,6 +22,7 @@ import numpy as np
 import wave
 from audio_engine import generate_audio_from_script, clean_script_for_tts
 from search_agent import SearxngClient, DeepResearch
+from research_planner import build_research_plan, run_iterative_search, compare_plan_vs_results, run_supplementary_research
 
 # --- SOURCE TRACKING MODELS ---
 class ScientificSource(BaseModel):
@@ -66,6 +67,10 @@ def setup_logging(output_dir: Path):
 
 # --- INITIALIZATION ---
 load_dotenv()
+# Override .env settings for model configuration
+# Using vLLM with Qwen2.5-32B-Instruct-AWQ (supports function/tool calling)
+os.environ["MODEL_NAME"] = "Qwen/Qwen2.5-32B-Instruct-AWQ"
+os.environ["LLM_BASE_URL"] = "http://localhost:8000/v1"
 script_dir = Path(__file__).parent.absolute()
 base_output_dir = script_dir / "research_outputs"
 base_output_dir.mkdir(exist_ok=True)
@@ -298,48 +303,53 @@ ACCESSIBILITY_INSTRUCTIONS = {
 accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL]
 
 # --- MODEL DETECTION & CONFIG ---
-DEFAULT_MODEL = "hf.co/bartowski/Qwen_Qwen3-32B-GGUF:Q4_K_M"
+# Using Ollama with DeepSeek-R1:32b (131k context, excellent research capabilities)
+DEFAULT_MODEL = "deepseek-r1:32b"  # No prefix - CrewAI detects Ollama from base_url
+DEFAULT_BASE_URL = "http://localhost:11434/v1"  # Ollama OpenAI-compatible endpoint
 
 def get_final_model_string():
     model = os.getenv("MODEL_NAME", DEFAULT_MODEL)
-    base_url = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
-    print(f"Connecting to Ollama at {base_url}...")
+    base_url = os.getenv("LLM_BASE_URL", DEFAULT_BASE_URL)
+    print(f"Connecting to Ollama server at {base_url}...")
 
     for i in range(10):
         try:
             response = httpx.get(f"{base_url}/models", timeout=5.0)
             if response.status_code == 200:
-                print(f"Ollama online! Using model: {model}")
-                return f"openai/{model}"
-        except Exception:
+                print(f"✓ Ollama server online! Using model: {model}")
+                return model
+        except Exception as e:
             if i % 5 == 0:
-                print(f"Waiting for Ollama server... ({i*5}s)")
-            time.sleep(5)
+                print(f"Waiting for Ollama server... ({i}s) - {e}")
+            time.sleep(1)
 
-    print("Error: Could not connect to Ollama. Check if it is running.")
+    print("Error: Could not connect to Ollama server. Check if it is running.")
+    print("Start Ollama with: ollama serve")
     sys.exit(1)
 
 final_model_string = get_final_model_string()
 
-# LLM Configuration for Qwen 32B (32k context window optimization)
+# LLM Configuration for Qwen2.5-32B-Instruct (32k context window, function calling support)
 dgx_llm_strict = LLM(
     model=final_model_string,
-    base_url=os.getenv("LLM_BASE_URL", "http://localhost:11434/v1"),
-    api_key="NA",
+    base_url=os.getenv("LLM_BASE_URL", DEFAULT_BASE_URL),
+    api_key="NA",  # vLLM uses "NA"
+    provider="openai",
     timeout=600,
     temperature=0.1,  # Strict mode for Researcher/Auditor
-    max_tokens=32000,  # Prevent KV cache overflow on consumer GPUs
-    stop=["<|im_end|>", "<|endoftext|>", "Observation:", "Thought:"]
+    max_tokens=16000,  # Safe limit for 32k context (leaves room for input)
+    stop=["<|im_end|>", "<|endoftext|>"]
 )
 
 dgx_llm_creative = LLM(
     model=final_model_string,
-    base_url=os.getenv("LLM_BASE_URL", "http://localhost:11434/v1"),
-    api_key="NA",
+    base_url=os.getenv("LLM_BASE_URL", DEFAULT_BASE_URL),
+    api_key="NA",  # vLLM uses "NA"
+    provider="openai",
     timeout=600,
     temperature=0.7,  # Creative mode for Producer/Personality
-    max_tokens=32000,  # Prevent KV cache overflow on consumer GPUs
-    stop=["<|im_end|>", "<|endoftext|>", "Observation:", "Thought:"]
+    max_tokens=16000,  # Safe limit for 32k context (leaves room for input)
+    stop=["<|im_end|>", "<|endoftext|>"]
 )
 
 # Legacy alias for backward compatibility
@@ -371,8 +381,8 @@ def search_tool(search_query: str):
     - Supplement with "[topic] animal study" or "[topic] mechanism"
     - Always prioritize peer-reviewed > preprint > news
 
-    DO NOT search for well-established concepts.
-    Use internal knowledge first. Search is last resort.
+    CRITICAL: Always search to obtain verifiable URLs for all citations.
+    This enables source validation and provides readers with direct access to evidence.
     """
     api_key = os.getenv("BRAVE_API_KEY")
     if not api_key:
@@ -422,8 +432,8 @@ def deep_search_tool(search_query: str) -> str:
     ADVANTAGE: Provides FULL PAGE CONTENT (not just snippets) from top 5 results.
     Uses local SearXNG (no API key required).
 
-    DO NOT search for well-established concepts.
-    Use internal knowledge first. Search is last resort.
+    CRITICAL: Always search to obtain verifiable URLs and full article content for all citations.
+    This enables thorough source validation and provides detailed evidence for research claims.
     """
 
     async def perform_deep_search():
@@ -556,7 +566,7 @@ researcher = Agent(
         f'who has a {SESSION_ROLES["pro"]["personality"]} approach. '
         f'{language_instruction}'
     ),
-    tools=[deep_search_tool, search_tool],
+    tools=[search_tool, deep_search_tool],
     llm=dgx_llm_strict,
     verbose=True
 )
@@ -576,11 +586,13 @@ auditor = Agent(
         f'  3. The Caveat Box: Explicitly list why the findings might be wrong:\n'
         f'       (e.g., "Mouse study only", "Sample size n=12", "Conflicts of interest")\n'
         f'  4. Consensus Check: Search specifically for "criticism of [topic]" or "limitations of [study]".\n'
+        f'  5. Source Validation: Use DeepSearch to scan through full article content from cited URLs.\n'
+        f'     Verify that claims actually match what the source says. REJECT misrepresented sources.\n'
         f'\n'
         f'OUTPUT: A structured Markdown report with a "Reliability Scorecard". '
         f'{language_instruction}'
     ),
-    tools=[deep_search_tool, search_tool, link_validator],
+    tools=[search_tool, deep_search_tool, link_validator],
     llm=dgx_llm_strict,
     verbose=True
 )
@@ -603,7 +615,7 @@ counter_researcher = Agent(
         f'who has a {SESSION_ROLES["con"]["personality"]} approach. '
         f'{language_instruction}'
     ),
-    tools=[deep_search_tool, search_tool],
+    tools=[search_tool, deep_search_tool],
     llm=dgx_llm_strict,
     verbose=True
 )
@@ -687,11 +699,12 @@ research_task = Task(
         f"3. SUPPLEMENTARY: Non-human RCTs (animal studies, in vitro) to verify proposed mechanisms\n\n"
         f"SEARCH STRATEGY: Start with RCT/meta-analysis search. If no strong evidence, "
         f"expand to observatory studies. Supplement with animal/mechanistic studies to validate logic.\n\n"
-        f"Use internal knowledge first. Search only for recent (2025+) or specific citations needed.\n"
-        f"Include: Abstract, Introduction, 3 Biochemical Mechanisms with CONCRETE health impacts, Bibliography with study types noted. "
+        f"CRITICAL: Use BraveSearch or DeepSearch to find and cite verifiable sources with URLs for ALL major claims. "
+        f"Every citation in your bibliography MUST include a URL for source validation.\n"
+        f"Include: Abstract, Introduction, 3 Biochemical Mechanisms with CONCRETE health impacts, Bibliography with URLs and study types noted. "
         f"{language_instruction}"
     ),
-    expected_output=f"Scientific paper with SPECIFIC health mechanisms and effects, citations from RCTs, observatory studies, and non-human studies as needed. {language_instruction}",
+    expected_output=f"Scientific paper with SPECIFIC health mechanisms and effects, citations with URLs from RCTs, observatory studies, and non-human studies. Bibliography must include verifiable URLs for all sources. {language_instruction}",
     agent=researcher
 )
 
@@ -718,11 +731,12 @@ adversarial_task = Task(
         f"3. SUPPLEMENTARY: Animal studies contradicting proposed mechanisms\n\n"
         f"SEARCH STRATEGY: Find contradictory RCTs first. If limited, use observatory studies showing "
         f"no effect or harm. Include animal studies that disprove the mechanism.\n\n"
-        f"Use internal knowledge first. Search only for recent (2025+) contradictory evidence.\n"
-        f"Include Bibliography with study types noted. "
+        f"CRITICAL: Use BraveSearch or DeepSearch to find and cite contradictory evidence with URLs. "
+        f"Every citation in your bibliography MUST include a URL for source validation.\n"
+        f"Include Bibliography with URLs and study types noted. "
         f"{language_instruction}"
     ),
-    expected_output=f"Scientific paper challenging SPECIFIC health claims with contradictory evidence from RCTs, observatory studies, and animal studies as needed. {language_instruction}",
+    expected_output=f"Scientific paper challenging SPECIFIC health claims with contradictory evidence from RCTs, observatory studies, and animal studies. Bibliography must include verifiable URLs for all sources. {language_instruction}",
     agent=counter_researcher,
     context=[research_task, gap_analysis_task]
 )
@@ -1125,6 +1139,45 @@ print(f"Topic: {topic_name}")
 print(f"Language: {language_config['name']} ({language})")
 print("---\n")
 
+# --- PHASE 0: DEEP RESEARCH PRE-SCAN ---
+print(f"\n{'='*70}")
+print("PHASE 0: DEEP RESEARCH PRE-SCAN (Iterative Evidence Gathering)")
+print(f"{'='*70}")
+print("Building research plan and gathering sources before agent pipeline...")
+
+research_plan = build_research_plan(topic_name)
+brave_key = os.getenv("BRAVE_API_KEY", "")
+
+try:
+    pre_research = asyncio.run(run_iterative_search(
+        research_plan,
+        use_searxng=True,
+        use_brave=bool(brave_key),
+        brave_api_key=brave_key,
+        max_results_per_query=10
+    ))
+
+    # Format pre-research findings for injection into agent tasks
+    pre_research_brief = pre_research.format_for_llm()
+    source_count = len(pre_research.total_unique_urls)
+    print(f"\n✓ Pre-research complete: {source_count} unique sources gathered")
+
+    # Inject pre-research into both research task descriptions
+    pre_research_injection = (
+        f"\n\nIMPORTANT: A pre-research scan has already gathered {source_count} sources. "
+        f"Use the evidence below as a starting point, then supplement with your own searches.\n\n"
+        f"PRE-COLLECTED EVIDENCE:\n{pre_research_brief}"
+    )
+    research_task.description = f"{research_task.description}{pre_research_injection}"
+    adversarial_task.description = f"{adversarial_task.description}{pre_research_injection}"
+
+except Exception as e:
+    print(f"⚠ Pre-research scan failed: {e}")
+    print("Continuing with standard agent research...")
+    pre_research = None
+
+print(f"{'='*70}\n")
+
 # Start progress monitoring in background thread
 import threading
 
@@ -1200,6 +1253,46 @@ try:
     create_pdf("Final Meta-Audit Verdict", audit_task.output.raw, "final_audit_report.pdf")
 except Exception as e:
     print(f"Warning: PDF generation failed, but research is complete: {e}")
+
+# --- PLAN vs RESULTS COMPARISON ---
+if pre_research is not None:
+    print("\n--- Comparing Research Plan vs Actual Results ---")
+    try:
+        comparison_report = compare_plan_vs_results(pre_research)
+        comparison_file = output_dir / "research_plan_comparison.md"
+        with open(comparison_file, 'w') as f:
+            f.write(comparison_report)
+        print(f"✓ Plan comparison report: {comparison_file}")
+
+        # Log summary stats
+        well_covered = sum(1 for a in pre_research.aspects if a.evidence_level in ("strong", "moderate"))
+        total_aspects = len(pre_research.aspects)
+        print(f"  Coverage: {well_covered}/{total_aspects} aspects at moderate+ evidence")
+        print(f"  Total unique sources: {len(pre_research.total_unique_urls)}")
+    except Exception as e:
+        print(f"⚠ Plan comparison failed: {e}")
+
+# --- SUPPLEMENTARY RESEARCH (Auditor Gap-Fill) ---
+if pre_research is not None:
+    weak_aspects = [a for a in pre_research.aspects if a.evidence_level in ("none", "weak")]
+    if weak_aspects:
+        print(f"\n--- Auditor Gap-Fill: {len(weak_aspects)} aspects need more evidence ---")
+        try:
+            supp_report, new_count = asyncio.run(run_supplementary_research(
+                pre_research,
+                audit_task.output.raw if audit_task.output else "",
+                use_searxng=True,
+                use_brave=bool(brave_key),
+                brave_api_key=brave_key
+            ))
+            supp_file = output_dir / "supplementary_research.md"
+            with open(supp_file, 'w') as f:
+                f.write(supp_report)
+            print(f"✓ Supplementary research: {new_count} new sources -> {supp_file}")
+        except Exception as e:
+            print(f"⚠ Supplementary research failed: {e}")
+    else:
+        print("\n✓ All research aspects have sufficient evidence — no supplementary research needed")
 
 # --- SESSION METADATA ---
 print("\n--- Documenting Session Metadata ---")

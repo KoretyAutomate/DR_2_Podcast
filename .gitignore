@@ -2,3 +2,5 @@
 *.mp3
 __pycache__/
 research_outputs/
+youtube_token.pickle
+client_secret.json
