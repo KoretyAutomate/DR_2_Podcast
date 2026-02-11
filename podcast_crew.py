@@ -23,6 +23,7 @@ import wave
 from audio_engine import generate_audio_from_script, clean_script_for_tts
 from search_agent import SearxngClient, DeepResearch
 from research_planner import build_research_plan, run_iterative_search, compare_plan_vs_results, run_supplementary_research
+from deep_research_agent import Orchestrator, run_deep_research
 
 # --- SOURCE TRACKING MODELS ---
 class ScientificSource(BaseModel):
@@ -1139,44 +1140,66 @@ print(f"Topic: {topic_name}")
 print(f"Language: {language_config['name']} ({language})")
 print("---\n")
 
-# --- PHASE 0: DEEP RESEARCH PRE-SCAN ---
-print(f"\n{'='*70}")
-print("PHASE 0: DEEP RESEARCH PRE-SCAN (Iterative Evidence Gathering)")
-print(f"{'='*70}")
-print("Building research plan and gathering sources before agent pipeline...")
-
-research_plan = build_research_plan(topic_name)
+# --- PHASE 0: DEEP RESEARCH PRE-SCAN (Dual-Model Map-Reduce) ---
 brave_key = os.getenv("BRAVE_API_KEY", "")
 
+# Check if fast model is available
+# Check if fast model (Phi-4 Mini via Ollama) is available
+fast_model_available = False
 try:
-    pre_research = asyncio.run(run_iterative_search(
-        research_plan,
-        use_searxng=True,
-        use_brave=bool(brave_key),
+    _resp = httpx.get("http://localhost:11434/v1/models", timeout=3)
+    if _resp.status_code == 200:
+        _models = [m.get("id", "") for m in _resp.json().get("data", [])]
+        fast_model_available = any("phi" in m.lower() for m in _models)
+        if fast_model_available:
+            print("✓ Fast model (Phi-4 Mini) detected on Ollama")
+        else:
+            print(f"⚠ Ollama running but no phi model found. Available: {_models}")
+except Exception:
+    print("⚠ Fast model not available, using smart-only mode")
+
+try:
+    deep_reports = asyncio.run(run_deep_research(
+        topic=topic_name,
         brave_api_key=brave_key,
-        max_results_per_query=10
+        results_per_query=10,
+        fast_model_available=fast_model_available
     ))
 
-    # Format pre-research findings for injection into agent tasks
-    pre_research_brief = pre_research.format_for_llm()
-    source_count = len(pre_research.total_unique_urls)
-    print(f"\n✓ Pre-research complete: {source_count} unique sources gathered")
+    # Save all reports (lead, counter, audit)
+    for role_name, report in deep_reports.items():
+        report_file = output_dir / f"deep_research_{role_name}.md"
+        with open(report_file, 'w') as f:
+            f.write(report.report)
+        print(f"✓ {role_name.capitalize()} report saved: {report_file} ({report.total_summaries} sources)")
 
-    # Inject pre-research into both research task descriptions
-    pre_research_injection = (
-        f"\n\nIMPORTANT: A pre-research scan has already gathered {source_count} sources. "
-        f"Use the evidence below as a starting point, then supplement with your own searches.\n\n"
-        f"PRE-COLLECTED EVIDENCE:\n{pre_research_brief}"
+    # Use audit report (combined synthesis) for injection into CrewAI agents
+    audit_report = deep_reports["audit"]
+    lead_report = deep_reports["lead"]
+    counter_report = deep_reports["counter"]
+
+    # Inject supporting evidence into lead research task
+    lead_injection = (
+        f"\n\nIMPORTANT: A deep research pre-scan has already analyzed {lead_report.total_summaries} "
+        f"supporting sources in {lead_report.duration_seconds:.0f}s. Use the evidence below as a "
+        f"starting point, then supplement with your own searches.\n\n"
+        f"PRE-COLLECTED SUPPORTING EVIDENCE:\n{lead_report.report}"
     )
-    research_task.description = f"{research_task.description}{pre_research_injection}"
-    adversarial_task.description = f"{adversarial_task.description}{pre_research_injection}"
+    research_task.description = f"{research_task.description}{lead_injection}"
+
+    # Inject opposing evidence into adversarial task
+    counter_injection = (
+        f"\n\nIMPORTANT: A deep research pre-scan has already analyzed {counter_report.total_summaries} "
+        f"opposing sources in {counter_report.duration_seconds:.0f}s. Use the evidence below as a "
+        f"starting point, then supplement with your own searches.\n\n"
+        f"PRE-COLLECTED OPPOSING EVIDENCE:\n{counter_report.report}"
+    )
+    adversarial_task.description = f"{adversarial_task.description}{counter_injection}"
 
 except Exception as e:
-    print(f"⚠ Pre-research scan failed: {e}")
+    print(f"⚠ Deep research pre-scan failed: {e}")
     print("Continuing with standard agent research...")
-    pre_research = None
-
-print(f"{'='*70}\n")
+    deep_reports = None
 
 # Start progress monitoring in background thread
 import threading
@@ -1254,45 +1277,15 @@ try:
 except Exception as e:
     print(f"Warning: PDF generation failed, but research is complete: {e}")
 
-# --- PLAN vs RESULTS COMPARISON ---
-if pre_research is not None:
-    print("\n--- Comparing Research Plan vs Actual Results ---")
-    try:
-        comparison_report = compare_plan_vs_results(pre_research)
-        comparison_file = output_dir / "research_plan_comparison.md"
-        with open(comparison_file, 'w') as f:
-            f.write(comparison_report)
-        print(f"✓ Plan comparison report: {comparison_file}")
-
-        # Log summary stats
-        well_covered = sum(1 for a in pre_research.aspects if a.evidence_level in ("strong", "moderate"))
-        total_aspects = len(pre_research.aspects)
-        print(f"  Coverage: {well_covered}/{total_aspects} aspects at moderate+ evidence")
-        print(f"  Total unique sources: {len(pre_research.total_unique_urls)}")
-    except Exception as e:
-        print(f"⚠ Plan comparison failed: {e}")
-
-# --- SUPPLEMENTARY RESEARCH (Auditor Gap-Fill) ---
-if pre_research is not None:
-    weak_aspects = [a for a in pre_research.aspects if a.evidence_level in ("none", "weak")]
-    if weak_aspects:
-        print(f"\n--- Auditor Gap-Fill: {len(weak_aspects)} aspects need more evidence ---")
-        try:
-            supp_report, new_count = asyncio.run(run_supplementary_research(
-                pre_research,
-                audit_task.output.raw if audit_task.output else "",
-                use_searxng=True,
-                use_brave=bool(brave_key),
-                brave_api_key=brave_key
-            ))
-            supp_file = output_dir / "supplementary_research.md"
-            with open(supp_file, 'w') as f:
-                f.write(supp_report)
-            print(f"✓ Supplementary research: {new_count} new sources -> {supp_file}")
-        except Exception as e:
-            print(f"⚠ Supplementary research failed: {e}")
-    else:
-        print("\n✓ All research aspects have sufficient evidence — no supplementary research needed")
+# --- RESEARCH SUMMARY ---
+if deep_reports is not None:
+    audit = deep_reports["audit"]
+    print(f"\n--- Deep Research Summary ---")
+    print(f"  Lead sources: {deep_reports['lead'].total_summaries}")
+    print(f"  Counter sources: {deep_reports['counter'].total_summaries}")
+    print(f"  Total sources: {audit.total_summaries}")
+    print(f"  Total URLs fetched: {audit.total_urls_fetched}")
+    print(f"  Duration: {audit.duration_seconds:.0f}s")
 
 # --- SESSION METADATA ---
 print("\n--- Documenting Session Metadata ---")
