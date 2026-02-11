@@ -522,8 +522,14 @@ class Orchestrator:
         )
         self.fast_model_available = fast_model_available
 
-    async def run(self, topic: str, progress_callback=None) -> Dict[str, ResearchReport]:
-        """Run the full research pipeline. Returns dict of role→report."""
+    async def run(self, topic: str, framing_context: str = "", progress_callback=None) -> Dict[str, ResearchReport]:
+        """Run the full research pipeline. Returns dict of role→report.
+
+        Args:
+            topic: Research topic
+            framing_context: Optional research framing document to guide searches
+            progress_callback: Optional callback for progress messages
+        """
         start_time = time.time()
 
         def log(msg: str):
@@ -537,7 +543,19 @@ class Orchestrator:
         log(f"DEEP RESEARCH AGENT - Iterative Delegation ({mode})")
         log(f"{'='*70}")
         log(f"Topic: {topic}")
+        if framing_context:
+            log(f"Research framing provided: {len(framing_context)} chars")
         log(f"{'='*70}")
+
+        # Build framing prefix for role instructions
+        framing_prefix = ""
+        if framing_context:
+            framing_prefix = (
+                f"A Research Framing document has been prepared to guide your investigation. "
+                f"Use the core questions, scope boundaries, and evidence criteria below to focus "
+                f"your searches systematically:\n\n{framing_context}\n\n"
+                f"--- END FRAMING ---\n\n"
+            )
 
         # Phase 1: Lead Researcher
         log(f"\n{'='*70}")
@@ -547,6 +565,7 @@ class Orchestrator:
             topic=topic,
             role="Lead Researcher (Principal Investigator)",
             role_instructions=(
+                f"{framing_prefix}"
                 "Your job is to find SUPPORTING scientific evidence for the topic. "
                 "Focus on: mechanisms of action, clinical trials (RCTs), meta-analyses, "
                 "and expert consensus that SUPPORTS the claim. "
@@ -564,6 +583,7 @@ class Orchestrator:
             topic=topic,
             role="Counter Researcher (The Skeptic)",
             role_instructions=(
+                f"{framing_prefix}"
                 "Your job is to find OPPOSING and CONTRADICTORY evidence for the topic. "
                 "Focus on: studies showing null effects, negative outcomes, methodological "
                 "flaws in supporting studies, and expert criticism. "
@@ -648,7 +668,8 @@ async def run_deep_research(
     brave_api_key: str = "",
     results_per_query: int = 8,
     max_iterations: int = MAX_RESEARCH_ITERATIONS,
-    fast_model_available: bool = True
+    fast_model_available: bool = True,
+    framing_context: str = ""
 ) -> Dict[str, ResearchReport]:
     orchestrator = Orchestrator(
         brave_api_key=brave_api_key,
@@ -656,7 +677,7 @@ async def run_deep_research(
         max_iterations=max_iterations,
         fast_model_available=fast_model_available
     )
-    return await orchestrator.run(topic)
+    return await orchestrator.run(topic, framing_context=framing_context)
 
 
 async def main():

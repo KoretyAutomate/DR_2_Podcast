@@ -684,12 +684,66 @@ source_verifier = Agent(
     verbose=True
 )
 
+research_framer = Agent(
+    role='Research Framing Specialist',
+    goal=f'Define the research scope, core questions, and evidence criteria for investigating {topic_name}. {language_instruction}',
+    backstory=(
+        'You are a senior research methodologist who designs investigation frameworks. '
+        'Before any evidence is gathered, you establish:\n'
+        '  1. Core research questions that must be answered\n'
+        '  2. Scope boundaries (what is in/out of scope)\n'
+        '  3. Evidence criteria (what counts as strong/weak evidence)\n'
+        '  4. Suggested search directions and keywords\n'
+        '  5. Hypotheses to test\n\n'
+        'Your framing document guides all downstream research, ensuring systematic '
+        'coverage rather than ad-hoc searching. You do NOT search for evidence yourself — '
+        'you define WHAT to look for and HOW to evaluate it.'
+    ),
+    llm=dgx_llm_strict,
+    verbose=True
+)
+
 # --- TASKS ---
+framing_task = Task(
+    description=(
+        f"Define the research framework for investigating: {topic_name}\n\n"
+        f"Produce a structured framing document with:\n\n"
+        f"## 1. Core Research Questions\n"
+        f"List 5-8 specific questions that this research MUST answer. "
+        f"These should cover mechanisms, clinical evidence, population effects, and limitations.\n\n"
+        f"## 2. Scope Boundaries\n"
+        f"Define what is IN SCOPE and OUT OF SCOPE. "
+        f"E.g., 'In scope: human health effects. Out of scope: economic impact, agricultural methods.'\n\n"
+        f"## 3. Evidence Criteria\n"
+        f"Define what constitutes strong vs weak evidence for this topic:\n"
+        f"  - What study types are most relevant? (RCT, cohort, meta-analysis, etc.)\n"
+        f"  - What sample sizes would be convincing?\n"
+        f"  - What confounders should researchers watch for?\n\n"
+        f"## 4. Suggested Search Directions\n"
+        f"Provide 8-12 specific search queries or keyword combinations that would "
+        f"systematically cover the topic. Group by: supporting evidence, opposing evidence, "
+        f"mechanistic evidence, and population-level data.\n\n"
+        f"## 5. Hypotheses\n"
+        f"State 3-5 testable hypotheses that the research should evaluate.\n\n"
+        f"Do NOT search for evidence. Only define the framework. "
+        f"{language_instruction}"
+    ),
+    expected_output=(
+        f"Structured research framing document with core questions, scope boundaries, "
+        f"evidence criteria, search directions, and hypotheses. {language_instruction}"
+    ),
+    agent=research_framer,
+    output_file=str(output_dir / "RESEARCH_FRAMING.md")
+)
+
 research_task = Task(
     description=(
-        f"Conduct exhaustive deep dive into {topic_name}. "
+        f"Conduct exhaustive deep dive into {topic_name}, guided by the Research Framing document. "
         f"Draft condensed scientific paper (Nature style). "
-        f"\n\nCRITICAL: Focus ONLY on the health topic itself. Include:\n"
+        f"\n\nIMPORTANT: The Research Framing document defines the core questions, scope boundaries, "
+        f"and evidence criteria for this investigation. Use it to guide your searches systematically — "
+        f"ensure each core research question is addressed.\n\n"
+        f"CRITICAL: Focus ONLY on the health topic itself. Include:\n"
         f"- Specific health effects and mechanisms\n"
         f"- Biochemical pathways and physiological impacts\n"
         f"- Clinical outcomes and disease relationships\n"
@@ -706,18 +760,63 @@ research_task = Task(
         f"{language_instruction}"
     ),
     expected_output=f"Scientific paper with SPECIFIC health mechanisms and effects, citations with URLs from RCTs, observatory studies, and non-human studies. Bibliography must include verifiable URLs for all sources. {language_instruction}",
-    agent=researcher
+    agent=researcher,
+    context=[framing_task]
 )
 
 gap_analysis_task = Task(
     description=(
-        f"Review the Lead Scientist's Supporting Paper. Identify potential weaknesses "
-        f"and suggest specific topics for the Adversarial Researcher to investigate. "
+        f"RESEARCH GATE: Evaluate whether the initial research on {topic_name} adequately "
+        f"addresses the core research questions defined in the framing document.\n\n"
+        f"Compare the research output against the framing document's:\n"
+        f"- Core research questions: Are they all addressed?\n"
+        f"- Evidence criteria: Does the evidence meet the defined standards?\n"
+        f"- Scope boundaries: Did the research stay in scope?\n\n"
+        f"For EACH core research question, assess:\n"
+        f"  - ADDRESSED: Question answered with adequate evidence\n"
+        f"  - PARTIALLY ADDRESSED: Some evidence but significant gaps remain\n"
+        f"  - NOT ADDRESSED: No meaningful evidence found\n\n"
+        f"OUTPUT FORMAT:\n"
+        f"## Research Gate Assessment\n\n"
+        f"### Question Coverage\n"
+        f"[For each core question: ADDRESSED / PARTIALLY / NOT ADDRESSED + brief justification]\n\n"
+        f"### Identified Gaps\n"
+        f"[Numbered list of specific gaps that need filling]\n\n"
+        f"### Weak Points for Adversarial Review\n"
+        f"[3-5 specific scientific weak points for the Counter-Researcher]\n\n"
+        f"### VERDICT: [PASS or FAIL]\n"
+        f"PASS = All core questions at least PARTIALLY addressed with credible evidence.\n"
+        f"FAIL = One or more core questions NOT ADDRESSED, or evidence quality critically low.\n\n"
         f"{language_instruction}"
     ),
-    expected_output=f"A list of 3-5 specific scientific 'weak points'. {language_instruction}",
+    expected_output=(
+        f"Research gate assessment with question coverage, identified gaps, weak points, "
+        f"and a clear VERDICT: PASS or VERDICT: FAIL. {language_instruction}"
+    ),
     agent=auditor,
-    context=[research_task]
+    context=[framing_task, research_task]
+)
+
+gap_fill_task = Task(
+    description=(
+        f"Conduct TARGETED supplementary research to fill specific gaps identified by the Research Gate.\n\n"
+        f"The Gap Analysis has identified specific weaknesses in the initial research on {topic_name}. "
+        f"Your job is to conduct focused searches ONLY for the missing evidence.\n\n"
+        f"INSTRUCTIONS:\n"
+        f"1. Read the gap analysis carefully — it lists specific missing evidence\n"
+        f"2. For EACH identified gap, conduct 1-2 targeted searches\n"
+        f"3. Report findings organized by which gap they address\n"
+        f"4. Do NOT repeat research already covered — only fill gaps\n\n"
+        f"CRITICAL: Use BraveSearch or DeepSearch to find verifiable sources with URLs. "
+        f"{language_instruction}"
+    ),
+    expected_output=(
+        f"Targeted supplementary research addressing each identified gap, "
+        f"with verifiable sources and URLs. {language_instruction}"
+    ),
+    agent=researcher,
+    tools=[search_tool, deep_search_tool],
+    context=[research_task, gap_analysis_task]
 )
 
 adversarial_task = Task(
@@ -751,57 +850,80 @@ source_verification_task = Task(
         f"3. Trust level: HIGH (Nature/Science/Lancet/Cell/PNAS), "
         f"MEDIUM (PubMed/arXiv), LOW (news/blogs)\n"
         f"4. Journal name and year if available\n\n"
+        f"CLAIM-TO-SOURCE VERIFICATION (NEW):\n"
+        f"For each major claim in the research papers, verify that:\n"
+        f"  - The cited source ACTUALLY supports the claim as stated\n"
+        f"  - The claim does not overstate what the source says\n"
+        f"  - Hedging language (may, suggests, correlates) is preserved accurately\n"
+        f"  - Flag any misrepresented sources as 'MISREPRESENTED: [explanation]'\n\n"
         f"Create structured bibliography JSON:\n"
-        f'{{"supporting_sources": [{{title, url, journal, year, trust_level, source_type}}],\n'
+        f'{{"supporting_sources": [{{title, url, journal, year, trust_level, source_type, claim_match: "VERIFIED/MISREPRESENTED"}}],\n'
         f' "contradicting_sources": [...],\n'
-        f' "summary": "X high-trust, Y medium-trust sources"}}\n\n'
+        f' "misrepresented_claims": ["claim X cites source Y but source actually says Z"],\n'
+        f' "summary": "X high-trust, Y medium-trust sources, Z misrepresented"}}\n\n'
         f"REJECT non-scientific sources. Flag if <3 high-trust sources. "
         f"{language_instruction}"
     ),
-    expected_output=f"JSON bibliography with categorized, verified sources and quality summary. {language_instruction}",
+    expected_output=(
+        f"JSON bibliography with categorized, verified sources, claim-to-source match verification, "
+        f"and quality summary. {language_instruction}"
+    ),
     agent=source_verifier,
     context=[research_task, adversarial_task]
 )
 
 audit_task = Task(
     description=(
-        f"Review Supporting, Anti-Thesis papers on {topic_name} AND verified source bibliography. "
-        f"Use LinkValidatorTool to verify every URL cited. If a URL is broken, REJECT that citation.\n\n"
-        f"GRADING REQUIREMENTS:\n"
-        f"1. Assign strength ratings (1-10) to each main claim\n"
-        f"2. Create a 'Reliability Scorecard' with scores and justifications\n"
-        f"3. Build 'The Caveat Box' - list why findings might be wrong:\n"
-        f"   - Sample size issues (e.g., 'n=12 only')\n"
-        f"   - Study limitations (e.g., 'Mouse study only')\n"
-        f"   - Conflicts of interest\n"
-        f"   - Contradictory findings from other studies\n"
-        f"4. Search for criticism: 'criticism of {topic_name}' and 'limitations of [study]'\n\n"
+        f"Synthesize ALL research on {topic_name} into a single Source-of-Truth document.\n\n"
+        f"This is NOT a grade — it is a SYNTHESIS. Combine the supporting evidence, opposing evidence, "
+        f"and source verification results into one authoritative reference document that the script "
+        f"writers will use as their ONLY source.\n\n"
         f"OUTPUT FORMAT (Markdown):\n"
-        f"# Research Audit Report: {topic_name}\n\n"
-        f"## Abstract\n"
-        f"[Brief summary of findings]\n\n"
-        f"## Evidence Block\n"
-        f"[Key findings grouped by mechanism]\n\n"
+        f"# Source of Truth: {topic_name}\n\n"
+        f"## Executive Summary\n"
+        f"[2-3 paragraph balanced summary of what the evidence shows]\n\n"
+        f"## Key Claims with Confidence Levels\n"
+        f"For EACH major claim, assign a confidence level:\n"
+        f"  - **HIGH**: Multiple RCTs/meta-analyses agree, no significant contradictions\n"
+        f"  - **MEDIUM**: Some RCT evidence but limited replication, or strong observational data\n"
+        f"  - **LOW**: Only animal/mechanistic studies, or single small study\n"
+        f"  - **CONTESTED**: Significant evidence on BOTH sides\n\n"
+        f"Format each claim as:\n"
+        f"### Claim: [statement]\n"
+        f"- **Confidence**: HIGH/MEDIUM/LOW/CONTESTED\n"
+        f"- **Supporting evidence**: [brief summary with citations]\n"
+        f"- **Opposing evidence**: [brief summary with citations, or 'None found']\n"
+        f"- **Key caveats**: [limitations]\n\n"
+        f"## Settled Science vs Active Debate\n"
+        f"### What the Evidence Broadly Agrees On:\n"
+        f"[Claims with HIGH confidence where both sides agree]\n\n"
+        f"### Where the Science is Still Debated:\n"
+        f"[CONTESTED and LOW confidence claims with both sides presented]\n\n"
         f"## Reliability Scorecard\n"
-        f"| Claim | Strength (1-10) | Evidence Type | Justification |\n"
+        f"| Claim | Confidence | Evidence Type | Best Source |\n"
         f"| --- | --- | --- | --- |\n\n"
         f"## The Caveat Box\n"
         f"### Why These Findings Might Be Wrong:\n"
         f"- [List of limitations and concerns]\n\n"
+        f"## Complete Bibliography\n"
+        f"[All verified sources with URLs, organized by claim]\n\n"
         f"The output MUST contain concrete health information, NOT a discussion about source quality. "
+        f"This document is the SINGLE SOURCE OF TRUTH for all downstream script generation. "
         f"{language_instruction}"
     ),
     expected_output=(
-        f"Structured Markdown report (RESEARCH_REPORT.md format) with:\n"
-        f"- Abstract\n"
-        f"- Evidence Block (mechanisms grouped)\n"
-        f"- Reliability Scorecard (table with 1-10 ratings)\n"
-        f"- Caveat Box (limitations list)\n"
+        f"Structured Source-of-Truth document (SOURCE_OF_TRUTH.md) with:\n"
+        f"- Executive Summary\n"
+        f"- Key Claims with Confidence Levels (HIGH/MEDIUM/LOW/CONTESTED)\n"
+        f"- Settled Science vs Active Debate sections\n"
+        f"- Reliability Scorecard\n"
+        f"- Caveat Box\n"
+        f"- Complete Bibliography\n"
         f"{language_instruction}"
     ),
     agent=auditor,
     context=[research_task, adversarial_task, source_verification_task],
-    output_file=str(output_dir / "RESEARCH_REPORT.md")
+    output_file=str(output_dir / "SOURCE_OF_TRUTH.md")
 )
 
 script_task = Task(
@@ -864,10 +986,45 @@ natural_language_task = Task(
     context=[script_task, audit_task]
 )
 
+accuracy_check_task = Task(
+    description=(
+        f"Compare the POLISHED SCRIPT against the Source-of-Truth document for {topic_name}.\n\n"
+        f"This is a POST-POLISH accuracy check. The script has been edited for natural delivery, "
+        f"and scientific drift may have been introduced during polishing.\n\n"
+        f"CHECK FOR THESE SPECIFIC DRIFT PATTERNS:\n"
+        f"1. **Correlation → Causation drift**: Script says 'X causes Y' when source says 'X is associated with Y'\n"
+        f"2. **Hedge removal**: Source says 'may' or 'suggests', script says 'does' or 'proves'\n"
+        f"3. **Confidence inflation**: LOW confidence claims presented as settled fact\n"
+        f"4. **Cherry-picking**: Only one side of CONTESTED claims presented\n"
+        f"5. **Contested-as-settled**: Claims marked CONTESTED in source-of-truth presented as consensus\n\n"
+        f"OUTPUT FORMAT:\n"
+        f"# Accuracy Check: {topic_name}\n\n"
+        f"## Overall Assessment\n"
+        f"[PASS / PASS WITH WARNINGS / FAIL]\n\n"
+        f"## Drift Instances Found\n"
+        f"For each issue:\n"
+        f"- **Script says**: [exact quote from script]\n"
+        f"- **Source-of-truth says**: [what the evidence actually supports]\n"
+        f"- **Drift type**: [one of the 5 patterns above]\n"
+        f"- **Severity**: HIGH / MEDIUM / LOW\n\n"
+        f"## Recommendations\n"
+        f"[Specific line-level fixes if needed]\n\n"
+        f"NOTE: This check is ADVISORY. It does NOT block audio generation. "
+        f"{language_instruction}"
+    ),
+    expected_output=(
+        f"Accuracy check report comparing polished script against source-of-truth, "
+        f"listing any scientific drift with severity ratings. {language_instruction}"
+    ),
+    agent=auditor,
+    context=[natural_language_task, audit_task],
+    output_file=str(output_dir / "ACCURACY_CHECK.md")
+)
+
 show_notes_task = Task(
     description=(
         f"Generate comprehensive show notes (SHOW_NOTES.md) for the podcast episode on {topic_name}.\n\n"
-        f"Using the Research Report and verified sources, create a bulleted list with:\n"
+        f"Using the Source-of-Truth document and its bibliography, create a bulleted list with:\n"
         f"1. Episode title and topic\n"
         f"2. Key takeaways (3-5 bullet points)\n"
         f"3. Full citation list with validity ratings:\n\n"
@@ -894,82 +1051,119 @@ show_notes_task = Task(
         f"{language_instruction}"
     ),
     agent=scriptwriter,
-    context=[audit_task, source_verification_task],
+    context=[audit_task],
     output_file=str(output_dir / "SHOW_NOTES.md")
 )
 
 # --- TASK METADATA & WORKFLOW PLANNING ---
 TASK_METADATA = {
+    'framing_task': {
+        'name': 'Research Framing & Hypothesis',
+        'phase': '0',
+        'estimated_duration_min': 2,
+        'description': 'Research Framing Specialist defines scope, questions, and evidence criteria',
+        'agent': 'Research Framing Specialist',
+        'dependencies': [],
+        'crew': 0
+    },
     'research_task': {
-        'name': 'Initial Research & Evidence Gathering',
-        'phase': 1,
+        'name': 'Systematic Evidence Gathering',
+        'phase': '1',
         'estimated_duration_min': 8,
-        'description': 'Lead Researcher conducts deep dive into topic',
+        'description': 'Lead Researcher conducts deep dive guided by framing document',
         'agent': 'Principal Investigator',
-        'dependencies': []
+        'dependencies': ['framing_task'],
+        'crew': 1
     },
     'gap_analysis_task': {
-        'name': 'Research Quality Assessment',
-        'phase': 2,
+        'name': 'Research Gate & Gap Analysis',
+        'phase': '2',
         'estimated_duration_min': 3,
-        'description': 'Scientific Auditor identifies weak points',
+        'description': 'Scientific Auditor evaluates coverage with PASS/FAIL gate',
         'agent': 'Scientific Auditor',
-        'dependencies': ['research_task']
+        'dependencies': ['framing_task', 'research_task'],
+        'crew': 1
+    },
+    'gap_fill_task': {
+        'name': 'Gap-Fill Research (conditional)',
+        'phase': '2b',
+        'estimated_duration_min': 4,
+        'description': 'Targeted supplementary research if gate FAILS',
+        'agent': 'Principal Investigator',
+        'dependencies': ['research_task', 'gap_analysis_task'],
+        'crew': 'conditional',
+        'conditional': True
     },
     'adversarial_task': {
         'name': 'Counter-Evidence Research',
-        'phase': 3,
+        'phase': '3',
         'estimated_duration_min': 8,
         'description': 'Counter-Researcher challenges findings',
         'agent': 'Adversarial Researcher',
-        'dependencies': ['research_task', 'gap_analysis_task']
+        'dependencies': ['research_task', 'gap_analysis_task'],
+        'crew': 2
     },
     'source_verification_task': {
-        'name': 'Source Validation & Bibliography',
-        'phase': 4,
+        'name': 'Source Validation & Claim Verification',
+        'phase': '4',
         'estimated_duration_min': 5,
-        'description': 'Source Verifier validates all citations',
+        'description': 'Source Verifier validates citations and claim-to-source accuracy',
         'agent': 'Scientific Source Verifier',
-        'dependencies': ['research_task', 'adversarial_task']
+        'dependencies': ['research_task', 'adversarial_task'],
+        'crew': 2
     },
     'audit_task': {
-        'name': 'Final Meta-Audit & Grading',
-        'phase': 5,
+        'name': 'Source-of-Truth Synthesis',
+        'phase': '5',
         'estimated_duration_min': 5,
-        'description': 'Scientific Auditor grades research quality',
+        'description': 'Scientific Auditor synthesizes authoritative source-of-truth document',
         'agent': 'Scientific Auditor',
-        'dependencies': ['research_task', 'adversarial_task', 'source_verification_task']
-    },
-    'script_task': {
-        'name': 'Podcast Script Generation',
-        'phase': 6,
-        'estimated_duration_min': 6,
-        'description': 'Scriptwriter creates debate dialogue',
-        'agent': 'Podcast Producer',
-        'dependencies': ['audit_task']
-    },
-    'natural_language_task': {
-        'name': 'Script Polishing & Editing',
-        'phase': 7,
-        'estimated_duration_min': 4,
-        'description': 'Personality Agent refines for natural delivery',
-        'agent': 'Podcast Personality',
-        'dependencies': ['script_task', 'audit_task']
+        'dependencies': ['research_task', 'adversarial_task', 'source_verification_task'],
+        'crew': 2
     },
     'show_notes_task': {
         'name': 'Show Notes & Citations',
-        'phase': 8,
+        'phase': '6a',
         'estimated_duration_min': 3,
-        'description': 'Scriptwriter generates comprehensive show notes',
+        'description': 'Scriptwriter generates show notes from source-of-truth',
         'agent': 'Podcast Producer',
-        'dependencies': ['audit_task', 'source_verification_task']
+        'dependencies': ['audit_task'],
+        'crew': 2
+    },
+    'script_task': {
+        'name': 'Podcast Script Generation',
+        'phase': '6b',
+        'estimated_duration_min': 6,
+        'description': 'Scriptwriter creates debate dialogue from source-of-truth',
+        'agent': 'Podcast Producer',
+        'dependencies': ['audit_task'],
+        'crew': 2
+    },
+    'natural_language_task': {
+        'name': 'Script Polishing & Editing',
+        'phase': '7',
+        'estimated_duration_min': 4,
+        'description': 'Personality Agent refines for natural delivery',
+        'agent': 'Podcast Personality',
+        'dependencies': ['script_task', 'audit_task'],
+        'crew': 2
+    },
+    'accuracy_check_task': {
+        'name': 'Script Accuracy Check',
+        'phase': '8',
+        'estimated_duration_min': 3,
+        'description': 'Scientific Auditor checks polished script for drift (advisory)',
+        'agent': 'Scientific Auditor',
+        'dependencies': ['natural_language_task', 'audit_task'],
+        'crew': 2
     }
 }
 
 def display_workflow_plan():
     """
     Display detailed workflow plan before execution.
-    Shows all 8 phases with durations, dependencies, and total time estimate.
+    Shows Phases 0-8 with durations, dependencies, and total time estimate.
+    Phase 2b is marked as conditional.
     """
     print("\n" + "="*70)
     print(" "*20 + "PODCAST GENERATION WORKFLOW")
@@ -978,7 +1172,7 @@ def display_workflow_plan():
     print(f"Language: {language_config['name']}")
     print(f"Output Directory: {output_dir}")
     print("\n" + "-"*70)
-    print(f"{'PHASE':<6} {'TASK NAME':<35} {'EST TIME':<12} {'AGENT':<20}")
+    print(f"{'PHASE':<6} {'TASK NAME':<40} {'EST TIME':<12} {'AGENT':<25}")
     print("-"*70)
 
     total_duration = 0
@@ -987,18 +1181,22 @@ def display_workflow_plan():
         name = metadata['name']
         duration = metadata['estimated_duration_min']
         agent = metadata['agent']
+        is_conditional = metadata.get('conditional', False)
 
-        total_duration += duration
+        if not is_conditional:
+            total_duration += duration
 
-        print(f"{phase:<6} {name:<35} {duration:>3} min{'':<6} {agent:<20}")
+        conditional_marker = " [CONDITIONAL]" if is_conditional else ""
+        print(f"{phase:<6} {name:<40} {duration:>3} min{'':<6} {agent:<25}{conditional_marker}")
         print(f"{'':6} └─ {metadata['description']}")
         if metadata['dependencies']:
-            deps_str = ', '.join([f"Phase {TASK_METADATA[d]['phase']}" for d in metadata['dependencies']])
+            deps_str = ', '.join([f"Phase {TASK_METADATA[d]['phase']}" for d in metadata['dependencies'] if d in TASK_METADATA])
             print(f"{'':6}    Dependencies: {deps_str}")
         print()
 
     print("-"*70)
     print(f"TOTAL ESTIMATED TIME: {total_duration} minutes (~{total_duration//60}h {total_duration%60}m)")
+    print(f"  (+ up to 4 min if gap-fill triggers)")
     print("="*70 + "\n")
 
 class ProgressTracker:
@@ -1010,10 +1208,12 @@ class ProgressTracker:
         self.task_metadata = task_metadata
         self.task_names = list(task_metadata.keys())
         self.current_task_index = 0
-        self.total_phases = len(task_metadata)
+        # Exclude conditional tasks from total count initially
+        self.total_phases = len([m for m in task_metadata.values() if not m.get('conditional', False)])
         self.start_time = None
         self.task_start_time = None
         self.completed_tasks = []
+        self.gate_passed = True  # Updated after gate check
 
     def start_workflow(self):
         """Mark workflow start time"""
@@ -1040,7 +1240,7 @@ class ProgressTracker:
         print(f"Description: {metadata['description']}")
         print(f"Estimated Duration: {metadata['estimated_duration_min']} minutes")
         if metadata['dependencies']:
-            deps_str = ', '.join([self.task_metadata[d]['name'] for d in metadata['dependencies']])
+            deps_str = ', '.join([self.task_metadata[d]['name'] for d in metadata['dependencies'] if d in self.task_metadata])
             print(f"Dependencies: {deps_str}")
         print("-"*70)
 
@@ -1099,23 +1299,7 @@ class ProgressTracker:
 
         print(f"{'='*70}\n")
 
-# --- EXECUTION ---
-crew = Crew(
-    agents=[researcher, auditor, counter_researcher, source_verifier, scriptwriter, personality],
-    tasks=[
-        research_task,
-        gap_analysis_task,
-        adversarial_task,
-        source_verification_task,
-        audit_task,
-        script_task,
-        natural_language_task,
-        show_notes_task
-    ],
-    verbose=True,
-    process='sequential'
-)
-
+# --- EXECUTION (Multi-Crew Pipeline with Gate) ---
 # Display workflow plan before execution
 display_workflow_plan()
 
@@ -1123,16 +1307,19 @@ display_workflow_plan()
 progress_tracker = ProgressTracker(TASK_METADATA)
 progress_tracker.start_workflow()
 
-# Get task list for tracking
-task_list = [
+# Combined task list for tracking (will be updated if gap_fill runs)
+all_task_list = [
+    framing_task,
     research_task,
     gap_analysis_task,
+    # gap_fill_task inserted here conditionally
     adversarial_task,
     source_verification_task,
     audit_task,
+    show_notes_task,
     script_task,
     natural_language_task,
-    show_notes_task
+    accuracy_check_task,
 ]
 
 print(f"\n--- Initiating Scientific Research Pipeline on DGX Spark ---")
@@ -1140,10 +1327,70 @@ print(f"Topic: {topic_name}")
 print(f"Language: {language_config['name']} ({language})")
 print("---\n")
 
-# --- PHASE 0: DEEP RESEARCH PRE-SCAN (Dual-Model Map-Reduce) ---
+# Start progress monitoring in background thread
+import threading
+
+class CrewMonitor(threading.Thread):
+    """Background thread that monitors crew execution progress"""
+    def __init__(self, task_list, progress_tracker):
+        super().__init__(daemon=True)
+        self.task_list = task_list
+        self.progress_tracker = progress_tracker
+        self.running = True
+        self.last_completed = -1
+
+    def run(self):
+        """Monitor crew tasks in background"""
+        while self.running:
+            try:
+                completed_count = 0
+                for task in self.task_list:
+                    if hasattr(task, 'output') and task.output is not None:
+                        completed_count += 1
+                    else:
+                        break
+                if completed_count > self.last_completed:
+                    if self.last_completed >= 0:
+                        self.progress_tracker.task_completed(self.last_completed)
+                    if completed_count < len(self.task_list):
+                        self.progress_tracker.task_started(completed_count)
+                    self.last_completed = completed_count
+                time.sleep(3)
+            except Exception:
+                pass
+
+    def stop(self):
+        """Stop monitoring"""
+        self.running = False
+
+# ================================================================
+# PHASE 0: Research Framing & Hypothesis
+# ================================================================
+print(f"\n{'='*70}")
+print(f"PHASE 0: RESEARCH FRAMING & HYPOTHESIS")
+print(f"{'='*70}")
+
+crew_0 = Crew(
+    agents=[research_framer],
+    tasks=[framing_task],
+    verbose=True,
+    process='sequential'
+)
+
+try:
+    crew_0_result = crew_0.kickoff()
+    framing_output = framing_task.output.raw if hasattr(framing_task, 'output') and framing_task.output else ""
+    print(f"✓ Phase 0 complete: Research framing generated ({len(framing_output)} chars)")
+except Exception as e:
+    print(f"⚠ Phase 0 (Research Framing) failed: {e}")
+    print("Continuing without framing context...")
+    framing_output = ""
+
+# ================================================================
+# DEEP RESEARCH PRE-SCAN (Dual-Model Map-Reduce)
+# ================================================================
 brave_key = os.getenv("BRAVE_API_KEY", "")
 
-# Check if fast model is available
 # Check if fast model (Phi-4 Mini via Ollama) is available
 fast_model_available = False
 try:
@@ -1163,7 +1410,8 @@ try:
         topic=topic_name,
         brave_api_key=brave_key,
         results_per_query=10,
-        fast_model_available=fast_model_available
+        fast_model_available=fast_model_available,
+        framing_context=framing_output
     ))
 
     # Save all reports (lead, counter, audit)
@@ -1174,7 +1422,7 @@ try:
         print(f"✓ {role_name.capitalize()} report saved: {report_file} ({report.total_summaries} sources)")
 
     # Use audit report (combined synthesis) for injection into CrewAI agents
-    audit_report = deep_reports["audit"]
+    deep_audit_report = deep_reports["audit"]
     lead_report = deep_reports["lead"]
     counter_report = deep_reports["counter"]
 
@@ -1201,67 +1449,177 @@ except Exception as e:
     print("Continuing with standard agent research...")
     deep_reports = None
 
-# Start progress monitoring in background thread
-import threading
+# ================================================================
+# Inject framing context into Crew 1 tasks (cross-crew context)
+# ================================================================
+if framing_output:
+    framing_injection = (
+        f"\n\nRESEARCH FRAMING CONTEXT (from Phase 0):\n"
+        f"{framing_output}\n"
+        f"--- END FRAMING CONTEXT ---\n"
+    )
+    research_task.description = f"{research_task.description}{framing_injection}"
 
-class CrewMonitor(threading.Thread):
-    """Background thread that monitors crew execution progress"""
-    def __init__(self, task_list, progress_tracker):
-        super().__init__(daemon=True)
-        self.task_list = task_list
-        self.progress_tracker = progress_tracker
-        self.running = True
-        self.last_completed = -1
+# ================================================================
+# CREW 1: Phases 1-2 (Research + Gate)
+# ================================================================
+print(f"\n{'='*70}")
+print(f"CREW 1: PHASES 1-2 (RESEARCH + GATE)")
+print(f"{'='*70}")
 
-    def run(self):
-        """Monitor crew tasks in background"""
-        while self.running:
-            try:
-                # Check how many tasks have outputs (completed)
-                completed_count = 0
-                for task in self.task_list:
-                    if hasattr(task, 'output') and task.output is not None:
-                        completed_count += 1
-                    else:
-                        break  # Tasks complete sequentially
+crew_1 = Crew(
+    agents=[researcher, auditor],
+    tasks=[research_task, gap_analysis_task],
+    verbose=True,
+    process='sequential'
+)
 
-                # New task started or completed
-                if completed_count > self.last_completed:
-                    # If we detected completion of previous task
-                    if self.last_completed >= 0:
-                        self.progress_tracker.task_completed(self.last_completed)
-
-                    # New task has started
-                    if completed_count < len(self.task_list):
-                        self.progress_tracker.task_started(completed_count)
-
-                    self.last_completed = completed_count
-
-                time.sleep(3)  # Check every 3 seconds
-            except Exception:
-                pass  # Silently continue monitoring
-
-    def stop(self):
-        """Stop monitoring"""
-        self.running = False
-
-# Start background monitor
-monitor = CrewMonitor(task_list, progress_tracker)
-monitor.start()
-
-# Execute crew
 try:
-    result = crew.kickoff()
+    crew_1_result = crew_1.kickoff()
 except Exception as e:
     print(f"\n{'='*70}")
-    print("WORKFLOW FAILED")
+    print("CREW 1 FAILED")
     print(f"{'='*70}")
     print(f"Error: {e}")
-    print(f"{'='*70}\n")
+    raise
+
+# ================================================================
+# GATE CHECK: Parse gap_analysis_task output for VERDICT
+# ================================================================
+print(f"\n{'='*70}")
+print(f"RESEARCH GATE CHECK")
+print(f"{'='*70}")
+
+gate_passed = True
+gap_fill_output = ""
+
+gate_output = gap_analysis_task.output.raw if hasattr(gap_analysis_task, 'output') and gap_analysis_task.output else ""
+
+# Parse for VERDICT: PASS or VERDICT: FAIL
+verdict_match = re.search(r'VERDICT:\s*(PASS|FAIL)', gate_output, re.IGNORECASE)
+if verdict_match:
+    verdict = verdict_match.group(1).upper()
+    gate_passed = (verdict == "PASS")
+    print(f"Gate verdict: {verdict}")
+else:
+    # If no clear verdict found, default to PASS with warning
+    print("⚠ No clear VERDICT found in gate output. Defaulting to PASS.")
+    gate_passed = True
+
+if not gate_passed:
+    print(f"\n{'='*70}")
+    print(f"PHASE 2b: GAP-FILL RESEARCH (Gate FAILED)")
+    print(f"{'='*70}")
+
+    # Inject gate analysis into gap_fill_task description
+    gap_fill_task.description = (
+        f"{gap_fill_task.description}\n\n"
+        f"GAP ANALYSIS RESULTS (the gaps you need to fill):\n"
+        f"{gate_output}\n"
+        f"--- END GAP ANALYSIS ---"
+    )
+
+    gap_fill_crew = Crew(
+        agents=[researcher],
+        tasks=[gap_fill_task],
+        verbose=True,
+        process='sequential'
+    )
+
+    try:
+        gap_fill_crew.kickoff()
+        gap_fill_output = gap_fill_task.output.raw if hasattr(gap_fill_task, 'output') and gap_fill_task.output else ""
+        print(f"✓ Phase 2b complete: Gap-fill research ({len(gap_fill_output)} chars)")
+
+        # Insert gap_fill_task into tracking list
+        idx = all_task_list.index(adversarial_task)
+        all_task_list.insert(idx, gap_fill_task)
+
+    except Exception as e:
+        print(f"⚠ Gap-fill research failed: {e}")
+        print("Continuing with existing research...")
+        gap_fill_output = ""
+else:
+    print("✓ Gate PASSED — skipping gap-fill research")
+
+# Store gate status for progress tracker
+progress_tracker.gate_passed = gate_passed
+
+# ================================================================
+# Inject cross-crew context into Crew 2 tasks
+# ================================================================
+# Inject research output into downstream tasks
+research_output = research_task.output.raw if hasattr(research_task, 'output') and research_task.output else ""
+gap_analysis_output = gap_analysis_task.output.raw if hasattr(gap_analysis_task, 'output') and gap_analysis_task.output else ""
+
+# Build combined research context for adversarial task
+research_context_injection = (
+    f"\n\nPRIOR RESEARCH CONTEXT (from Phases 1-2):\n\n"
+    f"=== SUPPORTING RESEARCH ===\n{research_output[:8000]}\n\n"
+    f"=== GAP ANALYSIS ===\n{gap_analysis_output[:4000]}\n"
+)
+if gap_fill_output:
+    research_context_injection += (
+        f"\n=== GAP-FILL RESEARCH (Phase 2b) ===\n{gap_fill_output[:4000]}\n"
+    )
+research_context_injection += f"--- END PRIOR CONTEXT ---\n"
+adversarial_task.description = f"{adversarial_task.description}{research_context_injection}"
+
+# Inject framing + research into source verification
+if framing_output:
+    source_verification_task.description = (
+        f"{source_verification_task.description}\n\n"
+        f"RESEARCH FRAMING (for scope reference):\n{framing_output[:2000]}\n"
+        f"--- END FRAMING ---\n"
+    )
+
+# Inject research context into audit (source-of-truth) task
+audit_context_injection = (
+    f"\n\nPRIOR RESEARCH CONTEXT:\n\n"
+    f"=== SUPPORTING RESEARCH ===\n{research_output[:6000]}\n\n"
+    f"=== GAP ANALYSIS ===\n{gap_analysis_output[:3000]}\n"
+)
+if gap_fill_output:
+    audit_context_injection += f"\n=== GAP-FILL ===\n{gap_fill_output[:3000]}\n"
+audit_context_injection += f"--- END PRIOR CONTEXT ---\n"
+audit_task.description = f"{audit_task.description}{audit_context_injection}"
+
+# ================================================================
+# CREW 2: Phases 3-8 (Adversarial through Accuracy Check)
+# ================================================================
+print(f"\n{'='*70}")
+print(f"CREW 2: PHASES 3-8 (ADVERSARIAL → ACCURACY CHECK)")
+print(f"{'='*70}")
+
+crew_2 = Crew(
+    agents=[counter_researcher, source_verifier, auditor, scriptwriter, personality],
+    tasks=[
+        adversarial_task,
+        source_verification_task,
+        audit_task,
+        show_notes_task,
+        script_task,
+        natural_language_task,
+        accuracy_check_task,
+    ],
+    verbose=True,
+    process='sequential'
+)
+
+# Start background monitor for crew 2
+monitor = CrewMonitor(all_task_list, progress_tracker)
+monitor.start()
+
+try:
+    result = crew_2.kickoff()
+except Exception as e:
+    print(f"\n{'='*70}")
+    print("CREW 2 FAILED")
+    print(f"{'='*70}")
+    print(f"Error: {e}")
     monitor.stop()
     raise
 finally:
-    # Stop monitor and show final summary
     monitor.stop()
     monitor.join(timeout=2)
     progress_tracker.workflow_completed()
@@ -1269,23 +1627,31 @@ finally:
 # --- PDF GENERATION STEP ---
 print("\n--- Generating Documentation PDFs ---")
 try:
-    # Use task_outputs to get specific results
+    create_pdf("Research Framing", framing_output, "research_framing.pdf")
     create_pdf("Supporting Scientific Paper", research_task.output.raw, "supporting_paper.pdf")
     create_pdf("Adversarial Anti-Thesis Paper", adversarial_task.output.raw, "adversarial_paper.pdf")
     create_pdf("Verified Source Bibliography", source_verification_task.output.raw, "verified_sources_bibliography.pdf")
-    create_pdf("Final Meta-Audit Verdict", audit_task.output.raw, "final_audit_report.pdf")
+    create_pdf("Source of Truth", audit_task.output.raw, "source_of_truth.pdf")
+    if hasattr(accuracy_check_task, 'output') and accuracy_check_task.output:
+        create_pdf("Accuracy Check", accuracy_check_task.output.raw, "accuracy_check.pdf")
 except Exception as e:
     print(f"Warning: PDF generation failed, but research is complete: {e}")
 
 # --- RESEARCH SUMMARY ---
 if deep_reports is not None:
-    audit = deep_reports["audit"]
+    deep_audit = deep_reports["audit"]
     print(f"\n--- Deep Research Summary ---")
     print(f"  Lead sources: {deep_reports['lead'].total_summaries}")
     print(f"  Counter sources: {deep_reports['counter'].total_summaries}")
-    print(f"  Total sources: {audit.total_summaries}")
-    print(f"  Total URLs fetched: {audit.total_urls_fetched}")
-    print(f"  Duration: {audit.duration_seconds:.0f}s")
+    print(f"  Total sources: {deep_audit.total_summaries}")
+    print(f"  Total URLs fetched: {deep_audit.total_urls_fetched}")
+    print(f"  Duration: {deep_audit.duration_seconds:.0f}s")
+
+# --- GATE SUMMARY ---
+print(f"\n--- Gate Summary ---")
+print(f"  Gate verdict: {'PASS' if gate_passed else 'FAIL'}")
+if not gate_passed:
+    print(f"  Gap-fill research: {'completed' if gap_fill_output else 'failed'}")
 
 # --- SESSION METADATA ---
 print("\n--- Documenting Session Metadata ---")
@@ -1331,7 +1697,8 @@ print(f"Session metadata: {metadata_file}")
 print("\n--- Generating Multi-Voice Podcast Audio (Kokoro TTS) ---")
 
 # Check script length before generation
-script_text = result.raw
+# Get the polished script from natural_language_task (not the last crew result, which is accuracy_check)
+script_text = natural_language_task.output.raw if hasattr(natural_language_task, 'output') and natural_language_task.output else result.raw
 word_count = len(script_text.split())
 estimated_duration_min = word_count / 150  # 150 words per minute
 
