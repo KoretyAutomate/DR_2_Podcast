@@ -1426,21 +1426,21 @@ try:
     lead_report = deep_reports["lead"]
     counter_report = deep_reports["counter"]
 
-    # Inject supporting evidence into lead research task
+    # Inject supporting evidence into lead research task (truncate to ~6000 chars to stay within context)
     lead_injection = (
         f"\n\nIMPORTANT: A deep research pre-scan has already analyzed {lead_report.total_summaries} "
         f"supporting sources in {lead_report.duration_seconds:.0f}s. Use the evidence below as a "
         f"starting point, then supplement with your own searches.\n\n"
-        f"PRE-COLLECTED SUPPORTING EVIDENCE:\n{lead_report.report}"
+        f"PRE-COLLECTED SUPPORTING EVIDENCE:\n{lead_report.report[:6000]}"
     )
     research_task.description = f"{research_task.description}{lead_injection}"
 
-    # Inject opposing evidence into adversarial task
+    # Inject opposing evidence into adversarial task (truncate to ~6000 chars)
     counter_injection = (
         f"\n\nIMPORTANT: A deep research pre-scan has already analyzed {counter_report.total_summaries} "
         f"opposing sources in {counter_report.duration_seconds:.0f}s. Use the evidence below as a "
         f"starting point, then supplement with your own searches.\n\n"
-        f"PRE-COLLECTED OPPOSING EVIDENCE:\n{counter_report.report}"
+        f"PRE-COLLECTED OPPOSING EVIDENCE:\n{counter_report.report[:6000]}"
     )
     adversarial_task.description = f"{adversarial_task.description}{counter_injection}"
 
@@ -1553,14 +1553,15 @@ research_output = research_task.output.raw if hasattr(research_task, 'output') a
 gap_analysis_output = gap_analysis_task.output.raw if hasattr(gap_analysis_task, 'output') and gap_analysis_task.output else ""
 
 # Build combined research context for adversarial task
+# Keep injections small — the deep research pre-scan is already injected above
 research_context_injection = (
     f"\n\nPRIOR RESEARCH CONTEXT (from Phases 1-2):\n\n"
-    f"=== SUPPORTING RESEARCH ===\n{research_output[:8000]}\n\n"
-    f"=== GAP ANALYSIS ===\n{gap_analysis_output[:4000]}\n"
+    f"=== SUPPORTING RESEARCH (summary) ===\n{research_output[:4000]}\n\n"
+    f"=== GAP ANALYSIS ===\n{gap_analysis_output[:2000]}\n"
 )
 if gap_fill_output:
     research_context_injection += (
-        f"\n=== GAP-FILL RESEARCH (Phase 2b) ===\n{gap_fill_output[:4000]}\n"
+        f"\n=== GAP-FILL RESEARCH (Phase 2b) ===\n{gap_fill_output[:2000]}\n"
     )
 research_context_injection += f"--- END PRIOR CONTEXT ---\n"
 adversarial_task.description = f"{adversarial_task.description}{research_context_injection}"
@@ -1576,11 +1577,11 @@ if framing_output:
 # Inject research context into audit (source-of-truth) task
 audit_context_injection = (
     f"\n\nPRIOR RESEARCH CONTEXT:\n\n"
-    f"=== SUPPORTING RESEARCH ===\n{research_output[:6000]}\n\n"
-    f"=== GAP ANALYSIS ===\n{gap_analysis_output[:3000]}\n"
+    f"=== SUPPORTING RESEARCH ===\n{research_output[:4000]}\n\n"
+    f"=== GAP ANALYSIS ===\n{gap_analysis_output[:2000]}\n"
 )
 if gap_fill_output:
-    audit_context_injection += f"\n=== GAP-FILL ===\n{gap_fill_output[:3000]}\n"
+    audit_context_injection += f"\n=== GAP-FILL ===\n{gap_fill_output[:2000]}\n"
 audit_context_injection += f"--- END PRIOR CONTEXT ---\n"
 audit_task.description = f"{audit_task.description}{audit_context_injection}"
 
