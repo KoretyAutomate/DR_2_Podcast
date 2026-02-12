@@ -769,7 +769,9 @@ researcher = Agent(
     ),
     tools=[search_tool, deep_search_tool, list_research_sources, read_research_source, read_full_report],
     llm=dgx_llm_strict,
-    verbose=True
+    verbose=True,
+    max_iter=10,
+    max_execution_time=600,
 )
 
 auditor = Agent(
@@ -797,7 +799,8 @@ auditor = Agent(
     ),
     tools=[search_tool, deep_search_tool, link_validator, list_research_sources, read_research_source, read_full_report],
     llm=dgx_llm_strict,
-    verbose=True
+    verbose=True,
+    max_iter=15,
 )
 
 counter_researcher = Agent(
@@ -823,7 +826,9 @@ counter_researcher = Agent(
     ),
     tools=[search_tool, deep_search_tool, list_research_sources, read_research_source, read_full_report],
     llm=dgx_llm_strict,
-    verbose=True
+    verbose=True,
+    max_iter=10,
+    max_execution_time=600,
 )
 
 scriptwriter = Agent(
@@ -957,6 +962,9 @@ research_task = Task(
         f"1. PRIMARY: RCTs and meta-analyses from Nature/Science/Lancet/Cell/PNAS\n"
         f"2. SECONDARY: Observatory studies, cohort studies, epidemiological data (when RCTs unavailable)\n"
         f"3. SUPPLEMENTARY: Non-human RCTs (animal studies, in vitro) to verify proposed mechanisms\n\n"
+        f"RESEARCH LIBRARY: You have access to a pre-scanned Research Library with dozens of sources. "
+        f"Use ListResearchSources('lead') and ReadResearchSource('lead:N') as your PRIMARY evidence source. "
+        f"Only use BraveSearch/DeepSearch if a critical gap exists in the library.\n\n"
         f"SEARCH STRATEGY: Start with RCT/meta-analysis search. If no strong evidence, "
         f"expand to observatory studies. Supplement with animal/mechanistic studies to validate logic.\n\n"
         f"CRITICAL: Use BraveSearch or DeepSearch to find and cite verifiable sources with URLs for ALL major claims. "
@@ -1034,6 +1042,9 @@ adversarial_task = Task(
         f"1. PRIMARY: Contradictory RCTs, systematic reviews showing null/negative effects\n"
         f"2. SECONDARY: Observatory/cohort studies with null findings or adverse outcomes\n"
         f"3. SUPPLEMENTARY: Animal studies contradicting proposed mechanisms\n\n"
+        f"RESEARCH LIBRARY: You have access to a pre-scanned Research Library with dozens of sources. "
+        f"Use ListResearchSources('counter') and ReadResearchSource('counter:N') as your PRIMARY evidence source. "
+        f"Only use BraveSearch/DeepSearch if a critical gap exists in the library.\n\n"
         f"SEARCH STRATEGY: Find contradictory RCTs first. If limited, use observatory studies showing "
         f"no effect or harm. Include animal studies that disprove the mechanism.\n\n"
         f"CRITICAL: Use BraveSearch or DeepSearch to find and cite contradictory evidence with URLs. "
@@ -1648,7 +1659,7 @@ try:
     deep_reports = asyncio.run(run_deep_research(
         topic=topic_name,
         brave_api_key=brave_key,
-        results_per_query=10,
+        results_per_query=5,
         fast_model_available=fast_model_available,
         framing_context=framing_output
     ))
@@ -1696,22 +1707,28 @@ try:
 
     # Inject summarized supporting evidence into lead research task
     lead_injection = (
-        f"\n\nIMPORTANT: A deep research pre-scan has already analyzed {lead_report.total_summaries} "
-        f"supporting sources in {lead_report.duration_seconds:.0f}s. Use the evidence below as a "
-        f"starting point, then supplement with your own searches. "
+        f"\n\nIMPORTANT: A deep research pre-scan has comprehensively analyzed "
+        f"{lead_report.total_summaries} supporting sources in {lead_report.duration_seconds:.0f}s.\n\n"
+        f"YOUR PRIMARY TASK: Synthesize and organize this pre-collected evidence. "
         f"Use ListResearchSources('lead') to browse all {lead_report.total_summaries} sources, "
         f"and ReadResearchSource('lead:N') to read any source in full.\n\n"
+        f"SEARCH POLICY: Do NOT use BraveSearch or DeepSearch unless you identify a CRITICAL "
+        f"gap — a specific claim or mechanism that has ZERO coverage in the pre-scan. "
+        f"The pre-scan already covers the major aspects of this topic.\n\n"
         f"PRE-COLLECTED SUPPORTING EVIDENCE (condensed):\n{lead_summary}"
     )
     research_task.description = f"{research_task.description}{lead_injection}"
 
     # Inject summarized opposing evidence into adversarial task
     counter_injection = (
-        f"\n\nIMPORTANT: A deep research pre-scan has already analyzed {counter_report.total_summaries} "
-        f"opposing sources in {counter_report.duration_seconds:.0f}s. Use the evidence below as a "
-        f"starting point, then supplement with your own searches. "
+        f"\n\nIMPORTANT: A deep research pre-scan has comprehensively analyzed "
+        f"{counter_report.total_summaries} opposing sources in {counter_report.duration_seconds:.0f}s.\n\n"
+        f"YOUR PRIMARY TASK: Synthesize and organize this pre-collected evidence. "
         f"Use ListResearchSources('counter') to browse all {counter_report.total_summaries} sources, "
         f"and ReadResearchSource('counter:N') to read any source in full.\n\n"
+        f"SEARCH POLICY: Do NOT use BraveSearch or DeepSearch unless you identify a CRITICAL "
+        f"gap — a specific claim or mechanism that has ZERO coverage in the pre-scan. "
+        f"The pre-scan already covers the major aspects of this topic.\n\n"
         f"PRE-COLLECTED OPPOSING EVIDENCE (condensed):\n{counter_summary}"
     )
     adversarial_task.description = f"{adversarial_task.description}{counter_injection}"

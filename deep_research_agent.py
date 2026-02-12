@@ -43,7 +43,7 @@ FAST_MODEL = "phi4-mini"
 FAST_BASE_URL = "http://localhost:11434/v1"
 
 MAX_INPUT_TOKENS = 32000
-MAX_CONCURRENT_SUMMARIES = 2
+MAX_CONCURRENT_SUMMARIES = 4
 MAX_RESEARCH_ITERATIONS = 3
 SCRAPING_TIMEOUT = 20.0
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -358,7 +358,7 @@ class ResearchAgent:
         search_service: SearchService,
         fetcher: ContentFetcher,
         smart_model: str = SMART_MODEL,
-        results_per_query: int = 8,
+        results_per_query: int = 5,
         max_iterations: int = MAX_RESEARCH_ITERATIONS
     ):
         self.smart_client = smart_client
@@ -633,7 +633,7 @@ class Orchestrator:
         smart_model: str = SMART_MODEL,
         fast_model: str = FAST_MODEL,
         brave_api_key: str = "",
-        results_per_query: int = 8,
+        results_per_query: int = 5,
         max_iterations: int = MAX_RESEARCH_ITERATIONS,
         fast_model_available: bool = True
     ):
@@ -690,40 +690,37 @@ class Orchestrator:
                 f"--- END FRAMING ---\n\n"
             )
 
-        # Phase 1: Lead Researcher
+        # Phase 1+2: Lead & Counter Researchers (parallel)
         log(f"\n{'='*70}")
-        log(f"PHASE 1: LEAD RESEARCHER")
+        log(f"PHASE 1+2: LEAD & COUNTER RESEARCHERS (PARALLEL)")
         log(f"{'='*70}")
-        lead_report = await self.lead_researcher.research(
-            topic=topic,
-            role="Lead Researcher (Principal Investigator)",
-            role_instructions=(
-                f"{framing_prefix}"
-                "Your job is to find SUPPORTING scientific evidence for the topic. "
-                "Focus on: mechanisms of action, clinical trials (RCTs), meta-analyses, "
-                "and expert consensus that SUPPORTS the claim. "
-                "Prioritize peer-reviewed sources. Include specific data points, "
-                "study sizes, and effect sizes when available."
+        lead_report, counter_report = await asyncio.gather(
+            self.lead_researcher.research(
+                topic=topic,
+                role="Lead Researcher (Principal Investigator)",
+                role_instructions=(
+                    f"{framing_prefix}"
+                    "Your job is to find SUPPORTING scientific evidence for the topic. "
+                    "Focus on: mechanisms of action, clinical trials (RCTs), meta-analyses, "
+                    "and expert consensus that SUPPORTS the claim. "
+                    "Prioritize peer-reviewed sources. Include specific data points, "
+                    "study sizes, and effect sizes when available."
+                ),
+                log=log
             ),
-            log=log
-        )
-
-        # Phase 2: Counter Researcher
-        log(f"\n{'='*70}")
-        log(f"PHASE 2: COUNTER RESEARCHER")
-        log(f"{'='*70}")
-        counter_report = await self.counter_researcher.research(
-            topic=topic,
-            role="Counter Researcher (The Skeptic)",
-            role_instructions=(
-                f"{framing_prefix}"
-                "Your job is to find OPPOSING and CONTRADICTORY evidence for the topic. "
-                "Focus on: studies showing null effects, negative outcomes, methodological "
-                "flaws in supporting studies, and expert criticism. "
-                "Search specifically for 'criticism of [topic]', 'limitations of [topic]', "
-                "and 'no effect' findings. Be adversarial but evidence-based."
+            self.counter_researcher.research(
+                topic=topic,
+                role="Counter Researcher (The Skeptic)",
+                role_instructions=(
+                    f"{framing_prefix}"
+                    "Your job is to find OPPOSING and CONTRADICTORY evidence for the topic. "
+                    "Focus on: studies showing null effects, negative outcomes, methodological "
+                    "flaws in supporting studies, and expert criticism. "
+                    "Search specifically for 'criticism of [topic]', 'limitations of [topic]', "
+                    "and 'no effect' findings. Be adversarial but evidence-based."
+                ),
+                log=log
             ),
-            log=log
         )
 
         # Phase 3: Auditor synthesis

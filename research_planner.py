@@ -58,12 +58,8 @@ class ResearchAspect:
             self.evidence_level = "none"
         elif len(self.sources_found) < 3:
             self.evidence_level = "weak"
-        elif len(self.sources_found) < 6:
-            types = {s["type"] for s in self.sources_found}
-            if types & {"RCT", "meta-analysis", "systematic_review"}:
-                self.evidence_level = "moderate"
-            else:
-                self.evidence_level = "weak"
+        elif len(self.sources_found) < 5:
+            self.evidence_level = "moderate"
         else:
             types = {s["type"] for s in self.sources_found}
             if types & {"RCT", "meta-analysis", "systematic_review"}:
