@@ -19,11 +19,17 @@ import re
 from pathlib import Path
 
 # Voice Configuration
-VOICE_HOST_1 = 'bm_george'  # British Male (The Expert)
-VOICE_HOST_2 = 'af_nicole'  # American Female (The Skeptic)
-LANG_CODE = 'a'  # American English
+VOICE_HOST_1 = 'bm_george'  # British Male (The Expert) - default English
+VOICE_HOST_2 = 'af_nicole'  # American Female (The Skeptic) - default English
+LANG_CODE = 'a'  # American English (default)
 
-def generate_audio_from_script(script_text: str, output_filename: str = "final_podcast.wav") -> str:
+# Per-language voice mapping for Kokoro TTS
+VOICE_MAP = {
+    'a': {'host1': 'bm_george', 'host2': 'af_nicole'},   # English
+    'j': {'host1': 'jm_kumo',   'host2': 'jf_alpha'},    # Japanese
+}
+
+def generate_audio_from_script(script_text: str, output_filename: str = "final_podcast.wav", lang_code: str = 'a') -> str:
     """
     Parses a script looking for 'Host 1:' and 'Host 2:' lines,
     generates audio segments using Kokoro, and stitches them together.
@@ -31,6 +37,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
     Args:
         script_text: Full podcast script with "Host 1:" and "Host 2:" labels
         output_filename: Output WAV file name (default: "final_podcast.wav")
+        lang_code: Kokoro language code ('a' for English, 'j' for Japanese, etc.)
 
     Returns:
         Path to generated audio file, or None if generation failed
@@ -44,6 +51,11 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
     print("KOKORO TTS AUDIO GENERATION")
     print("="*60)
 
+    # Resolve voices for this language
+    voices = VOICE_MAP.get(lang_code, VOICE_MAP['a'])
+    voice_host_1 = voices['host1']
+    voice_host_2 = voices['host2']
+
     # 1. Initialize Pipeline
     device = 'cpu'
     if torch.cuda.is_available():
@@ -53,16 +65,17 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         except RuntimeError:
             print("  CUDA reported available but kernel execution failed, falling back to CPU")
     print(f"Device: {device}")
-    print(f"Voices: Host 1 ({VOICE_HOST_1}), Host 2 ({VOICE_HOST_2})")
+    print(f"Language code: {lang_code}")
+    print(f"Voices: Host 1 ({voice_host_1}), Host 2 ({voice_host_2})")
 
     try:
-        pipeline = KPipeline(lang_code=LANG_CODE, device=device)
+        pipeline = KPipeline(lang_code=lang_code, device=device)
         print("✓ Kokoro pipeline initialized")
     except RuntimeError as e:
         if 'CUDA' in str(e) and device == 'cuda':
             print(f"  CUDA init failed, retrying on CPU: {e}")
             device = 'cpu'
-            pipeline = KPipeline(lang_code=LANG_CODE, device=device)
+            pipeline = KPipeline(lang_code=lang_code, device=device)
             print("✓ Kokoro pipeline initialized (CPU fallback)")
         else:
             print(f"✗ ERROR: Failed to initialize Kokoro: {e}")
@@ -88,7 +101,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         if line.startswith("Host 1:") or line.startswith("Dr. Data:") or line.startswith("Kaz:"):
             # Process previous buffer
             if buffer_text and current_speaker:
-                voice = VOICE_HOST_1 if current_speaker == 1 else VOICE_HOST_2
+                voice = voice_host_1 if current_speaker == 1 else voice_host_2
                 try:
                     generator = pipeline(buffer_text, voice=voice, speed=1.0, split_pattern=r'\n+')
                     for _, _, audio in generator:
@@ -103,7 +116,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         elif line.startswith("Host 2:") or line.startswith("Dr. Doubt:") or line.startswith("Erika:"):
             # Process previous buffer
             if buffer_text and current_speaker:
-                voice = VOICE_HOST_1 if current_speaker == 1 else VOICE_HOST_2
+                voice = voice_host_1 if current_speaker == 1 else voice_host_2
                 try:
                     generator = pipeline(buffer_text, voice=voice, speed=1.0, split_pattern=r'\n+')
                     for _, _, audio in generator:
@@ -124,7 +137,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
 
     # Process final buffer
     if buffer_text and current_speaker:
-        voice = VOICE_HOST_1 if current_speaker == 1 else VOICE_HOST_2
+        voice = voice_host_1 if current_speaker == 1 else voice_host_2
         try:
             generator = pipeline(buffer_text, voice=voice, speed=1.0, split_pattern=r'\n+')
             for _, _, audio in generator:

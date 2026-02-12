@@ -211,13 +211,13 @@ check_tts_dependencies()
 SUPPORTED_LANGUAGES = {
     'en': {
         'name': 'English',
-        'tts_code': 'en',
+        'tts_code': 'a',  # Kokoro American English
         'instruction': 'Write all content in English.',
         'pdf_font': 'Helvetica'  # Latin-1 compatible
     },
     'ja': {
         'name': '日本語 (Japanese)',
-        'tts_code': 'ja',
+        'tts_code': 'j',  # Kokoro Japanese
         'instruction': 'すべてのコンテンツを日本語で書いてください。(Write all content in Japanese.)',
         'pdf_font': 'Arial Unicode MS'  # Unicode compatible for Japanese
     }
@@ -272,6 +272,11 @@ Environment variable:
 
 language = get_language()
 language_config = SUPPORTED_LANGUAGES[language]
+# English-first reasoning: all research/reasoning phases use English,
+# only post-translation phases (polish, show notes, accuracy check) use target language.
+english_instruction = "Write all content in English."
+target_instruction = language_config['instruction']
+# For backward compatibility and phases that always match the target language
 language_instruction = language_config['instruction']
 
 # --- ACCESSIBILITY LEVEL CONFIG ---
@@ -715,7 +720,7 @@ link_validator = LinkValidatorTool()
 
 researcher = Agent(
     role='Principal Investigator (Lead Researcher)',
-    goal=f'Find and document credible scientific signals about {topic_name}, organized by mechanism of action. {language_instruction}',
+    goal=f'Find and document credible scientific signals about {topic_name}, organized by mechanism of action. {english_instruction}',
     backstory=(
         f'You are a desperate scientist looking for signals in the noise. '
         f'CONSTRAINT: If Human RCTs are unavailable, you are AUTHORIZED to use Animal Models or Mechanistic Studies, '
@@ -734,7 +739,7 @@ researcher = Agent(
         f'\n\n'
         f'You have access to a Research Library containing all sources from the deep research pre-scan. '
         f'Use ListResearchSources to browse available sources, then ReadResearchSource to read specific ones in detail. '
-        f'{language_instruction}'
+        f'{english_instruction}'
     ),
     tools=[search_tool, deep_search_tool, list_research_sources, read_research_source, read_full_report],
     llm=dgx_llm_strict,
@@ -743,7 +748,7 @@ researcher = Agent(
 
 auditor = Agent(
     role='Scientific Auditor (The Grader)',
-    goal=f'Grade the research quality with a Reliability Scorecard. Do NOT write content - GRADE it. {language_instruction}',
+    goal=f'Grade the research quality with a Reliability Scorecard. Do NOT write content - GRADE it. {english_instruction}',
     backstory=(
         f'You are a harsh peer reviewer. You do not write content; you GRADE it.\n\n'
         f'YOUR TASKS:\n'
@@ -762,7 +767,7 @@ auditor = Agent(
         f'You have access to a Research Library containing all sources from the deep research pre-scan. '
         f'Use ListResearchSources to browse available sources, then ReadResearchSource to read specific ones in detail.\n\n'
         f'OUTPUT: A structured Markdown report with a "Reliability Scorecard". '
-        f'{language_instruction}'
+        f'{english_instruction}'
     ),
     tools=[search_tool, deep_search_tool, link_validator, list_research_sources, read_research_source, read_full_report],
     llm=dgx_llm_strict,
@@ -771,7 +776,7 @@ auditor = Agent(
 
 counter_researcher = Agent(
     role='Adversarial Researcher (The Skeptic)',
-    goal=f'Systematically challenge and debunk specific claims about {topic_name}. {language_instruction}',
+    goal=f'Systematically challenge and debunk specific claims about {topic_name}. {english_instruction}',
     backstory=(
         f'Skeptical meta-analyst who hunts for contradictory evidence and methodology flaws. '
         f'You actively search for "criticism of {topic_name}" and "limitations of [specific studies]".\n\n'
@@ -788,7 +793,7 @@ counter_researcher = Agent(
         f'\n\n'
         f'You have access to a Research Library containing all sources from the deep research pre-scan. '
         f'Use ListResearchSources to browse available sources, then ReadResearchSource to read specific ones in detail. '
-        f'{language_instruction}'
+        f'{english_instruction}'
     ),
     tools=[search_tool, deep_search_tool, list_research_sources, read_research_source, read_full_report],
     llm=dgx_llm_strict,
@@ -799,7 +804,7 @@ scriptwriter = Agent(
     role='Podcast Producer (The Showrunner)',
     goal=(
         f'Transform research into a Masters/PhD-level debate on "{topic_name}". '
-        f'Target: Intellectual, curious, slightly skeptical professionals. {language_instruction}'
+        f'Target: Intellectual, curious, slightly skeptical professionals. {english_instruction}'
     ),
     backstory=(
         f'Science Communicator targeting Post-Graduate Professionals (Masters/PhD level). '
@@ -814,7 +819,7 @@ scriptwriter = Agent(
         f'\n'
         f'Your dialogue should dive into nuance, trade-offs, and disputed evidence. '
         f'The audience wants intellectual depth, not simplified explanations. '
-        f'{language_instruction}'
+        f'{english_instruction}'
     ),
     llm=dgx_llm_creative,
     verbose=True
@@ -825,7 +830,7 @@ personality = Agent(
     goal=(
         f'Polish the "{topic_name}" script for natural verbal delivery at Masters-level. '
         f'Target: Exactly 1,500 words (10 minutes). '
-        f'{language_instruction}'
+        f'{target_instruction}'
     ),
     backstory=(
         f'Editor for high-end intellectual podcasts (Huberman Lab, The Economist Audio). '
@@ -838,7 +843,7 @@ personality = Agent(
         f'\n'
         f'If script is too short, add nuance and disputed evidence. '
         f'If too long, cut repetition while preserving technical depth. '
-        f'{language_instruction}'
+        f'{target_instruction}'
     ),
     llm=dgx_llm_creative,
     verbose=True
@@ -860,7 +865,7 @@ source_verifier = Agent(
 
 research_framer = Agent(
     role='Research Framing Specialist',
-    goal=f'Define the research scope, core questions, and evidence criteria for investigating {topic_name}. {language_instruction}',
+    goal=f'Define the research scope, core questions, and evidence criteria for investigating {topic_name}. {english_instruction}',
     backstory=(
         'You are a senior research methodologist who designs investigation frameworks. '
         'Before any evidence is gathered, you establish:\n'
@@ -900,11 +905,11 @@ framing_task = Task(
         f"## 5. Hypotheses\n"
         f"State 3-5 testable hypotheses that the research should evaluate.\n\n"
         f"Do NOT search for evidence. Only define the framework. "
-        f"{language_instruction}"
+        f"{english_instruction}"
     ),
     expected_output=(
         f"Structured research framing document with core questions, scope boundaries, "
-        f"evidence criteria, search directions, and hypotheses. {language_instruction}"
+        f"evidence criteria, search directions, and hypotheses. {english_instruction}"
     ),
     agent=research_framer,
     output_file=str(output_dir / "RESEARCH_FRAMING.md")
@@ -931,9 +936,9 @@ research_task = Task(
         f"CRITICAL: Use BraveSearch or DeepSearch to find and cite verifiable sources with URLs for ALL major claims. "
         f"Every citation in your bibliography MUST include a URL for source validation.\n"
         f"Include: Abstract, Introduction, 3 Biochemical Mechanisms with CONCRETE health impacts, Bibliography with URLs and study types noted. "
-        f"{language_instruction}"
+        f"{english_instruction}"
     ),
-    expected_output=f"Scientific paper with SPECIFIC health mechanisms and effects, citations with URLs from RCTs, observatory studies, and non-human studies. Bibliography must include verifiable URLs for all sources. {language_instruction}",
+    expected_output=f"Scientific paper with SPECIFIC health mechanisms and effects, citations with URLs from RCTs, observatory studies, and non-human studies. Bibliography must include verifiable URLs for all sources. {english_instruction}",
     agent=researcher,
     context=[framing_task]
 )
@@ -961,11 +966,11 @@ gap_analysis_task = Task(
         f"### VERDICT: [PASS or FAIL]\n"
         f"PASS = All core questions at least PARTIALLY addressed with credible evidence.\n"
         f"FAIL = One or more core questions NOT ADDRESSED, or evidence quality critically low.\n\n"
-        f"{language_instruction}"
+        f"{english_instruction}"
     ),
     expected_output=(
         f"Research gate assessment with question coverage, identified gaps, weak points, "
-        f"and a clear VERDICT: PASS or VERDICT: FAIL. {language_instruction}"
+        f"and a clear VERDICT: PASS or VERDICT: FAIL. {english_instruction}"
     ),
     agent=auditor,
     context=[framing_task, research_task]
@@ -982,11 +987,11 @@ gap_fill_task = Task(
         f"3. Report findings organized by which gap they address\n"
         f"4. Do NOT repeat research already covered — only fill gaps\n\n"
         f"CRITICAL: Use BraveSearch or DeepSearch to find verifiable sources with URLs. "
-        f"{language_instruction}"
+        f"{english_instruction}"
     ),
     expected_output=(
         f"Targeted supplementary research addressing each identified gap, "
-        f"with verifiable sources and URLs. {language_instruction}"
+        f"with verifiable sources and URLs. {english_instruction}"
     ),
     agent=researcher,
     tools=[search_tool, deep_search_tool],
@@ -1008,9 +1013,9 @@ adversarial_task = Task(
         f"CRITICAL: Use BraveSearch or DeepSearch to find and cite contradictory evidence with URLs. "
         f"Every citation in your bibliography MUST include a URL for source validation.\n"
         f"Include Bibliography with URLs and study types noted. "
-        f"{language_instruction}"
+        f"{english_instruction}"
     ),
-    expected_output=f"Scientific paper challenging SPECIFIC health claims with contradictory evidence from RCTs, observatory studies, and animal studies. Bibliography must include verifiable URLs for all sources. {language_instruction}",
+    expected_output=f"Scientific paper challenging SPECIFIC health claims with contradictory evidence from RCTs, observatory studies, and animal studies. Bibliography must include verifiable URLs for all sources. {english_instruction}",
     agent=counter_researcher,
     context=[research_task, gap_analysis_task]
 )
@@ -1036,11 +1041,11 @@ source_verification_task = Task(
         f' "misrepresented_claims": ["claim X cites source Y but source actually says Z"],\n'
         f' "summary": "X high-trust, Y medium-trust sources, Z misrepresented"}}\n\n'
         f"REJECT non-scientific sources. Flag if <3 high-trust sources. "
-        f"{language_instruction}"
+        f"{english_instruction}"
     ),
     expected_output=(
         f"JSON bibliography with categorized, verified sources, claim-to-source match verification, "
-        f"and quality summary. {language_instruction}"
+        f"and quality summary. {english_instruction}"
     ),
     agent=source_verifier,
     context=[research_task, adversarial_task]
@@ -1083,7 +1088,7 @@ audit_task = Task(
         f"[All verified sources with URLs, organized by claim]\n\n"
         f"The output MUST contain concrete health information, NOT a discussion about source quality. "
         f"This document is the SINGLE SOURCE OF TRUTH for all downstream script generation. "
-        f"{language_instruction}"
+        f"{english_instruction}"
     ),
     expected_output=(
         f"Structured Source-of-Truth document (SOURCE_OF_TRUTH.md) with:\n"
@@ -1093,7 +1098,7 @@ audit_task = Task(
         f"- Reliability Scorecard\n"
         f"- Caveat Box\n"
         f"- Complete Bibliography\n"
-        f"{language_instruction}"
+        f"{english_instruction}"
     ),
     agent=auditor,
     context=[research_task, adversarial_task, source_verification_task],
@@ -1124,16 +1129,36 @@ script_task = Task(
         f"{SESSION_ROLES['pro']['character']}: [dialogue]\n"
         f"{SESSION_ROLES['con']['character']}: [dialogue]\n\n"
         f"Maintain consistent roles throughout. NO role switching mid-conversation. "
-        f"{language_instruction}"
+        f"{english_instruction}"
     ),
     expected_output=(
         f"Dialogue about the health risks of {topic_name} between {SESSION_ROLES['pro']['character']} (risks are real) "
         f"and {SESSION_ROLES['con']['character']} (some risks are overstated). Every line discusses the topic. "
-        f"{language_instruction}"
+        f"{english_instruction}"
     ),
     agent=scriptwriter,
     context=[audit_task]
 )
+
+# --- TRANSLATION TASK (only when language != 'en') ---
+translation_task = None
+if language != 'en':
+    translation_task = Task(
+        description=(
+            f"Translate the podcast script and key Source-of-Truth findings about "
+            f"{topic_name} into {language_config['name']}.\n\n"
+            f"RULES:\n"
+            f"- Preserve Host 1: / Host 2: format exactly\n"
+            f"- Preserve scientific terminology accuracy\n"
+            f"- Translate for natural spoken delivery, not literal translation\n"
+            f"- Keep proper nouns, study names, journal names in English\n"
+            f"- Maintain debate structure and argumentation flow\n"
+            f"{target_instruction}"
+        ),
+        expected_output=f"Complete translated script in {language_config['name']} with Host 1:/Host 2: format.",
+        agent=scriptwriter,
+        context=[script_task, audit_task],
+    )
 
 natural_language_task = Task(
     description=(
@@ -1149,12 +1174,12 @@ natural_language_task = Task(
         f"Format:\nHost 1: [dialogue]\n"
         f"Host 2: [dialogue]\n\n"
         f"Remove meta-tags, markdown, stage directions. Dialogue only. "
-        f"{language_instruction}"
+        f"{target_instruction}"
     ),
     expected_output=(
         f"Final Masters-level dialogue about {topic_name}, exactly 1,500 words. "
         f"No basic definitions. Host 2 challenges weak evidence. "
-        f"{language_instruction}"
+        f"{target_instruction}"
     ),
     agent=personality,
     context=[script_task, audit_task]
@@ -1184,11 +1209,11 @@ accuracy_check_task = Task(
         f"## Recommendations\n"
         f"[Specific line-level fixes if needed]\n\n"
         f"NOTE: This check is ADVISORY. It does NOT block audio generation. "
-        f"{language_instruction}"
+        f"{target_instruction}"
     ),
     expected_output=(
         f"Accuracy check report comparing polished script against source-of-truth, "
-        f"listing any scientific drift with severity ratings. {language_instruction}"
+        f"listing any scientific drift with severity ratings. {target_instruction}"
     ),
     agent=auditor,
     context=[natural_language_task, audit_task],
@@ -1214,7 +1239,7 @@ show_notes_task = Task(
         f"  - Key Finding: [One sentence summary]\n\n"
         f"Include validity ratings from the Reliability Scorecard. "
         f"Mark broken links as '✗ Broken Link'. "
-        f"{language_instruction}"
+        f"{target_instruction}"
     ),
     expected_output=(
         f"Markdown show notes with:\n"
@@ -1222,12 +1247,21 @@ show_notes_task = Task(
         f"- Key takeaways (3-5 bullets)\n"
         f"- Full citation list with validity ratings (✓ High/Medium/Low)\n"
         f"- Evidence type labels (RCT/Observational/Animal Model)\n"
-        f"{language_instruction}"
+        f"{target_instruction}"
     ),
     agent=scriptwriter,
     context=[audit_task],
     output_file=str(output_dir / "SHOW_NOTES.md")
 )
+
+# --- TRANSLATION PIPELINE: Update contexts when translating ---
+if translation_task is not None:
+    # Polish reads from translated script instead of English script
+    natural_language_task.context = [translation_task, audit_task]
+    # Show notes use translated SOT context
+    show_notes_task.context = [translation_task, audit_task]
+    # Accuracy check compares polished (target lang) against translated script
+    accuracy_check_task.context = [natural_language_task, translation_task]
 
 # --- TASK METADATA & WORKFLOW PLANNING ---
 TASK_METADATA = {
@@ -1798,9 +1832,23 @@ print(f"\n{'='*70}")
 print(f"CREW 2: PHASES 3-8 (ADVERSARIAL → ACCURACY CHECK)")
 print(f"{'='*70}")
 
-crew_2 = Crew(
-    agents=[counter_researcher, source_verifier, auditor, scriptwriter, personality],
-    tasks=[
+# Build Crew 2 task list — order depends on whether translation is needed
+if translation_task is not None:
+    # Non-English: script → translate → polish → show notes → accuracy check
+    print(f"\nTRANSLATION PHASE: Translating to {language_config['name']}")
+    crew_2_tasks = [
+        adversarial_task,
+        source_verification_task,
+        audit_task,
+        script_task,
+        translation_task,
+        natural_language_task,
+        show_notes_task,
+        accuracy_check_task,
+    ]
+else:
+    # English: original order (no translation)
+    crew_2_tasks = [
         adversarial_task,
         source_verification_task,
         audit_task,
@@ -1808,7 +1856,11 @@ crew_2 = Crew(
         script_task,
         natural_language_task,
         accuracy_check_task,
-    ],
+    ]
+
+crew_2 = Crew(
+    agents=[counter_researcher, source_verifier, auditor, scriptwriter, personality],
+    tasks=crew_2_tasks,
     verbose=True,
     process='sequential'
 )
@@ -1933,7 +1985,7 @@ output_path = output_dir / "podcast_final_audio.wav"
 
 audio_file = None
 try:
-    audio_file = generate_audio_from_script(cleaned_script, str(output_path))
+    audio_file = generate_audio_from_script(cleaned_script, str(output_path), lang_code=language_config['tts_code'])
     if audio_file:
         audio_file = Path(audio_file)
 except Exception as e:
