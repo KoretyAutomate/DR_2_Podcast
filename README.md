@@ -31,7 +31,7 @@ An AI-powered pipeline that deeply researches any scientific topic, conducts adv
      └───────────────────────┬───────────────────────────────────────┘
                              ▼
      ┌───────────────────────────────────────────────────────────────┐
-     │ CREW 2a — Evidence Validation                                 │
+     │ CREW 2 — Evidence Validation                                   │
      │                                                               │
      │  Phase 3: Counter-Evidence Research (Adversarial Researcher)  │
      │  Phase 4: Source Validation (Source Verifier)                  │
@@ -39,7 +39,7 @@ An AI-powered pipeline that deeply researches any scientific topic, conducts adv
      └───────────────────────┬───────────────────────────────────────┘
                              ▼
      ┌───────────────────────────────────────────────────────────────┐
-     │ CREW 2b — Podcast Creation                                    │
+     │ CREW 3 — Podcast Creation                                      │
      │                                                               │
      │  Phase 6a: Show Notes & Citations (Producer)                  │
      │  Phase 6b: Podcast Script Generation (Producer)               │
