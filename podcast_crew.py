@@ -5,6 +5,7 @@ import httpx
 import time
 import random
 import sys
+import json
 import argparse
 import logging
 import asyncio
@@ -356,6 +357,52 @@ dgx_llm_creative = LLM(
 # Legacy alias for backward compatibility
 dgx_llm = dgx_llm_strict
 
+
+def summarize_report_with_fast_model(report_text: str, role: str, topic: str) -> str:
+    """Condense a deep research report using phi4-mini via Ollama.
+
+    Returns a ~2000-word summary that preserves ALL key findings (not just
+    the first N characters).  Falls back to [:6000] truncation on error.
+    """
+    try:
+        from openai import OpenAI
+        client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+        response = client.chat.completions.create(
+            model="phi4-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Condense this research report into a summary that preserves "
+                        "ALL key findings, claim names, source URLs, and evidence "
+                        "strength ratings. Target ~2000 words. Do not drop any "
+                        "findings — compress descriptions instead."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Summarize this {role} research report on '{topic}':\n\n"
+                        f"{report_text}"
+                    ),
+                },
+            ],
+            temperature=0.1,
+            max_tokens=4000,
+            timeout=180,
+        )
+        summary = response.choices[0].message.content.strip()
+        if len(summary) > 200:
+            print(f"  ✓ {role} report summarized: {len(report_text)} → {len(summary)} chars")
+            return summary
+        # Summary too short — fall through to truncation
+        print(f"  ⚠ {role} summary too short ({len(summary)} chars), falling back to truncation")
+    except Exception as e:
+        print(f"  ⚠ phi4-mini summarization failed for {role}: {e}")
+
+    return report_text[:6000]
+
+
 @tool("BraveSearch")
 def search_tool(search_query: str):
     """
@@ -499,6 +546,125 @@ def deep_search_tool(search_query: str) -> str:
 
     return loop.run_until_complete(perform_deep_search())
 
+
+# --- RESEARCH LIBRARY TOOLS ---
+# These tools let agents browse and read individual sources from the
+# deep research pre-scan that was saved to deep_research_sources.json.
+
+@tool("ListResearchSources")
+def list_research_sources(role: str) -> str:
+    """List all available research sources from the deep research pre-scan.
+
+    Args:
+        role: Either "lead" (supporting evidence) or "counter" (opposing evidence)
+
+    Returns a numbered index with title, URL, and research goal for each source.
+    Use ReadResearchSource to read the full summary of any specific source.
+    """
+    sources_file = output_dir / "deep_research_sources.json"
+    if not sources_file.exists():
+        return "No research library available. Deep research pre-scan may not have run."
+    try:
+        data = json.loads(sources_file.read_text())
+    except Exception as e:
+        return f"Error reading research library: {e}"
+
+    role_key = role.strip().lower()
+    if role_key not in data:
+        return f"Unknown role '{role}'. Available: {', '.join(data.keys())}"
+
+    sources = data[role_key]
+    header = f"=== {role_key.upper()} RESEARCHER SOURCES ({len(sources)} total) ===\n\n"
+    lines = []
+    for s in sources:
+        lines.append(
+            f"[{s['index']}] \"{s['title']}\"\n"
+            f"    URL: {s['url']}\n"
+            f"    Goal: {s['goal']}"
+        )
+    return header + "\n\n".join(lines)
+
+
+@tool("ReadResearchSource")
+def read_research_source(role_and_index: str) -> str:
+    """Read the full summary of a specific research source from the deep research pre-scan.
+
+    Args:
+        role_and_index: Format "role:index" e.g. "lead:5" or "counter:12"
+
+    Returns the full extracted summary for that source, including URL, title,
+    research goal, and all extracted facts.
+    """
+    sources_file = output_dir / "deep_research_sources.json"
+    if not sources_file.exists():
+        return "No research library available."
+    try:
+        data = json.loads(sources_file.read_text())
+    except Exception as e:
+        return f"Error reading research library: {e}"
+
+    parts = role_and_index.strip().split(":")
+    if len(parts) != 2:
+        return "Invalid format. Use 'role:index' e.g. 'lead:5' or 'counter:12'."
+    role_key, idx_str = parts[0].strip().lower(), parts[1].strip()
+
+    if role_key not in data:
+        return f"Unknown role '{role_key}'. Available: {', '.join(data.keys())}"
+    try:
+        idx = int(idx_str)
+    except ValueError:
+        return f"Invalid index '{idx_str}'. Must be a number."
+
+    sources = data[role_key]
+    if idx < 0 or idx >= len(sources):
+        return f"Index {idx} out of range. {role_key} has {len(sources)} sources (0-{len(sources)-1})."
+
+    s = sources[idx]
+    return (
+        f"=== SOURCE [{idx}] ===\n"
+        f"Title: {s['title']}\n"
+        f"URL: {s['url']}\n"
+        f"Query: {s['query']}\n"
+        f"Goal: {s['goal']}\n\n"
+        f"--- FULL SUMMARY ---\n{s['summary']}"
+    )
+
+
+@tool("ReadFullReport")
+def read_full_report(report_name: str) -> str:
+    """Read a full research report from disk. Available reports:
+    - "lead": Full supporting evidence report
+    - "counter": Full opposing evidence report
+    - "audit": Full audit synthesis report
+    - "framing": Research framing document
+
+    WARNING: Reports can be very long. Prefer ListResearchSources + ReadResearchSource
+    to selectively read specific sources instead.
+    """
+    name_map = {
+        "lead": "deep_research_lead.md",
+        "counter": "deep_research_counter.md",
+        "audit": "deep_research_audit.md",
+        "framing": "RESEARCH_FRAMING.md",
+    }
+    key = report_name.strip().lower()
+    if key not in name_map:
+        return f"Unknown report '{report_name}'. Available: {', '.join(name_map.keys())}"
+
+    report_path = output_dir / name_map[key]
+    if not report_path.exists():
+        return f"Report file not found: {report_path}"
+
+    content = report_path.read_text()
+    if len(content) > 15000:
+        return (
+            content[:15000]
+            + f"\n\n... [TRUNCATED — full report is {len(content)} chars. "
+            f"Use ListResearchSources + ReadResearchSource for targeted reading.] ..."
+        )
+    return content
+
+
 # --- PDF GENERATOR UTILITY ---
 class SciencePDF(FPDF):
     def header(self):
@@ -565,9 +731,12 @@ researcher = Agent(
         f'\n'
         f'In this podcast, you will be portrayed by "{SESSION_ROLES["pro"]["character"]}" '
         f'who has a {SESSION_ROLES["pro"]["personality"]} approach. '
+        f'\n\n'
+        f'You have access to a Research Library containing all sources from the deep research pre-scan. '
+        f'Use ListResearchSources to browse available sources, then ReadResearchSource to read specific ones in detail. '
         f'{language_instruction}'
     ),
-    tools=[search_tool, deep_search_tool],
+    tools=[search_tool, deep_search_tool, list_research_sources, read_research_source, read_full_report],
     llm=dgx_llm_strict,
     verbose=True
 )
@@ -590,10 +759,12 @@ auditor = Agent(
         f'  5. Source Validation: Use DeepSearch to scan through full article content from cited URLs.\n'
         f'     Verify that claims actually match what the source says. REJECT misrepresented sources.\n'
         f'\n'
+        f'You have access to a Research Library containing all sources from the deep research pre-scan. '
+        f'Use ListResearchSources to browse available sources, then ReadResearchSource to read specific ones in detail.\n\n'
         f'OUTPUT: A structured Markdown report with a "Reliability Scorecard". '
         f'{language_instruction}'
     ),
-    tools=[search_tool, deep_search_tool, link_validator],
+    tools=[search_tool, deep_search_tool, link_validator, list_research_sources, read_research_source, read_full_report],
     llm=dgx_llm_strict,
     verbose=True
 )
@@ -614,9 +785,12 @@ counter_researcher = Agent(
         f'\n'
         f'In this podcast, you will be portrayed by "{SESSION_ROLES["con"]["character"]}" '
         f'who has a {SESSION_ROLES["con"]["personality"]} approach. '
+        f'\n\n'
+        f'You have access to a Research Library containing all sources from the deep research pre-scan. '
+        f'Use ListResearchSources to browse available sources, then ReadResearchSource to read specific ones in detail. '
         f'{language_instruction}'
     ),
-    tools=[search_tool, deep_search_tool],
+    tools=[search_tool, deep_search_tool, list_research_sources, read_research_source, read_full_report],
     llm=dgx_llm_strict,
     verbose=True
 )
@@ -1421,26 +1595,58 @@ try:
             f.write(report.report)
         print(f"✓ {role_name.capitalize()} report saved: {report_file} ({report.total_summaries} sources)")
 
+    # Save source-level data to JSON for the research library tools
+    sources_json = {}
+    for role_name in ("lead", "counter"):
+        report = deep_reports[role_name]
+        role_sources = []
+        for idx, src in enumerate(report.sources):
+            if src.error or not src.summary or src.summary.strip().upper() == "NO RELEVANT DATA":
+                continue
+            role_sources.append({
+                "index": idx,
+                "url": src.url,
+                "title": src.title,
+                "query": src.query,
+                "goal": src.goal,
+                "summary": src.summary,
+            })
+        sources_json[role_name] = role_sources
+    sources_file = output_dir / "deep_research_sources.json"
+    with open(sources_file, 'w') as f:
+        json.dump(sources_json, f, indent=2, ensure_ascii=False)
+    print(f"✓ Research library saved: {sources_file} "
+          f"(lead={len(sources_json['lead'])}, counter={len(sources_json['counter'])} sources)")
+
     # Use audit report (combined synthesis) for injection into CrewAI agents
     deep_audit_report = deep_reports["audit"]
     lead_report = deep_reports["lead"]
     counter_report = deep_reports["counter"]
 
-    # Inject supporting evidence into lead research task (truncate to ~6000 chars to stay within context)
+    # Summarize reports with phi4-mini (preserves ALL findings, not just first 6000 chars)
+    print("Summarizing deep research reports with phi4-mini...")
+    lead_summary = summarize_report_with_fast_model(lead_report.report, "lead", topic_name)
+    counter_summary = summarize_report_with_fast_model(counter_report.report, "counter", topic_name)
+
+    # Inject summarized supporting evidence into lead research task
     lead_injection = (
         f"\n\nIMPORTANT: A deep research pre-scan has already analyzed {lead_report.total_summaries} "
         f"supporting sources in {lead_report.duration_seconds:.0f}s. Use the evidence below as a "
-        f"starting point, then supplement with your own searches.\n\n"
-        f"PRE-COLLECTED SUPPORTING EVIDENCE:\n{lead_report.report[:6000]}"
+        f"starting point, then supplement with your own searches. "
+        f"Use ListResearchSources('lead') to browse all {lead_report.total_summaries} sources, "
+        f"and ReadResearchSource('lead:N') to read any source in full.\n\n"
+        f"PRE-COLLECTED SUPPORTING EVIDENCE (condensed):\n{lead_summary}"
     )
     research_task.description = f"{research_task.description}{lead_injection}"
 
-    # Inject opposing evidence into adversarial task (truncate to ~6000 chars)
+    # Inject summarized opposing evidence into adversarial task
     counter_injection = (
         f"\n\nIMPORTANT: A deep research pre-scan has already analyzed {counter_report.total_summaries} "
         f"opposing sources in {counter_report.duration_seconds:.0f}s. Use the evidence below as a "
-        f"starting point, then supplement with your own searches.\n\n"
-        f"PRE-COLLECTED OPPOSING EVIDENCE:\n{counter_report.report[:6000]}"
+        f"starting point, then supplement with your own searches. "
+        f"Use ListResearchSources('counter') to browse all {counter_report.total_summaries} sources, "
+        f"and ReadResearchSource('counter:N') to read any source in full.\n\n"
+        f"PRE-COLLECTED OPPOSING EVIDENCE (condensed):\n{counter_summary}"
     )
     adversarial_task.description = f"{adversarial_task.description}{counter_injection}"
 
