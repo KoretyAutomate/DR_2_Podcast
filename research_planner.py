@@ -285,8 +285,14 @@ def is_junk_url(url: str) -> bool:
     return any(domain in url_lower for domain in JUNK_DOMAINS)
 
 
-def classify_source_type(title: str, snippet: str) -> str:
-    """Classify a source based on its title and snippet."""
+def classify_source_type(title: str, snippet: str, metadata_type: Optional[str] = None) -> str:
+    """Classify a source based on its title and snippet.
+
+    If metadata_type is provided (from structured extraction) and is not
+    "general", it takes precedence over keyword matching.
+    """
+    if metadata_type and metadata_type != "general":
+        return metadata_type
     text = f"{title} {snippet}".lower()
     url_lower = title.lower()
 

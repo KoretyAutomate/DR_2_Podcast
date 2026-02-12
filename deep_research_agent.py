@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -79,6 +79,27 @@ class FetchedPage:
     error: Optional[str] = None
 
 @dataclass
+class StudyMetadata:
+    """Structured metadata extracted from a scientific source."""
+    study_type: Optional[str] = None       # RCT, meta-analysis, cohort, observational, etc.
+    sample_size: Optional[str] = None      # "n=1234" or None
+    key_result: Optional[str] = None       # Main quantitative finding
+    publication_year: Optional[int] = None
+    journal_name: Optional[str] = None
+    authors: Optional[str] = None          # "First Author et al."
+    effect_size: Optional[str] = None      # "HR 0.82", "OR 1.5", "d=0.3"
+    limitations: Optional[str] = None      # Author-stated limitations
+    demographics: Optional[str] = None     # "age 25-45, 60% female, healthy adults"
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in self.__dict__.items() if v is not None}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "StudyMetadata":
+        valid_fields = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in valid_fields})
+
+@dataclass
 class SummarizedSource:
     url: str
     title: str
@@ -86,6 +107,7 @@ class SummarizedSource:
     query: str
     goal: str
     error: Optional[str] = None
+    metadata: Optional[StudyMetadata] = None
 
 @dataclass
 class ResearchReport:
@@ -199,6 +221,68 @@ class FastWorker:
         self.model = model
         self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUMMARIES)
 
+    def _parse_metadata_from_response(self, raw_text: str) -> Tuple[str, Optional[StudyMetadata]]:
+        """Parse FACTS and METADATA sections from fast model response.
+
+        Returns (facts_text, metadata_or_none). On parse failure, returns
+        original text with None metadata (graceful fallback).
+        """
+        # Split on METADATA: marker
+        marker = "METADATA:"
+        marker_idx = raw_text.find(marker)
+        if marker_idx == -1:
+            return raw_text.strip(), None
+
+        facts_text = raw_text[:marker_idx].strip()
+        # Remove "FACTS:" prefix if present
+        if facts_text.upper().startswith("FACTS:"):
+            facts_text = facts_text[6:].strip()
+
+        json_part = raw_text[marker_idx + len(marker):].strip()
+
+        # Extract JSON using brace-depth tracking
+        brace_start = json_part.find("{")
+        if brace_start == -1:
+            return facts_text, None
+
+        depth = 0
+        brace_end = -1
+        for i in range(brace_start, len(json_part)):
+            if json_part[i] == "{":
+                depth += 1
+            elif json_part[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    brace_end = i
+                    break
+
+        if brace_end == -1:
+            return facts_text, None
+
+        json_str = json_part[brace_start:brace_end + 1]
+
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError:
+            logger.debug(f"Failed to parse metadata JSON: {json_str[:200]}")
+            return facts_text, None
+
+        # Convert "null" strings and null values to None
+        cleaned = {}
+        for k, v in data.items():
+            if v is None or v == "null" or v == "":
+                continue
+            cleaned[k] = v
+
+        if not cleaned:
+            return facts_text, None
+
+        try:
+            metadata = StudyMetadata.from_dict(cleaned)
+            return facts_text, metadata
+        except Exception:
+            return facts_text, None
+
     async def summarize(self, page: FetchedPage, goal: str, query: str) -> SummarizedSource:
         if page.error or not page.content.strip():
             return SummarizedSource(
@@ -207,9 +291,26 @@ class FastWorker:
             )
         content = page.content[:MAX_INPUT_TOKENS * 4]
         system_prompt = (
-            f"You are a precise data extractor. Extract facts relevant to: '{goal}'. "
-            f"Output ONLY the facts as a bulleted list. Do not summarize unrelated sections. "
-            f"Be extremely concise. If no relevant information is found, output 'NO RELEVANT DATA'."
+            f"You are a precise scientific data extractor. Extract facts relevant to: '{goal}'.\n\n"
+            f"OUTPUT FORMAT (follow exactly):\n"
+            f"FACTS:\n"
+            f"- [fact 1]\n"
+            f"- [fact 2]\n"
+            f"...\n\n"
+            f"METADATA:\n"
+            f'{{"study_type":"RCT|meta-analysis|cohort|observational|animal_model|review|mechanism|guideline|general",'
+            f'"sample_size":"n=X or null",'
+            f'"key_result":"main quantitative finding or null",'
+            f'"publication_year":YYYY or null,'
+            f'"journal_name":"journal name or null",'
+            f'"authors":"First Author et al. or null",'
+            f'"effect_size":"HR/OR/d value or null",'
+            f'"limitations":"key limitation or null",'
+            f'"demographics":"age range, sex ratio, population description or null"}}\n\n'
+            f"Rules:\n"
+            f"- Be extremely concise in facts\n"
+            f"- Use null (not quotes) for unknown metadata fields\n"
+            f"- If no relevant information: output 'NO RELEVANT DATA' with no metadata"
         )
         async with self.semaphore:
             try:
@@ -219,10 +320,14 @@ class FastWorker:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Source URL: {page.url}\n\nContent:\n{content}"}
                     ],
-                    max_tokens=1024, temperature=0.1, timeout=180
+                    max_tokens=1536, temperature=0.1, timeout=180
                 )
-                summary = resp.choices[0].message.content.strip()
-                return SummarizedSource(url=page.url, title=page.title, summary=summary, query=query, goal=goal)
+                raw_text = resp.choices[0].message.content.strip()
+                facts_text, metadata = self._parse_metadata_from_response(raw_text)
+                return SummarizedSource(
+                    url=page.url, title=page.title, summary=facts_text,
+                    query=query, goal=goal, metadata=metadata
+                )
             except Exception as e:
                 logger.warning(f"Fast model failed for {page.url}: {str(e)[:100]}")
                 return SummarizedSource(url=page.url, title=page.title, summary="", query=query, goal=goal, error=str(e)[:200])
@@ -432,10 +537,31 @@ class ResearchAgent:
 
         evidence_blocks = []
         for s in good_summaries:
+            meta_line = ""
+            if s.metadata:
+                m = s.metadata
+                parts = []
+                if m.study_type:
+                    parts.append(f"Type: {m.study_type}")
+                if m.sample_size:
+                    parts.append(f"N: {m.sample_size}")
+                if m.journal_name:
+                    parts.append(f"Journal: {m.journal_name}")
+                if m.publication_year:
+                    parts.append(f"Year: {m.publication_year}")
+                if m.effect_size:
+                    parts.append(f"Effect: {m.effect_size}")
+                if m.authors:
+                    parts.append(f"Authors: {m.authors}")
+                if m.demographics:
+                    parts.append(f"Pop: {m.demographics}")
+                if parts:
+                    meta_line = f"**Study Metadata:** {' | '.join(parts)}\n"
             evidence_blocks.append(
                 f"### Source: {s.title or s.url}\n"
                 f"**URL:** {s.url}\n"
                 f"**Research Goal:** {s.goal}\n"
+                f"{meta_line}"
                 f"**Extracted Facts:**\n{s.summary}\n"
             )
         aggregated = "\n---\n".join(evidence_blocks) if evidence_blocks else "No evidence gathered."
@@ -445,12 +571,19 @@ class ResearchAgent:
         report_system = (
             f"You are a {role}. {role_instructions}\n\n"
             f"Write a comprehensive research report based ONLY on the evidence provided.\n"
+            f"Each source includes structured metadata (study type, sample size, effect size, journal).\n"
+            f"Weight evidence accordingly: RCTs and meta-analyses > cohort studies > observational > general.\n"
+            f"Report specific sample sizes and effect sizes when available.\n\n"
             f"Structure:\n"
             f"1. Executive Summary\n"
             f"2. Key Findings (grouped by theme)\n"
             f"3. Evidence Quality Assessment\n"
-            f"4. Gaps & Limitations\n"
-            f"5. Bibliography (all source URLs)\n\n"
+            f"4. Evidence Table\n"
+            f"   | Source | Study Type | N | Key Result | Effect Size | Journal | Year |\n"
+            f"   | --- | --- | --- | --- | --- | --- | --- |\n"
+            f"   [Fill from source metadata]\n"
+            f"5. Gaps & Limitations\n"
+            f"6. Bibliography (all source URLs)\n\n"
             f"Be factual. Cite sources by URL. Note evidence strength."
         )
 

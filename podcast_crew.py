@@ -582,8 +582,10 @@ def list_research_sources(role: str) -> str:
     header = f"=== {role_key.upper()} RESEARCHER SOURCES ({len(sources)} total) ===\n\n"
     lines = []
     for s in sources:
+        meta = s.get("metadata")
+        study_tag = f" [{meta.get('study_type', 'general')}]" if meta and meta.get("study_type") else ""
         lines.append(
-            f"[{s['index']}] \"{s['title']}\"\n"
+            f"[{s['index']}]{study_tag} \"{s['title']}\"\n"
             f"    URL: {s['url']}\n"
             f"    Goal: {s['goal']}"
         )
@@ -625,12 +627,36 @@ def read_research_source(role_and_index: str) -> str:
         return f"Index {idx} out of range. {role_key} has {len(sources)} sources (0-{len(sources)-1})."
 
     s = sources[idx]
+    meta_section = ""
+    meta = s.get("metadata")
+    if meta:
+        meta_lines = ["--- STUDY METADATA ---"]
+        if meta.get("study_type"):
+            meta_lines.append(f"Study Type: {meta['study_type']}")
+        if meta.get("sample_size"):
+            meta_lines.append(f"Sample Size: {meta['sample_size']}")
+        if meta.get("key_result"):
+            meta_lines.append(f"Key Result: {meta['key_result']}")
+        if meta.get("journal_name"):
+            meta_lines.append(f"Journal: {meta['journal_name']}")
+        if meta.get("publication_year"):
+            meta_lines.append(f"Year: {meta['publication_year']}")
+        if meta.get("effect_size"):
+            meta_lines.append(f"Effect Size: {meta['effect_size']}")
+        if meta.get("authors"):
+            meta_lines.append(f"Authors: {meta['authors']}")
+        if meta.get("demographics"):
+            meta_lines.append(f"Demographics: {meta['demographics']}")
+        if meta.get("limitations"):
+            meta_lines.append(f"Limitations: {meta['limitations']}")
+        meta_section = "\n".join(meta_lines) + "\n\n"
     return (
         f"=== SOURCE [{idx}] ===\n"
         f"Title: {s['title']}\n"
         f"URL: {s['url']}\n"
         f"Query: {s['query']}\n"
         f"Goal: {s['goal']}\n\n"
+        f"{meta_section}"
         f"--- FULL SUMMARY ---\n{s['summary']}"
     )
 
@@ -1084,6 +1110,10 @@ audit_task = Task(
         f"## The Caveat Box\n"
         f"### Why These Findings Might Be Wrong:\n"
         f"- [List of limitations and concerns]\n\n"
+        f"## Evidence Table\n"
+        f"| Claim | Source | Study Type | Sample Size | Effect Size | Journal | Year | Demographics |\n"
+        f"| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        f"[Fill from structured study metadata extracted during deep research]\n\n"
         f"## Complete Bibliography\n"
         f"[All verified sources with URLs, organized by claim]\n\n"
         f"The output MUST contain concrete health information, NOT a discussion about source quality. "
@@ -1097,6 +1127,7 @@ audit_task = Task(
         f"- Settled Science vs Active Debate sections\n"
         f"- Reliability Scorecard\n"
         f"- Caveat Box\n"
+        f"- Evidence Table (study type, sample size, effect size, journal, year)\n"
         f"- Complete Bibliography\n"
         f"{english_instruction}"
     ),
@@ -1644,6 +1675,7 @@ try:
                 "query": src.query,
                 "goal": src.goal,
                 "summary": src.summary,
+                "metadata": src.metadata.to_dict() if src.metadata else None,
             })
         sources_json[role_name] = role_sources
     sources_file = output_dir / "deep_research_sources.json"
