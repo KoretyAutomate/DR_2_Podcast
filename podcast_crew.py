@@ -26,6 +26,8 @@ from search_agent import SearxngClient, DeepResearch
 from research_planner import build_research_plan, run_iterative_search, compare_plan_vs_results, run_supplementary_research
 from deep_research_agent import Orchestrator, run_deep_research
 
+_pending_search_requests: list[dict] = []
+
 # --- SOURCE TRACKING MODELS ---
 class ScientificSource(BaseModel):
     """Structured scientific source."""
@@ -552,6 +554,96 @@ def deep_search_tool(search_query: str) -> str:
     return loop.run_until_complete(perform_deep_search())
 
 
+@tool("RequestSearch")
+def request_search(search_requests_json: str) -> str:
+    """Request targeted searches to fill evidence gaps. Only use if you find a CRITICAL gap with ZERO coverage in the Research Library.
+
+    Args:
+        search_requests_json: JSON array of search requests. Each must have "query" and "goal".
+            Example: [{"query": "creatine RCT cognitive function", "goal": "Find RCTs on creatine and cognition"}]
+    """
+    try:
+        requests_list = json.loads(search_requests_json)
+        if not isinstance(requests_list, list):
+            return "ERROR: Input must be a JSON array of {query, goal} objects."
+        valid = []
+        for req in requests_list:
+            if isinstance(req, dict) and "query" in req and "goal" in req:
+                valid.append({"query": req["query"], "goal": req["goal"]})
+        if not valid:
+            return "ERROR: No valid search requests. Each must have 'query' and 'goal' keys."
+        _pending_search_requests.extend(valid)
+        return (
+            f"Queued {len(valid)} search request(s). Results will be available via "
+            f"ListResearchSources/ReadResearchSource after the search round completes. "
+            f"Continue your analysis with existing sources."
+        )
+    except json.JSONDecodeError:
+        return 'ERROR: Invalid JSON. Provide a JSON array like: [{"query": "...", "goal": "..."}]'
+
+
+async def execute_gap_fill_searches(
+    pending_requests: list[dict],
+    role: str,
+    brave_api_key: str,
+    fast_model_available: bool = True,
+) -> list[dict]:
+    """Execute gap-fill searches using deep_research_agent pipeline."""
+    from deep_research_agent import (
+        SearchService, ContentFetcher, FastWorker, ResearchAgent, ResearchQuery,
+        SMART_MODEL, SMART_BASE_URL, FAST_MODEL, FAST_BASE_URL,
+    )
+    from openai import AsyncOpenAI
+
+    smart_client = AsyncOpenAI(base_url=SMART_BASE_URL, api_key="NA")
+    fast_client = AsyncOpenAI(base_url=FAST_BASE_URL, api_key="NA") if fast_model_available else None
+    fast_worker = FastWorker(fast_client, FAST_MODEL) if fast_model_available else None
+    search_svc = SearchService(brave_api_key)
+    fetcher = ContentFetcher(max_concurrent=10)
+
+    agent = ResearchAgent(
+        smart_client=smart_client, fast_worker=fast_worker,
+        search=search_svc, fetcher=fetcher,
+        smart_model=SMART_MODEL, results_per_query=5, max_iterations=1,
+    )
+
+    queries = [ResearchQuery(query=r["query"], goal=r["goal"]) for r in pending_requests]
+    summaries, _, _ = await agent._search_and_summarize(queries, set(), print)
+
+    new_sources = []
+    for s in summaries:
+        if s.error or not s.summary or s.summary.strip().upper() == "NO RELEVANT DATA":
+            continue
+        meta = None
+        if s.metadata:
+            meta = {f.name: getattr(s.metadata, f.name) for f in __import__('dataclasses').fields(s.metadata)}
+        new_sources.append({
+            "url": s.url, "title": s.title, "query": s.query,
+            "goal": s.goal, "summary": s.summary, "metadata": meta,
+        })
+    return new_sources
+
+
+def append_sources_to_library(new_sources: list[dict], role: str, output_dir_path=None):
+    """Append new sources to deep_research_sources.json."""
+    src_dir = output_dir_path or output_dir
+    sources_file = Path(src_dir) / "deep_research_sources.json"
+    if sources_file.exists():
+        data = json.loads(sources_file.read_text())
+    else:
+        data = {"lead": [], "counter": []}
+    role_key = role.strip().lower()
+    if role_key not in data:
+        data[role_key] = []
+    start_idx = len(data[role_key])
+    for i, src in enumerate(new_sources):
+        src["index"] = start_idx + i
+        data[role_key].append(src)
+    with open(sources_file, 'w') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    print(f"  Appended {len(new_sources)} sources to {role_key} library (total: {len(data[role_key])})")
+
+
 # --- RESEARCH LIBRARY TOOLS ---
 # These tools let agents browse and read individual sources from the
 # deep research pre-scan that was saved to deep_research_sources.json.
@@ -744,6 +836,22 @@ def create_pdf(title, content, filename):
 # Initialize Link Validator Tool
 link_validator = LinkValidatorTool()
 
+@tool("ReadValidationResults")
+def read_validation_results(url: str) -> str:
+    """Look up the pre-validated status of a URL from batch validation results.
+
+    Args:
+        url: The URL to check.
+    """
+    validation_file = output_dir / "url_validation_results.json"
+    if not validation_file.exists():
+        return "No pre-validation data available. Use Link Validator to check this URL."
+    try:
+        data = json.loads(validation_file.read_text())
+        return data.get(url, f"Not pre-validated. Use Link Validator to check: {url}")
+    except Exception as e:
+        return f"Error reading validation data: {e}"
+
 researcher = Agent(
     role='Principal Investigator (Lead Researcher)',
     goal=f'Find and document credible scientific signals about {topic_name}, organized by mechanism of action. {english_instruction}',
@@ -764,10 +872,12 @@ researcher = Agent(
         f'who has a {SESSION_ROLES["pro"]["personality"]} approach. '
         f'\n\n'
         f'You have access to a Research Library containing all sources from the deep research pre-scan. '
-        f'Use ListResearchSources to browse available sources, then ReadResearchSource to read specific ones in detail. '
+        f'Use ListResearchSources to browse, ReadResearchSource to read specific ones. '
+        f'If you find a CRITICAL gap with ZERO coverage, use RequestSearch to queue targeted searches. '
+        f'Do NOT attempt BraveSearch or DeepSearch — they are not available.'
         f'{english_instruction}'
     ),
-    tools=[search_tool, deep_search_tool, list_research_sources, read_research_source, read_full_report],
+    tools=[list_research_sources, read_research_source, read_full_report, request_search],
     llm=dgx_llm_strict,
     verbose=True,
     max_iter=10,
@@ -788,16 +898,15 @@ auditor = Agent(
         f'       1-3 = Animal model or speculation\n'
         f'  3. The Caveat Box: Explicitly list why the findings might be wrong:\n'
         f'       (e.g., "Mouse study only", "Sample size n=12", "Conflicts of interest")\n'
-        f'  4. Consensus Check: Search specifically for "criticism of [topic]" or "limitations of [study]".\n'
-        f'  5. Source Validation: Use DeepSearch to scan through full article content from cited URLs.\n'
-        f'     Verify that claims actually match what the source says. REJECT misrepresented sources.\n'
+        f'  4. Consensus Check: Verify consensus from pre-scanned sources in the Research Library.\n'
+        f'  5. Source Validation: Use ReadResearchSource to read source content. Verify claims match sources. REJECT misrepresented sources.\n'
         f'\n'
         f'You have access to a Research Library containing all sources from the deep research pre-scan. '
         f'Use ListResearchSources to browse available sources, then ReadResearchSource to read specific ones in detail.\n\n'
         f'OUTPUT: A structured Markdown report with a "Reliability Scorecard". '
         f'{english_instruction}'
     ),
-    tools=[search_tool, deep_search_tool, link_validator, list_research_sources, read_research_source, read_full_report],
+    tools=[list_research_sources, read_research_source, read_full_report, link_validator],
     llm=dgx_llm_strict,
     verbose=True,
     max_iter=15,
@@ -821,10 +930,12 @@ counter_researcher = Agent(
         f'who has a {SESSION_ROLES["con"]["personality"]} approach. '
         f'\n\n'
         f'You have access to a Research Library containing all sources from the deep research pre-scan. '
-        f'Use ListResearchSources to browse available sources, then ReadResearchSource to read specific ones in detail. '
+        f'Use ListResearchSources to browse, ReadResearchSource to read specific ones. '
+        f'If you find a CRITICAL gap with ZERO coverage, use RequestSearch to queue targeted searches. '
+        f'Do NOT attempt BraveSearch or DeepSearch — they are not available.'
         f'{english_instruction}'
     ),
-    tools=[search_tool, deep_search_tool, list_research_sources, read_research_source, read_full_report],
+    tools=[list_research_sources, read_research_source, read_full_report, request_search],
     llm=dgx_llm_strict,
     verbose=True,
     max_iter=10,
@@ -889,7 +1000,7 @@ source_verifier = Agent(
         'Ensures citations come from reputable peer-reviewed journals. '
         'Prioritizes high-impact publications (Nature, Science, Lancet, Cell, PNAS).'
     ),
-    tools=[link_validator],
+    tools=[link_validator, read_validation_results],
     llm=dgx_llm_strict,
     verbose=True
 )
@@ -1020,7 +1131,7 @@ gap_fill_task = Task(
         f"2. For EACH identified gap, conduct 1-2 targeted searches\n"
         f"3. Report findings organized by which gap they address\n"
         f"4. Do NOT repeat research already covered — only fill gaps\n\n"
-        f"CRITICAL: Use BraveSearch or DeepSearch to find verifiable sources with URLs. "
+        f"Use RequestSearch to queue targeted searches for missing evidence. Results will appear in the Research Library. "
         f"{english_instruction}"
     ),
     expected_output=(
@@ -1028,7 +1139,7 @@ gap_fill_task = Task(
         f"with verifiable sources and URLs. {english_instruction}"
     ),
     agent=researcher,
-    tools=[search_tool, deep_search_tool],
+    tools=[request_search, list_research_sources, read_research_source],
     context=[research_task, gap_analysis_task]
 )
 
@@ -1044,10 +1155,8 @@ adversarial_task = Task(
         f"3. SUPPLEMENTARY: Animal studies contradicting proposed mechanisms\n\n"
         f"RESEARCH LIBRARY: You have access to a pre-scanned Research Library with dozens of sources. "
         f"Use ListResearchSources('counter') and ReadResearchSource('counter:N') as your PRIMARY evidence source. "
-        f"Only use BraveSearch/DeepSearch if a critical gap exists in the library.\n\n"
-        f"SEARCH STRATEGY: Find contradictory RCTs first. If limited, use observatory studies showing "
-        f"no effect or harm. Include animal studies that disprove the mechanism.\n\n"
-        f"CRITICAL: Use BraveSearch or DeepSearch to find and cite contradictory evidence with URLs. "
+        f"If a critical gap exists, use RequestSearch to queue targeted searches.\n\n"
+        f"SEARCH STRATEGY: Find contradictory RCTs first from the Research Library. If limited, use observatory studies with null findings.\n\n"
         f"Every citation in your bibliography MUST include a URL for source validation.\n"
         f"Include Bibliography with URLs and study types noted. "
         f"{english_instruction}"
@@ -1712,7 +1821,7 @@ try:
         f"YOUR PRIMARY TASK: Synthesize and organize this pre-collected evidence. "
         f"Use ListResearchSources('lead') to browse all {lead_report.total_summaries} sources, "
         f"and ReadResearchSource('lead:N') to read any source in full.\n\n"
-        f"SEARCH POLICY: Do NOT use BraveSearch or DeepSearch unless you identify a CRITICAL "
+        f"SEARCH POLICY: Do NOT use RequestSearch unless you identify a CRITICAL "
         f"gap — a specific claim or mechanism that has ZERO coverage in the pre-scan. "
         f"The pre-scan already covers the major aspects of this topic.\n\n"
         f"PRE-COLLECTED SUPPORTING EVIDENCE (condensed):\n{lead_summary}"
@@ -1726,7 +1835,7 @@ try:
         f"YOUR PRIMARY TASK: Synthesize and organize this pre-collected evidence. "
         f"Use ListResearchSources('counter') to browse all {counter_report.total_summaries} sources, "
         f"and ReadResearchSource('counter:N') to read any source in full.\n\n"
-        f"SEARCH POLICY: Do NOT use BraveSearch or DeepSearch unless you identify a CRITICAL "
+        f"SEARCH POLICY: Do NOT use RequestSearch unless you identify a CRITICAL "
         f"gap — a specific claim or mechanism that has ZERO coverage in the pre-scan. "
         f"The pre-scan already covers the major aspects of this topic.\n\n"
         f"PRE-COLLECTED OPPOSING EVIDENCE (condensed):\n{counter_summary}"
@@ -1800,7 +1909,6 @@ if not gate_passed:
     print(f"PHASE 2b: GAP-FILL RESEARCH (Gate FAILED)")
     print(f"{'='*70}")
 
-    # Inject gate analysis into gap_fill_task description
     gap_fill_task.description = (
         f"{gap_fill_task.description}\n\n"
         f"GAP ANALYSIS RESULTS (the gaps you need to fill):\n"
@@ -1808,37 +1916,120 @@ if not gate_passed:
         f"--- END GAP ANALYSIS ---"
     )
 
-    gap_fill_crew = Crew(
-        agents=[researcher],
-        tasks=[gap_fill_task],
-        verbose=True,
-        process='sequential'
-    )
+    MAX_SEARCH_ROUNDS = 3
+    gap_fill_output = ""
+    for search_round in range(MAX_SEARCH_ROUNDS):
+        print(f"\n  --- Gap-Fill Round {search_round + 1}/{MAX_SEARCH_ROUNDS} ---")
+        _pending_search_requests.clear()
 
-    try:
-        gap_fill_crew.kickoff()
-        gap_fill_output = gap_fill_task.output.raw if hasattr(gap_fill_task, 'output') and gap_fill_task.output else ""
-        print(f"✓ Phase 2b complete: Gap-fill research ({len(gap_fill_output)} chars)")
+        gap_fill_crew = Crew(
+            agents=[researcher],
+            tasks=[gap_fill_task],
+            verbose=True,
+            process='sequential'
+        )
 
-        # Insert gap_fill_task into tracking list
-        idx = all_task_list.index(adversarial_task)
-        all_task_list.insert(idx, gap_fill_task)
+        try:
+            gap_fill_crew.kickoff()
+            gap_fill_output = gap_fill_task.output.raw if hasattr(gap_fill_task, 'output') and gap_fill_task.output else ""
+            print(f"  Round {search_round + 1}: Agent produced {len(gap_fill_output)} chars")
+        except Exception as e:
+            print(f"  Round {search_round + 1}: Gap-fill failed: {e}")
+            break
 
-    except Exception as e:
-        print(f"⚠ Gap-fill research failed: {e}")
-        print("Continuing with existing research...")
-        gap_fill_output = ""
+        if not _pending_search_requests:
+            print(f"  No search requests queued — gap-fill complete")
+            break
+
+        print(f"  Executing {len(_pending_search_requests)} queued search requests...")
+        new_sources = asyncio.run(execute_gap_fill_searches(
+            pending_requests=list(_pending_search_requests),
+            role="lead",
+            brave_api_key=brave_key,
+            fast_model_available=fast_model_available,
+        ))
+
+        if new_sources:
+            append_sources_to_library(new_sources, "lead")
+            print(f"  Added {len(new_sources)} new sources to library")
+        else:
+            print(f"  No new sources found — gap-fill complete")
+            break
+
+    # Insert gap_fill_task into tracking list
+    idx = all_task_list.index(adversarial_task)
+    all_task_list.insert(idx, gap_fill_task)
 else:
     print("✓ Gate PASSED — skipping gap-fill research")
+    gap_fill_output = ""
 
 # Store gate status for progress tracker
 progress_tracker.gate_passed = gate_passed
 
 # ================================================================
+# BATCH URL VALIDATION (parallel, outside agent loops)
+# ================================================================
+print(f"\n{'='*70}")
+print(f"BATCH URL VALIDATION (parallel)")
+print(f"{'='*70}")
+
+from link_validator_tool import validate_multiple_urls_parallel
+
+all_urls = set()
+url_pattern = re.compile(r'https?://[^\s\)\]\"\'<>]+')
+# Collect from research output
+research_output = research_task.output.raw if hasattr(research_task, 'output') and research_task.output else ""
+if research_output:
+    all_urls.update(url_pattern.findall(research_output))
+if gap_fill_output:
+    all_urls.update(url_pattern.findall(gap_fill_output))
+
+# From source library
+sources_file = output_dir / "deep_research_sources.json"
+if sources_file.exists():
+    try:
+        src_data = json.loads(sources_file.read_text())
+        for role_sources in src_data.values():
+            if isinstance(role_sources, list):
+                for src in role_sources:
+                    if src.get("url"):
+                        all_urls.add(src["url"])
+    except Exception:
+        pass
+
+print(f"  Found {len(all_urls)} unique URLs to validate")
+
+if all_urls:
+    validation_results = validate_multiple_urls_parallel(list(all_urls), max_workers=15)
+    valid_count = sum(1 for v in validation_results.values() if "Valid" in v)
+    broken_count = sum(1 for v in validation_results.values() if "Broken" in v or "Invalid" in v)
+    print(f"  Results: {valid_count} valid, {broken_count} broken, "
+          f"{len(validation_results) - valid_count - broken_count} other")
+
+    validation_file = output_dir / "url_validation_results.json"
+    with open(validation_file, 'w') as f:
+        json.dump(validation_results, f, indent=2, ensure_ascii=False)
+    print(f"  Saved to {validation_file}")
+
+    validation_summary = "\n".join(
+        f"  {url}: {status}" for url, status in sorted(validation_results.items())
+    )
+    source_verification_task.description = (
+        f"{source_verification_task.description}\n\n"
+        f"PRE-VALIDATED URL RESULTS ({len(validation_results)} URLs checked in parallel):\n"
+        f"{validation_summary}\n"
+        f"--- END PRE-VALIDATION ---\n"
+        f"Use these results instead of checking URLs one by one. "
+        f"Only use LinkValidator for any NEW URLs not in this list."
+    )
+else:
+    print("  No URLs found to validate")
+
+# ================================================================
 # Inject cross-crew context into Crew 2 tasks
 # ================================================================
-# Inject research output into downstream tasks
-research_output = research_task.output.raw if hasattr(research_task, 'output') and research_task.output else ""
+# Inject research output into downstream tasks (research_output already set above)
+gap_analysis_output = gap_analysis_task.output.raw if hasattr(gap_analysis_task, 'output') and gap_analysis_task.output else ""
 gap_analysis_output = gap_analysis_task.output.raw if hasattr(gap_analysis_task, 'output') and gap_analysis_task.output else ""
 
 # Build combined research context for adversarial task

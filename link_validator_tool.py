@@ -10,6 +10,7 @@ from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 import requests
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class LinkValidatorTool(BaseTool):
@@ -67,8 +68,8 @@ class LinkValidatorTool(BaseTool):
             return f"✗ ERROR: {str(e)[:100]}"
 
 
-# Batch validation function for processing multiple URLs
-def validate_multiple_urls(urls: list[str]) -> dict[str, str]:
+# Batch validation function for processing multiple URLs (sequential)
+def validate_multiple_urls_sequential(urls: list[str]) -> dict[str, str]:
     """
     Validate multiple URLs in batch.
 
@@ -84,6 +85,31 @@ def validate_multiple_urls(urls: list[str]) -> dict[str, str]:
     for url in urls:
         results[url] = validator._run(url)
 
+    return results
+
+
+# Parallel batch validation using ThreadPoolExecutor
+def validate_multiple_urls_parallel(urls: list[str], max_workers: int = 10) -> dict[str, str]:
+    """
+    Validate multiple URLs in parallel using threads.
+
+    Args:
+        urls: List of URLs to validate
+        max_workers: Maximum number of concurrent threads
+
+    Returns:
+        Dictionary mapping each URL to its validation status
+    """
+    validator = LinkValidatorTool()
+    results = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_url = {executor.submit(validator._run, url): url for url in urls}
+        for future in as_completed(future_to_url):
+            url = future_to_url[future]
+            try:
+                results[url] = future.result(timeout=10)
+            except Exception as e:
+                results[url] = f"ERROR: {str(e)[:100]}"
     return results
 
 
@@ -104,4 +130,11 @@ if __name__ == "__main__":
         print(f"\nURL: {url}")
         print(f"Result: {result}")
 
+    print("\n" + "="*60)
+
+    print("\n\nTesting Parallel Batch Validation\n" + "="*60)
+    batch_results = validate_multiple_urls_parallel(test_urls)
+    for url, status in batch_results.items():
+        print(f"\nURL: {url}")
+        print(f"Result: {status}")
     print("\n" + "="*60)
