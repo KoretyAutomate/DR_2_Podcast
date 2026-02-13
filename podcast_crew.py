@@ -17,7 +17,7 @@ from crewai.tools import tool
 from fpdf import FPDF
 from link_validator_tool import LinkValidatorTool
 from pydantic import BaseModel, HttpUrl, Field
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Union
 import soundfile as sf
 import numpy as np
 import wave
@@ -555,7 +555,7 @@ def deep_search_tool(search_query: str) -> str:
 
 
 @tool("RequestSearch")
-def request_search(search_requests_json: str) -> str:
+def request_search(search_requests_json: Union[str, list]) -> str:
     """Request targeted searches to fill evidence gaps. Only use if you find a CRITICAL gap with ZERO coverage in the Research Library.
 
     Args:
@@ -578,9 +578,11 @@ def request_search(search_requests_json: str) -> str:
             return "ERROR: No valid search requests. Each must have 'query' and 'goal' keys."
         _pending_search_requests.extend(valid)
         return (
-            f"Queued {len(valid)} search request(s). Results will be available via "
-            f"ListResearchSources/ReadResearchSource after the search round completes. "
-            f"Continue your analysis with existing sources."
+            f"Queued {len(valid)} search request(s). These searches run ASYNCHRONOUSLY in a later phase — "
+            f"results will NOT appear in ListResearchSources until a future round. "
+            f"Do NOT call ListResearchSources again to check for new results. "
+            f"IMMEDIATELY proceed to write your FINAL ANSWER using the evidence you have already gathered. "
+            f"Conclude with available evidence now."
         )
     except (json.JSONDecodeError, TypeError):
         return 'ERROR: Invalid JSON. Provide a JSON array like: [{"query": "...", "goal": "..."}]'
@@ -1080,8 +1082,13 @@ research_task = Task(
         f"If a critical gap exists, use RequestSearch to queue targeted searches.\n\n"
         f"SEARCH STRATEGY: Start with the Research Library sources. If no strong evidence for a specific mechanism, "
         f"expand search using RequestSearch. Supplement with animal/mechanistic studies to validate logic.\n\n"
+        f"CRITICAL — ASYNC SEARCHES: RequestSearch only QUEUES searches for a future round. "
+        f"Results will NOT appear immediately in ListResearchSources. After queuing any searches, "
+        f"do NOT call ListResearchSources again to check — instead IMMEDIATELY write your final paper "
+        f"using evidence you have already read.\n\n"
         f"Every citation in your bibliography MUST include a URL for source validation.\n"
-        f"If time runs short, CONCLUDE with available evidence — present findings as hypotheses based on current knowledge rather than failing.\n"
+        f"CONCLUDE with available evidence — present findings as hypotheses based on current knowledge rather than failing. "
+        f"You MUST produce a final paper even if some evidence gaps remain.\n"
         f"Include: Abstract, Introduction, 3 Biochemical Mechanisms with CONCRETE health impacts, Bibliography with URLs and study types noted. "
         f"{english_instruction}"
     ),
@@ -1825,7 +1832,10 @@ try:
         f"and ReadResearchSource('lead:N') to read any source in full.\n\n"
         f"SEARCH POLICY: Do NOT use RequestSearch unless you identify a CRITICAL "
         f"gap — a specific claim or mechanism that has ZERO coverage in the pre-scan. "
-        f"The pre-scan already covers the major aspects of this topic.\n\n"
+        f"The pre-scan already covers the major aspects of this topic. "
+        f"If you DO use RequestSearch, note that searches run ASYNCHRONOUSLY — results will NOT appear "
+        f"in ListResearchSources until a future round. After queuing searches, IMMEDIATELY write your "
+        f"final paper with evidence already gathered. Do NOT loop calling ListResearchSources.\n\n"
         f"PRE-COLLECTED SUPPORTING EVIDENCE (condensed):\n{lead_summary}"
     )
     research_task.description = f"{research_task.description}{lead_injection}"
@@ -1839,7 +1849,10 @@ try:
         f"and ReadResearchSource('counter:N') to read any source in full.\n\n"
         f"SEARCH POLICY: Do NOT use RequestSearch unless you identify a CRITICAL "
         f"gap — a specific claim or mechanism that has ZERO coverage in the pre-scan. "
-        f"The pre-scan already covers the major aspects of this topic.\n\n"
+        f"The pre-scan already covers the major aspects of this topic. "
+        f"If you DO use RequestSearch, note that searches run ASYNCHRONOUSLY — results will NOT appear "
+        f"in ListResearchSources until a future round. After queuing searches, IMMEDIATELY write your "
+        f"final paper with evidence already gathered. Do NOT loop calling ListResearchSources.\n\n"
         f"PRE-COLLECTED OPPOSING EVIDENCE (condensed):\n{counter_summary}"
     )
     adversarial_task.description = f"{adversarial_task.description}{counter_injection}"
