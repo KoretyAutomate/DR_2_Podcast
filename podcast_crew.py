@@ -881,7 +881,7 @@ researcher = Agent(
     llm=dgx_llm_strict,
     verbose=True,
     max_iter=10,
-    max_execution_time=600,
+    max_execution_time=900,
 )
 
 auditor = Agent(
@@ -939,7 +939,7 @@ counter_researcher = Agent(
     llm=dgx_llm_strict,
     verbose=True,
     max_iter=10,
-    max_execution_time=600,
+    max_execution_time=900,
 )
 
 scriptwriter = Agent(
@@ -1075,11 +1075,11 @@ research_task = Task(
         f"3. SUPPLEMENTARY: Non-human RCTs (animal studies, in vitro) to verify proposed mechanisms\n\n"
         f"RESEARCH LIBRARY: You have access to a pre-scanned Research Library with dozens of sources. "
         f"Use ListResearchSources('lead') and ReadResearchSource('lead:N') as your PRIMARY evidence source. "
-        f"Only use BraveSearch/DeepSearch if a critical gap exists in the library.\n\n"
-        f"SEARCH STRATEGY: Start with RCT/meta-analysis search. If no strong evidence, "
-        f"expand to observatory studies. Supplement with animal/mechanistic studies to validate logic.\n\n"
-        f"CRITICAL: Use BraveSearch or DeepSearch to find and cite verifiable sources with URLs for ALL major claims. "
+        f"If a critical gap exists, use RequestSearch to queue targeted searches.\n\n"
+        f"SEARCH STRATEGY: Start with the Research Library sources. If no strong evidence for a specific mechanism, "
+        f"expand search using RequestSearch. Supplement with animal/mechanistic studies to validate logic.\n\n"
         f"Every citation in your bibliography MUST include a URL for source validation.\n"
+        f"If time runs short, CONCLUDE with available evidence — present findings as hypotheses based on current knowledge rather than failing.\n"
         f"Include: Abstract, Introduction, 3 Biochemical Mechanisms with CONCRETE health impacts, Bibliography with URLs and study types noted. "
         f"{english_instruction}"
     ),
@@ -1874,6 +1874,18 @@ crew_1 = Crew(
 
 try:
     crew_1_result = crew_1.kickoff()
+except TimeoutError as e:
+    print(f"\n{'='*70}")
+    print("CREW 1: AGENT TIMED OUT — using partial results")
+    print(f"{'='*70}")
+    print(f"Timeout details: {str(e)[:200]}")
+    # Extract whatever partial output exists from the tasks
+    for t in [research_task, gap_analysis_task]:
+        if hasattr(t, 'output') and t.output and hasattr(t.output, 'raw'):
+            print(f"  Task '{t.description[:60]}...' has {len(t.output.raw)} chars of output")
+        else:
+            print(f"  Task '{t.description[:60]}...' has no output yet")
+    # Continue with whatever we have — agents should draw conclusions from available evidence
 except Exception as e:
     print(f"\n{'='*70}")
     print("CREW 1 FAILED")
