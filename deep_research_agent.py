@@ -55,7 +55,8 @@ JUNK_DOMAINS = {
     "cambridge.org", "wiktionary.org", "vocabulary.com",
     "thesaurus.com", "urbandictionary.com",
     "facebook.com", "fb.com", "twitter.com", "instagram.com", "tiktok.com",
-    "pinterest.com", "reddit.com", "youtube.com",
+    "pinterest.com", "reddit.com", "youtube.com", "support.google.com",
+    "lkong.com", "rctslabs.com",
     "starbucks.com", "amazon.com", "walmart.com",
     "dailythemedcrosswordanswers.com", "crosswordanswers.com",
 }

@@ -603,7 +603,7 @@ async def execute_gap_fill_searches(
 
     agent = ResearchAgent(
         smart_client=smart_client, fast_worker=fast_worker,
-        search=search_svc, fetcher=fetcher,
+        search_service=search_svc, fetcher=fetcher,
         smart_model=SMART_MODEL, results_per_query=5, max_iterations=1,
     )
 
@@ -881,7 +881,6 @@ researcher = Agent(
     llm=dgx_llm_strict,
     verbose=True,
     max_iter=10,
-    max_execution_time=900,
 )
 
 auditor = Agent(
@@ -939,7 +938,6 @@ counter_researcher = Agent(
     llm=dgx_llm_strict,
     verbose=True,
     max_iter=10,
-    max_execution_time=900,
 )
 
 scriptwriter = Agent(
