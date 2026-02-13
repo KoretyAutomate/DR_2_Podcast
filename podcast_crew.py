@@ -2160,20 +2160,35 @@ for title, source, filename in pdf_tasks:
     except Exception as e:
         print(f"  Warning: Failed to create {filename}: {e}")
 
-print("\n--- Saving Task Outputs ---")
-task_output_files = [
-    (research_task, "research_output.txt"),
-    (adversarial_task, "adversarial_output.txt"),
-    (source_verification_task, "source_verification.txt"),
-    (audit_task, "source_of_truth.txt"),
+print("\n--- Saving Research Outputs (Markdown) ---")
+markdown_outputs = [
+    ("Research Framing", framing_output, "research_framing.md"),
+    ("Supporting Research", research_task, "supporting_research.md"),
+    ("Gap Analysis", gap_analysis_task, "gap_analysis.md"),
+    ("Gap-Fill Research", gap_fill_output, "gap_fill_research.md"),
+    ("Adversarial Research", adversarial_task, "adversarial_research.md"),
+    ("Source Verification", source_verification_task, "source_verification.md"),
+    ("Source of Truth", audit_task, "source_of_truth.md"),
+    ("Accuracy Check", accuracy_check_task, "accuracy_check.md"),
+    ("Show Notes", show_notes_task, "show_notes.md"),
+    ("Podcast Script (Raw)", script_task, "podcast_script_raw.md"),
+    ("Podcast Script (Polished)", natural_language_task, "podcast_script_polished.md"),
 ]
-for task_obj, filename in task_output_files:
+for label, source, filename in markdown_outputs:
     try:
-        if hasattr(task_obj, 'output') and task_obj.output and hasattr(task_obj.output, 'raw') and task_obj.output.raw:
+        if isinstance(source, str):
+            content = source
+        elif hasattr(source, 'output') and source.output and hasattr(source.output, 'raw'):
+            content = source.output.raw
+        else:
+            content = None
+        if content and content.strip():
             outfile = output_dir / filename
             with open(outfile, 'w') as f:
-                f.write(task_obj.output.raw)
-            print(f"  Saved {filename} ({len(task_obj.output.raw)} chars)")
+                f.write(content)
+            print(f"  Saved {filename} ({len(content)} chars)")
+        else:
+            print(f"  Skipping {filename}: no output available")
     except Exception as e:
         print(f"  Warning: Could not save {filename}: {e}")
 
