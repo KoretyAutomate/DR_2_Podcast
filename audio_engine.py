@@ -11,12 +11,17 @@ Features:
 - Audio stitching and WAV export
 """
 
+import logging
 import soundfile as sf
 from kokoro import KPipeline
 import torch
 import numpy as np
 import re
 from pathlib import Path
+
+from pydub import AudioSegment
+
+logger = logging.getLogger(__name__)
 
 # Voice Configuration
 VOICE_HOST_1 = 'bm_george'  # British Male (The Expert) - default English
@@ -87,6 +92,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
     # 2. Parse Script
     lines = script_text.split('\n')
     audio_segments = []
+    silence_gap = np.zeros(int(0.3 * 24000), dtype=np.float32)  # 300ms silence at 24kHz
 
     current_speaker = None
     buffer_text = ""
@@ -110,6 +116,10 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
                 except Exception as e:
                     print(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
 
+            # Insert silence gap between speaker switches (not before first speaker)
+            if current_speaker is not None and current_speaker != 1:
+                audio_segments.append(silence_gap)
+
             current_speaker = 1
             buffer_text = line.split(":", 1)[1].strip() if ":" in line else ""
 
@@ -124,6 +134,10 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
                         segment_count += 1
                 except Exception as e:
                     print(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
+
+            # Insert silence gap between speaker switches (not before first speaker)
+            if current_speaker is not None and current_speaker != 2:
+                audio_segments.append(silence_gap)
 
             current_speaker = 2
             buffer_text = line.split(":", 1)[1].strip() if ":" in line else ""
@@ -170,6 +184,57 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             return None
     else:
         print("✗ ERROR: No audio segments generated")
+        return None
+
+
+def post_process_audio(wav_path: str) -> str:
+    """
+    Post-process raw Kokoro TTS output: normalize loudness and optionally overlay background music.
+
+    Args:
+        wav_path: Path to the raw WAV file (24kHz, mono)
+
+    Returns:
+        Path to the mastered WAV file, or None if processing failed
+    """
+    try:
+        audio = AudioSegment.from_wav(wav_path)
+
+        # Normalize loudness to -16 dBFS (podcast standard)
+        target_dBFS = -16.0
+        change = target_dBFS - audio.dBFS
+        audio = audio.apply_gain(change)
+        print(f"  Normalized loudness: {audio.dBFS:.1f} dBFS (target: {target_dBFS})")
+
+        # Optional: overlay background music if available
+        script_dir = Path(__file__).parent
+        bg_music_path = script_dir / "asset" / "background_music.mp3"
+        if bg_music_path.exists():
+            try:
+                bg_music = AudioSegment.from_mp3(str(bg_music_path))
+                # Loop background music to match speech duration
+                while len(bg_music) < len(audio):
+                    bg_music = bg_music + bg_music
+                bg_music = bg_music[:len(audio)]
+                # Duck background music to -25 dB relative
+                bg_music = bg_music.apply_gain(-25 - bg_music.dBFS)
+                audio = audio.overlay(bg_music)
+                print(f"  Background music overlaid from: {bg_music_path}")
+            except Exception as e:
+                logger.warning(f"Failed to overlay background music: {e}")
+                print(f"  ⚠ Background music overlay failed: {e}")
+
+        # Export mastered file
+        mastered_path = wav_path.replace(".wav", "_mastered.wav")
+        if mastered_path == wav_path:
+            mastered_path = wav_path + "_mastered.wav"
+        audio.export(mastered_path, format="wav")
+        print(f"  Mastered audio saved: {mastered_path}")
+        return mastered_path
+
+    except Exception as e:
+        logger.warning(f"Audio post-processing failed: {e}")
+        print(f"  ⚠ Audio post-processing failed (using raw audio): {e}")
         return None
 
 

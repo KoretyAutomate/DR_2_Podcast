@@ -20,7 +20,9 @@ Author: DR_2_Podcast Team
 import asyncio
 import json
 import logging
+import os
 import re
+import sqlite3
 import time
 from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional, Tuple
@@ -61,6 +63,59 @@ JUNK_DOMAINS = {
 def is_junk_url(url: str) -> bool:
     domain = urlparse(url).netloc.lower()
     return any(junk in domain for junk in JUNK_DOMAINS)
+
+
+# --- URL Cache ---
+
+CACHE_TTL_DAYS = 7
+
+
+class PageCache:
+    """SQLite-backed URL cache to avoid re-scraping across pipeline runs."""
+
+    def __init__(self, db_path: str = None, ttl_days: int = CACHE_TTL_DAYS):
+        if db_path is None:
+            db_path = os.path.expanduser("~/.cache/dr2podcast/url_cache.db")
+        self.db_path = db_path
+        self.ttl_seconds = ttl_days * 86400
+
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self.conn = sqlite3.connect(db_path)
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS page_cache "
+            "(url TEXT PRIMARY KEY, title TEXT, content TEXT, word_count INTEGER, fetched_at REAL)"
+        )
+        # Cleanup expired entries
+        cutoff = time.time() - self.ttl_seconds
+        deleted = self.conn.execute("DELETE FROM page_cache WHERE fetched_at < ?", (cutoff,)).rowcount
+        self.conn.commit()
+        if deleted:
+            logger.info(f"PageCache: cleaned {deleted} expired entries")
+
+    def get(self, url: str):
+        """Return a FetchedPage if cached and not expired, else None."""
+        cutoff = time.time() - self.ttl_seconds
+        row = self.conn.execute(
+            "SELECT url, title, content, word_count FROM page_cache WHERE url = ? AND fetched_at > ?",
+            (url, cutoff)
+        ).fetchone()
+        if row:
+            # Import here to avoid circular reference at class definition time
+            return FetchedPage(url=row[0], title=row[1], content=row[2], word_count=row[3])
+        return None
+
+    def put(self, page) -> None:
+        """Store a successfully fetched page in cache."""
+        if page.error or not page.content:
+            return
+        self.conn.execute(
+            "INSERT OR REPLACE INTO page_cache (url, title, content, word_count, fetched_at) VALUES (?, ?, ?, ?, ?)",
+            (page.url, page.title, page.content, page.word_count, time.time())
+        )
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
 
 
 # --- Data Models ---
@@ -178,11 +233,18 @@ class SearchService:
 class ContentFetcher:
     """Async parallel content fetcher."""
 
-    def __init__(self, max_concurrent: int = 10):
+    def __init__(self, max_concurrent: int = 10, cache: PageCache = None):
         self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.cache = cache
 
     async def fetch_page(self, url: str) -> FetchedPage:
         async with self.semaphore:
+            # Check cache first
+            if self.cache:
+                cached = self.cache.get(url)
+                if cached is not None:
+                    logger.debug(f"Cache hit: {url}")
+                    return cached
             try:
                 headers = {"User-Agent": USER_AGENT}
                 async with httpx.AsyncClient(
@@ -203,7 +265,10 @@ class ContentFetcher:
                     if len(text) > max_chars:
                         text = text[:max_chars] + "..."
                     title = soup.title.string.strip() if soup.title and soup.title.string else ""
-                    return FetchedPage(url=url, title=title, content=text, word_count=len(text.split()))
+                    page = FetchedPage(url=url, title=title, content=text, word_count=len(text.split()))
+                    if self.cache:
+                        self.cache.put(page)
+                    return page
             except httpx.HTTPStatusError as e:
                 return FetchedPage(url=url, title="", content="", word_count=0, error=f"HTTP {e.response.status_code}")
             except Exception as e:
@@ -643,7 +708,8 @@ class Orchestrator:
 
         fast_worker = FastWorker(self.fast_client, fast_model) if fast_model_available else None
         search_svc = SearchService(brave_api_key)
-        fetcher = ContentFetcher(max_concurrent=15)
+        self._page_cache = PageCache()
+        fetcher = ContentFetcher(max_concurrent=15, cache=self._page_cache)
 
         self.lead_researcher = ResearchAgent(
             self.smart_client, fast_worker, search_svc, fetcher,

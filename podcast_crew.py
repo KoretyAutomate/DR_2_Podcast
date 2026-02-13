@@ -21,7 +21,7 @@ from typing import List, Optional, Literal
 import soundfile as sf
 import numpy as np
 import wave
-from audio_engine import generate_audio_from_script, clean_script_for_tts
+from audio_engine import generate_audio_from_script, clean_script_for_tts, post_process_audio
 from search_agent import SearxngClient, DeepResearch
 from research_planner import build_research_plan, run_iterative_search, compare_plan_vs_results, run_supplementary_research
 from deep_research_agent import Orchestrator, run_deep_research
@@ -2137,16 +2137,43 @@ finally:
 
 # --- PDF GENERATION STEP ---
 print("\n--- Generating Documentation PDFs ---")
-try:
-    create_pdf("Research Framing", framing_output, "research_framing.pdf")
-    create_pdf("Supporting Scientific Paper", research_task.output.raw, "supporting_paper.pdf")
-    create_pdf("Adversarial Anti-Thesis Paper", adversarial_task.output.raw, "adversarial_paper.pdf")
-    create_pdf("Verified Source Bibliography", source_verification_task.output.raw, "verified_sources_bibliography.pdf")
-    create_pdf("Source of Truth", audit_task.output.raw, "source_of_truth.pdf")
-    if hasattr(accuracy_check_task, 'output') and accuracy_check_task.output:
-        create_pdf("Accuracy Check", accuracy_check_task.output.raw, "accuracy_check.pdf")
-except Exception as e:
-    print(f"Warning: PDF generation failed, but research is complete: {e}")
+pdf_tasks = [
+    ("Research Framing", framing_output, "research_framing.pdf"),
+    ("Supporting Scientific Paper", research_task, "supporting_paper.pdf"),
+    ("Adversarial Anti-Thesis Paper", adversarial_task, "adversarial_paper.pdf"),
+    ("Verified Source Bibliography", source_verification_task, "verified_sources_bibliography.pdf"),
+    ("Source of Truth", audit_task, "source_of_truth.pdf"),
+    ("Accuracy Check", accuracy_check_task, "accuracy_check.pdf"),
+]
+for title, source, filename in pdf_tasks:
+    try:
+        if isinstance(source, str):
+            content = source
+        elif hasattr(source, 'output') and source.output and hasattr(source.output, 'raw'):
+            content = source.output.raw
+        else:
+            print(f"  Skipping {filename}: no output available")
+            continue
+        create_pdf(title, content, filename)
+    except Exception as e:
+        print(f"  Warning: Failed to create {filename}: {e}")
+
+print("\n--- Saving Task Outputs ---")
+task_output_files = [
+    (research_task, "research_output.txt"),
+    (adversarial_task, "adversarial_output.txt"),
+    (source_verification_task, "source_verification.txt"),
+    (audit_task, "source_of_truth.txt"),
+]
+for task_obj, filename in task_output_files:
+    try:
+        if hasattr(task_obj, 'output') and task_obj.output and hasattr(task_obj.output, 'raw') and task_obj.output.raw:
+            outfile = output_dir / filename
+            with open(outfile, 'w') as f:
+                f.write(task_obj.output.raw)
+            print(f"  Saved {filename} ({len(task_obj.output.raw)} chars)")
+    except Exception as e:
+        print(f"  Warning: Could not save {filename}: {e}")
 
 # --- RESEARCH SUMMARY ---
 if deep_reports is not None:
@@ -2233,6 +2260,13 @@ print(f"{'='*60}\n")
 
 # Clean script and generate audio with Kokoro
 cleaned_script = clean_script_for_tts(script_text)
+
+# Save podcast script for review
+script_file = output_dir / "podcast_script.txt"
+with open(script_file, 'w') as f:
+    f.write(script_text)
+print(f"Podcast script saved: {script_file} ({word_count} words)")
+
 output_path = output_dir / "podcast_final_audio.wav"
 
 audio_file = None
@@ -2240,6 +2274,10 @@ try:
     audio_file = generate_audio_from_script(cleaned_script, str(output_path), lang_code=language_config['tts_code'])
     if audio_file:
         audio_file = Path(audio_file)
+        # Post-process: normalize loudness and optionally overlay background music
+        mastered = post_process_audio(str(audio_file))
+        if mastered:
+            audio_file = Path(mastered)
 except Exception as e:
     print(f"✗ ERROR: Kokoro TTS failed: {e}")
     print("  Ensure Kokoro is installed: pip install kokoro>=0.9")
