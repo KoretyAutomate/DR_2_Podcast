@@ -7,7 +7,7 @@
 MODEL_NAME="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
 PORT=8000
 MAX_MODEL_LEN=32768  # 32k context window
-GPU_MEMORY_UTIL=0.9  # Use 90% of GPU memory
+GPU_MEMORY_UTIL=0.8  # Use 80% of GPU memory (~102GB), leaves ~26GB for system/Ollama
 
 echo "=========================================="
 echo "Starting vLLM Server (Docker) for DR_2_Podcast"

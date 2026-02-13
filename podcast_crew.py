@@ -563,7 +563,11 @@ def request_search(search_requests_json: str) -> str:
             Example: [{"query": "creatine RCT cognitive function", "goal": "Find RCTs on creatine and cognition"}]
     """
     try:
-        requests_list = json.loads(search_requests_json)
+        # Handle both JSON string and raw list (LLM sometimes passes list directly)
+        if isinstance(search_requests_json, list):
+            requests_list = search_requests_json
+        else:
+            requests_list = json.loads(search_requests_json)
         if not isinstance(requests_list, list):
             return "ERROR: Input must be a JSON array of {query, goal} objects."
         valid = []
@@ -578,7 +582,7 @@ def request_search(search_requests_json: str) -> str:
             f"ListResearchSources/ReadResearchSource after the search round completes. "
             f"Continue your analysis with existing sources."
         )
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         return 'ERROR: Invalid JSON. Provide a JSON array like: [{"query": "...", "goal": "..."}]'
 
 
