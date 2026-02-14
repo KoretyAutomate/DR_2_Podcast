@@ -157,38 +157,38 @@ CHARACTERS = {
     "Kaz": {
         "gender": "male",
         "voice_model": "male_voice",  # TTS-specific, will update in #3
-        "base_personality": "Enthusiastic science advocate, optimistic, data-driven"
+        "base_personality": "Enthusiastic science communicator, clear explainer, data-driven"
     },
     "Erika": {
         "gender": "female",
         "voice_model": "female_voice",  # TTS-specific, will update in #3
-        "base_personality": "Skeptical analyst, cautious, evidence-focused"
+        "base_personality": "Curious and sharp interviewer, asks what the audience is thinking"
     }
 }
 
 # --- ROLE ASSIGNMENT (Dynamic per session) ---
 def assign_roles() -> dict:
-    """Randomly assign Kaz and Erika to pro/con roles for this session."""
+    """Randomly assign Kaz and Erika to presenter/questioner roles for this session."""
     characters = list(CHARACTERS.keys())
     random.shuffle(characters)
 
     role_assignment = {
-        "pro": {
+        "presenter": {
             "character": characters[0],
-            "stance": "supporting",
+            "stance": "teaching",
             "personality": CHARACTERS[characters[0]]["base_personality"]
         },
-        "con": {
+        "questioner": {
             "character": characters[1],
-            "stance": "critical",
+            "stance": "curious",
             "personality": CHARACTERS[characters[1]]["base_personality"]
         }
     }
 
     print(f"\n{'='*60}")
     print(f"SESSION ROLE ASSIGNMENT:")
-    print(f"  Supporting: {role_assignment['pro']['character']} ({CHARACTERS[characters[0]]['gender']})")
-    print(f"  Critical: {role_assignment['con']['character']} ({CHARACTERS[characters[1]]['gender']})")
+    print(f"  Presenter: {role_assignment['presenter']['character']} ({CHARACTERS[characters[0]]['gender']})")
+    print(f"  Questioner: {role_assignment['questioner']['character']} ({CHARACTERS[characters[1]]['gender']})")
     print(f"{'='*60}\n")
 
     return role_assignment
@@ -874,8 +874,8 @@ researcher = Agent(
         f'(2) Observatory/cohort studies (label as "Observational"), '
         f'(3) Animal/in vitro studies (label as "Animal Model" or "Early Signal"). '
         f'\n'
-        f'In this podcast, you will be portrayed by "{SESSION_ROLES["pro"]["character"]}" '
-        f'who has a {SESSION_ROLES["pro"]["personality"]} approach. '
+        f'In this podcast, you will be portrayed by "{SESSION_ROLES["presenter"]["character"]}" '
+        f'who has a {SESSION_ROLES["presenter"]["personality"]} approach. '
         f'\n\n'
         f'You have access to a Research Library containing all sources from the deep research pre-scan. '
         f'Use ListResearchSources to browse, ReadResearchSource to read specific ones. '
@@ -931,8 +931,8 @@ counter_researcher = Agent(
         f'Label all evidence appropriately (RCT, Observational, Animal Model). '
         f'Focus on WHY the original claims might be wrong (confounders, bias, small samples). '
         f'\n'
-        f'In this podcast, you will be portrayed by "{SESSION_ROLES["con"]["character"]}" '
-        f'who has a {SESSION_ROLES["con"]["personality"]} approach. '
+        f'In this podcast, you will be portrayed by "{SESSION_ROLES["questioner"]["character"]}" '
+        f'who has a {SESSION_ROLES["questioner"]["personality"]} approach. '
         f'\n\n'
         f'You have access to a Research Library containing all sources from the deep research pre-scan. '
         f'Use ListResearchSources to browse, ReadResearchSource to read specific ones. '
@@ -949,22 +949,27 @@ counter_researcher = Agent(
 scriptwriter = Agent(
     role='Podcast Producer (The Showrunner)',
     goal=(
-        f'Transform research into a Masters/PhD-level debate on "{topic_name}". '
-        f'Target: Intellectual, curious, slightly skeptical professionals. {english_instruction}'
+        f'Transform research into an engaging, in-depth teaching conversation on "{topic_name}". '
+        f'Target: Intellectual, curious professionals who want to learn. {english_instruction}'
     ),
     backstory=(
         f'Science Communicator targeting Post-Graduate Professionals (Masters/PhD level). '
-        f'Tone: Think "The Economist" or "Huberman Lab" - intellectual, curious, slightly skeptical.\n\n'
+        f'Tone: Think "Huberman Lab" or "Lex Fridman" - intellectual, curious, deep-diving.\n\n'
         f'CRITICAL RULES:\n'
         f'  1. NO BASICS: Do NOT define basic terms like "DNA", "inflation", "supply chain", '
         f'     "peer review", "RCT", or "meta-analysis". Assume the listener knows them.\n'
-        f'  2. LENGTH: Generate exactly 1,500 words (approx 10 minutes).\n'
-        f'  3. FORMAT: Script MUST use "Host 1:" (The Expert) and "Host 2:" (The Skeptic).\n'
-        f'  4. DYNAMIC: Host 2 must ask hard questions based on the "Caveat Box" from the Auditor. '
-        f'     Host 2 represents the listener\'s doubts.\n'
+        f'  2. LENGTH: Generate exactly 4,500 words (approx 30 minutes at 150 wpm). This is CRITICAL.\n'
+        f'  3. FORMAT: Script MUST use "{SESSION_ROLES["presenter"]["character"]}:" (Presenter) '
+        f'     and "{SESSION_ROLES["questioner"]["character"]}:" (Questioner).\n'
+        f'  4. TEACHING STYLE: The Presenter explains the topic systematically. '
+        f'     The Questioner asks bridging questions on behalf of the audience:\n'
+        f'     - Clarify jargon or uncommon terms\n'
+        f'     - Request real-world examples and analogies\n'
+        f'     - Occasionally push back on weak or debated evidence\n'
+        f'  5. DEPTH: Cover 3-4 main aspects of the topic thoroughly with mechanisms, evidence, and implications.\n'
         f'\n'
-        f'Your dialogue should dive into nuance, trade-offs, and disputed evidence. '
-        f'The audience wants intellectual depth, not simplified explanations. '
+        f'Your dialogue should dive into nuance, trade-offs, and practical implications. '
+        f'The questioner keeps it accessible without dumbing it down. '
         f'{english_instruction}'
     ),
     llm=dgx_llm_creative,
@@ -975,20 +980,22 @@ personality = Agent(
     role='Podcast Personality (The Editor)',
     goal=(
         f'Polish the "{topic_name}" script for natural verbal delivery at Masters-level. '
-        f'Target: Exactly 1,500 words (10 minutes). '
+        f'Target: Exactly 4,500 words (30 minutes). '
         f'{target_instruction}'
     ),
     backstory=(
-        f'Editor for high-end intellectual podcasts (Huberman Lab, The Economist Audio). '
+        f'Editor for high-end intellectual podcasts (Huberman Lab, Lex Fridman). '
         f'Your audience has advanced degrees - they want depth, not hand-holding.\n\n'
         f'EDITING RULES:\n'
         f'  - Remove any definitions of basic scientific concepts\n'
-        f'  - Ensure Host 2 challenges Host 1 on weak evidence (from Caveat Box)\n'
+        f'  - Ensure the questioner\'s questions feel natural and audience-aligned\n'
         f'  - Keep technical language intact (no dumbing down)\n'
-        f'  - Target exactly 1,500 words for 10-minute runtime\n'
+        f'  - Target exactly 4,500 words for 30-minute runtime\n'
+        f'  - Ensure the opening follows the 3-part structure: welcome → hook question → topic shift\n'
+        f'  - Teaching flow: presenter explains, questioner bridges gaps for listeners\n'
         f'\n'
-        f'If script is too short, add nuance and disputed evidence. '
-        f'If too long, cut repetition while preserving technical depth. '
+        f'If script is too short, add more depth, examples, and practical implications. '
+        f'If too long, cut repetition while preserving teaching flow. '
         f'{target_instruction}'
     ),
     llm=dgx_llm_creative,
@@ -1267,33 +1274,46 @@ audit_task = Task(
 
 script_task = Task(
     description=(
-        f"Using the audit report, write a podcast dialogue about \"{topic_name}\" "
-        f"featuring {SESSION_ROLES['pro']['character']} vs {SESSION_ROLES['con']['character']}.\n\n"
-        f"TOPIC FOCUS — every exchange must be about the health topic. Suggested structure:\n"
-        f"  1. Open: What high GI food means in plain terms and why it matters\n"
-        f"  2. Body: The main health risks (blood sugar spikes, insulin resistance, cardiovascular, etc.)\n"
-        f"  3. Disagreement: Which risks are proven vs still debated\n"
-        f"  4. Close: Practical takeaway for listeners\n\n"
-        f"DO NOT discuss: peer review, journal quality, source trustworthiness, research methodology.\n"
-        f"If the audit report contains that commentary, skip it. Extract only the health conclusions.\n\n"
+        f"Using the audit report, write a 4,500-word podcast dialogue about \"{topic_name}\" "
+        f"featuring {SESSION_ROLES['presenter']['character']} (presenter) and {SESSION_ROLES['questioner']['character']} (questioner).\n\n"
+        f"STRUCTURE:\n"
+        f"  1. OPENING (joint welcome):\n"
+        f"     a) Both hosts greet listeners with a short, warm welcome to the channel\n"
+        f"     b) One host hooks listeners with a relatable question (e.g., 'Have you ever wondered why...?' "
+        f"or 'Have you experienced...?') — the other responds naturally\n"
+        f"     c) Transition into the topic: 'Today, we're going to explore...'\n\n"
+        f"  2. BODY (teaching style — this is the bulk, cover 3-4 main aspects in depth):\n"
+        f"     - {SESSION_ROLES['presenter']['character']} explains the topic systematically: mechanisms, evidence, practical implications\n"
+        f"     - {SESSION_ROLES['questioner']['character']} asks bridging questions on behalf of listeners:\n"
+        f"       * Clarify jargon or uncommon terms\n"
+        f"       * Ask for real-world examples and analogies\n"
+        f"       * Occasionally push back on weak or debated evidence\n"
+        f"     - Each aspect should include: what the science says, why it matters, and what listeners can do\n\n"
+        f"  3. CLOSING:\n"
+        f"     - Summarize key takeaways\n"
+        f"     - Practical advice for listeners\n"
+        f"     - Sign off together\n\n"
         f"SIMPLIFY THE SCIENCE (not the research process):\n"
         f"- 'Glycemic index' → 'a score that measures how fast a food raises blood sugar'\n"
         f"- 'Insulin resistance' → 'when your body stops responding properly to insulin'\n"
         f"- 'Postprandial glucose spike' → 'a sharp rise in blood sugar after eating'\n\n"
         f"CHARACTER ROLES:\n"
-        f"  - {SESSION_ROLES['pro']['character']}: argues the health risks ARE significant, "
-        f"{SESSION_ROLES['pro']['personality']}\n"
-        f"  - {SESSION_ROLES['con']['character']}: argues some risks are overstated or context-dependent, "
-        f"{SESSION_ROLES['con']['personality']}\n\n"
+        f"  - {SESSION_ROLES['presenter']['character']} (Presenter): presents evidence and explains the topic, "
+        f"{SESSION_ROLES['presenter']['personality']}\n"
+        f"  - {SESSION_ROLES['questioner']['character']} (Questioner): asks questions the audience would ask, bridges gaps, "
+        f"{SESSION_ROLES['questioner']['personality']}\n\n"
         f"Format STRICTLY as:\n"
-        f"{SESSION_ROLES['pro']['character']}: [dialogue]\n"
-        f"{SESSION_ROLES['con']['character']}: [dialogue]\n\n"
+        f"{SESSION_ROLES['presenter']['character']}: [dialogue]\n"
+        f"{SESSION_ROLES['questioner']['character']}: [dialogue]\n\n"
+        f"TARGET LENGTH: 4,500 words (30 minutes at 150 wpm). This is CRITICAL — do not write less.\n"
         f"Maintain consistent roles throughout. NO role switching mid-conversation. "
         f"{english_instruction}"
     ),
     expected_output=(
-        f"Dialogue about the health risks of {topic_name} between {SESSION_ROLES['pro']['character']} (risks are real) "
-        f"and {SESSION_ROLES['con']['character']} (some risks are overstated). Every line discusses the topic. "
+        f"A 4,500-word teaching-style dialogue about {topic_name} between "
+        f"{SESSION_ROLES['presenter']['character']} (presents and explains) "
+        f"and {SESSION_ROLES['questioner']['character']} (asks bridging questions). "
+        f"Opens with welcome → hook → topic shift. Every line discusses the topic. "
         f"{english_instruction}"
     ),
     agent=scriptwriter,
@@ -1308,14 +1328,14 @@ if language != 'en':
             f"Translate the podcast script and key Source-of-Truth findings about "
             f"{topic_name} into {language_config['name']}.\n\n"
             f"RULES:\n"
-            f"- Preserve Host 1: / Host 2: format exactly\n"
+            f"- Preserve {SESSION_ROLES['presenter']['character']}: / {SESSION_ROLES['questioner']['character']}: format exactly\n"
             f"- Preserve scientific terminology accuracy\n"
             f"- Translate for natural spoken delivery, not literal translation\n"
             f"- Keep proper nouns, study names, journal names in English\n"
-            f"- Maintain debate structure and argumentation flow\n"
+            f"- Maintain teaching structure and conversational flow\n"
             f"{target_instruction}"
         ),
-        expected_output=f"Complete translated script in {language_config['name']} with Host 1:/Host 2: format.",
+        expected_output=f"Complete translated script in {language_config['name']} with {SESSION_ROLES['presenter']['character']}:/{SESSION_ROLES['questioner']['character']}: format.",
         agent=scriptwriter,
         context=[script_task, audit_task],
     )
@@ -1325,20 +1345,24 @@ natural_language_task = Task(
         f"Polish the \"{topic_name}\" dialogue for natural spoken delivery at Masters-level.\n\n"
         f"MASTERS-LEVEL REQUIREMENTS:\n"
         f"- Remove ALL definitions of basic scientific concepts (DNA, peer review, RCT, meta-analysis)\n"
-        f"- Ensure Host 2 challenges Host 1 on weak evidence (refer to Caveat Box from audit)\n"
+        f"- Ensure the questioner's questions feel natural and audience-aligned\n"
         f"- Keep technical language intact - NO dumbing down\n"
-        f"- Target exactly 1,500 words (10 minutes at 150 wpm)\n\n"
+        f"- Target exactly 4,500 words (30 minutes at 150 wpm)\n\n"
         f"MAINTAIN ROLES:\n"
-        f"  - Host 1 ({SESSION_ROLES['pro']['character']}): The Expert - presents evidence\n"
-        f"  - Host 2 ({SESSION_ROLES['con']['character']}): The Skeptic - challenges weak claims\n\n"
-        f"Format:\nHost 1: [dialogue]\n"
-        f"Host 2: [dialogue]\n\n"
+        f"  - {SESSION_ROLES['presenter']['character']} (Presenter): explains and teaches the topic\n"
+        f"  - {SESSION_ROLES['questioner']['character']} (Questioner): asks bridging questions, occasionally pushes back\n\n"
+        f"OPENING STRUCTURE (verify this is intact):\n"
+        f"  1. Both hosts greet listeners warmly\n"
+        f"  2. Hook question to engage the audience\n"
+        f"  3. Transition into the topic\n\n"
+        f"Format:\n{SESSION_ROLES['presenter']['character']}: [dialogue]\n"
+        f"{SESSION_ROLES['questioner']['character']}: [dialogue]\n\n"
         f"Remove meta-tags, markdown, stage directions. Dialogue only. "
         f"{target_instruction}"
     ),
     expected_output=(
-        f"Final Masters-level dialogue about {topic_name}, exactly 1,500 words. "
-        f"No basic definitions. Host 2 challenges weak evidence. "
+        f"Final Masters-level dialogue about {topic_name}, exactly 4,500 words. "
+        f"No basic definitions. Teaching style with engaging 3-part opening. "
         f"{target_instruction}"
     ),
     agent=personality,
@@ -2228,8 +2252,8 @@ session_metadata = (
     f"Topic: {topic_name}\n\n"
     f"Language: {language_config['name']} ({language})\n\n"
     f"Character Assignments:\n"
-    f"  {SESSION_ROLES['pro']['character']}: Supporting ({SESSION_ROLES['pro']['personality']})\n"
-    f"  {SESSION_ROLES['con']['character']}: Critical ({SESSION_ROLES['con']['personality']})\n"
+    f"  {SESSION_ROLES['presenter']['character']}: Presenter ({SESSION_ROLES['presenter']['personality']})\n"
+    f"  {SESSION_ROLES['questioner']['character']}: Questioner ({SESSION_ROLES['questioner']['personality']})\n"
 )
 metadata_file = output_dir / "session_metadata.txt"
 with open(metadata_file, 'w') as f:
@@ -2275,13 +2299,13 @@ print(f"DURATION CHECK")
 print(f"{'='*60}")
 print(f"Script word count: {word_count}")
 print(f"Estimated duration: {estimated_duration_min:.1f} minutes")
-print(f"Target: 10 minutes (1,500 words)")
+print(f"Target: 30 minutes (4,500 words)")
 
-if word_count < 1350:
-    print(f"⚠ WARNING: Script is SHORT ({word_count} words < 1,500 target)")
+if word_count < 4050:
+    print(f"⚠ WARNING: Script is SHORT ({word_count} words < 4,500 target)")
     print(f"  Estimated {estimated_duration_min:.1f} min")
-elif word_count > 1650:
-    print(f"⚠ WARNING: Script is LONG ({word_count} words > 1,500 target)")
+elif word_count > 4950:
+    print(f"⚠ WARNING: Script is LONG ({word_count} words > 4,500 target)")
     print(f"  Estimated {estimated_duration_min:.1f} min")
 else:
     print(f"✓ Script length GOOD ({word_count} words)")
@@ -2326,13 +2350,13 @@ if audio_file and audio_file.exists():
         print(f"AUDIO DURATION VERIFICATION")
         print(f"{'='*60}")
         print(f"Actual audio duration: {duration_minutes:.2f} minutes ({duration_seconds:.1f} seconds)")
-        print(f"Target range: 9-11 minutes")
+        print(f"Target range: 27-33 minutes")
 
-        if duration_minutes < 9.0:
-            print(f"✗ FAILED: Audio is TOO SHORT ({duration_minutes:.2f} min < 9 min)")
+        if duration_minutes < 27.0:
+            print(f"✗ FAILED: Audio is TOO SHORT ({duration_minutes:.2f} min < 27 min)")
             print(f"  ACTION: Re-run with longer script")
-        elif duration_minutes > 11.0:
-            print(f"✗ FAILED: Audio is TOO LONG ({duration_minutes:.2f} min > 11 min)")
+        elif duration_minutes > 33.0:
+            print(f"✗ FAILED: Audio is TOO LONG ({duration_minutes:.2f} min > 33 min)")
             print(f"  ACTION: Re-run with shorter script")
         else:
             print(f"✓ SUCCESS: Audio duration within acceptable range")
