@@ -103,6 +103,10 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         if not line:
             continue
 
+        # Stop at section separator (--- marks end of dialogue, start of appendix/notes)
+        if re.match(r'^-{3,}$', line):
+            break
+
         # Check for Speaker Switch
         if line.startswith("Host 1:") or line.startswith("Dr. Data:") or line.startswith("Kaz:"):
             # Process previous buffer
@@ -143,7 +147,9 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             buffer_text = line.split(":", 1)[1].strip() if ":" in line else ""
 
         else:
-            # Continuation of current speaker
+            # Continuation of current speaker (or unlabeled opening — default to Host 1)
+            if current_speaker is None:
+                current_speaker = 1
             if buffer_text:
                 buffer_text += " " + line
             else:
@@ -265,8 +271,10 @@ def clean_script_for_tts(script_text: str) -> str:
     for old, new in unicode_map.items():
         clean = clean.replace(old, new)
 
-    # Normalize whitespace
-    clean = re.sub(r'\s+', ' ', clean).strip()
+    # Normalize whitespace within lines, but preserve line breaks
+    clean = re.sub(r'[^\S\n]+', ' ', clean)  # collapse spaces/tabs but keep \n
+    clean = re.sub(r'\n{3,}', '\n\n', clean)  # collapse excessive blank lines
+    clean = clean.strip()
 
     return clean
 
