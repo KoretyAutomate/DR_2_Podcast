@@ -335,6 +335,7 @@ dgx_llm_creative = LLM(
     timeout=600,
     temperature=0.7,  # Creative mode for Producer/Personality
     max_tokens=12000,  # Scriptwriter needs more output for 4,500-word scripts; leaves 20k for input
+    frequency_penalty=0.3,  # Prevent repetition loops in long outputs (especially Japanese)
     stop=["<|im_end|>", "<|endoftext|>"]
 )
 
@@ -2268,24 +2269,43 @@ print("\n--- Generating Multi-Voice Podcast Audio (Kokoro TTS) ---")
 # Check script length before generation
 # Get the polished script from natural_language_task (not the last crew result, which is accuracy_check)
 script_text = natural_language_task.output.raw if hasattr(natural_language_task, 'output') and natural_language_task.output else result.raw
-word_count = len(script_text.split())
-estimated_duration_min = word_count / 150  # 150 words per minute
+
+# Language-aware word/character count and duration estimation
+if language == 'ja':
+    # Japanese: count characters (excluding spaces/punctuation/newlines), ~500 chars/min speaking rate
+    import re
+    char_count = len(re.sub(r'[\s\n\r\t　：:「」、。・（）\-\—\*#]', '', script_text))
+    script_length = char_count
+    length_unit = "chars"
+    estimated_duration_min = char_count / 500
+    # 30 min target = 15,000 chars; ±10% = 13,500–16,500
+    target_length = 15000
+    target_low = 13500
+    target_high = 16500
+else:
+    # English and other space-delimited languages: count words, 150 wpm
+    script_length = len(script_text.split())
+    length_unit = "words"
+    estimated_duration_min = script_length / 150
+    target_length = 4500
+    target_low = 4050
+    target_high = 4950
 
 print(f"\n{'='*60}")
 print(f"DURATION CHECK")
 print(f"{'='*60}")
-print(f"Script word count: {word_count}")
+print(f"Script length: {script_length} {length_unit}")
 print(f"Estimated duration: {estimated_duration_min:.1f} minutes")
-print(f"Target: 30 minutes (4,500 words)")
+print(f"Target: 30 minutes ({target_length} {length_unit})")
 
-if word_count < 4050:
-    print(f"⚠ WARNING: Script is SHORT ({word_count} words < 4,500 target)")
+if script_length < target_low:
+    print(f"⚠ WARNING: Script is SHORT ({script_length} {length_unit} < {target_length} target)")
     print(f"  Estimated {estimated_duration_min:.1f} min")
-elif word_count > 4950:
-    print(f"⚠ WARNING: Script is LONG ({word_count} words > 4,500 target)")
+elif script_length > target_high:
+    print(f"⚠ WARNING: Script is LONG ({script_length} {length_unit} > {target_length} target)")
     print(f"  Estimated {estimated_duration_min:.1f} min")
 else:
-    print(f"✓ Script length GOOD ({word_count} words)")
+    print(f"✓ Script length GOOD ({script_length} {length_unit})")
     print(f"  Estimated {estimated_duration_min:.1f} min")
 print(f"{'='*60}\n")
 
@@ -2296,7 +2316,7 @@ cleaned_script = clean_script_for_tts(script_text)
 script_file = output_dir / "podcast_script.txt"
 with open(script_file, 'w') as f:
     f.write(script_text)
-print(f"Podcast script saved: {script_file} ({word_count} words)")
+print(f"Podcast script saved: {script_file} ({script_length} {length_unit})")
 
 output_path = output_dir / "podcast_final_audio.wav"
 
