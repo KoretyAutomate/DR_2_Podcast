@@ -1,10 +1,10 @@
 #!/bin/bash
 # vLLM Docker Server Startup Script for DR_2_Podcast
-# Model: DeepSeek-R1-Distill-Qwen-32B
+# Model: Qwen2.5-32B-Instruct-AWQ
 # Port: 8000
 
 # Configuration
-MODEL_NAME="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+MODEL_NAME="Qwen/Qwen2.5-32B-Instruct-AWQ"
 PORT=8000
 MAX_MODEL_LEN=32768  # 32k context window
 GPU_MEMORY_UTIL=0.8  # Use 80% of GPU memory (~102GB), leaves ~26GB for system/Ollama
