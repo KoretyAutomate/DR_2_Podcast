@@ -323,7 +323,7 @@ dgx_llm_strict = LLM(
     provider="openai",
     timeout=600,
     temperature=0.1,  # Strict mode for Researcher/Auditor
-    max_tokens=16000,  # Safe limit for 32k context (leaves room for input)
+    max_tokens=8000,  # Researchers/auditors produce short structured outputs; leaves 24k for input
     stop=["<|im_end|>", "<|endoftext|>"]
 )
 
@@ -334,7 +334,7 @@ dgx_llm_creative = LLM(
     provider="openai",
     timeout=600,
     temperature=0.7,  # Creative mode for Producer/Personality
-    max_tokens=16000,  # Safe limit for 32k context (leaves room for input)
+    max_tokens=12000,  # Scriptwriter needs more output for 4,500-word scripts; leaves 20k for input
     stop=["<|im_end|>", "<|endoftext|>"]
 )
 
