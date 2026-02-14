@@ -5,7 +5,7 @@ Kokoro TTS Audio Engine for Deep Research Podcast
 Generates high-quality, multi-speaker podcast audio using Kokoro-82M (local TTS).
 
 Features:
-- Dual-voice system: Host 1 (bm_george - British Male Expert)
+- Dual-voice system: Host 1 (am_fenrir - American Male Expert)
                      Host 2 (af_heart - American Female Skeptic)
 - Script parsing with speaker detection
 - Audio stitching and WAV export
@@ -24,13 +24,13 @@ from pydub import AudioSegment
 logger = logging.getLogger(__name__)
 
 # Voice Configuration
-VOICE_HOST_1 = 'bm_george'  # British Male (The Expert) - default English
-VOICE_HOST_2 = 'af_nicole'  # American Female (The Skeptic) - default English
+VOICE_HOST_1 = 'am_fenrir'  # American Male (The Expert) - default English
+VOICE_HOST_2 = 'af_heart'   # American Female (The Skeptic) - default English
 LANG_CODE = 'a'  # American English (default)
 
 # Per-language voice mapping for Kokoro TTS
 VOICE_MAP = {
-    'a': {'host1': 'bm_george', 'host2': 'af_nicole'},   # English
+    'a': {'host1': 'am_fenrir', 'host2': 'af_heart'},     # English
     'j': {'host1': 'jm_kumo',   'host2': 'jf_alpha'},    # Japanese
 }
 
