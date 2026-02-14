@@ -6,7 +6,7 @@ Generates high-quality, multi-speaker podcast audio using Kokoro-82M (local TTS)
 
 Features:
 - Dual-voice system: Host 1 (bm_george - British Male Expert)
-                     Host 2 (af_nicole - American Female Skeptic)
+                     Host 2 (af_heart - American Female Skeptic)
 - Script parsing with speaker detection
 - Audio stitching and WAV export
 """
