@@ -108,23 +108,19 @@ output_dir = create_timestamped_output_dir(base_output_dir)
 setup_logging(output_dir)
 
 # --- TOPIC CONFIGURATION ---
-def get_topic():
-    """
-    Get podcast topic from multiple sources (priority order):
-    1. Command-line argument (--topic)
-    2. Environment variable (PODCAST_TOPIC)
-    3. Default topic (for backward compatibility)
-    """
+def parse_arguments():
+    """Parse command-line arguments for topic and language."""
     parser = argparse.ArgumentParser(
         description='Generate a research-driven debate podcast on any scientific topic.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python podcast_crew.py --topic "effects of meditation on brain plasticity"
-  python podcast_crew.py --topic "climate change impact on marine ecosystems"
+  python podcast_crew.py --topic "effects of meditation on brain plasticity" --language en
+  python podcast_crew.py --topic "climate change impact on marine ecosystems" --language ja
 
-Environment variable:
+Environment variables:
   export PODCAST_TOPIC="your topic here"
+  export PODCAST_LANGUAGE=ja
   python podcast_crew.py
         """
     )
@@ -133,11 +129,21 @@ Environment variable:
         type=str,
         help='Scientific topic for podcast research and debate'
     )
+    parser.add_argument(
+        '--language',
+        type=str,
+        choices=['en', 'ja'],
+        help='Language for podcast generation (en=English, ja=Japanese)'
+    )
+    return parser.parse_args()
 
-    # Parse known args to avoid conflicts with other argument parsers (e.g., --language)
-    args, _ = parser.parse_known_args()
-
-    # Priority: CLI arg > env var > default
+def get_topic(args):
+    """
+    Get podcast topic from multiple sources (priority order):
+    1. Command-line argument (--topic)
+    2. Environment variable (PODCAST_TOPIC)
+    3. Default topic
+    """
     if args.topic:
         topic = args.topic
         print(f"Using topic from command-line: {topic}")
@@ -147,10 +153,28 @@ Environment variable:
     else:
         topic = 'scientific benefit of coffee intake to increase productivity during the day'
         print(f"Using default topic: {topic}")
-
     return topic
 
-topic_name = get_topic()
+def get_language(args):
+    """
+    Get podcast language from multiple sources (priority order):
+    1. Command-line argument (--language)
+    2. Environment variable (PODCAST_LANGUAGE)
+    3. Default language (English)
+    """
+    lang_code = 'en' # Default
+    if args.language:
+        lang_code = args.language
+        print(f"Using language from command-line: {SUPPORTED_LANGUAGES[lang_code]['name']}")
+    elif os.getenv("PODCAST_LANGUAGE") and os.getenv("PODCAST_LANGUAGE") in SUPPORTED_LANGUAGES:
+        lang_code = os.getenv("PODCAST_LANGUAGE")
+        print(f"Using language from environment: {SUPPORTED_LANGUAGES[lang_code]['name']}")
+    else:
+        print(f"Using default language: {SUPPORTED_LANGUAGES[lang_code]['name']}")
+    return lang_code
+
+args = parse_arguments()
+topic_name = get_topic(args)
 
 # --- CHARACTER CONFIGURATION ---
 CHARACTERS = {
@@ -225,54 +249,7 @@ SUPPORTED_LANGUAGES = {
     }
 }
 
-def get_language():
-    """
-    Get podcast language from multiple sources (priority order):
-    1. Command-line argument (--language)
-    2. Environment variable (PODCAST_LANGUAGE)
-    3. Default language (English)
-    """
-    parser = argparse.ArgumentParser(
-        description='Generate a research-driven debate podcast in English or Japanese.',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Language Options:
-  en    English (default)
-  ja    日本語 (Japanese)
-
-Examples:
-  python podcast_crew.py --language ja
-  python podcast_crew.py --language en
-
-Environment variable:
-  export PODCAST_LANGUAGE=ja
-  python podcast_crew.py
-        """
-    )
-    parser.add_argument(
-        '--language',
-        type=str,
-        choices=['en', 'ja'],
-        help='Language for podcast generation (en=English, ja=Japanese)'
-    )
-
-    # Parse known args to avoid conflicts with other argument parsers
-    args, _ = parser.parse_known_args()
-
-    # Priority: CLI arg > env var > default
-    if args.language:
-        lang_code = args.language
-        print(f"Using language from command-line: {SUPPORTED_LANGUAGES[lang_code]['name']}")
-    elif os.getenv("PODCAST_LANGUAGE") and os.getenv("PODCAST_LANGUAGE") in SUPPORTED_LANGUAGES:
-        lang_code = os.getenv("PODCAST_LANGUAGE")
-        print(f"Using language from environment: {SUPPORTED_LANGUAGES[lang_code]['name']}")
-    else:
-        lang_code = 'en'
-        print(f"Using default language: {SUPPORTED_LANGUAGES[lang_code]['name']}")
-
-    return lang_code
-
-language = get_language()
+language = get_language(args)
 language_config = SUPPORTED_LANGUAGES[language]
 # English-first reasoning: all research/reasoning phases use English,
 # only post-translation phases (polish, show notes, accuracy check) use target language.
