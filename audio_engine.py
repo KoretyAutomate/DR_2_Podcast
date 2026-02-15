@@ -18,6 +18,7 @@ import torch
 import numpy as np
 import re
 import os
+import random
 from pathlib import Path
 
 from pydub import AudioSegment
@@ -194,44 +195,73 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         return None
 
 
-def post_process_audio(wav_path: str, music_prompt: str = "lofi hip hop beat, chill, study") -> str:
+def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav") -> str:
     """
-    Post-process raw Kokoro TTS output: generate background music and mix it.
+    Post-process raw Kokoro TTS output: select background music from library or generate it, then mix.
 
     Args:
         wav_path: Path to the raw WAV file (24kHz, mono)
-        music_prompt: Description of the music to generate
+        bgm_target: Filename in 'Podcast BGM' folder OR 'random' OR music description for generation.
+                    Defaults to "Interesting BGM.wav".
 
     Returns:
         Path to the mastered WAV file, or None if processing failed
     """
     try:
-        # Import here to avoid circular dependencies or early load issues
+        # Import here to avoid circular dependencies
         from music_engine import MusicGenerator
         from audio_mixer import AudioMixer
         
         logger.info(f"Post-processing audio: {wav_path}")
         
-        # 1. Generate Music
-        music_gen = MusicGenerator()
-        # Estimate duration needed based on file size (approximate)
-        # 24kHz * 4 bytes (float32) = 96kb/s
-        file_size = os.path.getsize(wav_path)
-        duration_est = file_size / (24000 * 4) 
-        
-        # Generate 30s loopable segment (MusicGen is slow for long generation)
-        music_path = str(Path(wav_path).parent / "bgm_generated.wav")
-        
-        # Check if we already generated music for this run (optimization)
-        if not os.path.exists(music_path):
-             # Generate 30s of music to loop
-            generated_music = music_gen.generate_music(music_prompt, duration=30, output_filename=music_path)
-            if not generated_music:
-                logger.warning("Music generation failed. Skipping BGM.")
-                return wav_path # Return original info
-            music_path = generated_music
+        BGM_LIBRARY_DIR = Path(__file__).parent / "Podcast BGM"
+        music_path = None
 
-        # 2. Mix
+        # 1. Select Music from Library
+        if BGM_LIBRARY_DIR.exists():
+            if bgm_target == "random":
+                # Pick random .wav file
+                files = list(BGM_LIBRARY_DIR.glob("*.wav"))
+                if files:
+                    selected = random.choice(files)
+                    music_path = str(selected)
+                    logger.info(f"Selected random BGM from library: {selected.name}")
+                else:
+                    logger.warning("BGM Library is empty. Falling back to generation.")
+            
+            elif (BGM_LIBRARY_DIR / bgm_target).exists():
+                # Specific file found
+                music_path = str(BGM_LIBRARY_DIR / bgm_target)
+                logger.info(f"Selected specific BGM from library: {bgm_target}")
+            
+            elif bgm_target.endswith(".wav"):
+                 # Requested specific file but not found
+                 logger.warning(f"Requested BGM '{bgm_target}' not found in library.")
+                 # Fallback to random if possible? Or interesting?
+                 # User said: "When nothing is mentioned, default ... Interesting BGM.wav"
+                 # If specifically requested file is missing, let's try Interesting BGM.wav
+                 default_bgm = BGM_LIBRARY_DIR / "Interesting BGM.wav"
+                 if default_bgm.exists():
+                     music_path = str(default_bgm)
+                     logger.warning(f"Falling back to default: Interesting BGM.wav")
+        
+        # 2. Fallback to MusicGen if no music selected yet
+        if not music_path:
+            logger.info("Generating new BGM (Library file not found or empty)...")
+            music_gen = MusicGenerator()
+            
+            # Use bgm_target as prompt if it doesn't look like a filename, otherwise default prompt
+            prompt = bgm_target if " " in bgm_target and not bgm_target.endswith(".wav") else "lofi hip hop beat, chill, study"
+            
+            music_path = str(Path(wav_path).parent / "bgm_generated.wav")
+            if not os.path.exists(music_path):
+                generated_music = music_gen.generate_music(prompt, duration=30, output_filename=music_path)
+                if not generated_music:
+                    logger.warning("Music generation failed. Skipping BGM.")
+                    return wav_path 
+                music_path = generated_music
+
+        # 3. Mix
         mixer = AudioMixer()
         mixed_path = wav_path.replace(".wav", "_mixed.wav")
         
@@ -241,7 +271,6 @@ def post_process_audio(wav_path: str, music_prompt: str = "lofi hip hop beat, ch
             logger.info(f"Mastered audio saved: {mixed_path}")
             return mixed_path
         else:
-            logger.warning("Mixing failed. Returning original audio.")
             return wav_path
 
     except Exception as e:

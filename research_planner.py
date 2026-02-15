@@ -429,7 +429,7 @@ async def run_iterative_search(
             # Dynamic result scaling: fetch more results for weaker aspects
             results_per_query = max_results_per_query
             if aspect.evidence_level == "none":
-                results_per_query = min(max_results_per_query * 2, 20)
+                results_per_query = min(max_results_per_query * 2, 40)
 
             # Search with SearXNG (full content)
             if use_searxng:

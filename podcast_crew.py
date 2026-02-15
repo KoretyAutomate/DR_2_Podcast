@@ -88,10 +88,7 @@ def setup_logging(output_dir: Path):
 
 # --- INITIALIZATION ---
 load_dotenv()
-# Override .env settings for model configuration
-# Using vLLM with Qwen2.5-32B-Instruct-AWQ (supports function/tool calling)
-os.environ["MODEL_NAME"] = "Qwen/Qwen2.5-32B-Instruct-AWQ"
-os.environ["LLM_BASE_URL"] = "http://localhost:8000/v1"
+# Configuration loaded from .env
 script_dir = Path(__file__).parent.absolute()
 base_output_dir = script_dir / "research_outputs"
 base_output_dir.mkdir(exist_ok=True)
@@ -388,9 +385,9 @@ def summarize_report_with_fast_model(report_text: str, role: str, topic: str) ->
     """
     try:
         from openai import OpenAI
-        client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+        client = OpenAI(base_url=os.getenv("FAST_LLM_BASE_URL", "http://localhost:11434/v1"), api_key="ollama")
         response = client.chat.completions.create(
-            model="phi4-mini",
+            model=os.getenv("FAST_MODEL_NAME", "llama3.2:1b"),
             messages=[
                 {
                     "role": "system",
@@ -1839,11 +1836,11 @@ try:
     _resp = httpx.get("http://localhost:11434/v1/models", timeout=3)
     if _resp.status_code == 200:
         _models = [m.get("id", "") for m in _resp.json().get("data", [])]
-        fast_model_available = any("phi" in m.lower() for m in _models)
+        fast_model_available = any(any(k in m.lower() for k in ["phi", "llama", "qwen", "mistral"]) for m in _models)
         if fast_model_available:
-            print("✓ Fast model (Phi-4 Mini) detected on Ollama")
+            print(f"✓ Fast model detected on Ollama (available: {_models})")
         else:
-            print(f"⚠ Ollama running but no phi model found. Available: {_models}")
+            print(f"⚠ Ollama running but no suitable fast model found (phi/llama/qwen). Available: {_models}")
 except Exception:
     print("⚠ Fast model not available, using smart-only mode")
 
@@ -1851,7 +1848,7 @@ try:
     deep_reports = asyncio.run(run_deep_research(
         topic=topic_name,
         brave_api_key=brave_key,
-        results_per_query=5,
+        results_per_query=15,
         fast_model_available=fast_model_available,
         framing_context=framing_output
     ))
@@ -2425,16 +2422,32 @@ try:
     audio_file = generate_audio_from_script(cleaned_script, str(output_path), lang_code=language_config['tts_code'])
     if audio_file:
         audio_file = Path(audio_file)
-        # Post-process: normalize loudness and optionally overlay background music
-        mastered = post_process_audio(str(audio_file))
-        if mastered:
-            audio_file = Path(mastered)
+        logger.info(f"Audio generation complete: {audio_file}")
 except Exception as e:
     print(f"✗ ERROR: Kokoro TTS failed with exception: {e}")
     import traceback
     traceback.print_exc()
     print("  Ensure Kokoro is installed: pip install kokoro>=0.9")
     audio_file = None
+
+# --- BGM MERGING ---
+if audio_file and audio_file.exists():
+    print(f"\n{PHASE_MARKERS[-1][0]} {PHASE_MARKERS[-1][1]} ({PHASE_MARKERS[-1][2]}%)\n")
+    print(f"Starting BGM Merging Phase...")
+    
+    try:
+        # Default to "Interesting BGM.wav" as per user request
+        # This function now checks the 'Podcast BGM' library first
+        mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav")
+        if mastered and os.path.exists(mastered) and mastered != str(audio_file):
+            audio_file = Path(mastered)
+            print(f"✓ BGM Merging Complete: {audio_file}")
+            print(f"[SOURCE] {audio_file}") # Mark final file as source
+        else:
+             print(f"⚠ BGM Merging skipped or failed (original audio preserved)")
+    except Exception as e:
+        print(f"⚠ Warning: BGM merging process encountered an error: {e}")
+
 
 # Check actual audio duration
 if audio_file and audio_file.exists():

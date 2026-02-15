@@ -24,6 +24,9 @@ import os
 import re
 import sqlite3
 import time
+from dotenv import load_dotenv
+
+load_dotenv()
 from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -38,14 +41,14 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 
-SMART_MODEL = "Qwen/Qwen2.5-32B-Instruct-AWQ"
-SMART_BASE_URL = "http://localhost:8000/v1"
+SMART_MODEL = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-32B-Instruct-AWQ")
+SMART_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:8000/v1")
 
-FAST_MODEL = "phi4-mini"
-FAST_BASE_URL = "http://localhost:11434/v1"
+FAST_MODEL = os.getenv("FAST_MODEL_NAME", "llama3.2:1b")
+FAST_BASE_URL = os.getenv("FAST_LLM_BASE_URL", "http://localhost:11434/v1")
 
 MAX_INPUT_TOKENS = 32000
-MAX_CONCURRENT_SUMMARIES = 4
+MAX_CONCURRENT_SUMMARIES = 10
 MAX_RESEARCH_ITERATIONS = 3
 SCRAPING_TIMEOUT = 20.0
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"

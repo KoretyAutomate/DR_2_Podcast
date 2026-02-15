@@ -48,24 +48,29 @@ def test_mixing(voice_path, music_path):
         print("✗ Audio mixing failed")
 
 def test_pipeline_integration():
-    print("\n--- Testing Pipeline Integration (Music Generation + Mixing) ---")
+    print("\n--- Testing Pipeline Integration (BGM Selection from Library) ---")
+    
     # Create dummy parsed audio
     dummy_voice = "test_pipeline_voice.wav"
     create_dummy_voice(dummy_voice)
     
-    # Run post_process_audio (which should trigger generation + mixing)
-    result = post_process_audio(dummy_voice, music_prompt="upbeat techno")
+    # 3.1 Test Specific Library File (Assuming "Interesting BGM.wav" exists)
+    print("Test 3.1: Library Lookup (Interesting BGM.wav)...")
+    result_lib = post_process_audio(dummy_voice, bgm_target="Interesting BGM.wav")
     
-    if result and "_mixed" in result and os.path.exists(result):
-        # Clean up
-        try:
-           # os.remove(dummy_voice)
-           # os.remove(result)
-           pass
-        except: pass
-        print(f"✓ Pipeline integration successful. Result: {result}")
+    if result_lib and "_mixed" in result_lib and os.path.exists(result_lib):
+        print(f"✓ Library integration successful. Result: {result_lib}")
     else:
-        print(f"✗ Pipeline integration failed. Result: {result}")
+        print(f"✗ Library integration failed. Result: {result_lib}")
+    
+    # 3.2 Test Random
+    print("Test 3.2: Random Selection...")
+    result_rand = post_process_audio(dummy_voice, bgm_target="random")
+    
+    if result_rand and "_mixed" in result_lib and os.path.exists(result_rand):
+        print("✓ Random integration successful.")
+    else:
+        print("✗ Random integration failed.")
 
 if __name__ == "__main__":
     # Ensure asset dir exists for temp files
