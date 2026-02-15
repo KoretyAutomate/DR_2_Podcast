@@ -499,6 +499,10 @@ class ResearchAgent:
                 continue
 
             log(f"      [{rq.goal[:40]}] {len(good_pages)}/{len(pages)} fetched → summarizing...")
+            
+            # Log sources for UI visualization
+            for p in good_pages:
+                log(f"[SOURCE] {p.url}")
 
             # Summarize with fast model
             if self.fast_worker:
