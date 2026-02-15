@@ -335,7 +335,7 @@ dgx_llm_creative = LLM(
     timeout=600,
     temperature=0.7,  # Creative mode for Producer/Personality
     max_tokens=12000,  # Scriptwriter needs more output for 4,500-word scripts; leaves 20k for input
-    frequency_penalty=0.3,  # Prevent repetition loops in long outputs (especially Japanese)
+    frequency_penalty=0.15,  # Prevent repetition loops while allowing long creative output
     stop=["<|im_end|>", "<|endoftext|>"]
 )
 
@@ -949,6 +949,9 @@ scriptwriter = Agent(
         f'Your dialogue should dive into nuance, trade-offs, and practical implications. '
         f'The questioner keeps it accessible without dumbing it down. '
         f'{english_instruction}'
+        + (f'\n\nLANGUAGE WARNING: When generating Japanese (日本語) output, you MUST stay in Japanese throughout. '
+           f'Do NOT switch to Chinese (中文). Use katakana for host names: カズ and エリカ (NOT 卡兹/埃里卡).'
+           if language == 'ja' else '')
     ),
     llm=dgx_llm_creative,
     verbose=True
@@ -1311,7 +1314,10 @@ if language != 'en':
             f"- Translate for natural spoken delivery, not literal translation\n"
             f"- Keep proper nouns, study names, journal names in English\n"
             f"- Maintain teaching structure and conversational flow\n"
-            f"{target_instruction}"
+            + (f"- CRITICAL: Output MUST be in Japanese (日本語) only. Do NOT switch to Chinese (中文).\n"
+               f"  Use katakana for host names: カズ and エリカ (NOT 卡兹/埃里卡).\n"
+               if language == 'ja' else '')
+            + f"{target_instruction}"
         ),
         expected_output=f"Complete translated script in {language_config['name']} with {SESSION_ROLES['presenter']['character']}:/{SESSION_ROLES['questioner']['character']}: format.",
         agent=scriptwriter,
@@ -1336,7 +1342,10 @@ natural_language_task = Task(
         f"Format:\n{SESSION_ROLES['presenter']['character']}: [dialogue]\n"
         f"{SESSION_ROLES['questioner']['character']}: [dialogue]\n\n"
         f"Remove meta-tags, markdown, stage directions. Dialogue only. "
-        f"{target_instruction}"
+        + (f"\nCRITICAL: Output MUST be in Japanese (日本語) only. Do NOT switch to Chinese (中文). "
+           f"Use katakana for host names: カズ and エリカ (NOT 卡兹/埃里卡). "
+           if language == 'ja' else '')
+        + f"{target_instruction}"
     ),
     expected_output=(
         f"Final Masters-level dialogue about {topic_name}, exactly 4,500 words. "
