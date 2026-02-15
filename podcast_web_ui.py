@@ -57,6 +57,34 @@ tasks_db: Dict[str, Dict] = {}
 
 # Task Queue
 task_queue = queue.Queue()
+# Expected artifacts for progress tracking
+EXPECTED_ARTIFACTS = [
+    "research_framing.md", "research_framing.pdf",
+    "deep_research_lead.md", "deep_research_counter.md", "deep_research_audit.md",
+    "deep_research_sources.json",
+    "gap_analysis.md",
+    "adversarial_research.md", "adversarial_paper.pdf",
+    "supporting_research.md", "supporting_paper.pdf",
+    "source_verification.md", "verified_sources_bibliography.pdf",
+    "source_of_truth.md", "source_of_truth.pdf",
+    "podcast_script_raw.md", "podcast_script_polished.md", "podcast_script.txt",
+    "show_notes.md", "accuracy_check.md", "accuracy_check.pdf",
+    "podcast_generation.log", "session_metadata.txt",
+    "podcast_final_audio.wav"
+]
+
+def count_artifacts(directory: Optional[str]) -> tuple[int, int]:
+    """Count generated artifacts vs expected total."""
+    if not directory or not os.path.exists(directory):
+        return 0, len(EXPECTED_ARTIFACTS)
+    
+    found = 0
+    for filename in EXPECTED_ARTIFACTS:
+        if (Path(directory) / filename).exists():
+            found += 1
+            
+    return found, len(EXPECTED_ARTIFACTS)
+
 current_task_id = None
 
 def load_tasks():
@@ -648,6 +676,24 @@ def home(username: str = Depends(verify_credentials)):
                     </div>
                     
                     <div class="eta-box" id="etaDisplay"></div>
+                    
+                    <!-- Artifact Progress -->
+                    <div id="artifactProgress" style="margin-top: 10px; font-size: 0.9rem; color: var(--text-secondary); display: none;">
+                        📦 Artifacts: <span id="artifactCount" style="color: var(--text-primary); font-weight: bold;">0/24</span>
+                    </div>
+
+                    <!-- Step Durations -->
+                    <div id="stepDurations" style="margin-top: 15px; border-top: 1px solid var(--border-color); padding-top: 10px; display: none;">
+                        <h4 style="margin: 0 0 10px 0; font-size: 0.9rem; color: var(--text-secondary);">Step Timings</h4>
+                        <table style="width: 100%; font-size: 0.85rem; border-collapse: collapse;">
+                            <tbody id="stepDurationList">
+                                <!-- Steps injected here -->
+                            </tbody>
+                        </table>
+                        <div style="margin-top: 5px; font-size: 0.85rem; color: var(--accent-primary);">
+                            Current Step: <span id="currentStepTimer">0m 0s</span>
+                        </div>
+                    </div>
 
                     <!-- Research Visualizer -->
                     <div id="researchViz" style="display:none; margin-top: 20px;">
@@ -864,6 +910,36 @@ def home(username: str = Depends(verify_credentials)):
                          const secs = Math.floor(data.estimated_remaining % 60);
                          document.getElementById('etaDisplay').textContent = `⏱️ EST. REMAINING: ${{mins}}m ${{secs}}s`;
                     }}
+                    
+                    // Update Artifact Count
+                    const artifactNav = document.getElementById('artifactProgress');
+                    const artifactCount = document.getElementById('artifactCount');
+                    if (data.artifacts_total) {{
+                        artifactNav.style.display = 'block';
+                        artifactCount.textContent = `${{data.artifacts_created}}/${{data.artifacts_total}}`;
+                    }}
+                    
+                    // Update Step Durations
+                    const durationBox = document.getElementById('stepDurations');
+                    const durationList = document.getElementById('stepDurationList');
+                    const currentTimer = document.getElementById('currentStepTimer');
+                    
+                    if (data.step_durations && data.step_durations.length > 0) {{
+                        durationBox.style.display = 'block';
+                        durationList.innerHTML = data.step_durations.map(s => `
+                            <tr style="border-bottom: 1px dashed var(--border-color);">
+                                <td style="padding: 4px 0;">${{s.phase}}</td>
+                                <td style="text-align: right; color: var(--text-secondary);">${{s.duration_formatted}}</td>
+                            </tr>
+                        `).join('');
+                    }} else {{
+                         durationBox.style.display = 'none';
+                    }}
+                    
+                    if (data.current_step_duration) {{
+                        durationBox.style.display = 'block';
+                        currentTimer.textContent = data.current_step_duration;
+                    }}
 
                     // Update Research Visualizer
                     if (data.sources && data.sources.length > 0) {{
@@ -949,6 +1025,7 @@ def home(username: str = Depends(verify_credentials)):
                             <div class="history-meta">
                                 Language: ${{task.language === 'en' ? 'English' : '日本語'}} |
                                 Status: <span class="status-${{task.status}}">${{task.status}}</span> |
+                                Artifacts: ${{task.artifacts_created || 0}}/${{task.artifacts_total || 24}} |
                                 ${{new Date(task.created_at).toLocaleString()}}
                             </div>
                         </li>
@@ -1058,6 +1135,8 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
         tasks_db[task_id]["status"] = "running"
         tasks_db[task_id]["progress"] = 0
         tasks_db[task_id]["phase"] = "Starting..."
+        tasks_db[task_id]["phase_start_time"] = time.time()
+        tasks_db[task_id]["step_durations"] = []
         save_tasks()
 
         env = os.environ.copy()
@@ -1085,11 +1164,32 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
             # 1. Parse Phase Markers
             for marker, phase_name, progress_pct in PHASE_MARKERS:
                 if marker in line:
+                    # Calculate duration of previous phase
+                    current_time = time.time()
+                    if "phase_start_time" in tasks_db[task_id]:
+                         prev_start = tasks_db[task_id]["phase_start_time"]
+                         duration = current_time - prev_start
+                         prev_phase = tasks_db[task_id]["phase"]
+                         
+                         # Add to step durations if not already recorded (avoid duplicates)
+                         if "step_durations" not in tasks_db[task_id]:
+                             tasks_db[task_id]["step_durations"] = []
+                         
+                         # Check if we already have this phase (some markers might repeat or be close)
+                         if not any(s["phase"] == prev_phase for s in tasks_db[task_id]["step_durations"]):
+                            tasks_db[task_id]["step_durations"].append({
+                                "phase": prev_phase,
+                                "duration": duration,
+                                "duration_formatted": f"{int(duration // 60)}m {int(duration % 60)}s"
+                            })
+
+                    # Update to new phase
                     tasks_db[task_id]["phase"] = phase_name
                     tasks_db[task_id]["progress"] = progress_pct
+                    tasks_db[task_id]["phase_start_time"] = current_time
                     
                     # Calculate ETA
-                    elapsed = time.time() - start_time
+                    elapsed = current_time - start_time
                     if progress_pct > 5:
                          total_est = (elapsed / progress_pct) * 100
                          remaining = total_est - elapsed
@@ -1165,22 +1265,53 @@ def _find_latest_output_dir() -> Optional[Path]:
     return max(subdirs, key=lambda d: d.stat().st_mtime)
 
 @app.get("/api/status/{task_id}")
-def get_status(task_id: str, username: str = Depends(verify_credentials)):
-    """Get task status"""
+async def get_status(task_id: str, username: str = Depends(verify_credentials)):
+    """Get status of a specific task"""
     if task_id not in tasks_db:
         raise HTTPException(status_code=404, detail="Task not found")
+    
+    task = tasks_db[task_id]
+    
+    # Calculate artifact counts on-the-fly
+    if task.get("output_dir"):
+        created, total = count_artifacts(task["output_dir"])
+        task["artifacts_created"] = created
+        task["artifacts_total"] = total
+    else:
+        task["artifacts_created"] = 0
+        task["artifacts_total"] = len(EXPECTED_ARTIFACTS)
 
-    return tasks_db[task_id]
+    # Calculate current step duration
+    current_step_duration = 0
+    if task["status"] == "running" and task.get("phase_start_time"):
+        current_step_duration = time.time() - task["phase_start_time"]
+    
+    response = task.copy()
+    response["current_step_duration"] = f"{int(current_step_duration // 60)}m {int(current_step_duration % 60)}s"
+    
+    return response
 
 @app.get("/api/history")
-def get_history(username: str = Depends(verify_credentials)):
-    """Get generation history"""
-    # Return last 20 tasks, newest first
+async def get_history(username: str = Depends(verify_credentials)):
+    """Get list of past production runs"""
+    # Sort by created_at desc
     sorted_tasks = sorted(
         tasks_db.values(),
         key=lambda x: x["created_at"],
         reverse=True
     )
+    
+    # Calculate artifact counts for history items
+    for task in sorted_tasks:
+        if task.get("output_dir"):
+            created, total = count_artifacts(task["output_dir"])
+            task["artifacts_created"] = created
+            task["artifacts_total"] = total
+        else:
+            task["artifacts_created"] = 0
+            task["artifacts_total"] = len(EXPECTED_ARTIFACTS)
+            
+    # Return last 20 tasks, newest first
     return sorted_tasks[:20]
 
 @app.get("/api/download/{task_id}/{filename}")
