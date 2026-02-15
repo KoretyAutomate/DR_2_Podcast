@@ -71,6 +71,8 @@ class PodcastRequest(BaseModel):
     topic: str
     language: str = "en"
     accessibility_level: str = "simple"
+    podcast_length: str = "long"
+    podcast_hosts: str = "random"
     upload_to_buzzsprout: bool = False
     upload_to_youtube: bool = False
     buzzsprout_api_key: str = ""
@@ -332,6 +334,25 @@ def home(username: str = Depends(verify_credentials)):
                         <option value="technical">Technical (expert audience)</option>
                     </select>
 
+                    <div style="display: flex; gap: 20px;">
+                        <div style="flex: 1;">
+                            <label for="length">Duration</label>
+                            <select id="length" name="podcast_length">
+                                <option value="short">Short (10-15 min)</option>
+                                <option value="medium">Medium (20-25 min)</option>
+                                <option value="long" selected>Long (30+ min)</option>
+                            </select>
+                        </div>
+                        <div style="flex: 1;">
+                            <label for="hosts">Hosts</label>
+                            <select id="hosts" name="podcast_hosts">
+                                <option value="random" selected>Random Assignment</option>
+                                <option value="kaz_erika">Kaz (Presenter) & Erika</option>
+                                <option value="erika_kaz">Erika (Presenter) & Kaz</option>
+                            </select>
+                        </div>
+                    </div>
+
                     <div style="margin-bottom: 20px;">
                         <label style="font-weight: 500; color: #555; font-size: 14px; margin-bottom: 10px;">Auto-upload (as draft)</label>
                         <div style="display: flex; gap: 24px; margin-bottom: 10px;">
@@ -468,6 +489,8 @@ def home(username: str = Depends(verify_credentials)):
                         body: JSON.stringify({{
                             topic, language,
                             accessibility_level: accessibility,
+                            podcast_length: document.getElementById('length').value,
+                            podcast_hosts: document.getElementById('hosts').value,
                             upload_to_buzzsprout: document.getElementById('uploadBuzzsprout').checked,
                             upload_to_youtube: document.getElementById('uploadYoutube').checked,
                             buzzsprout_api_key: document.getElementById('buzzsproutApiKey').value || '',
@@ -622,6 +645,8 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
         "topic": request.topic,
         "language": request.language,
         "accessibility_level": request.accessibility_level,
+        "podcast_length": request.podcast_length,
+        "podcast_hosts": request.podcast_hosts,
         "status": "pending",
         "progress": 0,
         "phase": "",
@@ -648,7 +673,7 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
     thread = threading.Thread(
         target=run_podcast_generation,
         args=(task_id, request.topic, request.language,
-              request.accessibility_level,
+              request.accessibility_level, request.podcast_length, request.podcast_hosts,
               request.upload_to_buzzsprout, request.upload_to_youtube)
     )
     thread.daemon = True
@@ -673,6 +698,7 @@ PHASE_MARKERS = [
 
 def run_podcast_generation(task_id: str, topic: str, language: str,
                            accessibility_level: str = "simple",
+                           podcast_length: str = "long", podcast_hosts: str = "random",
                            upload_buzzsprout: bool = False, upload_youtube: bool = False):
     """Run podcast_crew.py in background with real-time phase tracking."""
     try:
@@ -683,6 +709,8 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
 
         env = os.environ.copy()
         env["ACCESSIBILITY_LEVEL"] = accessibility_level
+        env["PODCAST_LENGTH"] = podcast_length
+        env["PODCAST_HOSTS"] = podcast_hosts
 
         proc = subprocess.Popen(
             [str(PODCAST_ENV_PYTHON), "podcast_crew.py", "--topic", topic, "--language", language],

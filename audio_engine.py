@@ -17,6 +17,7 @@ from kokoro import KPipeline
 import torch
 import numpy as np
 import re
+import os
 from pathlib import Path
 
 from pydub import AudioSegment
@@ -206,8 +207,8 @@ def post_process_audio(wav_path: str, music_prompt: str = "lofi hip hop beat, ch
     """
     try:
         # Import here to avoid circular dependencies or early load issues
-        from .music_engine import MusicGenerator
-        from .audio_mixer import AudioMixer
+        from music_engine import MusicGenerator
+        from audio_mixer import AudioMixer
         
         logger.info(f"Post-processing audio: {wav_path}")
         
