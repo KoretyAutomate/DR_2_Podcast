@@ -12,7 +12,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict
+import queue
 import secrets
+import shutil
+import base64
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
@@ -52,17 +55,73 @@ security = HTTPBasic()
 # Task storage
 tasks_db: Dict[str, Dict] = {}
 
+# Task Queue
+task_queue = queue.Queue()
+current_task_id = None
+
 def load_tasks():
-    """Load tasks from file"""
+    """Load tasks from file and clean up interrupted runs."""
     global tasks_db
     if TASKS_FILE.exists():
-        with open(TASKS_FILE, 'r') as f:
-            tasks_db = json.load(f)
+        try:
+            with open(TASKS_FILE, 'r') as f:
+                tasks_db = json.load(f)
+            
+            # CLEANUP: Mark any interrupted "running" tasks as "cancelled" on startup
+            dirty = False
+            for tid, task in tasks_db.items():
+                if task["status"] in ["running", "uploading", "queued"]:
+                    task["status"] = "cancelled"
+                    task["error"] = "Server restarted during execution"
+                    dirty = True
+            if dirty:
+                save_tasks()
+                print("Cleaned up interrupted tasks from previous run.")
+        except Exception as e:
+            print(f"Error loading tasks: {e}")
+            tasks_db = {}
 
 def save_tasks():
-    """Save tasks to file"""
     with open(TASKS_FILE, 'w') as f:
         json.dump(tasks_db, f, indent=2)
+
+def worker_thread():
+    """Background thread to process the task queue sequentially."""
+    global current_task_id
+    print("Worker thread started, waiting for tasks...")
+    while True:
+        try:
+            # Block until a task is available
+            task_data = task_queue.get()
+            task_id = task_data["task_id"]
+            current_task_id = task_id
+            
+            print(f"Starting task {task_id} from queue...")
+            
+            # Execute the generation
+            run_podcast_generation(
+                task_id, 
+                task_data["topic"],
+                task_data["language"],
+                task_data["accessibility_level"],
+                task_data["podcast_length"],
+                task_data["podcast_hosts"],
+                task_data["upload_buzzsprout"],
+                task_data["upload_youtube"]
+            )
+            
+        except Exception as e:
+            print(f"Worker thread error: {e}")
+            if current_task_id:
+                tasks_db[current_task_id]["status"] = "failed"
+                tasks_db[current_task_id]["error"] = f"Worker error: {str(e)}"
+                save_tasks()
+        finally:
+            current_task_id = None
+            task_queue.task_done()
+
+# Start worker thread on import (or main)
+threading.Thread(target=worker_thread, daemon=True).start()
 
 # Load existing tasks on startup
 load_tasks()
@@ -494,6 +553,7 @@ def home(username: str = Depends(verify_credentials)):
             <div class="header">
                 <h1>🎙️ DR_2_Podcast</h1>
                 <div class="subtitle">Next-Generation AI Research & Debate Engineer</div>
+                <div id="gitStatus" class="git-status" style="display:none; margin-top:10px; font-size: 0.8rem; padding: 4px 8px; border-radius: 4px; background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid #ef4444; display: inline-block;"></div>
             </div>
 
             <div class="glass-card">
@@ -626,6 +686,19 @@ def home(username: str = Depends(verify_credentials)):
 
             // Load history on page load
             loadHistory();
+            
+            // Check System Status (Git)
+            (async () => {{
+                try {{
+                    const res = await fetch('/api/system_status');
+                    const status = await res.json();
+                    const el = document.getElementById('gitStatus');
+                    if (!status.git_clean) {{
+                        el.textContent = status.message;
+                        el.style.display = 'inline-block';
+                    }}
+                }} catch(e) {{ console.warn('Git status check failed'); }}
+            }})();
 
             // Pre-fill fields if server already has config
             (async () => {{
@@ -764,7 +837,21 @@ def home(username: str = Depends(verify_credentials)):
                 statusText.textContent = displayStatus;
                 statusText.className = `status-${{data.status}}`;
 
-                if (data.status === 'running') {{
+                if (data.status === 'running' || data.status === 'queued') {{
+                    statusBox.style.display = 'block';
+
+                    if (data.status === 'queued') {{
+                        statusText.textContent = 'Queued for Production...';
+                        statusDetails.textContent = 'Waiting for previous task to finish.';
+                        statusIcon.textContent = '⏳';
+                        progressBar.style.width = '100%';
+                        progressBar.style.background = '#334155'; // Grey for queued
+                        return;
+                    }}
+
+                    statusText.textContent = 'Production In Progress...';
+                    statusIcon.textContent = '⚡';
+                    
                     const pct = data.progress || 0;
                     progressBar.style.width = pct + '%';
                     const phase = data.phase || 'Starting...';
@@ -879,6 +966,31 @@ def home(username: str = Depends(verify_credentials)):
     """
     return html
 
+@app.get("/api/system_status")
+def get_system_status(username: str = Depends(verify_credentials)):
+    """Check git status for unpushed changes."""
+    status = {"git_clean": True, "message": "Up to date"}
+    try:
+        # Check for uncommitted changes
+        proc = subprocess.run(["git", "status", "--porcelain"], cwd=SCRIPT_DIR, capture_output=True, text=True)
+        if proc.stdout.strip():
+            status["git_clean"] = False
+            status["message"] = "⚠️ Uncommitted changes detected"
+            return status
+
+        # Check for unpushed commits
+        proc = subprocess.run(["git", "log", "@{u}..HEAD"], cwd=SCRIPT_DIR, capture_output=True, text=True)
+        if proc.stdout.strip():
+            status["git_clean"] = False
+            status["message"] = "⚠️ Local commits not pushed"
+            return status
+
+    except Exception as e:
+        status["git_clean"] = False
+        status["message"] = f"Git check failed: {str(e)}"
+    
+    return status
+
 @app.post("/api/generate")
 async def generate_podcast(request: PodcastRequest, username: str = Depends(verify_credentials)):
     """Start podcast generation"""
@@ -892,9 +1004,9 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
         "accessibility_level": request.accessibility_level,
         "podcast_length": request.podcast_length,
         "podcast_hosts": request.podcast_hosts,
-        "status": "pending",
+        "status": "queued", # Start as queued
         "progress": 0,
-        "phase": "",
+        "phase": "Queued",
         "created_at": datetime.now().isoformat(),
         "error": None,
         "output_dir": None,
@@ -917,17 +1029,10 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
     if request.youtube_secret_path:
         os.environ["YOUTUBE_CLIENT_SECRET_PATH"] = request.youtube_secret_path
 
-    # Start generation in background thread
-    thread = threading.Thread(
-        target=run_podcast_generation,
-        args=(task_id, request.topic, request.language,
-              request.accessibility_level, request.podcast_length, request.podcast_hosts,
-              request.upload_to_buzzsprout, request.upload_to_youtube)
-    )
-    thread.daemon = True
-    thread.start()
+    # Add to queue instead of starting thread immediately
+    task_queue.put(task)
 
-    return {"task_id": task_id, "status": "pending"}
+    return {"task_id": task_id, "status": "queued"}
 
 # Phase markers parsed from podcast_crew.py stdout
 PHASE_MARKERS = [
@@ -971,7 +1076,7 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
 
         # Stream stdout and parse phase markers
         output_lines = []
-        deadline = time.time() + 3600  # 60 minute timeout
+        # No timeout limit
         start_time = tasks_db[task_id]["start_time"]
 
         for line in proc.stdout:
@@ -1003,12 +1108,7 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
                 except Exception:
                      pass
 
-            if time.time() > deadline:
-                proc.kill()
-                tasks_db[task_id]["status"] = "failed"
-                tasks_db[task_id]["error"] = "Generation timed out after 60 minutes"
-                save_tasks()
-                return
+
 
         proc.wait()
 

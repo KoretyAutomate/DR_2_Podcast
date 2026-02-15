@@ -209,27 +209,47 @@ CHARACTERS = {
 
 # --- ROLE ASSIGNMENT (Dynamic per session) ---
 def assign_roles() -> dict:
-    """Randomly assign Kaz and Erika to presenter/questioner roles for this session."""
+    """
+    Assign Kaz and Erika to presenter/questioner roles.
+    Respects PODCAST_HOSTS env var if set (kaz_erika, erika_kaz).
+    Otherwise defaults to random assignment.
+    """
     characters = list(CHARACTERS.keys())
-    random.shuffle(characters)
+    
+    # Check for manual override
+    host_config = os.getenv("PODCAST_HOSTS", "random").lower()
+    
+    if host_config == "kaz_erika":
+        # Kaz is Presenter, Erika is Questioner
+        presenter_name = "Kaz"
+        questioner_name = "Erika"
+    elif host_config == "erika_kaz":
+        # Erika is Presenter, Kaz is Questioner
+        presenter_name = "Erika"
+        questioner_name = "Kaz"
+    else:
+        # Random assignment
+        random.shuffle(characters)
+        presenter_name = characters[0]
+        questioner_name = characters[1]
 
     role_assignment = {
         "presenter": {
-            "character": characters[0],
+            "character": presenter_name,
             "stance": "teaching",
-            "personality": CHARACTERS[characters[0]]["base_personality"]
+            "personality": CHARACTERS[presenter_name]["base_personality"]
         },
         "questioner": {
-            "character": characters[1],
+            "character": questioner_name,
             "stance": "curious",
-            "personality": CHARACTERS[characters[1]]["base_personality"]
+            "personality": CHARACTERS[questioner_name]["base_personality"]
         }
     }
 
     print(f"\n{'='*60}")
-    print(f"SESSION ROLE ASSIGNMENT:")
-    print(f"  Presenter: {role_assignment['presenter']['character']} ({CHARACTERS[characters[0]]['gender']})")
-    print(f"  Questioner: {role_assignment['questioner']['character']} ({CHARACTERS[characters[1]]['gender']})")
+    print(f"SESSION ROLE ASSIGNMENT ({host_config}):")
+    print(f"  Presenter: {role_assignment['presenter']['character']} ({CHARACTERS[presenter_name]['gender']})")
+    print(f"  Questioner: {role_assignment['questioner']['character']} ({CHARACTERS[questioner_name]['gender']})")
     print(f"{'='*60}\n")
 
     return role_assignment
@@ -1271,9 +1291,26 @@ audit_task = Task(
     output_file=str(output_dir / "SOURCE_OF_TRUTH.md")
 )
 
+# Determine length targets based on env var
+length_mode = os.getenv("PODCAST_LENGTH", "long").lower()
+if length_mode == "short": # ~10-15 mins
+    target_words_en = "1,500"
+    target_chars_ja = "5,000"
+    duration_label = "Short (10-15 min)"
+elif length_mode == "medium": # ~20-25 mins
+    target_words_en = "3,000"
+    target_chars_ja = "10,000"
+    duration_label = "Medium (20-25 min)"
+else: # long / default ~30 mins
+    target_words_en = "4,500"
+    target_chars_ja = "15,000"
+    duration_label = "Long (30+ min)"
+
+print(f"Podcast Length Mode: {duration_label}")
+
 script_task = Task(
     description=(
-        f"Using the audit report, write a 4,500-word podcast dialogue about \"{topic_name}\" "
+        f"Using the audit report, write a {target_words_en if language != 'ja' else target_chars_ja}-{'word' if language != 'ja' else 'character'} podcast dialogue about \"{topic_name}\" "
         f"featuring {SESSION_ROLES['presenter']['character']} (presenter) and {SESSION_ROLES['questioner']['character']} (questioner).\n\n"
         f"STRUCTURE:\n"
         f"  1. OPENING (joint welcome):\n"
@@ -1304,12 +1341,17 @@ script_task = Task(
         f"Format STRICTLY as:\n"
         f"{SESSION_ROLES['presenter']['character']}: [dialogue]\n"
         f"{SESSION_ROLES['questioner']['character']}: [dialogue]\n\n"
-        f"TARGET LENGTH: 4,500 words (30 minutes at 150 wpm). This is CRITICAL — do not write less.\n"
+        f"TARGET LENGTH: {target_words_en if language != 'ja' else target_chars_ja} {'words' if language != 'ja' else 'characters'}. This is CRITICAL — do not write less.\n"
+        f"TO REACH THIS LENGTH: You must be extremely detailed. For every claim, provide:\n"
+        f"  1. The specific scientific mechanism (how it works)\n"
+        f"  2. A real-world analogy or metaphor\n"
+        f"  3. A practical example or case study\n"
+        f"  4. A potential counter-argument or nuance\n"
         f"Maintain consistent roles throughout. NO role switching mid-conversation. "
         f"{english_instruction}"
     ),
     expected_output=(
-        f"A 4,500-word teaching-style dialogue about {topic_name} between "
+        f"A {target_words_en if language != 'ja' else target_chars_ja}-{'word' if language != 'ja' else 'character'} teaching-style dialogue about {topic_name} between "
         f"{SESSION_ROLES['presenter']['character']} (presents and explains) "
         f"and {SESSION_ROLES['questioner']['character']} (asks bridging questions). "
         f"Opens with welcome → hook → topic shift. Every line discusses the topic. "
@@ -1349,7 +1391,9 @@ natural_language_task = Task(
         f"- Remove ALL definitions of basic scientific concepts (DNA, peer review, RCT, meta-analysis)\n"
         f"- Ensure the questioner's questions feel natural and audience-aligned\n"
         f"- Keep technical language intact - NO dumbing down\n"
-        f"- Target exactly 4,500 words (30 minutes at 150 wpm)\n\n"
+        f"- Ensure the questioner's questions feel natural and audience-aligned\n"
+        f"- Keep technical language intact - NO dumbing down\n"
+        f"- Target exactly {target_words_en if language != 'ja' else target_chars_ja} {'words' if language != 'ja' else 'characters'}\n\n"
         f"MAINTAIN ROLES:\n"
         f"  - {SESSION_ROLES['presenter']['character']} (Presenter): explains and teaches the topic\n"
         f"  - {SESSION_ROLES['questioner']['character']} (Questioner): asks bridging questions, occasionally pushes back\n\n"
@@ -1367,7 +1411,7 @@ natural_language_task = Task(
         + f"{target_instruction}"
     ),
     expected_output=(
-        f"Final Masters-level dialogue about {topic_name}, exactly 4,500 words. "
+        f"Final Masters-level dialogue about {topic_name}, exactly {target_words_en if language != 'ja' else target_chars_ja} {'words' if language != 'ja' else 'characters'}. "
         f"No basic definitions. Teaching style with engaging 3-part opening. "
         f"{target_instruction}"
     ),
@@ -2307,17 +2351,42 @@ if language == 'ja':
     length_unit = "chars"
     estimated_duration_min = char_count / 500
     # 30 min target = 15,000 chars; ±10% = 13,500–16,500
-    target_length = 15000
-    target_low = 13500
-    target_high = 16500
+    length_mode = os.getenv("PODCAST_LENGTH", "long").lower()
+    if length_mode == "short":
+        target_length = 5000
+        target_low = 4000
+        target_high = 6000
+    elif length_mode == "medium":
+        target_length = 10000
+        target_low = 8500
+        target_high = 11500
+    else:
+        target_length = 15000
+        target_low = 13500
+        target_high = 16500
 else:
     # English and other space-delimited languages: count words, 150 wpm
-    script_length = len(script_text.split())
-    length_unit = "words"
+    # Remove speaker labels (e.g. "Kaz: ", "Erika: ") to act as Net Duration
+    # Regex removes "Name:" at start of lines
+    content_only = re.sub(r'^[A-Za-z0-9_ ]+:\s*', '', script_text, flags=re.MULTILINE)
+    script_length = len(content_only.split())
+    length_unit = "words (net)"
     estimated_duration_min = script_length / 150
-    target_length = 4500
-    target_low = 4050
-    target_high = 4950
+    
+    # Determine targets based on mode
+    length_mode = os.getenv("PODCAST_LENGTH", "long").lower()
+    if length_mode == "short":
+        target_length = 1500
+        target_low = 1200
+        target_high = 1800
+    elif length_mode == "medium":
+        target_length = 3000
+        target_low = 2500
+        target_high = 3500
+    else:
+        target_length = 4500
+        target_low = 4050
+        target_high = 4950
 
 print(f"\n{'='*60}")
 print(f"DURATION CHECK")
@@ -2383,10 +2452,10 @@ if audio_file and audio_file.exists():
         print(f"Target range: 27-33 minutes")
 
         if duration_minutes < 27.0:
-            print(f"✗ FAILED: Audio is TOO SHORT ({duration_minutes:.2f} min < 27 min)")
+            print(f"✗ FAILED: Audio is TOO SHORT ({duration_minutes:.2f} min < {target_low/150 if language!='ja' else target_low/500:.1f} min)")
             print(f"  ACTION: Re-run with longer script")
-        elif duration_minutes > 33.0:
-            print(f"✗ FAILED: Audio is TOO LONG ({duration_minutes:.2f} min > 33 min)")
+        elif duration_minutes > (target_high/150 if language!='ja' else target_high/500) * 1.2: # Allow some buffer
+            print(f"✗ FAILED: Audio is TOO LONG ({duration_minutes:.2f} min > {target_high/150 if language!='ja' else target_high/500:.1f} min)")
             print(f"  ACTION: Re-run with shorter script")
         else:
             print(f"✓ SUCCESS: Audio duration within acceptable range")

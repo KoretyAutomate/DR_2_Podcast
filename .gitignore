@@ -1,6 +1,22 @@
+
+# Local config & secrets
 .env
-*.mp3
-__pycache__/
-research_outputs/
 youtube_token.pickle
 client_secret.json
+
+# Python & Environment
+__pycache__/
+*.pyc
+
+# Project Outputs & Logs
+research_outputs/
+web_ui.log
+*.log
+podcast_tasks.json
+tasks_db.json
+
+# Audio assets (except samples if needed, but usually large)
+*.mp3
+*.wav
+Podcast BGM/
+*.safetensors

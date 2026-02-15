@@ -1,0 +1,4 @@
+[
+  "Avoid including steps like running a linter unless explicitly required by the task.",
+  "Ensure that all tools called are necessary and that dependencies are available."
+]
