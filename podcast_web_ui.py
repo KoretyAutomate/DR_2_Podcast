@@ -1114,7 +1114,7 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
 # Phase markers parsed from podcast_crew.py stdout
 PHASE_MARKERS = [
     ("PHASE 0: RESEARCH FRAMING", "Research Framing", 5),
-    ("Fast model (Phi-4 Mini) detected", "Deep Research", 10),
+    ("PHASE 1+2: LEAD", "Deep Research", 10),
     ("Research library saved", "Deep Research Complete", 25),
     ("CREW 1: PHASES 1-2", "Evidence Gathering", 30),
     ("Gate verdict:", "Gate Check", 45),
