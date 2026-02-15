@@ -52,9 +52,9 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         Host 2: But is coffee actually good for you? Let's examine the evidence.
         Host 1: Studies show that moderate coffee intake...
     """
-    print("\n" + "="*60)
-    print("KOKORO TTS AUDIO GENERATION")
-    print("="*60)
+    logger.info("=" * 60)
+    logger.info("KOKORO TTS AUDIO GENERATION")
+    logger.info("=" * 60)
 
     # Resolve voices for this language
     voices = VOICE_MAP.get(lang_code, VOICE_MAP['a'])
@@ -68,25 +68,25 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             torch.zeros(1).cuda()
             device = 'cuda'
         except RuntimeError:
-            print("  CUDA reported available but kernel execution failed, falling back to CPU")
-    print(f"Device: {device}")
-    print(f"Language code: {lang_code}")
-    print(f"Voices: Host 1 ({voice_host_1}), Host 2 ({voice_host_2})")
+            logger.warning("  CUDA reported available but kernel execution failed, falling back to CPU")
+    logger.info(f"Device: {device}")
+    logger.info(f"Language code: {lang_code}")
+    logger.info(f"Voices: Host 1 ({voice_host_1}), Host 2 ({voice_host_2})")
 
     try:
         pipeline = KPipeline(lang_code=lang_code, device=device)
-        print("✓ Kokoro pipeline initialized")
+        logger.info("✓ Kokoro pipeline initialized")
     except RuntimeError as e:
         if 'CUDA' in str(e) and device == 'cuda':
-            print(f"  CUDA init failed, retrying on CPU: {e}")
+            logger.warning(f"  CUDA init failed, retrying on CPU: {e}")
             device = 'cpu'
             pipeline = KPipeline(lang_code=lang_code, device=device)
-            print("✓ Kokoro pipeline initialized (CPU fallback)")
+            logger.info("✓ Kokoro pipeline initialized (CPU fallback)")
         else:
-            print(f"✗ ERROR: Failed to initialize Kokoro: {e}")
+            logger.error(f"✗ ERROR: Failed to initialize Kokoro: {e}")
             return None
     except Exception as e:
-        print(f"✗ ERROR: Failed to initialize Kokoro: {e}")
+        logger.error(f"✗ ERROR: Failed to initialize Kokoro: {e}")
         return None
 
     # 2. Parse Script
@@ -118,7 +118,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
                         audio_segments.append(audio)
                         segment_count += 1
                 except Exception as e:
-                    print(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
+                    logger.warning(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
 
             # Insert silence gap between speaker switches (not before first speaker)
             if current_speaker is not None and current_speaker != 1:
@@ -137,7 +137,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
                         audio_segments.append(audio)
                         segment_count += 1
                 except Exception as e:
-                    print(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
+                    logger.warning(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
 
             # Insert silence gap between speaker switches (not before first speaker)
             if current_speaker is not None and current_speaker != 2:
@@ -164,9 +164,9 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
                 audio_segments.append(audio)
                 segment_count += 1
         except Exception as e:
-            print(f"  ⚠ Warning: Failed to generate final segment: {e}")
+            logger.warning(f"  ⚠ Warning: Failed to generate final segment: {e}")
 
-    print(f"Generated {segment_count} audio segments")
+    logger.info(f"Generated {segment_count} audio segments")
 
     # 3. Stitch and Save
     if audio_segments:
@@ -178,70 +178,74 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             duration_sec = len(final_audio) / 24000
             duration_min = duration_sec / 60
 
-            print(f"\n✓ Audio generated successfully:")
-            print(f"  File: {output_filename}")
-            print(f"  Size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
-            print(f"  Duration: {duration_min:.2f} minutes ({duration_sec:.1f} seconds)")
-            print("="*60 + "\n")
+            logger.info(f"\n✓ Audio generated successfully:")
+            logger.info(f"  File: {output_filename}")
+            logger.info(f"  Size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
+            logger.info(f"  Duration: {duration_min:.2f} minutes ({duration_sec:.1f} seconds)")
+            logger.info("=" * 60 + "\n")
 
             return output_filename
         except Exception as e:
-            print(f"✗ ERROR: Failed to save audio: {e}")
+            logger.error(f"✗ ERROR: Failed to save audio: {e}")
             return None
     else:
-        print("✗ ERROR: No audio segments generated")
+        logger.error("✗ ERROR: No audio segments generated")
         return None
 
 
-def post_process_audio(wav_path: str) -> str:
+def post_process_audio(wav_path: str, music_prompt: str = "lofi hip hop beat, chill, study") -> str:
     """
-    Post-process raw Kokoro TTS output: normalize loudness and optionally overlay background music.
+    Post-process raw Kokoro TTS output: generate background music and mix it.
 
     Args:
         wav_path: Path to the raw WAV file (24kHz, mono)
+        music_prompt: Description of the music to generate
 
     Returns:
         Path to the mastered WAV file, or None if processing failed
     """
     try:
-        audio = AudioSegment.from_wav(wav_path)
+        # Import here to avoid circular dependencies or early load issues
+        from .music_engine import MusicGenerator
+        from .audio_mixer import AudioMixer
+        
+        logger.info(f"Post-processing audio: {wav_path}")
+        
+        # 1. Generate Music
+        music_gen = MusicGenerator()
+        # Estimate duration needed based on file size (approximate)
+        # 24kHz * 4 bytes (float32) = 96kb/s
+        file_size = os.path.getsize(wav_path)
+        duration_est = file_size / (24000 * 4) 
+        
+        # Generate 30s loopable segment (MusicGen is slow for long generation)
+        music_path = str(Path(wav_path).parent / "bgm_generated.wav")
+        
+        # Check if we already generated music for this run (optimization)
+        if not os.path.exists(music_path):
+             # Generate 30s of music to loop
+            generated_music = music_gen.generate_music(music_prompt, duration=30, output_filename=music_path)
+            if not generated_music:
+                logger.warning("Music generation failed. Skipping BGM.")
+                return wav_path # Return original info
+            music_path = generated_music
 
-        # Normalize loudness to -16 dBFS (podcast standard)
-        target_dBFS = -16.0
-        change = target_dBFS - audio.dBFS
-        audio = audio.apply_gain(change)
-        print(f"  Normalized loudness: {audio.dBFS:.1f} dBFS (target: {target_dBFS})")
-
-        # Optional: overlay background music if available
-        script_dir = Path(__file__).parent
-        bg_music_path = script_dir / "asset" / "background_music.mp3"
-        if bg_music_path.exists():
-            try:
-                bg_music = AudioSegment.from_mp3(str(bg_music_path))
-                # Loop background music to match speech duration
-                while len(bg_music) < len(audio):
-                    bg_music = bg_music + bg_music
-                bg_music = bg_music[:len(audio)]
-                # Duck background music to -25 dB relative
-                bg_music = bg_music.apply_gain(-25 - bg_music.dBFS)
-                audio = audio.overlay(bg_music)
-                print(f"  Background music overlaid from: {bg_music_path}")
-            except Exception as e:
-                logger.warning(f"Failed to overlay background music: {e}")
-                print(f"  ⚠ Background music overlay failed: {e}")
-
-        # Export mastered file
-        mastered_path = wav_path.replace(".wav", "_mastered.wav")
-        if mastered_path == wav_path:
-            mastered_path = wav_path + "_mastered.wav"
-        audio.export(mastered_path, format="wav")
-        print(f"  Mastered audio saved: {mastered_path}")
-        return mastered_path
+        # 2. Mix
+        mixer = AudioMixer()
+        mixed_path = wav_path.replace(".wav", "_mixed.wav")
+        
+        success = mixer.mix_podcast(wav_path, music_path, mixed_path)
+        
+        if success:
+            logger.info(f"Mastered audio saved: {mixed_path}")
+            return mixed_path
+        else:
+            logger.warning("Mixing failed. Returning original audio.")
+            return wav_path
 
     except Exception as e:
-        logger.warning(f"Audio post-processing failed: {e}")
-        print(f"  ⚠ Audio post-processing failed (using raw audio): {e}")
-        return None
+        logger.error(f"Audio post-processing failed: {e}")
+        return wav_path
 
 
 def clean_script_for_tts(script_text: str) -> str:

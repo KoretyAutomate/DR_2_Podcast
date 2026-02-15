@@ -64,10 +64,27 @@ def setup_logging(output_dir: Path):
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler(output_dir / 'podcast_generation.log'),
-            logging.StreamHandler()
+            logging.StreamHandler(sys.stdout)
         ],
         force=True
     )
+
+    # Redirect stdout and stderr to logger
+    class StreamToLogger(object):
+        def __init__(self, logger, level):
+            self.logger = logger
+            self.level = level
+            self.linebuf = ''
+
+        def write(self, buf):
+            for line in buf.rstrip().splitlines():
+                self.logger.log(self.level, line.rstrip())
+
+        def flush(self):
+            pass
+
+    sys.stdout = StreamToLogger(logging.getLogger('STDOUT'), logging.INFO)
+    sys.stderr = StreamToLogger(logging.getLogger('STDERR'), logging.ERROR)
 
 # --- INITIALIZATION ---
 load_dotenv()
@@ -226,10 +243,10 @@ def check_tts_dependencies():
         import kokoro
         print("✓ Kokoro TTS dependencies verified")
     except ImportError as e:
-        print(f"WARNING: Kokoro TTS not installed: {e}")
+        print(f"CRITICAL ERROR: Kokoro TTS not installed: {e}")
         print("Install with: pip install kokoro>=0.9")
-        print("Audio generation will fail without Kokoro.")
-        # Don't exit - let it fail gracefully during audio generation
+        print("Audio generation cannot proceed without Kokoro.")
+        sys.exit(1)
 
 check_tts_dependencies()
 
@@ -950,7 +967,8 @@ scriptwriter = Agent(
         f'The questioner keeps it accessible without dumbing it down. '
         f'{english_instruction}'
         + (f'\n\nLANGUAGE WARNING: When generating Japanese (日本語) output, you MUST stay in Japanese throughout. '
-           f'Do NOT switch to Chinese (中文). Use katakana for host names: カズ and エリカ (NOT 卡兹/埃里卡).'
+           f'Do NOT switch to Chinese (中文). Use katakana for host names: カズ and エリカ (NOT 卡兹/埃里卡). '
+           f'Avoid Kanji that is only used in Chinese (e.g., use 気 instead of 气, 楽 instead of 乐).'
            if language == 'ja' else '')
     ),
     llm=dgx_llm_creative,
@@ -1344,6 +1362,7 @@ natural_language_task = Task(
         f"Remove meta-tags, markdown, stage directions. Dialogue only. "
         + (f"\nCRITICAL: Output MUST be in Japanese (日本語) only. Do NOT switch to Chinese (中文). "
            f"Use katakana for host names: カズ and エリカ (NOT 卡兹/埃里卡). "
+           f"Avoid Kanji that is only used in Chinese (e.g., use 気 instead of 气, 楽 instead of 乐). "
            if language == 'ja' else '')
         + f"{target_instruction}"
     ),
@@ -2330,7 +2349,10 @@ print(f"Podcast script saved: {script_file} ({script_length} {length_unit})")
 output_path = output_dir / "podcast_final_audio.wav"
 
 audio_file = None
+
+audio_file = None
 try:
+    print(f"Starting audio generation with script length: {len(cleaned_script)} chars")
     audio_file = generate_audio_from_script(cleaned_script, str(output_path), lang_code=language_config['tts_code'])
     if audio_file:
         audio_file = Path(audio_file)
@@ -2339,7 +2361,9 @@ try:
         if mastered:
             audio_file = Path(mastered)
 except Exception as e:
-    print(f"✗ ERROR: Kokoro TTS failed: {e}")
+    print(f"✗ ERROR: Kokoro TTS failed with exception: {e}")
+    import traceback
+    traceback.print_exc()
     print("  Ensure Kokoro is installed: pip install kokoro>=0.9")
     audio_file = None
 
