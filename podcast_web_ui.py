@@ -849,10 +849,34 @@ def home(username: str = Depends(verify_credentials)):
                 const button = document.getElementById('generateBtn');
                 const statusBox = document.getElementById('statusBox');
 
+                document.getElementById('error').style.display = 'none';
+
+                // Check queue status and confirm if tasks are already running/queued
+                try {{
+                    const qRes = await fetch('/api/queue-info');
+                    const qInfo = await qRes.json();
+                    const busy = qInfo.running + qInfo.queued;
+
+                    if (busy > 0) {{
+                        let msg = '';
+                        if (qInfo.running > 0 && qInfo.queued > 0) {{
+                            msg = `There is 1 task running and ${{qInfo.queued}} queued request${{qInfo.queued > 1 ? 's' : ''}}. Your request will be added to the queue.`;
+                        }} else if (qInfo.running > 0) {{
+                            msg = `There is 1 task currently running. Your request will be queued next.`;
+                        }} else {{
+                            msg = `There ${{qInfo.queued === 1 ? 'is' : 'are'}} ${{qInfo.queued}} queued request${{qInfo.queued > 1 ? 's' : ''}} ahead. Your request will be added to the queue.`;
+                        }}
+                        if (!confirm(msg + '\\n\\nProceed?')) {{
+                            return;
+                        }}
+                    }}
+                }} catch (err) {{
+                    console.warn('Queue check failed, proceeding anyway:', err);
+                }}
+
                 button.disabled = true;
                 button.textContent = 'Initializing Core Systems...';
                 statusBox.classList.add('show');
-                document.getElementById('error').style.display = 'none';
 
                 try {{
                     const response = await fetch('/api/generate', {{
@@ -878,6 +902,10 @@ def home(username: str = Depends(verify_credentials)):
                     const data = await response.json();
                     currentTaskId = data.task_id;
 
+                    // Re-enable button so user can queue more requests
+                    button.disabled = false;
+                    button.textContent = 'Initiate Production Sequence';
+
                     // Start status polling
                     statusInterval = setInterval(checkStatus, 2000);
 
@@ -899,8 +927,6 @@ def home(username: str = Depends(verify_credentials)):
 
                     if (data.status === 'completed' || data.status === 'failed') {{
                         clearInterval(statusInterval);
-                        document.getElementById('generateBtn').disabled = false;
-                        document.getElementById('generateBtn').textContent = 'Initiate Production Sequence';
                         loadHistory();
                     }}
                 }} catch (error) {{
@@ -1147,6 +1173,13 @@ def get_system_status(username: str = Depends(verify_credentials)):
         status["message"] = f"Git check failed: {str(e)}"
     
     return status
+
+@app.get("/api/queue-info")
+async def get_queue_info(username: str = Depends(verify_credentials)):
+    """Return count of running and queued tasks."""
+    running = sum(1 for t in tasks_db.values() if t["status"] == "running")
+    queued = sum(1 for t in tasks_db.values() if t["status"] == "queued")
+    return {"running": running, "queued": queued}
 
 @app.post("/api/generate")
 async def generate_podcast(request: PodcastRequest, username: str = Depends(verify_credentials)):
