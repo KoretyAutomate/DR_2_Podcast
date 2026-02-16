@@ -755,8 +755,10 @@ def home(username: str = Depends(verify_credentials)):
             </div>
 
             <div class="glass-card">
-                <h2>Production History</h2>
-                <ul id="history" class="history">
+                <h2 style="cursor:pointer;user-select:none;" onclick="const el=document.getElementById('history');const arrow=document.getElementById('historyArrow');if(el.style.display==='none'){{el.style.display='block';arrow.textContent='▼';}}else{{el.style.display='none';arrow.textContent='▶';}}">
+                    <span id="historyArrow">▶</span> Production History
+                </h2>
+                <ul id="history" class="history" style="display:none;">
                     <li style="color: var(--text-secondary); text-align: center; padding: 20px;">No episodes generated yet</li>
                 </ul>
             </div>
