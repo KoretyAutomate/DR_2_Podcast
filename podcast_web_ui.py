@@ -755,8 +755,8 @@ def home(username: str = Depends(verify_credentials)):
             </div>
 
             <div class="glass-card">
-                <h2 id="historyToggle" style="cursor:pointer;user-select:none;">
-                    <span id="historyArrow">&#9654;</span> Production History
+                <h2 id="historyToggle" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">
+                    Production History <span id="historyArrow">&#9654;</span>
                 </h2>
                 <ul id="history" class="history" style="display:none;">
                     <li style="color: var(--text-secondary); text-align: center; padding: 20px;">No episodes generated yet</li>
@@ -993,7 +993,7 @@ def home(username: str = Depends(verify_credentials)):
                     
                     const pct = data.progress || 0;
                     progressBar.style.width = pct + '%';
-                    const phase = data.phase || 'Starting...';
+                    const phase = data.phase || 'Initializing...';
                     statusDetails.textContent = `Phase: ${{phase}} >> Progress: ${{pct}}%`;
                     statusIcon.textContent = '⚙️';
                     
@@ -1272,7 +1272,7 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
 # Phase markers parsed from podcast_crew.py stdout
 PHASE_MARKERS = [
     ("PHASE 0: RESEARCH FRAMING", "Research Framing", 5),
-    ("PHASE 1: DEEP RESEARCH", "Deep Research Execution", 10),
+    ("PHASE 1: DEEP RESEARCH", "Deep Research", 15),
     ("Lead report saved", "Lead Researcher Report", 20),
     ("Gate verdict:", "Research Gate Check", 25),
     ("PHASE 2b: GAP-FILL", "Gap-Fill Research", 30),
@@ -1293,7 +1293,7 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
     try:
         tasks_db[task_id]["status"] = "running"
         tasks_db[task_id]["progress"] = 0
-        tasks_db[task_id]["phase"] = "Starting"
+        tasks_db[task_id]["phase"] = "Research Framing"
         tasks_db[task_id]["phase_start_time"] = time.time()
         tasks_db[task_id]["step_durations"] = []
         save_tasks()
