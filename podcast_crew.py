@@ -1488,8 +1488,7 @@ show_notes_task = Task(
 # --- RENAMED & REORDERED TASKS FOR NEW WORKFLOW ---
 # 6a: Podcast Planning (was show_notes_task)
 planning_task = show_notes_task 
-# 6b: Podcast Recording (was script_task)
-recording_task = script_task
+# 6b: Podcast Recording (Already defined as recording_task above)
 # 7: Post-Processing (was natural_language_task)
 post_process_task = natural_language_task
 
