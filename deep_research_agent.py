@@ -192,14 +192,26 @@ MIN_ACADEMIC_RESULTS = 5  # Sufficiency threshold for Tier 1
 class PubMedClient:
     """Search PubMed via NCBI E-utilities (free, no API key needed for <3 req/sec)."""
 
+    def __init__(self):
+        self.api_key = os.getenv("PUBMED_API_KEY")
+
     async def search(self, query: str, max_results: int = 10) -> List[Dict[str, str]]:
         results = []
         try:
             async with httpx.AsyncClient(timeout=15) as http:
                 # Step 1: esearch to get PMIDs
+                params = {
+                    "db": "pubmed",
+                    "term": query,
+                    "retmax": max_results,
+                    "retmode": "json"
+                }
+                if self.api_key:
+                    params["api_key"] = self.api_key
+
                 resp = await http.get(
                     f"{PUBMED_BASE_URL}/esearch.fcgi",
-                    params={"db": "pubmed", "term": query, "retmax": max_results, "retmode": "json"}
+                    params=params
                 )
                 resp.raise_for_status()
                 id_list = resp.json().get("esearchresult", {}).get("idlist", [])
@@ -207,9 +219,17 @@ class PubMedClient:
                     return []
 
                 # Step 2: efetch to get article details
+                fetch_params = {
+                    "db": "pubmed",
+                    "id": ",".join(id_list),
+                    "retmode": "xml"
+                }
+                if self.api_key:
+                    fetch_params["api_key"] = self.api_key
+
                 resp = await http.get(
                     f"{PUBMED_BASE_URL}/efetch.fcgi",
-                    params={"db": "pubmed", "id": ",".join(id_list), "retmode": "xml"}
+                    params=fetch_params
                 )
                 resp.raise_for_status()
 
