@@ -31,6 +31,8 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+import xml.etree.ElementTree as ET
+
 import httpx
 from bs4 import BeautifulSoup
 from openai import AsyncOpenAI
@@ -183,28 +185,121 @@ class ResearchReport:
 
 # --- Worker Services (IO + Fast Model) ---
 
-class SearchService:
-    """Searches via SearXNG and BraveSearch."""
+PUBMED_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+MIN_ACADEMIC_RESULTS = 5  # Sufficiency threshold for Tier 1
 
-    def __init__(self, brave_api_key: str = ""):
-        self.brave_api_key = brave_api_key
+
+class PubMedClient:
+    """Search PubMed via NCBI E-utilities (free, no API key needed for <3 req/sec)."""
 
     async def search(self, query: str, max_results: int = 10) -> List[Dict[str, str]]:
         results = []
         try:
+            async with httpx.AsyncClient(timeout=15) as http:
+                # Step 1: esearch to get PMIDs
+                resp = await http.get(
+                    f"{PUBMED_BASE_URL}/esearch.fcgi",
+                    params={"db": "pubmed", "term": query, "retmax": max_results, "retmode": "json"}
+                )
+                resp.raise_for_status()
+                id_list = resp.json().get("esearchresult", {}).get("idlist", [])
+                if not id_list:
+                    return []
+
+                # Step 2: efetch to get article details
+                resp = await http.get(
+                    f"{PUBMED_BASE_URL}/efetch.fcgi",
+                    params={"db": "pubmed", "id": ",".join(id_list), "retmode": "xml"}
+                )
+                resp.raise_for_status()
+
+                root = ET.fromstring(resp.text)
+                for article in root.findall(".//PubmedArticle"):
+                    pmid_el = article.find(".//PMID")
+                    title_el = article.find(".//ArticleTitle")
+                    abstract_el = article.find(".//AbstractText")
+
+                    pmid = pmid_el.text if pmid_el is not None else ""
+                    title = title_el.text if title_el is not None else ""
+                    abstract = abstract_el.text if abstract_el is not None else ""
+
+                    if pmid:
+                        results.append({
+                            "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                            "title": title or "",
+                            "snippet": (abstract or "")[:500]
+                        })
+        except Exception as e:
+            logger.warning(f"PubMed search failed: {e}")
+        return results
+
+
+def _dedup_and_filter(results: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Deduplicate results by URL and filter junk domains."""
+    seen = set()
+    unique = []
+    for r in results:
+        url = r["url"]
+        if url not in seen and not is_junk_url(url):
+            seen.add(url)
+            unique.append(r)
+    return unique
+
+
+class SearchService:
+    """Tiered search: Academic sources first (PubMed + Google Scholar), then general web."""
+
+    def __init__(self, brave_api_key: str = ""):
+        self.brave_api_key = brave_api_key
+        self.pubmed = PubMedClient()
+
+    async def _extract_searxng_results(self, raw: list) -> List[Dict[str, str]]:
+        """Extract url/title/snippet from SearXNG raw results."""
+        results = []
+        for r in raw:
+            url = r.get("url", "") if isinstance(r, dict) else getattr(r, "url", "")
+            title = r.get("title", "") if isinstance(r, dict) else getattr(r, "title", "")
+            snippet = r.get("content", "") if isinstance(r, dict) else getattr(r, "snippet", "")
+            if url:
+                results.append({"url": url, "title": title, "snippet": snippet})
+        return results
+
+    async def search(self, query: str, max_results: int = 10, min_academic: int = MIN_ACADEMIC_RESULTS) -> List[Dict[str, str]]:
+        academic_results = []
+
+        # Tier 1a: PubMed
+        pubmed_results = await self.pubmed.search(query, max_results=max_results)
+        academic_results.extend(pubmed_results)
+
+        # Tier 1b: Google Scholar via SearXNG
+        try:
             async with SearxngClient() as client:
                 if await client.validate_connection():
-                    raw = await client.search(query, num_results=max_results)
-                    for r in raw:
-                        url = r.get("url", "") if isinstance(r, dict) else getattr(r, "url", "")
-                        title = r.get("title", "") if isinstance(r, dict) else getattr(r, "title", "")
-                        snippet = r.get("content", "") if isinstance(r, dict) else getattr(r, "snippet", "")
-                        if url:
-                            results.append({"url": url, "title": title, "snippet": snippet})
+                    raw = await client.search(query, engines=['google scholar'], num_results=max_results)
+                    academic_results.extend(await self._extract_searxng_results(raw))
         except Exception as e:
-            logger.warning(f"SearXNG search failed: {e}")
+            logger.warning(f"Google Scholar search failed: {e}")
 
-        if self.brave_api_key and len(results) < max_results:
+        academic_results = _dedup_and_filter(academic_results)
+
+        # Tier 2: Sufficiency check
+        if len(academic_results) >= min_academic:
+            logger.info(f"[Tier 1: Academic] {len(academic_results)} results — sufficient, skipping general web")
+            return academic_results[:max_results]
+
+        logger.info(f"[Tier 3: General web] expanding search — only {len(academic_results)} academic results")
+
+        # Tier 3: General web (existing behavior)
+        general_results = []
+        try:
+            async with SearxngClient() as client:
+                if await client.validate_connection():
+                    raw = await client.search(query, engines=['google', 'bing', 'brave'], num_results=max_results)
+                    general_results.extend(await self._extract_searxng_results(raw))
+        except Exception as e:
+            logger.warning(f"SearXNG general search failed: {e}")
+
+        if self.brave_api_key and len(general_results) < max_results:
             try:
                 headers = {"X-Subscription-Token": self.brave_api_key, "Accept": "application/json"}
                 async with httpx.AsyncClient(timeout=15) as http:
@@ -216,7 +311,7 @@ class SearchService:
                     if resp.status_code == 200:
                         data = resp.json()
                         for r in data.get("web", {}).get("results", []):
-                            results.append({
+                            general_results.append({
                                 "url": r.get("url", ""),
                                 "title": r.get("title", ""),
                                 "snippet": r.get("description", "")
@@ -224,14 +319,9 @@ class SearchService:
             except Exception as e:
                 logger.warning(f"BraveSearch failed: {e}")
 
-        seen = set()
-        unique = []
-        for r in results:
-            url = r["url"]
-            if url not in seen and not is_junk_url(url):
-                seen.add(url)
-                unique.append(r)
-        return unique[:max_results]
+        # Merge: academic first (prioritized), then general
+        all_results = academic_results + general_results
+        return _dedup_and_filter(all_results)[:max_results]
 
 
 class ContentFetcher:
