@@ -765,6 +765,7 @@ def home(username: str = Depends(verify_credentials)):
         <script>
             let currentTaskId = null;
             let statusInterval = null;
+            let pendingTaskIds = [];  // queued tasks waiting to be tracked
 
             // Load history on page load
             loadHistory();
@@ -875,8 +876,7 @@ def home(username: str = Depends(verify_credentials)):
                 }}
 
                 button.disabled = true;
-                button.textContent = 'Initializing Core Systems...';
-                statusBox.classList.add('show');
+                button.textContent = 'Submitting...';
 
                 try {{
                     const response = await fetch('/api/generate', {{
@@ -900,14 +900,21 @@ def home(username: str = Depends(verify_credentials)):
                     }}
 
                     const data = await response.json();
-                    currentTaskId = data.task_id;
 
                     // Re-enable button so user can queue more requests
                     button.disabled = false;
                     button.textContent = 'Initiate Production Sequence';
 
-                    // Start status polling
-                    statusInterval = setInterval(checkStatus, 2000);
+                    if (currentTaskId && statusInterval) {{
+                        // Already tracking a running task — queue this one in the background
+                        pendingTaskIds.push(data.task_id);
+                        showQueuedToast(data.task_id, pendingTaskIds.length);
+                    }} else {{
+                        // Nothing active — track this task directly
+                        currentTaskId = data.task_id;
+                        statusBox.classList.add('show');
+                        statusInterval = setInterval(checkStatus, 2000);
+                    }}
 
                 }} catch (error) {{
                     showError(error.message);
@@ -927,7 +934,16 @@ def home(username: str = Depends(verify_credentials)):
 
                     if (data.status === 'completed' || data.status === 'failed') {{
                         clearInterval(statusInterval);
+                        statusInterval = null;
                         loadHistory();
+
+                        // Pick up next pending task if any
+                        if (pendingTaskIds.length > 0) {{
+                            currentTaskId = pendingTaskIds.shift();
+                            statusInterval = setInterval(checkStatus, 2000);
+                        }} else {{
+                            currentTaskId = null;
+                        }}
                     }}
                 }} catch (error) {{
                     console.error('Status check failed:', error);
@@ -1067,6 +1083,14 @@ def home(username: str = Depends(verify_credentials)):
                 const error = document.getElementById('error');
                 error.textContent = 'SYSTEM ERROR: ' + message;
                 error.style.display = 'block';
+            }}
+
+            function showQueuedToast(taskId, position) {{
+                const toast = document.createElement('div');
+                toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#1e293b;border:1px solid #f59e0b;color:#f59e0b;padding:12px 20px;border-radius:8px;z-index:9999;font-size:0.9rem;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+                toast.textContent = `Request queued (#${{position}} in queue). Current task progress continues below.`;
+                document.body.appendChild(toast);
+                setTimeout(() => toast.remove(), 4000);
             }}
 
                         async function loadHistory() {{
