@@ -2179,16 +2179,18 @@ print(f"{'='*70}")
 
 # Build Crew 2 task list — order depends on whether translation is needed
 if translation_task is not None:
-    # Non-English: script → translate → polish → show notes → accuracy check
+    # Non-English: script → translate → show notes → polish → accuracy check
+    # planning_task and post_process_task depend on translation_task context,
+    # so translation_task must come before them in sequential execution.
     print(f"\nTRANSLATION PHASE: Translating to {language_config['name']}")
     crew_2_tasks = [
         adversarial_task,
         source_verification_task, # 4a
         audit_task, # 4b
-        planning_task, # 6a
         recording_task, # 6b
         translation_task,
-        post_process_task, # 7
+        planning_task, # 6a (depends on translation_task context)
+        post_process_task, # 7 (depends on translation_task context)
         accuracy_check_task,
     ]
 else:

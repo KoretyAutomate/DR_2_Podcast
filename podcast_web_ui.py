@@ -1337,7 +1337,17 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
 
         if proc.returncode != 0:
             tasks_db[task_id]["status"] = "failed"
-            error_text = "".join(output_lines[-100:])  # Last 100 lines
+            # Filter out pydantic caret-only lines and log prefixes for cleaner error display
+            raw_lines = output_lines[-100:]
+            clean_lines = []
+            for l in raw_lines:
+                # Strip log prefix (timestamp + level) to get the actual message
+                stripped = l.rstrip('\n')
+                # Skip lines that are only carets/whitespace (pydantic error formatting)
+                msg = stripped.split(' - ERROR - ', 1)[-1] if ' - ERROR - ' in stripped else stripped
+                if msg.strip() and msg.strip().replace('^', '').strip():
+                    clean_lines.append(msg)
+            error_text = "\n".join(clean_lines[-50:])  # Last 50 meaningful lines
             tasks_db[task_id]["error"] = error_text or f"Process exited with code {proc.returncode}"
             save_tasks()
             return
