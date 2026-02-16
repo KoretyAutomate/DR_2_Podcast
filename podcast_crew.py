@@ -2431,7 +2431,7 @@ try:
     audio_file = generate_audio_from_script(cleaned_script, str(output_path), lang_code=language_config['tts_code'])
     if audio_file:
         audio_file = Path(audio_file)
-        logger.info(f"Audio generation complete: {audio_file}")
+        print(f"Audio generation complete: {audio_file}")
 except Exception as e:
     print(f"✗ ERROR: Kokoro TTS failed with exception: {e}")
     import traceback

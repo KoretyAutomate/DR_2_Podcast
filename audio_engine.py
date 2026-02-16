@@ -105,9 +105,9 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         if not line:
             continue
 
-        # Stop at section separator (--- marks end of dialogue, start of appendix/notes)
+        # Skip section separators (--- between topics) — not end of dialogue
         if re.match(r'^-{3,}$', line):
-            break
+            continue
 
         # Check for Speaker Switch
         if line.startswith("Host 1:") or line.startswith("Dr. Data:") or line.startswith("Kaz:"):
