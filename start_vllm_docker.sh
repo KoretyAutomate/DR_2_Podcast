@@ -4,7 +4,7 @@
 # Port: 8000
 
 # Configuration
-MODEL_NAME="Qwen/Qwen2.5-32B-Instruct-AWQ"
+MODEL_NAME="Qwen/Qwen2.5-14B-Instruct-AWQ"
 PORT=8000
 MAX_MODEL_LEN=32768  # 32k context window
 GPU_MEMORY_UTIL=0.8  # Use 80% of GPU memory (~102GB), leaves ~26GB for system/Ollama
@@ -34,7 +34,8 @@ docker run --runtime nvidia --gpus all \
   --max-model-len $MAX_MODEL_LEN \
   --gpu-memory-utilization $GPU_MEMORY_UTIL \
   --dtype auto \
-  --trust-remote-code
+  --trust-remote-code \
+  --enforce-eager
 
 # If server exits unexpectedly
 echo ""

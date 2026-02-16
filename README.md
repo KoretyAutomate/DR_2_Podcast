@@ -35,16 +35,21 @@ An AI-powered pipeline that deeply researches any scientific topic, conducts adv
      └───────────────────────┬───────────────────────────────────────┘
                              ▼
      ┌───────────────────────────────────────────────────────────────┐
-     │ CREW 2 — Evidence Validation & Podcast Production             │
+     │ CREW 2 — Evidence Validation                                  │
      │                                                               │
      │  Phase 3: Counter-Evidence Research (Adversarial Researcher)  │
      │  Phase 4a: Source Validation (Source Verifier)                │
      │  Phase 4b: Source-of-Truth Synthesis (Auditor)               │
-     │  Phase 6a: Show Notes & Citations (Producer)                 │
-     │  Phase 6b: Podcast Script Generation (Producer)              │
+     └───────────────────────┬───────────────────────────────────────┘
+                             ▼
+     ┌───────────────────────────────────────────────────────────────┐
+     │ CREW 3 — Podcast Production                                   │
+     │                                                               │
+     │  Phase 5: Show Notes & Citations (Producer)                   │
+     │  Phase 6: Podcast Script Generation (Producer)               │
      │  Phase 7: Script Polishing (Personality Editor)              │
      │  Phase 8: Accuracy Check (Auditor) [advisory]               │
-     │  [Translation task inserted before 6a/7 for non-English]     │
+     │  [Translation task inserted before 5/7 for non-English]      │
      └───────────────────────┬───────────────────────────────────────┘
                              ▼
               ┌─────────────────────────────────────────────┐
@@ -163,7 +168,7 @@ The Source Verifier validates every cited URL (HEAD requests) and checks that cl
 ### Phase 4b — Source-of-Truth Synthesis
 The Auditor combines all evidence into an authoritative reference document with confidence levels (HIGH / MEDIUM / LOW / CONTESTED), a Reliability Scorecard, and a Caveat Box.
 
-### Phase 6a/6b — Show Notes & Script
+### Phase 5/6 — Show Notes & Script
 The Producer generates show notes with citations and a debate script. The script uses `Kaz:` / `Erika:` dialogue format.
 
 ### Phase 7 — Script Polishing
@@ -184,7 +189,7 @@ Kokoro TTS renders the polished script with two voices at 24kHz WAV, followed by
 
 The pipeline supports English and Japanese output:
 - **English**: Default. All research, scripts, and audio in English.
-- **Japanese**: A translation task is inserted into Crew 2 before script polishing and show notes. Kokoro uses Japanese voice models. Host names use katakana (カズ / エリカ).
+- **Japanese**: A translation task is inserted into Crew 3 before script polishing and show notes. Kokoro uses Japanese voice models. Host names use katakana (カズ / エリカ).
 
 ## Podcast Characters
 
@@ -297,8 +302,8 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 ├── verified_sources_bibliography.pdf
 ├── source_of_truth.md                Phase 4b — authoritative reference
 ├── source_of_truth.pdf
-├── show_notes.md                     Phase 6a — show notes and citations
-├── podcast_script_raw.md             Phase 6b — raw script
+├── show_notes.md                     Phase 5 — show notes and citations
+├── podcast_script_raw.md             Phase 6 — raw script
 ├── podcast_script_polished.md        Phase 7 — polished script
 ├── podcast_script.txt                Final script for TTS
 ├── accuracy_check.md                 Phase 8 — drift detection

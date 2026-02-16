@@ -1486,9 +1486,9 @@ show_notes_task = Task(
 )
 
 # --- RENAMED & REORDERED TASKS FOR NEW WORKFLOW ---
-# 6a: Podcast Planning (was show_notes_task)
-planning_task = show_notes_task 
-# 6b: Podcast Recording (Already defined as recording_task above)
+# 5: Podcast Planning (was show_notes_task)
+planning_task = show_notes_task
+# 6: Podcast Recording (Already defined as recording_task above)
 # 7: Post-Processing (was natural_language_task)
 post_process_task = natural_language_task
 
@@ -1578,21 +1578,21 @@ TASK_METADATA = {
     },
     'planning_task': {
         'name': 'Podcast Planning',
-        'phase': '6a',
+        'phase': '5',
         'estimated_duration_min': 3,
         'description': 'Developing show notes, outline, and narrative arc',
         'agent': 'Podcast Producer',
         'dependencies': ['audit_task'],
-        'crew': 2
+        'crew': 3
     },
     'recording_task': {
         'name': 'Podcast Recording',
-        'phase': '6b',
+        'phase': '6',
         'estimated_duration_min': 6,
         'description': 'Script writing and conversation generation',
         'agent': 'Podcast Producer',
         'dependencies': ['planning_task'],
-        'crew': 2
+        'crew': 3
     },
     'post_process_task': {
         'name': 'Post-Processing',
@@ -1601,7 +1601,7 @@ TASK_METADATA = {
         'description': 'BGM merging, translation (if applicable), and polishing',
         'agent': 'Podcast Personality',
         'dependencies': ['recording_task'],
-        'crew': 2
+        'crew': 3
     }
 }
 
@@ -2171,42 +2171,20 @@ audit_context_injection += f"--- END PRIOR CONTEXT ---\n"
 audit_task.description = f"{audit_task.description}{audit_context_injection}"
 
 # ================================================================
-# CREW 2: Phases 3-8 (Adversarial through Accuracy Check)
+# CREW 2: Phases 3-4b (Evidence Validation)
 # ================================================================
 print(f"\n{'='*70}")
-print(f"CREW 2: PHASES 3-8 (ADVERSARIAL → ACCURACY CHECK)")
+print(f"CREW 2: PHASES 3-4b (EVIDENCE VALIDATION)")
 print(f"{'='*70}")
 
-# Build Crew 2 task list — order depends on whether translation is needed
-if translation_task is not None:
-    # Non-English: script → translate → show notes → polish → accuracy check
-    # planning_task and post_process_task depend on translation_task context,
-    # so translation_task must come before them in sequential execution.
-    print(f"\nTRANSLATION PHASE: Translating to {language_config['name']}")
-    crew_2_tasks = [
-        adversarial_task,
-        source_verification_task, # 4a
-        audit_task, # 4b
-        recording_task, # 6b
-        translation_task,
-        planning_task, # 6a (depends on translation_task context)
-        post_process_task, # 7 (depends on translation_task context)
-        accuracy_check_task,
-    ]
-else:
-    # English: original order (no translation)
-    crew_2_tasks = [
-        adversarial_task,
-        source_verification_task, # 4a
-        audit_task, # 4b
-        planning_task, # 6a
-        recording_task, # 6b
-        post_process_task, # 7
-        accuracy_check_task,
-    ]
+crew_2_tasks = [
+    adversarial_task,           # Phase 3
+    source_verification_task,   # Phase 4a
+    audit_task,                 # Phase 4b
+]
 
 crew_2 = Crew(
-    agents=[counter_researcher, source_verifier, auditor, scriptwriter, personality],
+    agents=[counter_researcher, source_verifier, auditor],
     tasks=crew_2_tasks,
     verbose=True,
     process='sequential'
@@ -2217,10 +2195,58 @@ monitor = CrewMonitor(all_task_list, progress_tracker)
 monitor.start()
 
 try:
-    result = crew_2.kickoff()
+    crew_2.kickoff()
 except Exception as e:
     print(f"\n{'='*70}")
     print("CREW 2 FAILED")
+    print(f"{'='*70}")
+    print(f"Error: {e}")
+    monitor.stop()
+    raise
+finally:
+    monitor.stop()
+    monitor.join(timeout=2)
+
+# ================================================================
+# CREW 3: Phases 5-8 (Podcast Production)
+# ================================================================
+print(f"\n{'='*70}")
+print(f"CREW 3: PHASES 5-8 (PODCAST PRODUCTION)")
+print(f"{'='*70}")
+
+if translation_task is not None:
+    print(f"\nTRANSLATION PHASE: Translating to {language_config['name']}")
+    crew_3_tasks = [
+        recording_task,         # Phase 6
+        translation_task,
+        planning_task,          # Phase 5 (depends on translation)
+        post_process_task,      # Phase 7 (depends on translation)
+        accuracy_check_task,    # Phase 8
+    ]
+else:
+    crew_3_tasks = [
+        planning_task,          # Phase 5
+        recording_task,         # Phase 6
+        post_process_task,      # Phase 7
+        accuracy_check_task,    # Phase 8
+    ]
+
+crew_3 = Crew(
+    agents=[scriptwriter, personality, auditor],
+    tasks=crew_3_tasks,
+    verbose=True,
+    process='sequential'
+)
+
+# Start background monitor for crew 3
+monitor = CrewMonitor(all_task_list, progress_tracker)
+monitor.start()
+
+try:
+    result = crew_3.kickoff()
+except Exception as e:
+    print(f"\n{'='*70}")
+    print("CREW 3 FAILED")
     print(f"{'='*70}")
     print(f"Error: {e}")
     monitor.stop()
