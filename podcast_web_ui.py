@@ -1214,9 +1214,9 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
                            upload_buzzsprout: bool = False, upload_youtube: bool = False):
     """Run podcast_crew.py in background with real-time phase tracking."""
     try:
-        tasks_db[task_id]["status"] = "queued"
+        tasks_db[task_id]["status"] = "running"
         tasks_db[task_id]["progress"] = 0
-        tasks_db[task_id]["phase"] = "Queued"
+        tasks_db[task_id]["phase"] = "Starting"
         tasks_db[task_id]["phase_start_time"] = time.time()
         tasks_db[task_id]["step_durations"] = []
         save_tasks()
@@ -1239,10 +1239,18 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
         output_lines = []
         # No timeout limit
         start_time = tasks_db[task_id]["start_time"]
+        output_dir_discovered = False
 
         for line in proc.stdout:
             output_lines.append(line)
-            
+
+            # 0. Discover output_dir early so artifact counting works during execution
+            if not output_dir_discovered:
+                found_dir = _find_latest_output_dir()
+                if found_dir:
+                    tasks_db[task_id]["output_dir"] = str(found_dir)
+                    output_dir_discovered = True
+
             # 1. Parse Phase Markers
             for marker, phase_name, progress_pct in PHASE_MARKERS:
                 if marker in line:
