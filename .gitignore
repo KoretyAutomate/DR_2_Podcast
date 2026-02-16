@@ -20,3 +20,11 @@ tasks_db.json
 *.wav
 Podcast BGM/
 *.safetensors
+
+# Archived/orphaned scripts
+archived_scripts/
+
+# Misc debris
+home/
+reflections/
+.pytest_cache/
