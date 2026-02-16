@@ -755,8 +755,8 @@ def home(username: str = Depends(verify_credentials)):
             </div>
 
             <div class="glass-card">
-                <h2 style="cursor:pointer;user-select:none;" onclick="const el=document.getElementById('history');const arrow=document.getElementById('historyArrow');if(el.style.display==='none'){{el.style.display='block';arrow.textContent='▼';}}else{{el.style.display='none';arrow.textContent='▶';}}">
-                    <span id="historyArrow">▶</span> Production History
+                <h2 id="historyToggle" style="cursor:pointer;user-select:none;">
+                    <span id="historyArrow">&#9654;</span> Production History
                 </h2>
                 <ul id="history" class="history" style="display:none;">
                     <li style="color: var(--text-secondary); text-align: center; padding: 20px;">No episodes generated yet</li>
@@ -768,6 +768,19 @@ def home(username: str = Depends(verify_credentials)):
             let currentTaskId = null;
             let statusInterval = null;
             let pendingTaskIds = [];  // queued tasks waiting to be tracked
+
+            // Production History toggle
+            document.getElementById('historyToggle').addEventListener('click', function() {{
+                const el = document.getElementById('history');
+                const arrow = document.getElementById('historyArrow');
+                if (el.style.display === 'none') {{
+                    el.style.display = 'block';
+                    arrow.innerHTML = '&#9660;';
+                }} else {{
+                    el.style.display = 'none';
+                    arrow.innerHTML = '&#9654;';
+                }}
+            }});
 
             // Load history on page load
             loadHistory();
@@ -1077,7 +1090,12 @@ def home(username: str = Depends(verify_credentials)):
                     progressBar.style.width = '100%';
                     progressBar.style.background = '#ef4444';
                     statusIcon.textContent = '❌';
-                    showError(data.error || 'Generation failed');
+                    statusDetails.textContent = 'Production failed.';
+                    // Extract last meaningful error line instead of full traceback
+                    const rawError = data.error || 'Generation failed';
+                    const lines = rawError.split('\\n').filter(l => l.trim());
+                    const lastLine = lines[lines.length - 1] || rawError;
+                    showError(lastLine);
                 }}
             }}
 
