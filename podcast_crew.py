@@ -1305,7 +1305,7 @@ else: # long / default ~30 mins
 
 print(f"Podcast Length Mode: {duration_label}")
 
-script_task = Task(
+recording_task = Task(
     description=(
         f"Using the audit report, write a {target_words_en if language != 'ja' else target_chars_ja}-{'word' if language != 'ja' else 'character'} podcast dialogue about \"{topic_name}\" "
         f"featuring {SESSION_ROLES['presenter']['character']} (presenter) and {SESSION_ROLES['questioner']['character']} (questioner).\n\n"
@@ -1378,7 +1378,7 @@ if language != 'en':
         ),
         expected_output=f"Complete translated script in {language_config['name']} with {SESSION_ROLES['presenter']['character']}:/{SESSION_ROLES['questioner']['character']}: format.",
         agent=scriptwriter,
-        context=[script_task, audit_task],
+        context=[recording_task, audit_task],
     )
 
 natural_language_task = Task(
@@ -1413,7 +1413,7 @@ natural_language_task = Task(
         f"{target_instruction}"
     ),
     agent=personality,
-    context=[script_task, audit_task]
+    context=[recording_task, audit_task]
 )
 
 accuracy_check_task = Task(
@@ -1485,14 +1485,22 @@ show_notes_task = Task(
     output_file=str(output_dir / "SHOW_NOTES.md")
 )
 
+# --- RENAMED & REORDERED TASKS FOR NEW WORKFLOW ---
+# 6a: Podcast Planning (was show_notes_task)
+planning_task = show_notes_task 
+# 6b: Podcast Recording (was script_task)
+recording_task = script_task
+# 7: Post-Processing (was natural_language_task)
+post_process_task = natural_language_task
+
 # --- TRANSLATION PIPELINE: Update contexts when translating ---
 if translation_task is not None:
     # Polish reads from translated script instead of English script
-    natural_language_task.context = [translation_task, audit_task]
+    post_process_task.context = [translation_task, audit_task]
     # Show notes use translated SOT context
-    show_notes_task.context = [translation_task, audit_task]
+    planning_task.context = [translation_task, audit_task]
     # Accuracy check compares polished (target lang) against translated script
-    accuracy_check_task.context = [natural_language_task, translation_task]
+    accuracy_check_task.context = [post_process_task, translation_task]
 
 # --- TASK METADATA & WORKFLOW PLANNING ---
 TASK_METADATA = {
@@ -1500,100 +1508,100 @@ TASK_METADATA = {
         'name': 'Research Framing & Hypothesis',
         'phase': '0',
         'estimated_duration_min': 2,
-        'description': 'Research Framing Specialist defines scope, questions, and evidence criteria',
+        'description': 'Defining scope, questions, and evidence criteria',
         'agent': 'Research Framing Specialist',
         'dependencies': [],
         'crew': 0
     },
     'research_task': {
-        'name': 'Systematic Evidence Gathering',
+        'name': 'Deep Research Execution',
         'phase': '1',
         'estimated_duration_min': 8,
-        'description': 'Lead Researcher conducts deep dive guided by framing document',
+        'description': 'Systematic evidence gathering and data collection',
         'agent': 'Principal Investigator',
         'dependencies': ['framing_task'],
         'crew': 1
     },
-    'gap_analysis_task': {
-        'name': 'Research Gate & Gap Analysis',
+    'report_task': {
+        'name': 'Lead Researcher Report',
         'phase': '2',
         'estimated_duration_min': 3,
-        'description': 'Scientific Auditor evaluates coverage with PASS/FAIL gate',
+        'description': 'Synthesizing initial findings into a structured report',
+        'agent': 'Principal Investigator',
+        'dependencies': ['research_task'],
+        'crew': 1
+    },
+    'gap_analysis_task': {
+        'name': 'Gap Analysis (Internal Gate)',
+        'phase': '2b',
+        'estimated_duration_min': 2,
+        'description': 'Checking for missing critical information',
         'agent': 'Scientific Auditor',
-        'dependencies': ['framing_task', 'research_task'],
+        'dependencies': ['report_task'],
         'crew': 1
     },
     'gap_fill_task': {
-        'name': 'Gap-Fill Research (conditional)',
-        'phase': '2b',
+        'name': 'Gap-Fill Research (Conditional)',
+        'phase': '2c',
         'estimated_duration_min': 4,
-        'description': 'Targeted supplementary research if gate FAILS',
+        'description': 'Targeted supplementary research if needed',
         'agent': 'Principal Investigator',
-        'dependencies': ['research_task', 'gap_analysis_task'],
+        'dependencies': ['gap_analysis_task'],
         'crew': 'conditional',
         'conditional': True
     },
     'adversarial_task': {
-        'name': 'Counter-Evidence Research',
+        'name': 'Adversarial Research',
         'phase': '3',
         'estimated_duration_min': 8,
-        'description': 'Counter-Researcher challenges findings',
+        'description': 'Counter-evidence gathering and challenge',
         'agent': 'Adversarial Researcher',
-        'dependencies': ['research_task', 'gap_analysis_task'],
+        'dependencies': ['gap_analysis_task'],
         'crew': 2
     },
     'source_verification_task': {
-        'name': 'Source Validation & Claim Verification',
-        'phase': '4',
-        'estimated_duration_min': 5,
-        'description': 'Source Verifier validates citations and claim-to-source accuracy',
+        'name': 'Source Validation (Audit Step 1)',
+        'phase': '4a',
+        'estimated_duration_min': 4,
+        'description': 'Validating citations and checking claim-to-source accuracy',
         'agent': 'Scientific Source Verifier',
-        'dependencies': ['research_task', 'adversarial_task'],
+        'dependencies': ['adversarial_task'],
         'crew': 2
     },
     'audit_task': {
-        'name': 'Source-of-Truth Synthesis',
-        'phase': '5',
-        'estimated_duration_min': 5,
-        'description': 'Scientific Auditor synthesizes authoritative source-of-truth document',
+        'name': 'Source-of-Truth Syntax (Audit Step 2)',
+        'phase': '4b',
+        'estimated_duration_min': 4,
+        'description': 'Synthesizing all valid evidence into authoritative document',
         'agent': 'Scientific Auditor',
-        'dependencies': ['research_task', 'adversarial_task', 'source_verification_task'],
+        'dependencies': ['source_verification_task'],
         'crew': 2
     },
-    'show_notes_task': {
-        'name': 'Show Notes & Citations',
+    'planning_task': {
+        'name': 'Podcast Planning',
         'phase': '6a',
         'estimated_duration_min': 3,
-        'description': 'Scriptwriter generates show notes from source-of-truth',
+        'description': 'Developing show notes, outline, and narrative arc',
         'agent': 'Podcast Producer',
         'dependencies': ['audit_task'],
         'crew': 2
     },
-    'script_task': {
-        'name': 'Podcast Script Generation',
+    'recording_task': {
+        'name': 'Podcast Recording',
         'phase': '6b',
         'estimated_duration_min': 6,
-        'description': 'Scriptwriter creates debate dialogue from source-of-truth',
+        'description': 'Script writing and conversation generation',
         'agent': 'Podcast Producer',
-        'dependencies': ['audit_task'],
+        'dependencies': ['planning_task'],
         'crew': 2
     },
-    'natural_language_task': {
-        'name': 'Script Polishing & Editing',
+    'post_process_task': {
+        'name': 'Post-Processing',
         'phase': '7',
-        'estimated_duration_min': 4,
-        'description': 'Personality Agent refines for natural delivery',
+        'estimated_duration_min': 5,
+        'description': 'BGM merging, translation (if applicable), and polishing',
         'agent': 'Podcast Personality',
-        'dependencies': ['script_task', 'audit_task'],
-        'crew': 2
-    },
-    'accuracy_check_task': {
-        'name': 'Script Accuracy Check',
-        'phase': '8',
-        'estimated_duration_min': 3,
-        'description': 'Scientific Auditor checks polished script for drift (advisory)',
-        'agent': 'Scientific Auditor',
-        'dependencies': ['natural_language_task', 'audit_task'],
+        'dependencies': ['recording_task'],
         'crew': 2
     }
 }
@@ -1750,14 +1758,15 @@ progress_tracker.start_workflow()
 all_task_list = [
     framing_task,
     research_task,
+    # report_task (to be added),
     gap_analysis_task,
     # gap_fill_task inserted here conditionally
     adversarial_task,
     source_verification_task,
     audit_task,
-    show_notes_task,
-    script_task,
-    natural_language_task,
+    planning_task,
+    recording_task,
+    post_process_task,
     accuracy_check_task,
 ]
 
@@ -2128,7 +2137,6 @@ else:
 # ================================================================
 # Inject research output into downstream tasks (research_output already set above)
 gap_analysis_output = gap_analysis_task.output.raw if hasattr(gap_analysis_task, 'output') and gap_analysis_task.output else ""
-gap_analysis_output = gap_analysis_task.output.raw if hasattr(gap_analysis_task, 'output') and gap_analysis_task.output else ""
 
 # Build combined research context for adversarial task
 # Keep injections small — the deep research pre-scan is already injected above
@@ -2176,23 +2184,23 @@ if translation_task is not None:
     print(f"\nTRANSLATION PHASE: Translating to {language_config['name']}")
     crew_2_tasks = [
         adversarial_task,
-        source_verification_task,
-        audit_task,
-        script_task,
+        source_verification_task, # 4a
+        audit_task, # 4b
+        planning_task, # 6a
+        recording_task, # 6b
         translation_task,
-        natural_language_task,
-        show_notes_task,
+        post_process_task, # 7
         accuracy_check_task,
     ]
 else:
     # English: original order (no translation)
     crew_2_tasks = [
         adversarial_task,
-        source_verification_task,
-        audit_task,
-        show_notes_task,
-        script_task,
-        natural_language_task,
+        source_verification_task, # 4a
+        audit_task, # 4b
+        planning_task, # 6a
+        recording_task, # 6b
+        post_process_task, # 7
         accuracy_check_task,
     ]
 
@@ -2254,9 +2262,9 @@ markdown_outputs = [
     ("Source Verification", source_verification_task, "source_verification.md"),
     ("Source of Truth", audit_task, "source_of_truth.md"),
     ("Accuracy Check", accuracy_check_task, "accuracy_check.md"),
-    ("Show Notes", show_notes_task, "show_notes.md"),
-    ("Podcast Script (Raw)", script_task, "podcast_script_raw.md"),
-    ("Podcast Script (Polished)", natural_language_task, "podcast_script_polished.md"),
+    ("Podcast Planning", planning_task, "show_notes.md"),
+    ("Podcast Recording (Raw)", recording_task, "podcast_script_raw.md"),
+    ("Podcast Recording (Polished)", post_process_task, "podcast_script_polished.md"),
 ]
 for label, source, filename in markdown_outputs:
     try:

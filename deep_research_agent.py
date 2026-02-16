@@ -24,6 +24,7 @@ import os
 import re
 import sqlite3
 import time
+import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -151,6 +152,7 @@ class StudyMetadata:
     effect_size: Optional[str] = None      # "HR 0.82", "OR 1.5", "d=0.3"
     limitations: Optional[str] = None      # Author-stated limitations
     demographics: Optional[str] = None     # "age 25-45, 60% female, healthy adults"
+    funding_source: Optional[str] = None   # "Industry-funded", "NIH grant", "Independent", etc.
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None}
@@ -171,6 +173,22 @@ class SummarizedSource:
     metadata: Optional[StudyMetadata] = None
 
 @dataclass
+class SearchMetrics:
+    """PRISMA-style search flow metrics for auto-generated methodology sections."""
+    search_date: str                    # ISO date
+    databases_searched: List[str]       # ["PubMed", "Google Scholar", "Google", "Bing", "Brave"]
+    total_identified: int               # raw results before dedup
+    total_after_dedup: int              # after dedup
+    total_fetched: int                  # pages fetched
+    total_fetch_errors: int             # fetch failures
+    total_with_content: int             # pages with extractable content
+    total_summarized: int               # successfully summarized
+    academic_sources: int               # pubmed + scholar count
+    general_web_sources: int            # general web count
+    tier1_sufficient_count: int         # queries where Tier 1 was sufficient
+    tier3_expanded_count: int           # queries that needed Tier 3
+
+@dataclass
 class ResearchReport:
     topic: str
     role: str
@@ -181,6 +199,7 @@ class ResearchReport:
     total_summaries: int
     total_errors: int
     duration_seconds: float
+    search_metrics: Optional[SearchMetrics] = None
 
 
 # --- Worker Services (IO + Fast Model) ---
@@ -272,6 +291,12 @@ class SearchService:
     def __init__(self, brave_api_key: str = ""):
         self.brave_api_key = brave_api_key
         self.pubmed = PubMedClient()
+        # Tier tracking counters for SearchMetrics
+        self.tier1_sufficient = 0
+        self.tier3_expanded = 0
+        self.academic_count = 0
+        self.general_count = 0
+        self.total_identified_raw = 0
 
     async def _extract_searxng_results(self, raw: list) -> List[Dict[str, str]]:
         """Extract url/title/snippet from SearXNG raw results."""
@@ -300,14 +325,18 @@ class SearchService:
         except Exception as e:
             logger.warning(f"Google Scholar search failed: {e}")
 
+        self.total_identified_raw += len(academic_results)
         academic_results = _dedup_and_filter(academic_results)
 
         # Tier 2: Sufficiency check
         if len(academic_results) >= min_academic:
             logger.info(f"[Tier 1: Academic] {len(academic_results)} results — sufficient, skipping general web")
+            self.tier1_sufficient += 1
+            self.academic_count += len(academic_results[:max_results])
             return academic_results[:max_results]
 
         logger.info(f"[Tier 3: General web] expanding search — only {len(academic_results)} academic results")
+        self.tier3_expanded += 1
 
         # Tier 3: General web (existing behavior)
         general_results = []
@@ -340,8 +369,12 @@ class SearchService:
                 logger.warning(f"BraveSearch failed: {e}")
 
         # Merge: academic first (prioritized), then general
+        self.total_identified_raw += len(general_results)
         all_results = academic_results + general_results
-        return _dedup_and_filter(all_results)[:max_results]
+        deduped = _dedup_and_filter(all_results)[:max_results]
+        self.academic_count += len(academic_results)
+        self.general_count += len(deduped) - min(len(academic_results), len(deduped))
+        return deduped
 
 
 class ContentFetcher:
@@ -485,7 +518,8 @@ class FastWorker:
             f'"authors":"First Author et al. or null",'
             f'"effect_size":"HR/OR/d value or null",'
             f'"limitations":"key limitation or null",'
-            f'"demographics":"age range, sex ratio, population description or null"}}\n\n'
+            f'"demographics":"age range, sex ratio, population description or null",'
+            f'"funding_source":"Industry/Government/Independent/Unknown or null"}}\n\n'
             f"Rules:\n"
             f"- Be extremely concise in facts\n"
             f"- Use null (not quotes) for unknown metadata fields\n"
@@ -738,6 +772,8 @@ class ResearchAgent:
                     parts.append(f"Authors: {m.authors}")
                 if m.demographics:
                     parts.append(f"Pop: {m.demographics}")
+                if m.funding_source:
+                    parts.append(f"Funding: {m.funding_source}")
                 if parts:
                     meta_line = f"**Study Metadata:** {' | '.join(parts)}\n"
             evidence_blocks.append(
@@ -754,20 +790,25 @@ class ResearchAgent:
         report_system = (
             f"You are a {role}. {role_instructions}\n\n"
             f"Write a comprehensive research report based ONLY on the evidence provided.\n"
-            f"Each source includes structured metadata (study type, sample size, effect size, journal).\n"
-            f"Weight evidence accordingly: RCTs and meta-analyses > cohort studies > observational > general.\n"
-            f"Report specific sample sizes and effect sizes when available.\n\n"
+            f"Each source includes structured metadata (study type, sample size, effect size, journal, funding).\n"
+            f"Weight evidence accordingly: meta-analyses > RCTs > cohort > observational > reviews > opinion.\n\n"
             f"Structure:\n"
-            f"1. Executive Summary\n"
-            f"2. Key Findings (grouped by theme)\n"
-            f"3. Evidence Quality Assessment\n"
-            f"4. Evidence Table\n"
-            f"   | Source | Study Type | N | Key Result | Effect Size | Journal | Year |\n"
+            f"1. Abstract (3-4 sentence summary of the overall findings)\n"
+            f"2. Key Findings (grouped by evidence tier):\n"
+            f"   - Meta-Analyses and Systematic Reviews\n"
+            f"   - Randomized Controlled Trials\n"
+            f"   - Cohort and Observational Studies\n"
+            f"   - Reviews and Expert Opinion\n"
+            f"3. Evidence Table (clean markdown table):\n"
+            f"   | Author (Year) | Study Type | N | Key Finding | Effect Size | Funding | Journal |\n"
             f"   | --- | --- | --- | --- | --- | --- | --- |\n"
-            f"   [Fill from source metadata]\n"
-            f"5. Gaps & Limitations\n"
-            f"6. Bibliography (all source URLs)\n\n"
-            f"Be factual. Cite sources by URL. Note evidence strength."
+            f"   [Fill from source metadata — one row per source]\n"
+            f"4. Limitations\n"
+            f"5. References (standardized format: 'Author et al. (Year). Title. Journal. URL')\n\n"
+            f"Citation rules:\n"
+            f"- In body text, cite as 'Author et al. (Year)' when metadata is available\n"
+            f"- Fall back to (URL) only when no author/year metadata exists\n"
+            f"- Report specific sample sizes and effect sizes when available"
         )
 
         try:
@@ -783,6 +824,23 @@ class ResearchAgent:
         duration = time.time() - start_time
         log(f"  {role} complete: {len(good_summaries)} sources, {duration:.0f}s")
 
+        # Build search metrics from SearchService counters
+        svc = self.search
+        metrics = SearchMetrics(
+            search_date=datetime.date.today().isoformat(),
+            databases_searched=["PubMed", "Google Scholar", "Google", "Bing", "Brave"],
+            total_identified=svc.total_identified_raw,
+            total_after_dedup=len(seen_urls),
+            total_fetched=total_fetched,
+            total_fetch_errors=total_errors,
+            total_with_content=total_fetched - total_errors,
+            total_summarized=len(good_summaries),
+            academic_sources=svc.academic_count,
+            general_web_sources=svc.general_count,
+            tier1_sufficient_count=svc.tier1_sufficient,
+            tier3_expanded_count=svc.tier3_expanded,
+        )
+
         return ResearchReport(
             topic=topic,
             role=role,
@@ -792,7 +850,8 @@ class ResearchAgent:
             total_urls_fetched=total_fetched,
             total_summaries=len(good_summaries),
             total_errors=total_errors,
-            duration_seconds=duration
+            duration_seconds=duration,
+            search_metrics=metrics,
         )
 
 
@@ -912,19 +971,83 @@ class Orchestrator:
         log(f"PHASE 3: AUDITOR SYNTHESIS")
         log(f"{'='*70}")
 
+        # Build combined SearchMetrics for methodology section
+        lead_m = lead_report.search_metrics
+        counter_m = counter_report.search_metrics
+        search_date = datetime.date.today().isoformat()
+        if lead_m and counter_m:
+            total_identified = lead_m.total_identified + counter_m.total_identified
+            total_after_dedup = lead_m.total_after_dedup + counter_m.total_after_dedup
+            total_fetched = lead_m.total_fetched + counter_m.total_fetched
+            total_fetch_errors = lead_m.total_fetch_errors + counter_m.total_fetch_errors
+            total_with_content = lead_m.total_with_content + counter_m.total_with_content
+            total_summarized = lead_m.total_summarized + counter_m.total_summarized
+            academic_sources = lead_m.academic_sources + counter_m.academic_sources
+            general_web_sources = lead_m.general_web_sources + counter_m.general_web_sources
+        else:
+            total_identified = lead_report.total_urls_fetched + counter_report.total_urls_fetched
+            total_after_dedup = total_identified
+            total_fetched = total_identified
+            total_fetch_errors = lead_report.total_errors + counter_report.total_errors
+            total_with_content = total_fetched - total_fetch_errors
+            total_summarized = lead_report.total_summaries + counter_report.total_summaries
+            academic_sources = 0
+            general_web_sources = 0
+
+        methodology_context = (
+            f"=== SEARCH METHODOLOGY ===\n"
+            f"Search conducted: {search_date}\n"
+            f"Databases: PubMed, Google Scholar, Google, Bing, Brave\n"
+            f"Articles identified: {total_identified}\n"
+            f"After deduplication: {total_after_dedup}\n"
+            f"Full-text retrieved: {total_fetched}\n"
+            f"Successfully analyzed: {total_summarized}\n"
+            f"Excluded (fetch errors): {total_fetch_errors}\n"
+            f"Academic sources (Tier 1): {academic_sources}\n"
+            f"General web sources (Tier 3): {general_web_sources}\n"
+        )
+
         audit_system = (
-            "You are a Scientific Auditor. Review both the supporting and opposing research reports. "
-            "Write a balanced meta-audit that:\n"
-            "1. Grades each major claim on a 1-10 evidence scale\n"
-            "2. Creates a Reliability Scorecard\n"
-            "3. Lists caveats (The Caveat Box): why findings might be wrong\n"
-            "4. Identifies the overall scientific consensus\n"
-            "5. Lists all cited URLs\n\n"
-            "Be impartial. Evaluate evidence quality, not quantity."
+            "You are a scientific review author synthesizing supporting and opposing evidence "
+            "into ONE cohesive review article.\n\n"
+            "Structure:\n"
+            "1. Abstract (200-300 words)\n"
+            "2. Introduction (background, scope, research questions)\n"
+            "3. Methodology\n"
+            f"   - Databases searched: PubMed, Google Scholar, Google, Bing, Brave\n"
+            f"   - Search date: {search_date}\n"
+            f"   - Source selection: {total_identified} identified → {total_after_dedup} screened → {total_summarized} included\n"
+            "   - Inclusion criteria: peer-reviewed studies, clinical trials, systematic reviews\n"
+            "   - Exclusion criteria: non-English, purely anecdotal, retracted\n"
+            "4. Results (grouped by evidence tier)\n"
+            "   4.1 Meta-Analyses and Systematic Reviews\n"
+            "   4.2 Randomized Controlled Trials\n"
+            "   4.3 Cohort and Observational Studies\n"
+            "   4.4 Mechanistic / Preclinical Evidence\n"
+            "   4.5 Expert Opinion and Narrative Reviews\n"
+            "5. Discussion\n"
+            "   5.1 Synthesis of Supporting Evidence\n"
+            "   5.2 Contradictory Findings and Limitations\n"
+            "   5.3 Evidence Quality Assessment (reliability scorecard)\n"
+            "   5.4 Recency Analysis (note when older findings superseded by newer evidence)\n"
+            "   5.5 Potential Conflicts of Interest (flag industry-funded studies)\n"
+            "   5.6 Cross-Study Comparison (compare effect sizes across studies reporting same outcome)\n"
+            "6. Conclusions\n"
+            "7. Evidence Summary Table\n"
+            "   | # | Author (Year) | Study Type | N | Key Finding | Effect Size | Funding | Journal |\n"
+            "   | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+            "8. References (Author et al. (Year). Title. Journal. DOI/URL)\n\n"
+            "Rules:\n"
+            "- Cite as 'Author et al. (Year)' in body text, not raw URLs\n"
+            "- Weight meta-analyses > RCTs > cohort > observational > opinion\n"
+            "- Flag industry-funded studies in Discussion 5.5\n"
+            "- When multiple studies report the same metric, explicitly compare their effect sizes\n"
+            "- Note when findings from before 2020 have been updated by more recent evidence"
         )
 
         combined_evidence = (
             f"TOPIC: {topic}\n\n"
+            f"{methodology_context}\n"
             f"=== SUPPORTING EVIDENCE (Lead Researcher) ===\n"
             f"{lead_report.report}\n\n"
             f"=== OPPOSING EVIDENCE (Counter Researcher) ===\n"
@@ -949,6 +1072,24 @@ class Orchestrator:
             logger.error(f"Audit failed: {e}")
             audit_text = f"Audit synthesis failed: {e}\n\n{combined_evidence}"
 
+        # Build combined search metrics for audit report
+        combined_metrics = None
+        if lead_m and counter_m:
+            combined_metrics = SearchMetrics(
+                search_date=search_date,
+                databases_searched=["PubMed", "Google Scholar", "Google", "Bing", "Brave"],
+                total_identified=total_identified,
+                total_after_dedup=total_after_dedup,
+                total_fetched=total_fetched,
+                total_fetch_errors=total_fetch_errors,
+                total_with_content=total_with_content,
+                total_summarized=total_summarized,
+                academic_sources=academic_sources,
+                general_web_sources=general_web_sources,
+                tier1_sufficient_count=(lead_m.tier1_sufficient_count + counter_m.tier1_sufficient_count),
+                tier3_expanded_count=(lead_m.tier3_expanded_count + counter_m.tier3_expanded_count),
+            )
+
         audit_report = ResearchReport(
             topic=topic, role="Auditor",
             sources=lead_report.sources + counter_report.sources,
@@ -957,7 +1098,8 @@ class Orchestrator:
             total_urls_fetched=lead_report.total_urls_fetched + counter_report.total_urls_fetched,
             total_summaries=lead_report.total_summaries + counter_report.total_summaries,
             total_errors=lead_report.total_errors + counter_report.total_errors,
-            duration_seconds=time.time() - start_time
+            duration_seconds=time.time() - start_time,
+            search_metrics=combined_metrics,
         )
 
         total_time = time.time() - start_time

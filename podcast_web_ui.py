@@ -467,6 +467,42 @@ def home(username: str = Depends(verify_credentials)):
                 color: var(--text-secondary);
             }}
 
+            .history-summary {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                cursor: pointer;
+            }}
+
+            .history-details {{
+                display: none;
+                margin-top: 15px;
+                padding-top: 15px;
+                border-top: 1px dashed var(--border-color);
+                font-size: 0.9rem;
+            }}
+            
+            .history-details.open {{
+                display: block;
+            }}
+            
+            .artifact-pill {{
+                display: inline-flex;
+                align-items: center;
+                padding: 4px 10px;
+                background: rgba(99, 102, 241, 0.1);
+                color: var(--accent-primary);
+                border-radius: 12px;
+                font-size: 0.8rem;
+                margin: 2px;
+                text-decoration: none;
+                border: 1px solid rgba(99, 102, 241, 0.2);
+            }}
+            
+            .artifact-pill:hover {{
+                background: rgba(99, 102, 241, 0.2);
+            }}
+
             /* Buttons inside sections */
             .auth-btn {{
                 background: transparent;
@@ -699,7 +735,7 @@ def home(username: str = Depends(verify_credentials)):
                     <div id="researchViz" style="display:none; margin-top: 20px;">
                         <div class="counter-box">
                             <div>
-                                <div class="counter-label">SOURCES ANALYZED</div>
+                                <div class="counter-label">SOURCES REFERRED</div>
                                 <div class="counter-value" id="sourceCount">0</div>
                             </div>
                             <div style="text-align:right;">
@@ -908,7 +944,7 @@ def home(username: str = Depends(verify_credentials)):
                     if (data.estimated_remaining) {{
                          const mins = Math.floor(data.estimated_remaining / 60);
                          const secs = Math.floor(data.estimated_remaining % 60);
-                         document.getElementById('etaDisplay').textContent = `⏱️ EST. REMAINING: ${{mins}}m ${{secs}}s`;
+                         document.getElementById('etaDisplay').textContent = `⏱️ Approx. Remaining: ${{mins}}m ${{secs}}s`;
                     }}
                     
                     // Update Artifact Count
@@ -984,9 +1020,9 @@ def home(username: str = Depends(verify_credentials)):
                         <h3 style="margin-top:20px; font-size:1.1rem; color:var(--text-primary);">Artifacts Generated:</h3>
                         <div style="display:flex; flex-wrap:wrap; gap:10px;">
                         <a href="/api/download/${{data.task_id}}/podcast_final_audio.wav" class="download-link">🎵 Audio (WAV)</a>
-                        <a href="/api/download/${{data.task_id}}/SOURCE_OF_TRUTH.md" class="download-link">📋 Source of Truth</a>
-                        <a href="/api/download/${{data.task_id}}/SHOW_NOTES.md" class="download-link">📝 Show Notes</a>
-                        <a href="/api/download/${{data.task_id}}/ACCURACY_CHECK.md" class="download-link">✅ Accuracy Check</a>
+                        <a href="/api/download/${{data.task_id}}/source_of_truth.md" class="download-link">📋 Source of Truth</a>
+                        <a href="/api/download/${{data.task_id}}/show_notes.md" class="download-link">📝 Show Notes</a>
+                        <a href="/api/download/${{data.task_id}}/accuracy_check.md" class="download-link">✅ Accuracy Check</a>
                         <a href="/api/download/${{data.task_id}}/supporting_paper.pdf" class="download-link">📄 Supporting Paper</a>
                         <a href="/api/download/${{data.task_id}}/adversarial_paper.pdf" class="download-link">📄 Adversarial Paper</a>
                         <a href="/api/download/${{data.task_id}}/source_of_truth.pdf" class="download-link">📄 Source of Truth PDF</a>
@@ -1007,7 +1043,7 @@ def home(username: str = Depends(verify_credentials)):
                 error.style.display = 'block';
             }}
 
-            async function loadHistory() {{
+                        async function loadHistory() {{
                 try {{
                     const response = await fetch('/api/history');
                     const tasks = await response.json();
@@ -1019,21 +1055,65 @@ def home(username: str = Depends(verify_credentials)):
                         return;
                     }}
 
-                    historyList.innerHTML = tasks.map(task => `
+                    historyList.innerHTML = tasks.map((task, index) => {{
+                         const date = new Date(task.created_at).toLocaleString();
+                         const artifacts = [
+                             {{ name: "Audio (WAV)", file: "podcast_final_audio.wav", icon: "🎵" }},
+                             {{ name: "Source of Truth", file: "source_of_truth.md", icon: "📋" }},
+                             {{ name: "Show Notes", file: "show_notes.md", icon: "📝" }},
+                             {{ name: "Accuracy Check", file: "accuracy_check.md", icon: "✅" }},
+                             {{ name: "Script PDF", file: "supporting_paper.pdf", icon: "📄" }},
+                             {{ name: "Adversarial Check", file: "adversarial_paper.pdf", icon: "⚖️" }}
+                         ];
+                         
+                         const artifactLinks = artifacts.map(a => 
+                             `<a href="/api/download/${{task.task_id}}/${{a.file}}" class="artifact-pill" target="_blank">${{a.icon}} ${{a.name}}</a>`
+                         ).join('');
+
+                         return `
                         <li class="history-item">
-                            <div class="history-topic">${{task.topic}}</div>
-                            <div class="history-meta">
-                                Language: ${{task.language === 'en' ? 'English' : '日本語'}} |
-                                Status: <span class="status-${{task.status}}">${{task.status}}</span> |
-                                Artifacts: ${{task.artifacts_created || 0}}/${{task.artifacts_total || 24}} |
-                                ${{new Date(task.created_at).toLocaleString()}}
+                            <div class="history-summary" onclick="toggleDetails('details-${{task.task_id}}')">
+                                <div>
+                                    <div class="history-topic">${{task.topic}}</div>
+                                    <div class="history-meta">
+                                        ${{task.language === 'en' ? 'English' : '日本語'}} • 
+                                        ${{date}} • 
+                                        Sources: ${{task.sources ? task.sources.length : 0}} • 
+                                        <span class="status-${{task.status}}">${{task.status}}</span>
+                                    </div>
+                                </div>
+                                <div>
+                                    <span style="font-size: 1.2rem;">${{task.status === 'completed' ? '✅' : '⚙️'}}</span>
+                                    <span style="margin-left: 10px; color: var(--text-secondary);">▼</span>
+                                </div>
+                            </div>
+                            <div id="details-${{task.task_id}}" class="history-details">
+                                <div style="margin-bottom: 10px; font-weight: 600;">Artifacts Generated (${{task.artifacts_created || 0}}/${{task.artifacts_total || 24}}):</div>
+                                <div style="display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px;">
+                                    ${{task.status === 'completed' ? artifactLinks : '<span style="color:var(--text-secondary)">Processing...</span>'}}
+                                </div>
+                                <div style="font-size: 0.8rem; color: var(--text-secondary);">
+                                    Task ID: ${{task.task_id}}<br>
+                                    Duration: ${{task.step_durations ? Math.round(task.step_durations.reduce((a,b)=>a+b.duration,0)/60) : 0}} min
+                                </div>
                             </div>
                         </li>
-                    `).join('');
+                    `}}).join('');
                 }} catch (error) {{
                     console.error('Failed to load history:', error);
                 }}
             }}
+            
+            window.toggleDetails = function(id) {{
+                const el = document.getElementById(id);
+                if (el.style.display === 'block') {{
+                    el.style.display = 'none';
+                    el.classList.remove('open');
+                }} else {{
+                    el.style.display = 'block';
+                    el.classList.add('open');
+                }}
+            }};
 
             // Auto-refresh history every 10 seconds
             setInterval(loadHistory, 10000);
@@ -1112,17 +1192,19 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
     return {"task_id": task_id, "status": "queued"}
 
 # Phase markers parsed from podcast_crew.py stdout
+# Phase markers parsed from podcast_crew.py stdout
 PHASE_MARKERS = [
     ("PHASE 0: RESEARCH FRAMING", "Research Framing", 5),
-    ("PHASE 1+2: LEAD", "Deep Research", 10),
-    ("Research library saved", "Deep Research Complete", 25),
-    ("CREW 1: PHASES 1-2", "Evidence Gathering", 30),
-    ("Gate verdict:", "Gate Check", 45),
-    ("PHASE 2b: GAP-FILL", "Gap-Fill Research", 50),
-    ("CREW 2: PHASES 3-8", "Validation & Production", 55),
-    ("TRANSLATION PHASE", "Translating to target language", 75),
-    ("Generating Documentation PDFs", "Generating PDFs", 85),
-    ("Generating Multi-Voice Podcast Audio", "Generating Audio", 90),
+    ("PHASE 1: DEEP RESEARCH", "Deep Research Execution", 10),
+    ("Lead report saved", "Lead Researcher Report", 20),
+    ("Gate verdict:", "Research Gate Check", 25),
+    ("PHASE 2b: GAP-FILL", "Gap-Fill Research", 30),
+    ("PHASE 3: ADVERSARIAL", "Adversarial Research", 40),
+    ("PHASE 4: FAIRNESS", "Fairness & Accuracy Audit", 50),
+    ("PHASE 6a: PODCAST PLANNING", "Podcast Planning", 60),
+    ("PHASE 6b: PODCAST RECORDING", "Podcast Recording", 70),
+    ("PHASE 7: POST-PROCESSING", "Post-Processing", 85),
+    ("Starting BGM Merging Phase", "BGM Merging", 90),
     ("SUCCESS: Audio duration", "Complete", 100),
 ]
 
@@ -1132,9 +1214,9 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
                            upload_buzzsprout: bool = False, upload_youtube: bool = False):
     """Run podcast_crew.py in background with real-time phase tracking."""
     try:
-        tasks_db[task_id]["status"] = "running"
+        tasks_db[task_id]["status"] = "queued"
         tasks_db[task_id]["progress"] = 0
-        tasks_db[task_id]["phase"] = "Starting..."
+        tasks_db[task_id]["phase"] = "Queued"
         tasks_db[task_id]["phase_start_time"] = time.time()
         tasks_db[task_id]["step_durations"] = []
         save_tasks()
