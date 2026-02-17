@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 import uvicorn
+import httpx
 
 from upload_utils import validate_upload_config, upload_to_buzzsprout, upload_to_youtube
 
@@ -125,18 +126,22 @@ def worker_thread():
             current_task_id = task_id
             
             print(f"Starting task {task_id} from queue...")
-            
-            # Execute the generation
-            run_podcast_generation(
-                task_id, 
-                task_data["topic"],
-                task_data["language"],
-                task_data["accessibility_level"],
-                task_data["podcast_length"],
-                task_data["podcast_hosts"],
-                task_data["upload_buzzsprout"],
-                task_data["upload_youtube"]
-            )
+
+            if task_data.get("reuse_mode"):
+                # Reuse path
+                run_podcast_reuse(task_data)
+            else:
+                # Normal full pipeline
+                run_podcast_generation(
+                    task_id,
+                    task_data["topic"],
+                    task_data["language"],
+                    task_data["accessibility_level"],
+                    task_data["podcast_length"],
+                    task_data["podcast_hosts"],
+                    task_data["upload_buzzsprout"],
+                    task_data["upload_youtube"]
+                )
             
         except Exception as e:
             print(f"Worker thread error: {e}")
@@ -156,6 +161,23 @@ load_tasks()
 
 class PodcastRequest(BaseModel):
     topic: str
+    language: str = "en"
+    accessibility_level: str = "simple"
+    podcast_length: str = "long"
+    podcast_hosts: str = "random"
+    upload_to_buzzsprout: bool = False
+    upload_to_youtube: bool = False
+    buzzsprout_api_key: str = ""
+    buzzsprout_account_id: str = ""
+    youtube_secret_path: str = ""
+
+class ReuseCheckRequest(BaseModel):
+    topic: str
+
+class ReuseGenerateRequest(BaseModel):
+    topic: str
+    reuse_task_id: str = ""
+    reuse_output_dir: str = ""
     language: str = "en"
     accessibility_level: str = "simple"
     podcast_length: str = "long"
@@ -764,6 +786,20 @@ def home(username: str = Depends(verify_credentials)):
             </div>
         </div>
 
+        <!-- Reuse Modal -->
+        <div id="reuseModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); backdrop-filter:blur(4px); z-index:1000; align-items:center; justify-content:center;">
+            <div style="background:var(--card-bg); border:1px solid var(--border-color); border-radius:16px; padding:32px; max-width:600px; width:90%; max-height:80vh; overflow-y:auto; box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+                <h2 style="margin-bottom:16px; border:none; padding:0; font-size:1.3rem;">Similar Topic Found</h2>
+                <div id="reuseMatchInfo" style="margin-bottom:20px;"></div>
+                <div id="reuseParamDiff" style="margin-bottom:20px;"></div>
+                <div style="display:flex; gap:12px; justify-content:flex-end; flex-wrap:wrap;">
+                    <button type="button" id="reuseCancelBtn" style="background:transparent; border:1px solid var(--border-color); color:var(--text-secondary); padding:10px 20px; width:auto; margin:0; box-shadow:none;">Cancel</button>
+                    <button type="button" id="reuseFreshBtn" style="background:transparent; border:1px solid var(--warning-color); color:var(--warning-color); padding:10px 20px; width:auto; margin:0; box-shadow:none;">Start Fresh</button>
+                    <button type="button" id="reuseUseBtn" style="padding:10px 20px; width:auto; margin:0;">Use Previous Research</button>
+                </div>
+            </div>
+        </div>
+
         <script>
             let currentTaskId = null;
             let statusInterval = null;
@@ -855,19 +891,167 @@ def home(username: str = Depends(verify_credentials)):
                 this.disabled = false;
             }});
 
+            // Show reuse modal and return user decision as a Promise
+            function showReuseModal(match) {{
+                return new Promise((resolve) => {{
+                    const modal = document.getElementById('reuseModal');
+                    const infoDiv = document.getElementById('reuseMatchInfo');
+                    const diffDiv = document.getElementById('reuseParamDiff');
+
+                    // Populate match info
+                    const date = new Date(match.created_at).toLocaleDateString();
+                    infoDiv.innerHTML = `
+                        <div style="background:rgba(139,92,246,0.1); border:1px solid rgba(139,92,246,0.3); border-radius:8px; padding:16px;">
+                            <div style="font-weight:600; color:var(--text-primary); margin-bottom:8px;">Previous Topic</div>
+                            <div style="color:var(--text-secondary); margin-bottom:12px;">${{match.topic}}</div>
+                            <div style="display:flex; gap:16px; font-size:0.85rem;">
+                                <span style="color:var(--accent-primary);">Similarity: ${{match.similarity_score}}%</span>
+                                <span style="color:var(--text-secondary);">Completed: ${{date}}</span>
+                            </div>
+                        </div>
+                    `;
+
+                    // Build parameter diff table
+                    const newLang = document.getElementById('language').value;
+                    const newAccess = document.getElementById('accessibility').value;
+                    const newLength = document.getElementById('length').value;
+                    const newHosts = document.getElementById('hosts').value;
+
+                    const params = [
+                        ['Language', match.language, newLang],
+                        ['Audience', match.accessibility_level, newAccess],
+                        ['Duration', match.podcast_length, newLength],
+                        ['Hosts', match.podcast_hosts, newHosts],
+                    ];
+
+                    let tableRows = '';
+                    for (const [name, old, cur] of params) {{
+                        const changed = old !== cur;
+                        const color = changed ? 'var(--warning-color)' : 'var(--text-secondary)';
+                        const badge = changed ? ' <span style="color:var(--warning-color); font-size:0.75rem;">(changed)</span>' : '';
+                        tableRows += `<tr>
+                            <td style="padding:6px 12px; color:var(--text-secondary);">${{name}}</td>
+                            <td style="padding:6px 12px; color:${{color}};">${{old}}</td>
+                            <td style="padding:6px 12px; color:${{color}};">${{cur}}${{badge}}</td>
+                        </tr>`;
+                    }}
+
+                    diffDiv.innerHTML = `
+                        <table style="width:100%; font-size:0.85rem; border-collapse:collapse;">
+                            <thead><tr style="border-bottom:1px solid var(--border-color);">
+                                <th style="padding:6px 12px; text-align:left; color:var(--text-secondary); font-weight:500;">Parameter</th>
+                                <th style="padding:6px 12px; text-align:left; color:var(--text-secondary); font-weight:500;">Previous</th>
+                                <th style="padding:6px 12px; text-align:left; color:var(--text-secondary); font-weight:500;">Current</th>
+                            </tr></thead>
+                            <tbody>${{tableRows}}</tbody>
+                        </table>
+                    `;
+
+                    modal.style.display = 'flex';
+
+                    function cleanup() {{
+                        modal.style.display = 'none';
+                        document.getElementById('reuseCancelBtn').removeEventListener('click', onCancel);
+                        document.getElementById('reuseFreshBtn').removeEventListener('click', onFresh);
+                        document.getElementById('reuseUseBtn').removeEventListener('click', onReuse);
+                    }}
+                    function onCancel() {{ cleanup(); resolve({{ action: 'cancel' }}); }}
+                    function onFresh() {{ cleanup(); resolve({{ action: 'fresh' }}); }}
+                    function onReuse() {{ cleanup(); resolve({{ action: 'reuse', match }}); }}
+
+                    document.getElementById('reuseCancelBtn').addEventListener('click', onCancel);
+                    document.getElementById('reuseFreshBtn').addEventListener('click', onFresh);
+                    document.getElementById('reuseUseBtn').addEventListener('click', onReuse);
+                }});
+            }}
+
+            // Helper: start tracking a task after submission
+            function startTracking(taskId) {{
+                const statusBox = document.getElementById('statusBox');
+                if (currentTaskId && statusInterval) {{
+                    pendingTaskIds.push(taskId);
+                    showQueuedToast(taskId, pendingTaskIds.length);
+                }} else {{
+                    currentTaskId = taskId;
+                    statusBox.classList.add('show');
+                    statusInterval = setInterval(checkStatus, 2000);
+                }}
+            }}
+
+            // Helper: get current form params as object
+            function getFormParams() {{
+                return {{
+                    topic: document.getElementById('topic').value,
+                    language: document.getElementById('language').value,
+                    accessibility_level: document.getElementById('accessibility').value,
+                    podcast_length: document.getElementById('length').value,
+                    podcast_hosts: document.getElementById('hosts').value,
+                    upload_to_buzzsprout: document.getElementById('uploadBuzzsprout').checked,
+                    upload_to_youtube: document.getElementById('uploadYoutube').checked,
+                    buzzsprout_api_key: document.getElementById('buzzsproutApiKey').value || '',
+                    buzzsprout_account_id: document.getElementById('buzzsproutAccountId').value || '',
+                    youtube_secret_path: document.getElementById('youtubeSecretPath').value || ''
+                }};
+            }}
+
             // Form submission
             document.getElementById('podcastForm').addEventListener('submit', async (e) => {{
                 e.preventDefault();
 
                 const topic = document.getElementById('topic').value;
-                const language = document.getElementById('language').value;
-                const accessibility = document.getElementById('accessibility').value;
                 const button = document.getElementById('generateBtn');
-                const statusBox = document.getElementById('statusBox');
 
                 document.getElementById('error').style.display = 'none';
 
-                // Check queue status and confirm if tasks are already running/queued
+                // Step 1: Check for similar previous runs
+                try {{
+                    button.disabled = true;
+                    button.textContent = 'Checking for similar topics...';
+                    const reuseRes = await fetch('/api/check-reuse', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ topic }})
+                    }});
+                    const reuseData = await reuseRes.json();
+
+                    if (reuseData.has_match && reuseData.matches.length > 0) {{
+                        button.disabled = false;
+                        button.textContent = 'Initiate Production Sequence';
+
+                        const decision = await showReuseModal(reuseData.matches[0]);
+
+                        if (decision.action === 'cancel') {{
+                            return;
+                        }}
+
+                        if (decision.action === 'reuse') {{
+                            // Submit via reuse endpoint
+                            button.disabled = true;
+                            button.textContent = 'Submitting (Reuse)...';
+                            const params = getFormParams();
+                            const reuseResp = await fetch('/api/generate-reuse', {{
+                                method: 'POST',
+                                headers: {{ 'Content-Type': 'application/json' }},
+                                body: JSON.stringify({{
+                                    ...params,
+                                    reuse_task_id: decision.match.task_id || '',
+                                    reuse_output_dir: decision.match.output_dir || ''
+                                }})
+                            }});
+                            if (!reuseResp.ok) throw new Error('Failed to start reuse generation');
+                            const reuseResult = await reuseResp.json();
+                            button.disabled = false;
+                            button.textContent = 'Initiate Production Sequence';
+                            startTracking(reuseResult.task_id);
+                            return;
+                        }}
+                        // action === 'fresh' — fall through to normal flow
+                    }}
+                }} catch (err) {{
+                    console.warn('Reuse check failed, proceeding with fresh generation:', err);
+                }}
+
+                // Step 2: Queue status check
                 try {{
                     const qRes = await fetch('/api/queue-info');
                     const qInfo = await qRes.json();
@@ -883,6 +1067,8 @@ def home(username: str = Depends(verify_credentials)):
                             msg = `There ${{qInfo.queued === 1 ? 'is' : 'are'}} ${{qInfo.queued}} queued request${{qInfo.queued > 1 ? 's' : ''}} ahead. Your request will be added to the queue.`;
                         }}
                         if (!confirm(msg + '\\n\\nProceed?')) {{
+                            button.disabled = false;
+                            button.textContent = 'Initiate Production Sequence';
                             return;
                         }}
                     }}
@@ -890,24 +1076,16 @@ def home(username: str = Depends(verify_credentials)):
                     console.warn('Queue check failed, proceeding anyway:', err);
                 }}
 
+                // Step 3: Normal generation
                 button.disabled = true;
                 button.textContent = 'Submitting...';
 
                 try {{
+                    const params = getFormParams();
                     const response = await fetch('/api/generate', {{
                         method: 'POST',
                         headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{
-                            topic, language,
-                            accessibility_level: accessibility,
-                            podcast_length: document.getElementById('length').value,
-                            podcast_hosts: document.getElementById('hosts').value,
-                            upload_to_buzzsprout: document.getElementById('uploadBuzzsprout').checked,
-                            upload_to_youtube: document.getElementById('uploadYoutube').checked,
-                            buzzsprout_api_key: document.getElementById('buzzsproutApiKey').value || '',
-                            buzzsprout_account_id: document.getElementById('buzzsproutAccountId').value || '',
-                            youtube_secret_path: document.getElementById('youtubeSecretPath').value || ''
-                        }})
+                        body: JSON.stringify(params)
                     }});
 
                     if (!response.ok) {{
@@ -915,21 +1093,9 @@ def home(username: str = Depends(verify_credentials)):
                     }}
 
                     const data = await response.json();
-
-                    // Re-enable button so user can queue more requests
                     button.disabled = false;
                     button.textContent = 'Initiate Production Sequence';
-
-                    if (currentTaskId && statusInterval) {{
-                        // Already tracking a running task — queue this one in the background
-                        pendingTaskIds.push(data.task_id);
-                        showQueuedToast(data.task_id, pendingTaskIds.length);
-                    }} else {{
-                        // Nothing active — track this task directly
-                        currentTaskId = data.task_id;
-                        statusBox.classList.add('show');
-                        statusInterval = setInterval(checkStatus, 2000);
-                    }}
+                    startTracking(data.task_id);
 
                 }} catch (error) {{
                     showError(error.message);
@@ -1225,6 +1391,237 @@ async def get_queue_info(username: str = Depends(verify_credentials)):
     queued = sum(1 for t in tasks_db.values() if t["status"] == "queued")
     return {"running": running, "queued": queued}
 
+@app.post("/api/check-reuse")
+async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify_credentials)):
+    """Check if a similar topic has been completed recently and could be reused.
+
+    Scans the research_outputs/ filesystem directly for directories from the
+    past 7 days that contain a source_of_truth.md, regardless of tasks_db status.
+    """
+    try:
+        import re as _re
+        from datetime import timedelta
+
+        cutoff_dt = datetime.now() - timedelta(days=7)
+        cutoff_str = cutoff_dt.strftime("%Y-%m-%d")  # e.g. "2026-02-09"
+
+        # Scan research_outputs/ for dirs with source_of_truth.md
+        candidates = []
+        if OUTPUT_DIR.exists():
+            for d in sorted(OUTPUT_DIR.iterdir(), reverse=True):
+                if not d.is_dir() or not d.name[:4].isdigit():
+                    continue
+                # Parse dir timestamp (format: YYYY-MM-DD_HH-MM-SS)
+                dir_date = d.name[:10]  # "2026-02-16"
+                if dir_date < cutoff_str:
+                    continue  # Older than 7 days
+
+                # Must have source_of_truth.md
+                sot_path = d / "source_of_truth.md"
+                if not sot_path.exists():
+                    sot_path = d / "SOURCE_OF_TRUTH.md"
+                if not sot_path.exists():
+                    continue
+
+                # Extract topic from session_metadata.txt
+                meta_path = d / "session_metadata.txt"
+                topic = ""
+                lang = "en"
+                if meta_path.exists():
+                    meta_text = meta_path.read_text()
+                    topic_match = _re.search(r'^Topic:\s*(.+)$', meta_text, _re.MULTILINE)
+                    if topic_match:
+                        topic = topic_match.group(1).strip()
+                    lang_match = _re.search(r'^Language:\s*\S+\s*\((\w+)\)', meta_text, _re.MULTILINE)
+                    if lang_match:
+                        lang = lang_match.group(1).strip()
+
+                if not topic:
+                    # Fallback: try tasks_db to find the topic
+                    for tid, task in tasks_db.items():
+                        if task.get("output_dir") == str(d):
+                            topic = task.get("topic", "")
+                            lang = task.get("language", "en")
+                            break
+                if not topic:
+                    continue
+
+                # Also look up params from tasks_db if available
+                access_level = "simple"
+                pod_length = "long"
+                pod_hosts = "random"
+                task_id_ref = None
+                for tid, task in tasks_db.items():
+                    if task.get("output_dir") == str(d):
+                        access_level = task.get("accessibility_level", "simple")
+                        pod_length = task.get("podcast_length", "long")
+                        pod_hosts = task.get("podcast_hosts", "random")
+                        task_id_ref = tid
+                        break
+
+                candidates.append({
+                    "task_id": task_id_ref or d.name,
+                    "topic": topic,
+                    "created_at": d.name[:10] + "T" + d.name[11:].replace("-", ":"),
+                    "language": lang,
+                    "accessibility_level": access_level,
+                    "podcast_length": pod_length,
+                    "podcast_hosts": pod_hosts,
+                    "output_dir": str(d),
+                })
+
+        if not candidates:
+            return {"has_match": False, "matches": []}
+
+        # Build LLM prompt to score similarity
+        candidate_topics = [c["topic"] for c in candidates]
+        prompt = (
+            f"You are a topic similarity scorer. Compare the NEW topic against each PREVIOUS topic.\n"
+            f"Return a JSON array of integers (0-100) representing similarity scores.\n"
+            f"100 = identical topic, 70+ = very similar/overlapping, 50-69 = somewhat related, <50 = different.\n\n"
+            f"NEW TOPIC: {request.topic}\n\n"
+            f"PREVIOUS TOPICS:\n"
+        )
+        for i, t in enumerate(candidate_topics):
+            prompt += f"  {i+1}. {t}\n"
+        prompt += f"\nReturn ONLY a JSON array of {len(candidate_topics)} integers. Example: [85, 30, 72]"
+
+        resp = httpx.post(
+            "http://localhost:8000/v1/chat/completions",
+            json={
+                "model": "Qwen/Qwen2.5-32B-Instruct-AWQ",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": 512,
+            },
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+
+        # Parse scores from LLM response
+        array_match = _re.search(r'\[[\d\s,]+\]', content)
+        if not array_match:
+            return {"has_match": False, "matches": []}
+        scores = json.loads(array_match.group())
+
+        # Pair scores with candidates, filter >= 70, take top 3
+        matches = []
+        for i, candidate in enumerate(candidates):
+            if i < len(scores) and scores[i] >= 70:
+                candidate["similarity_score"] = scores[i]
+                matches.append(candidate)
+        matches.sort(key=lambda m: m["similarity_score"], reverse=True)
+        matches = matches[:3]
+
+        return {"has_match": len(matches) > 0, "matches": matches}
+
+    except Exception as e:
+        print(f"check-reuse error (graceful fallback): {e}")
+        return {"has_match": False, "matches": []}
+
+
+@app.post("/api/generate-reuse")
+async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(verify_credentials)):
+    """Start podcast generation reusing a previous run's research."""
+    import re as _re
+
+    # Resolve reuse_dir from output_dir or task_id
+    reuse_dir = None
+    if request.reuse_output_dir:
+        reuse_dir = Path(request.reuse_output_dir)
+    elif request.reuse_task_id:
+        prev_task = tasks_db.get(request.reuse_task_id)
+        if prev_task and prev_task.get("output_dir"):
+            reuse_dir = Path(prev_task["output_dir"])
+
+    if not reuse_dir or not reuse_dir.exists():
+        raise HTTPException(status_code=400, detail="Previous output directory not found or no longer exists")
+
+    # Check it has source_of_truth.md
+    sot = reuse_dir / "source_of_truth.md"
+    if not sot.exists():
+        sot = reuse_dir / "SOURCE_OF_TRUTH.md"
+    if not sot.exists():
+        raise HTTPException(status_code=400, detail="Previous output directory has no source_of_truth.md")
+
+    # Determine old params: try tasks_db first, then session_metadata.txt
+    old_lang = "en"
+    old_access = "simple"
+    old_length = "long"
+    old_hosts = "random"
+
+    # Check tasks_db
+    for tid, task in tasks_db.items():
+        if task.get("output_dir") == str(reuse_dir):
+            old_lang = task.get("language", "en")
+            old_access = task.get("accessibility_level", "simple")
+            old_length = task.get("podcast_length", "long")
+            old_hosts = task.get("podcast_hosts", "random")
+            break
+    else:
+        # Fallback: parse session_metadata.txt for language
+        meta_path = reuse_dir / "session_metadata.txt"
+        if meta_path.exists():
+            meta_text = meta_path.read_text()
+            lang_match = _re.search(r'^Language:\s*\S+\s*\((\w+)\)', meta_text, _re.MULTILINE)
+            if lang_match:
+                old_lang = lang_match.group(1).strip()
+
+    params_match = (
+        old_lang == request.language
+        and old_access == request.accessibility_level
+        and old_length == request.podcast_length
+    )
+    hosts_match = old_hosts == request.podcast_hosts
+
+    if params_match and hosts_match:
+        reuse_mode = "check_supplemental"  # LLM decides full_reuse vs supplemental
+    elif params_match and not hosts_match:
+        reuse_mode = "tts_only"
+    else:
+        reuse_mode = "crew3_reuse"
+
+    task_id = secrets.token_hex(8)
+    task = {
+        "task_id": task_id,
+        "topic": request.topic,
+        "language": request.language,
+        "accessibility_level": request.accessibility_level,
+        "podcast_length": request.podcast_length,
+        "podcast_hosts": request.podcast_hosts,
+        "status": "queued",
+        "progress": 0,
+        "phase": "Queued (Reuse)",
+        "created_at": datetime.now().isoformat(),
+        "error": None,
+        "output_dir": None,
+        "upload_buzzsprout": request.upload_to_buzzsprout,
+        "upload_youtube": request.upload_to_youtube,
+        "upload_results": {},
+        "sources": [],
+        "start_time": time.time(),
+        "estimated_remaining": None,
+        "reuse_from": request.reuse_task_id,
+        "reuse_dir": str(reuse_dir),
+        "reuse_mode": reuse_mode,
+    }
+
+    tasks_db[task_id] = task
+    save_tasks()
+
+    # Set upload credentials
+    if request.buzzsprout_api_key:
+        os.environ["BUZZSPROUT_API_KEY"] = request.buzzsprout_api_key
+    if request.buzzsprout_account_id:
+        os.environ["BUZZSPROUT_ACCOUNT_ID"] = request.buzzsprout_account_id
+    if request.youtube_secret_path:
+        os.environ["YOUTUBE_CLIENT_SECRET_PATH"] = request.youtube_secret_path
+
+    task_queue.put(task)
+    return {"task_id": task_id, "status": "queued", "reuse_mode": reuse_mode}
+
+
 @app.post("/api/generate")
 async def generate_podcast(request: PodcastRequest, username: str = Depends(verify_credentials)):
     """Start podcast generation"""
@@ -1285,6 +1682,10 @@ PHASE_MARKERS = [
     ("PHASE 7: POST-PROCESSING", "Post-Processing", 85),
     ("Starting BGM Merging Phase", "BGM Merging", 90),
     ("SUCCESS: Audio duration", "Complete", 100),
+    # Reuse-mode markers
+    ("REUSE MODE:", "Reuse Analysis", 5),
+    ("SUPPLEMENTAL RESEARCH", "Supplemental Research", 20),
+    ("REUSE_COMPLETE:", "Complete (Cached)", 100),
 ]
 
 def run_podcast_generation(task_id: str, topic: str, language: str,
@@ -1442,6 +1843,228 @@ def _find_latest_output_dir() -> Optional[Path]:
     if not subdirs:
         return None
     return max(subdirs, key=lambda d: d.stat().st_mtime)
+
+
+def run_podcast_reuse(task_data: dict):
+    """Run podcast generation in reuse mode (tts_only, crew3_reuse, or check_supplemental)."""
+    task_id = task_data["task_id"]
+    reuse_mode = task_data["reuse_mode"]
+    reuse_dir = Path(task_data["reuse_dir"])
+    topic = task_data["topic"]
+    language = task_data.get("language", "en")
+    podcast_hosts = task_data.get("podcast_hosts", "random")
+    upload_buzzsprout = task_data.get("upload_buzzsprout", False)
+    upload_youtube = task_data.get("upload_youtube", False)
+
+    try:
+        tasks_db[task_id]["status"] = "running"
+        tasks_db[task_id]["progress"] = 0
+        tasks_db[task_id]["phase"] = "Reuse Analysis"
+        tasks_db[task_id]["phase_start_time"] = time.time()
+        tasks_db[task_id]["step_durations"] = []
+        save_tasks()
+
+        if reuse_mode == "tts_only":
+            _run_tts_only_reuse(task_id, task_data, reuse_dir)
+        elif reuse_mode in ("crew3_reuse", "check_supplemental"):
+            _run_subprocess_reuse(task_id, task_data, reuse_dir)
+        else:
+            raise ValueError(f"Unknown reuse_mode: {reuse_mode}")
+
+        # Handle uploads
+        resolved_dir = Path(tasks_db[task_id].get("output_dir") or str(OUTPUT_DIR))
+        audio_path = str(resolved_dir / "podcast_final_audio.wav")
+
+        if upload_buzzsprout or upload_youtube:
+            tasks_db[task_id]["status"] = "uploading"
+            tasks_db[task_id]["phase"] = "Uploading"
+            tasks_db[task_id]["progress"] = 95
+            save_tasks()
+
+            if upload_buzzsprout:
+                tasks_db[task_id]["upload_results"]["buzzsprout"] = upload_to_buzzsprout(audio_path, topic)
+                save_tasks()
+            if upload_youtube:
+                tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(audio_path, topic)
+                save_tasks()
+
+        tasks_db[task_id]["status"] = "completed"
+        tasks_db[task_id]["progress"] = 100
+        tasks_db[task_id]["phase"] = "Complete"
+        tasks_db[task_id]["completed_at"] = datetime.now().isoformat()
+
+    except Exception as e:
+        tasks_db[task_id]["status"] = "failed"
+        tasks_db[task_id]["error"] = str(e)
+    finally:
+        save_tasks()
+
+
+def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
+    """TTS-only reuse: copy research + script, regenerate audio with new hosts."""
+    from audio_engine import generate_audio_from_script, clean_script_for_tts, post_process_audio
+
+    # Create new timestamped output dir
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    new_output_dir = OUTPUT_DIR / timestamp
+    new_output_dir.mkdir(parents=True, exist_ok=True)
+    tasks_db[task_id]["output_dir"] = str(new_output_dir)
+
+    # Phase: Copying artifacts
+    tasks_db[task_id]["phase"] = "Copying Artifacts"
+    tasks_db[task_id]["progress"] = 10
+    save_tasks()
+
+    # Copy all artifacts from previous run
+    for item in reuse_dir.iterdir():
+        if item.is_file():
+            dest = new_output_dir / item.name
+            # Skip audio files — we'll regenerate them
+            if item.suffix in ('.wav', '.mp3'):
+                continue
+            shutil.copy2(item, dest)
+
+    # Load the polished script
+    script_path = new_output_dir / "podcast_script_polished.md"
+    if not script_path.exists():
+        script_path = new_output_dir / "PODCAST_SCRIPT_POLISHED.md"
+    if not script_path.exists():
+        raise FileNotFoundError(f"No polished script found in {reuse_dir}")
+
+    script_text = script_path.read_text()
+
+    # Phase: TTS Generation
+    tasks_db[task_id]["phase"] = "TTS Generation"
+    tasks_db[task_id]["progress"] = 50
+    save_tasks()
+
+    # Determine language TTS code
+    lang_code = "a" if task_data.get("language", "en") == "en" else "j"
+
+    cleaned_script = clean_script_for_tts(script_text)
+    output_path = new_output_dir / "podcast_final_audio.wav"
+
+    audio_file = generate_audio_from_script(cleaned_script, str(output_path), lang_code=lang_code)
+    if not audio_file:
+        raise RuntimeError("TTS generation failed")
+    audio_file = Path(audio_file)
+
+    # Phase: BGM Merging
+    tasks_db[task_id]["phase"] = "BGM Merging"
+    tasks_db[task_id]["progress"] = 85
+    save_tasks()
+
+    if audio_file.exists():
+        try:
+            mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav")
+            if mastered and os.path.exists(mastered) and mastered != str(audio_file):
+                audio_file = Path(mastered)
+        except Exception as e:
+            print(f"BGM merging warning: {e}")
+
+    tasks_db[task_id]["progress"] = 100
+    save_tasks()
+
+
+def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
+    """Run crew3_reuse or check_supplemental via podcast_crew.py subprocess."""
+    reuse_mode = task_data["reuse_mode"]
+    topic = task_data["topic"]
+    language = task_data.get("language", "en")
+
+    env = os.environ.copy()
+    env["ACCESSIBILITY_LEVEL"] = task_data.get("accessibility_level", "simple")
+    env["PODCAST_LENGTH"] = task_data.get("podcast_length", "long")
+    env["PODCAST_HOSTS"] = task_data.get("podcast_hosts", "random")
+
+    cmd = [
+        str(PODCAST_ENV_PYTHON), "podcast_crew.py",
+        "--topic", topic,
+        "--language", language,
+        "--reuse-dir", str(reuse_dir),
+    ]
+    if reuse_mode == "crew3_reuse":
+        cmd.append("--crew3-only")
+    elif reuse_mode == "check_supplemental":
+        cmd.append("--check-supplemental")
+
+    proc = subprocess.Popen(
+        cmd, cwd=SCRIPT_DIR,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
+    )
+
+    output_lines = []
+    start_time = tasks_db[task_id]["start_time"]
+    output_dir_discovered = False
+
+    for line in proc.stdout:
+        output_lines.append(line)
+
+        # Discover output_dir
+        if not output_dir_discovered:
+            found_dir = _find_latest_output_dir()
+            if found_dir:
+                tasks_db[task_id]["output_dir"] = str(found_dir)
+                output_dir_discovered = True
+
+        # Parse phase markers (same logic as run_podcast_generation)
+        for marker, phase_name, progress_pct in PHASE_MARKERS:
+            if marker in line:
+                current_time = time.time()
+                if "phase_start_time" in tasks_db[task_id]:
+                    prev_start = tasks_db[task_id]["phase_start_time"]
+                    duration = current_time - prev_start
+                    prev_phase = tasks_db[task_id]["phase"]
+                    if "step_durations" not in tasks_db[task_id]:
+                        tasks_db[task_id]["step_durations"] = []
+                    if not any(s["phase"] == prev_phase for s in tasks_db[task_id]["step_durations"]):
+                        tasks_db[task_id]["step_durations"].append({
+                            "phase": prev_phase,
+                            "duration": duration,
+                            "duration_formatted": f"{int(duration // 60)}m {int(duration % 60)}s"
+                        })
+
+                tasks_db[task_id]["phase"] = phase_name
+                tasks_db[task_id]["progress"] = progress_pct
+                tasks_db[task_id]["phase_start_time"] = current_time
+
+                elapsed = current_time - start_time
+                if progress_pct > 5:
+                    total_est = (elapsed / progress_pct) * 100
+                    remaining = total_est - elapsed
+                    tasks_db[task_id]["estimated_remaining"] = max(0, remaining)
+                save_tasks()
+                break
+
+        # Parse sources
+        if "[SOURCE]" in line:
+            try:
+                url = line.split("[SOURCE]")[1].strip()
+                if url not in tasks_db[task_id]["sources"]:
+                    tasks_db[task_id]["sources"].append(url)
+                    save_tasks()
+            except Exception:
+                pass
+
+    proc.wait()
+
+    if proc.returncode != 0:
+        raw_lines = output_lines[-100:]
+        clean_lines = []
+        for l in raw_lines:
+            stripped = l.rstrip('\n')
+            msg = stripped.split(' - ERROR - ', 1)[-1] if ' - ERROR - ' in stripped else stripped
+            if msg.strip() and msg.strip().replace('^', '').strip():
+                clean_lines.append(msg)
+        error_text = "\n".join(clean_lines[-50:])
+        raise RuntimeError(error_text or f"Process exited with code {proc.returncode}")
+
+    # Find output dir
+    output_dir = _find_latest_output_dir()
+    if output_dir:
+        tasks_db[task_id]["output_dir"] = str(output_dir)
+    save_tasks()
+
 
 @app.get("/api/status/{task_id}")
 async def get_status(task_id: str, username: str = Depends(verify_credentials)):

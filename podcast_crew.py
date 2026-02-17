@@ -9,6 +9,7 @@ import json
 import argparse
 import logging
 import asyncio
+import shutil
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -149,6 +150,21 @@ Environment variables:
         choices=['en', 'ja'],
         help='Language for podcast generation (en=English, ja=Japanese)'
     )
+    parser.add_argument(
+        '--reuse-dir',
+        type=str,
+        help='Previous run output directory to reuse research from'
+    )
+    parser.add_argument(
+        '--crew3-only',
+        action='store_true',
+        help='Skip research phases, run Crew 3 (podcast production) only using reuse-dir research'
+    )
+    parser.add_argument(
+        '--check-supplemental',
+        action='store_true',
+        help='LLM decides if supplemental research is needed for the reused topic'
+    )
     return parser.parse_args()
 
 def get_topic(args):
@@ -252,6 +268,98 @@ def assign_roles() -> dict:
     return role_assignment
 
 SESSION_ROLES = assign_roles()
+
+
+# --- REUSE HELPER FUNCTIONS ---
+RESEARCH_ARTIFACTS = [
+    "source_of_truth.md", "SOURCE_OF_TRUTH.md",
+    "supporting_research.md", "adversarial_research.md",
+    "source_verification.md", "deep_research_sources.json",
+    "research_framing.md", "gap_analysis.md",
+    "research_framing.pdf", "supporting_paper.pdf",
+    "adversarial_paper.pdf", "verified_sources_bibliography.pdf",
+    "source_of_truth.pdf", "gap_fill_research.md",
+    "url_validation_results.json",
+]
+
+
+def _copy_research_artifacts(src_dir: Path, dst_dir: Path):
+    """Copy research-related files from a previous run to a new output directory."""
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for name in RESEARCH_ARTIFACTS:
+        src = src_dir / name
+        if src.exists():
+            shutil.copy2(src, dst_dir / name)
+            copied += 1
+    print(f"  Copied {copied} research artifacts from {src_dir.name}")
+
+
+def _copy_all_artifacts(src_dir: Path, dst_dir: Path):
+    """Copy all files from a previous run to a new output directory."""
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for item in src_dir.iterdir():
+        if item.is_file():
+            shutil.copy2(item, dst_dir / item.name)
+            copied += 1
+    print(f"  Copied {copied} total artifacts from {src_dir.name}")
+
+
+def check_supplemental_needed(topic: str, reuse_dir: Path) -> dict:
+    """Ask the LLM if the previous source_of_truth.md adequately covers the new topic."""
+    sot_path = reuse_dir / "source_of_truth.md"
+    if not sot_path.exists():
+        sot_path = reuse_dir / "SOURCE_OF_TRUTH.md"
+    if not sot_path.exists():
+        return {"needs_supplement": True, "reason": "No source_of_truth.md found", "queries": []}
+
+    sot_content = sot_path.read_text()[:8000]
+
+    prompt = (
+        f"You are a research completeness evaluator.\n\n"
+        f"NEW TOPIC: {topic}\n\n"
+        f"EXISTING RESEARCH REPORT (source_of_truth.md):\n{sot_content}\n\n"
+        f"QUESTION: Does this existing report adequately cover the NEW TOPIC?\n"
+        f"Consider: Are there significant gaps, missing perspectives, or outdated information?\n\n"
+        f"Respond with a JSON object:\n"
+        f'{{"needs_supplement": true/false, "reason": "brief explanation", '
+        f'"queries": [{{"query": "search query", "goal": "what to find"}}]}}\n'
+        f"If needs_supplement is false, queries should be an empty array.\n"
+        f"If needs_supplement is true, provide 2-5 targeted search queries to fill gaps.\n"
+        f"Return ONLY the JSON object."
+    )
+
+    try:
+        resp = httpx.post(
+            "http://localhost:8000/v1/chat/completions",
+            json={
+                "model": "Qwen/Qwen2.5-32B-Instruct-AWQ",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": 1024,
+            },
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+
+        # Extract JSON from response
+        import re as _re
+        json_match = _re.search(r'\{.*\}', content, _re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group())
+            return {
+                "needs_supplement": result.get("needs_supplement", True),
+                "reason": result.get("reason", ""),
+                "queries": result.get("queries", []),
+            }
+    except Exception as e:
+        print(f"  Supplemental check failed: {e}")
+
+    # Default to needing supplement if check fails
+    return {"needs_supplement": True, "reason": "Check failed, running supplemental as precaution", "queries": []}
+
 
 # --- TTS DEPENDENCY CHECK ---
 def check_tts_dependencies():
@@ -1006,11 +1114,11 @@ personality = Agent(
         f'  - Remove any definitions of basic scientific concepts\n'
         f'  - Ensure the questioner\'s questions feel natural and audience-aligned\n'
         f'  - Keep technical language intact (no dumbing down)\n'
-        f'  - Target exactly 4,500 words for 30-minute runtime\n'
+        f'  - Target exactly 4,500 words for 30-minute runtime. If the script is too short, YOU MUST ADD DEPTH AND EXAMPLES TO REACH THE TARGET.\n'
         f'  - Ensure the opening follows the 3-part structure: welcome → hook question → topic shift\n'
         f'  - Teaching flow: presenter explains, questioner bridges gaps for listeners\n'
         f'\n'
-        f'If script is too short, add more depth, examples, and practical implications. '
+        f'If script is too short, add more depth, examples, and practical implications. DO NOT CUT CONTENT IF THE SCRIPT IS UNDER THE WORD COUNT TARGET.\n'
         f'If too long, cut repetition while preserving teaching flow. '
         f'{target_instruction}'
     ),
@@ -1307,7 +1415,7 @@ print(f"Podcast Length Mode: {duration_label}")
 
 recording_task = Task(
     description=(
-        f"Using the audit report, write a {target_words_en if language != 'ja' else target_chars_ja}-{'word' if language != 'ja' else 'character'} podcast dialogue about \"{topic_name}\" "
+        f"Using the audit report, write a comprehensive {target_words_en if language != 'ja' else target_chars_ja}-{'word' if language != 'ja' else 'character'} podcast dialogue about \"{topic_name}\" "
         f"featuring {SESSION_ROLES['presenter']['character']} (presenter) and {SESSION_ROLES['questioner']['character']} (questioner).\n\n"
         f"STRUCTURE:\n"
         f"  1. OPENING (joint welcome):\n"
@@ -1338,12 +1446,14 @@ recording_task = Task(
         f"Format STRICTLY as:\n"
         f"{SESSION_ROLES['presenter']['character']}: [dialogue]\n"
         f"{SESSION_ROLES['questioner']['character']}: [dialogue]\n\n"
-        f"TARGET LENGTH: {target_words_en if language != 'ja' else target_chars_ja} {'words' if language != 'ja' else 'characters'}. This is CRITICAL — do not write less.\n"
-        f"TO REACH THIS LENGTH: You must be extremely detailed. For every claim, provide:\n"
-        f"  1. The specific scientific mechanism (how it works)\n"
-        f"  2. A real-world analogy or metaphor\n"
-        f"  3. A practical example or case study\n"
-        f"  4. A potential counter-argument or nuance\n"
+        f"TARGET LENGTH: {target_words_en if language != 'ja' else target_chars_ja} {'words' if language != 'ja' else 'characters'}. This is CRITICAL — do not write less. The podcast MUST last 30 minutes. If you are too brief, the production will fail.\n"
+        f"TO REACH THIS LENGTH: You must be extremely detailed and conversational. For every single claim or mechanism, you MUST provide:\n"
+        f"  1. A deep-dive explanation of the specific scientific mechanism (how it works at a molecular/cellular level)\n"
+        f"  2. A real-world analogy or metaphor that lasts several lines\n"
+        f"  3. A practical, relatable example or case study\n"
+        f"  4. A potential counter-argument or nuance followed by a rebuttal\n"
+        f"  5. Interactive host dialogue (e.g., 'Wait, let me make sure I've got this right...', 'That's fascinating, tell me more about...')\n"
+        f"Expand the conversation. Do not just list facts. Have the hosts explore the 'So what?' and 'What now?' for the audience.\n"
         f"Maintain consistent roles throughout. NO role switching mid-conversation. "
         f"{english_instruction}"
     ),
@@ -1500,6 +1610,23 @@ if translation_task is not None:
     planning_task.context = [translation_task, audit_task]
     # Accuracy check compares polished (target lang) against translated script
     accuracy_check_task.context = [post_process_task, translation_task]
+
+# --- PHASE MARKERS FOR PROGRESS TRACKING ---
+PHASE_MARKERS = [
+    ("PHASE 0: RESEARCH FRAMING", "Research Framing", 5),
+    ("PHASE 1: DEEP RESEARCH", "Deep Research", 15),
+    ("PHASE 2: LEAD RESEARCHER REPORT", "Lead Researcher Report", 20),
+    ("PHASE 2b: RESEARCH GATE CHECK", "Research Gate Check", 25),
+    ("PHASE 2c: GAP-FILL RESEARCH", "Gap-Fill Research", 30),
+    ("PHASE 3: ADVERSARIAL RESEARCH", "Adversarial Research", 40),
+    ("PHASE 4a: SOURCE VALIDATION", "Source Validation", 45),
+    ("PHASE 4b: SOURCE-OF-TRUTH SYNTAX", "Source-of-Truth Synthesis", 50),
+    ("PHASE 5: PODCAST PLANNING", "Podcast Planning", 60),
+    ("PHASE 6: PODCAST RECORDING", "Podcast Recording", 75),
+    ("PHASE 7: POST-PROCESSING", "Post-Processing", 90),
+    ("PHASE 8: ACCURACY CHECK", "Accuracy Check", 95),
+    ("PHASE 9: BGM MERGING", "BGM Merging", 98),
+]
 
 # --- TASK METADATA & WORKFLOW PLANNING ---
 TASK_METADATA = {
@@ -1744,6 +1871,368 @@ class ProgressTracker:
                   f"{duration/60:>6.1f} min (est: {estimated/60:.1f} min, {variance:+.0f}%)")
 
         print(f"{'='*70}\n")
+
+# ================================================================
+# REUSE MODE BRANCHING
+# ================================================================
+# If --reuse-dir is specified, skip the normal pipeline and run the
+# appropriate reuse mode instead. This exits early via sys.exit(0).
+
+if args.reuse_dir:
+    reuse_dir = Path(args.reuse_dir)
+    print(f"\n{'='*70}")
+    print(f"REUSE MODE: Reusing research from {reuse_dir.name}")
+    print(f"{'='*70}")
+
+    if args.crew3_only:
+        # --- CREW 3 ONLY: Skip research, run podcast production ---
+        print(f"\nMode: Crew 3 Only (podcast production)")
+
+        # Create new output dir
+        new_output_dir = create_timestamped_output_dir(base_output_dir)
+
+        # Copy research artifacts
+        _copy_research_artifacts(reuse_dir, new_output_dir)
+
+        # Load source_of_truth.md content for context injection
+        sot_path = new_output_dir / "source_of_truth.md"
+        if not sot_path.exists():
+            sot_path = new_output_dir / "SOURCE_OF_TRUTH.md"
+        if not sot_path.exists():
+            print("ERROR: No source_of_truth.md found in reuse directory")
+            sys.exit(1)
+        sot_content = sot_path.read_text()
+
+        # Inject source_of_truth content into Crew 3 task descriptions
+        sot_injection = (
+            f"\n\nPREVIOUS RESEARCH (Source of Truth):\n"
+            f"{sot_content[:8000]}\n"
+            f"--- END PREVIOUS RESEARCH ---\n"
+        )
+        recording_task.description = f"{recording_task.description}{sot_injection}"
+        # Also update audit_task context since it's referenced by Crew 3 tasks
+        audit_task.description = f"Previous Source of Truth (reused):\n{sot_content[:6000]}"
+
+        # Update output_dir for file outputs
+        # Reassign global output_dir so output_file paths work
+        import builtins
+        # Update task output_file paths to new dir
+        for task_obj in [accuracy_check_task, show_notes_task]:
+            if hasattr(task_obj, '_original_output_file') or hasattr(task_obj, 'output_file'):
+                old_path = getattr(task_obj, 'output_file', '')
+                if old_path:
+                    filename = Path(old_path).name
+                    task_obj.output_file = str(new_output_dir / filename)
+
+        print(f"\nCREW 3: PHASES 5-8 (PODCAST PRODUCTION)")
+
+        if translation_task is not None:
+            crew_3_tasks = [
+                recording_task, translation_task,
+                planning_task, post_process_task, accuracy_check_task,
+            ]
+        else:
+            crew_3_tasks = [
+                planning_task, recording_task,
+                post_process_task, accuracy_check_task,
+            ]
+
+        crew_3 = Crew(
+            agents=[scriptwriter, personality, auditor],
+            tasks=crew_3_tasks,
+            verbose=True,
+            process='sequential'
+        )
+
+        result = crew_3.kickoff()
+
+        # Save markdown outputs
+        print("\n--- Saving Outputs ---")
+        script_text = post_process_task.output.raw if hasattr(post_process_task, 'output') and post_process_task.output else result.raw
+        for label, source, filename in [
+            ("Podcast Planning", planning_task, "show_notes.md"),
+            ("Podcast Recording (Raw)", recording_task, "podcast_script_raw.md"),
+            ("Podcast Recording (Polished)", post_process_task, "podcast_script_polished.md"),
+            ("Accuracy Check", accuracy_check_task, "accuracy_check.md"),
+        ]:
+            try:
+                if isinstance(source, str):
+                    content = source
+                elif hasattr(source, 'output') and source.output and hasattr(source.output, 'raw'):
+                    content = source.output.raw
+                else:
+                    content = None
+                if content and content.strip():
+                    outfile = new_output_dir / filename
+                    with open(outfile, 'w') as f:
+                        f.write(content)
+                    print(f"  Saved {filename} ({len(content)} chars)")
+            except Exception as e:
+                print(f"  Warning: Could not save {filename}: {e}")
+
+        # Generate PDF for accuracy check
+        try:
+            acc_content = accuracy_check_task.output.raw if hasattr(accuracy_check_task, 'output') and accuracy_check_task.output else ""
+            if acc_content:
+                create_pdf("Accuracy Check", acc_content, "accuracy_check.pdf")
+        except Exception:
+            pass
+
+        # TTS + BGM
+        print("\n--- Generating Multi-Voice Podcast Audio (Kokoro TTS) ---")
+        cleaned_script = clean_script_for_tts(script_text)
+        script_file = new_output_dir / "podcast_script.txt"
+        with open(script_file, 'w') as f:
+            f.write(script_text)
+
+        audio_output_path = new_output_dir / "podcast_final_audio.wav"
+        audio_file = generate_audio_from_script(cleaned_script, str(audio_output_path), lang_code=language_config['tts_code'])
+        if audio_file:
+            audio_file = Path(audio_file)
+            print(f"Audio generation complete: {audio_file}")
+            print(f"Starting BGM Merging Phase...")
+            try:
+                mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav")
+                if mastered and os.path.exists(mastered) and mastered != str(audio_file):
+                    audio_file = Path(mastered)
+                    print(f"✓ BGM Merging Complete: {audio_file}")
+            except Exception as e:
+                print(f"⚠ BGM merging warning: {e}")
+
+            # Duration check
+            try:
+                import wave
+                with wave.open(str(audio_file), 'r') as wav:
+                    frames = wav.getnframes()
+                    rate = wav.getframerate()
+                    duration_seconds = frames / float(rate)
+                    duration_minutes = duration_seconds / 60
+                print(f"SUCCESS: Audio duration {duration_minutes:.2f} minutes")
+            except Exception:
+                pass
+
+        # Session metadata
+        session_metadata = (
+            f"PODCAST SESSION METADATA (REUSE: crew3_only)\n{'='*60}\n\n"
+            f"Topic: {topic_name}\n"
+            f"Language: {language_config['name']} ({language})\n"
+            f"Reused from: {reuse_dir}\n"
+        )
+        with open(new_output_dir / "session_metadata.txt", 'w') as f:
+            f.write(session_metadata)
+
+        print(f"\n{'='*70}")
+        print("REUSE_COMPLETE: CREW3_ONLY")
+        print(f"{'='*70}")
+        sys.exit(0)
+
+    elif args.check_supplemental:
+        # --- CHECK SUPPLEMENTAL: LLM decides if supplement needed ---
+        print(f"\nMode: Check Supplemental")
+
+        result = check_supplemental_needed(topic_name, reuse_dir)
+        print(f"  Needs supplement: {result['needs_supplement']}")
+        print(f"  Reason: {result['reason']}")
+
+        if not result['needs_supplement']:
+            # Full reuse — copy everything
+            new_output_dir = create_timestamped_output_dir(base_output_dir)
+            _copy_all_artifacts(reuse_dir, new_output_dir)
+
+            # Session metadata
+            session_metadata = (
+                f"PODCAST SESSION METADATA (REUSE: full_reuse)\n{'='*60}\n\n"
+                f"Topic: {topic_name}\n"
+                f"Language: {language_config['name']} ({language})\n"
+                f"Reused from: {reuse_dir}\n"
+                f"Reason: {result['reason']}\n"
+            )
+            with open(new_output_dir / "session_metadata.txt", 'w') as f:
+                f.write(session_metadata)
+
+            print(f"\n{'='*70}")
+            print("REUSE_COMPLETE: NO_CHANGES")
+            print(f"{'='*70}")
+            sys.exit(0)
+
+        else:
+            # Supplemental research needed
+            print(f"\nSUPPLEMENTAL RESEARCH needed: {result['reason']}")
+            print(f"  Running {len(result['queries'])} supplemental searches...")
+
+            new_output_dir = create_timestamped_output_dir(base_output_dir)
+            _copy_research_artifacts(reuse_dir, new_output_dir)
+
+            # Run gap-fill searches with the LLM's queries
+            if result['queries']:
+                brave_api_key = os.getenv("BRAVE_API_KEY", "")
+                new_sources = asyncio.run(execute_gap_fill_searches(
+                    result['queries'], "lead", brave_api_key
+                ))
+                if new_sources:
+                    append_sources_to_library(new_sources, "lead", new_output_dir)
+                    print(f"  Added {len(new_sources)} new sources from supplemental research")
+                    # Build supplemental context
+                    supp_text = "\n\n".join(
+                        f"### {s['title']}\nURL: {s['url']}\n{s['summary']}"
+                        for s in new_sources
+                    )
+                else:
+                    supp_text = ""
+                    print("  No new sources found from supplemental research")
+            else:
+                supp_text = ""
+
+            # Load existing source_of_truth for audit context
+            sot_path = new_output_dir / "source_of_truth.md"
+            if not sot_path.exists():
+                sot_path = new_output_dir / "SOURCE_OF_TRUTH.md"
+            sot_content = sot_path.read_text() if sot_path.exists() else ""
+
+            # Re-run audit task to update source_of_truth with new evidence
+            if supp_text:
+                audit_task.description = (
+                    f"{audit_task.description}\n\n"
+                    f"SUPPLEMENTAL RESEARCH FINDINGS:\n{supp_text[:4000]}\n"
+                    f"--- END SUPPLEMENTAL ---\n"
+                    f"Update the Source of Truth to incorporate these new findings."
+                )
+
+            # Inject research context into audit
+            audit_task.description = (
+                f"{audit_task.description}\n\n"
+                f"PREVIOUS SOURCE OF TRUTH:\n{sot_content[:6000]}\n"
+                f"--- END PREVIOUS SOT ---\n"
+            )
+            audit_task.output_file = str(new_output_dir / "SOURCE_OF_TRUTH.md")
+
+            print(f"\nCREW 2: Re-running audit task to update Source of Truth")
+            audit_crew = Crew(
+                agents=[auditor],
+                tasks=[audit_task],
+                verbose=True,
+                process='sequential'
+            )
+            audit_crew.kickoff()
+
+            # Save updated source_of_truth.md
+            if hasattr(audit_task, 'output') and audit_task.output:
+                with open(new_output_dir / "source_of_truth.md", 'w') as f:
+                    f.write(audit_task.output.raw)
+                sot_content = audit_task.output.raw
+
+            # Now run Crew 3 with updated research
+            sot_injection = (
+                f"\n\nUPDATED RESEARCH (Source of Truth):\n"
+                f"{sot_content[:8000]}\n"
+                f"--- END RESEARCH ---\n"
+            )
+            recording_task.description = f"{recording_task.description}{sot_injection}"
+
+            # Update output_file paths
+            for task_obj in [accuracy_check_task, show_notes_task]:
+                old_path = getattr(task_obj, 'output_file', '')
+                if old_path:
+                    filename = Path(old_path).name
+                    task_obj.output_file = str(new_output_dir / filename)
+
+            print(f"\nCREW 3: PHASES 5-8 (PODCAST PRODUCTION)")
+
+            if translation_task is not None:
+                crew_3_tasks = [
+                    recording_task, translation_task,
+                    planning_task, post_process_task, accuracy_check_task,
+                ]
+            else:
+                crew_3_tasks = [
+                    planning_task, recording_task,
+                    post_process_task, accuracy_check_task,
+                ]
+
+            crew_3 = Crew(
+                agents=[scriptwriter, personality, auditor],
+                tasks=crew_3_tasks,
+                verbose=True,
+                process='sequential'
+            )
+
+            result = crew_3.kickoff()
+
+            # Save outputs
+            print("\n--- Saving Outputs ---")
+            script_text = post_process_task.output.raw if hasattr(post_process_task, 'output') and post_process_task.output else result.raw
+            for label, source, filename in [
+                ("Podcast Planning", planning_task, "show_notes.md"),
+                ("Podcast Recording (Raw)", recording_task, "podcast_script_raw.md"),
+                ("Podcast Recording (Polished)", post_process_task, "podcast_script_polished.md"),
+                ("Accuracy Check", accuracy_check_task, "accuracy_check.md"),
+            ]:
+                try:
+                    if isinstance(source, str):
+                        content = source
+                    elif hasattr(source, 'output') and source.output and hasattr(source.output, 'raw'):
+                        content = source.output.raw
+                    else:
+                        content = None
+                    if content and content.strip():
+                        outfile = new_output_dir / filename
+                        with open(outfile, 'w') as f:
+                            f.write(content)
+                        print(f"  Saved {filename} ({len(content)} chars)")
+                except Exception as e:
+                    print(f"  Warning: Could not save {filename}: {e}")
+
+            # TTS + BGM
+            print("\n--- Generating Multi-Voice Podcast Audio (Kokoro TTS) ---")
+            cleaned_script = clean_script_for_tts(script_text)
+            script_file = new_output_dir / "podcast_script.txt"
+            with open(script_file, 'w') as f:
+                f.write(script_text)
+
+            audio_output_path = new_output_dir / "podcast_final_audio.wav"
+            audio_file = generate_audio_from_script(cleaned_script, str(audio_output_path), lang_code=language_config['tts_code'])
+            if audio_file:
+                audio_file = Path(audio_file)
+                print(f"Audio generation complete: {audio_file}")
+                print(f"Starting BGM Merging Phase...")
+                try:
+                    mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav")
+                    if mastered and os.path.exists(mastered) and mastered != str(audio_file):
+                        audio_file = Path(mastered)
+                        print(f"✓ BGM Merging Complete: {audio_file}")
+                except Exception as e:
+                    print(f"⚠ BGM merging warning: {e}")
+
+                try:
+                    import wave
+                    with wave.open(str(audio_file), 'r') as wav:
+                        frames = wav.getnframes()
+                        rate = wav.getframerate()
+                        duration_seconds = frames / float(rate)
+                        duration_minutes = duration_seconds / 60
+                    print(f"SUCCESS: Audio duration {duration_minutes:.2f} minutes")
+                except Exception:
+                    pass
+
+            # Session metadata
+            session_metadata = (
+                f"PODCAST SESSION METADATA (REUSE: supplemental)\n{'='*60}\n\n"
+                f"Topic: {topic_name}\n"
+                f"Language: {language_config['name']} ({language})\n"
+                f"Reused from: {reuse_dir}\n"
+                f"Supplemental reason: {result['reason'] if isinstance(result, dict) else 'N/A'}\n"
+            )
+            with open(new_output_dir / "session_metadata.txt", 'w') as f:
+                f.write(session_metadata)
+
+            print(f"\n{'='*70}")
+            print("REUSE_COMPLETE: SUPPLEMENTAL")
+            print(f"{'='*70}")
+            sys.exit(0)
+
+# ================================================================
+# NORMAL PIPELINE (no --reuse-dir)
+# ================================================================
 
 # --- EXECUTION (Multi-Crew Pipeline with Gate) ---
 # Display workflow plan before execution
