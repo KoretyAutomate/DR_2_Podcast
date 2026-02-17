@@ -30,6 +30,7 @@ from upload_utils import validate_upload_config, upload_to_buzzsprout, upload_to
 SCRIPT_DIR = Path(__file__).parent.absolute()
 OUTPUT_DIR = SCRIPT_DIR / "research_outputs"
 TASKS_FILE = SCRIPT_DIR / "podcast_tasks.json"
+TOPIC_INDEX_FILE = OUTPUT_DIR / "topic_index.json"
 
 # Use podcast_env Python interpreter if available
 PODCAST_ENV_PYTHON = Path.home() / "miniconda3" / "envs" / "podcast_flow" / "bin" / "python3"
@@ -114,6 +115,118 @@ def save_tasks():
     with open(TASKS_FILE, 'w') as f:
         json.dump(tasks_db, f, indent=2)
 
+
+# --- Topic Index: central registry of completed research runs ---
+
+def load_topic_index() -> list:
+    """Load the topic index from disk."""
+    if TOPIC_INDEX_FILE.exists():
+        try:
+            return json.loads(TOPIC_INDEX_FILE.read_text())
+        except Exception:
+            pass
+    return []
+
+def save_topic_index(index: list):
+    """Save the topic index to disk."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    with open(TOPIC_INDEX_FILE, 'w') as f:
+        json.dump(index, f, indent=2, ensure_ascii=False)
+
+def register_topic(topic: str, output_dir: str, language: str = "en",
+                    accessibility_level: str = "simple", podcast_length: str = "long",
+                    podcast_hosts: str = "random"):
+    """Add a completed research run to the topic index. Deduplicates by output_dir."""
+    index = load_topic_index()
+    # Deduplicate: don't add if this output_dir is already registered
+    if any(entry["output_dir"] == output_dir for entry in index):
+        return
+    index.append({
+        "topic": topic,
+        "output_dir": output_dir,
+        "language": language,
+        "accessibility_level": accessibility_level,
+        "podcast_length": podcast_length,
+        "podcast_hosts": podcast_hosts,
+        "created_at": Path(output_dir).name,  # e.g. "2026-02-17_02-03-50"
+    })
+    save_topic_index(index)
+
+def backfill_topic_index():
+    """Scan existing research_outputs/ dirs and backfill the topic index for any
+    directories that have source_of_truth.md but aren't yet in the index."""
+    import re as _re
+    index = load_topic_index()
+    known_dirs = {entry["output_dir"] for entry in index}
+    added = 0
+
+    if not OUTPUT_DIR.exists():
+        return
+
+    for d in OUTPUT_DIR.iterdir():
+        if not d.is_dir() or not d.name[:4].isdigit():
+            continue
+        if str(d) in known_dirs:
+            continue
+
+        # Must have source_of_truth.md
+        sot = d / "source_of_truth.md"
+        if not sot.exists():
+            sot = d / "SOURCE_OF_TRUTH.md"
+        if not sot.exists():
+            continue
+
+        # Extract topic + language from session_metadata.txt
+        topic = ""
+        lang = "en"
+        meta_path = d / "session_metadata.txt"
+        if meta_path.exists():
+            meta_text = meta_path.read_text()
+            m = _re.search(r'^Topic:\s*(.+)$', meta_text, _re.MULTILINE)
+            if m:
+                topic = m.group(1).strip()
+            lm = _re.search(r'^Language:\s*\S+\s*\((\w+)\)', meta_text, _re.MULTILINE)
+            if lm:
+                lang = lm.group(1).strip()
+
+        if not topic:
+            # Fallback: check tasks_db
+            for tid, task in tasks_db.items():
+                if task.get("output_dir") == str(d):
+                    topic = task.get("topic", "")
+                    lang = task.get("language", "en")
+                    break
+
+        if not topic:
+            continue
+
+        # Look up other params from tasks_db
+        access_level = "simple"
+        pod_length = "long"
+        pod_hosts = "random"
+        for tid, task in tasks_db.items():
+            if task.get("output_dir") == str(d):
+                access_level = task.get("accessibility_level", "simple")
+                pod_length = task.get("podcast_length", "long")
+                pod_hosts = task.get("podcast_hosts", "random")
+                break
+
+        index.append({
+            "topic": topic,
+            "output_dir": str(d),
+            "language": lang,
+            "accessibility_level": access_level,
+            "podcast_length": pod_length,
+            "podcast_hosts": pod_hosts,
+            "created_at": d.name,
+        })
+        added += 1
+
+    if added > 0:
+        save_topic_index(index)
+        print(f"Topic index: backfilled {added} entries (total: {len(index)})")
+
+
 def worker_thread():
     """Background thread to process the task queue sequentially."""
     global current_task_id
@@ -158,6 +271,9 @@ threading.Thread(target=worker_thread, daemon=True).start()
 
 # Load existing tasks on startup
 load_tasks()
+
+# Backfill topic index from existing research_outputs/
+backfill_topic_index()
 
 class PodcastRequest(BaseModel):
     topic: str
@@ -1393,82 +1509,34 @@ async def get_queue_info(username: str = Depends(verify_credentials)):
 
 @app.post("/api/check-reuse")
 async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify_credentials)):
-    """Check if a similar topic has been completed recently and could be reused.
+    """Check if a similar topic has been researched recently.
 
-    Scans the research_outputs/ filesystem directly for directories from the
-    past 7 days that contain a source_of_truth.md, regardless of tasks_db status.
+    Reads the central topic_index.json for candidates from the past 7 days,
+    then asks vLLM to score similarity.
     """
     try:
         import re as _re
         from datetime import timedelta
 
-        cutoff_dt = datetime.now() - timedelta(days=7)
-        cutoff_str = cutoff_dt.strftime("%Y-%m-%d")  # e.g. "2026-02-09"
+        cutoff_str = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
 
-        # Scan research_outputs/ for dirs with source_of_truth.md
+        # Read the topic index and filter to past 7 days with existing dirs
+        index = load_topic_index()
         candidates = []
-        if OUTPUT_DIR.exists():
-            for d in sorted(OUTPUT_DIR.iterdir(), reverse=True):
-                if not d.is_dir() or not d.name[:4].isdigit():
-                    continue
-                # Parse dir timestamp (format: YYYY-MM-DD_HH-MM-SS)
-                dir_date = d.name[:10]  # "2026-02-16"
-                if dir_date < cutoff_str:
-                    continue  # Older than 7 days
-
-                # Must have source_of_truth.md
-                sot_path = d / "source_of_truth.md"
-                if not sot_path.exists():
-                    sot_path = d / "SOURCE_OF_TRUTH.md"
-                if not sot_path.exists():
-                    continue
-
-                # Extract topic from session_metadata.txt
-                meta_path = d / "session_metadata.txt"
-                topic = ""
-                lang = "en"
-                if meta_path.exists():
-                    meta_text = meta_path.read_text()
-                    topic_match = _re.search(r'^Topic:\s*(.+)$', meta_text, _re.MULTILINE)
-                    if topic_match:
-                        topic = topic_match.group(1).strip()
-                    lang_match = _re.search(r'^Language:\s*\S+\s*\((\w+)\)', meta_text, _re.MULTILINE)
-                    if lang_match:
-                        lang = lang_match.group(1).strip()
-
-                if not topic:
-                    # Fallback: try tasks_db to find the topic
-                    for tid, task in tasks_db.items():
-                        if task.get("output_dir") == str(d):
-                            topic = task.get("topic", "")
-                            lang = task.get("language", "en")
-                            break
-                if not topic:
-                    continue
-
-                # Also look up params from tasks_db if available
-                access_level = "simple"
-                pod_length = "long"
-                pod_hosts = "random"
-                task_id_ref = None
-                for tid, task in tasks_db.items():
-                    if task.get("output_dir") == str(d):
-                        access_level = task.get("accessibility_level", "simple")
-                        pod_length = task.get("podcast_length", "long")
-                        pod_hosts = task.get("podcast_hosts", "random")
-                        task_id_ref = tid
-                        break
-
-                candidates.append({
-                    "task_id": task_id_ref or d.name,
-                    "topic": topic,
-                    "created_at": d.name[:10] + "T" + d.name[11:].replace("-", ":"),
-                    "language": lang,
-                    "accessibility_level": access_level,
-                    "podcast_length": pod_length,
-                    "podcast_hosts": pod_hosts,
-                    "output_dir": str(d),
-                })
+        for entry in index:
+            dir_date = entry.get("created_at", "")[:10]
+            if dir_date < cutoff_str:
+                continue
+            # Verify directory and source_of_truth still exist
+            od = Path(entry["output_dir"])
+            if not od.exists():
+                continue
+            sot = od / "source_of_truth.md"
+            if not sot.exists():
+                sot = od / "SOURCE_OF_TRUTH.md"
+            if not sot.exists():
+                continue
+            candidates.append(entry)
 
         if not candidates:
             return {"has_match": False, "matches": []}
@@ -1829,9 +1897,29 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
         tasks_db[task_id]["phase"] = "Complete"
         tasks_db[task_id]["completed_at"] = datetime.now().isoformat()
 
+        # Register in topic index
+        if tasks_db[task_id].get("output_dir"):
+            register_topic(
+                topic=topic, output_dir=tasks_db[task_id]["output_dir"],
+                language=language, accessibility_level=accessibility_level,
+                podcast_length=podcast_length, podcast_hosts=podcast_hosts,
+            )
+
     except Exception as e:
         tasks_db[task_id]["status"] = "failed"
         tasks_db[task_id]["error"] = str(e)
+        # Still register if research completed (source_of_truth.md exists)
+        od = tasks_db[task_id].get("output_dir")
+        if od:
+            sot = Path(od) / "source_of_truth.md"
+            if not sot.exists():
+                sot = Path(od) / "SOURCE_OF_TRUTH.md"
+            if sot.exists():
+                register_topic(
+                    topic=topic, output_dir=od,
+                    language=language, accessibility_level=accessibility_level,
+                    podcast_length=podcast_length, podcast_hosts=podcast_hosts,
+                )
     finally:
         save_tasks()
 
@@ -1892,6 +1980,16 @@ def run_podcast_reuse(task_data: dict):
         tasks_db[task_id]["progress"] = 100
         tasks_db[task_id]["phase"] = "Complete"
         tasks_db[task_id]["completed_at"] = datetime.now().isoformat()
+
+        # Register in topic index
+        if tasks_db[task_id].get("output_dir"):
+            register_topic(
+                topic=topic, output_dir=tasks_db[task_id]["output_dir"],
+                language=language,
+                accessibility_level=task_data.get("accessibility_level", "simple"),
+                podcast_length=task_data.get("podcast_length", "long"),
+                podcast_hosts=podcast_hosts,
+            )
 
     except Exception as e:
         tasks_db[task_id]["status"] = "failed"
