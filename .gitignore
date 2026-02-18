@@ -28,3 +28,6 @@ archived_scripts/
 home/
 reflections/
 .pytest_cache/
+web_ui.pid
+PLAN.md
+CLAUDE.md

@@ -35,7 +35,9 @@ docker run --runtime nvidia --gpus all \
   --gpu-memory-utilization $GPU_MEMORY_UTIL \
   --dtype auto \
   --trust-remote-code \
-  --enforce-eager
+  --enforce-eager \
+  --enable-auto-tool-choice \
+  --tool-call-parser hermes
 
 # If server exits unexpectedly
 echo ""
