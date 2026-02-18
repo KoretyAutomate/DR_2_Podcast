@@ -36,6 +36,46 @@ VOICE_MAP = {
     'j': {'host1': 'jm_kumo',   'host2': 'jf_alpha'},    # Japanese
 }
 
+# Regex: detect a speaker label at the start of a line.
+# Matches 1-20 chars (letters, digits, spaces, CJK, katakana) followed by : or ：
+_SPEAKER_LABEL_RE = re.compile(
+    r'^([\w\s\u3000-\u9FFF\uFF00-\uFFEF]{1,20})[：:]\s*(.*)',
+    re.UNICODE
+)
+
+# Speaker assignment state (reset per generate call)
+_speaker_map: dict = {}  # label -> speaker_id (1 or 2)
+_next_speaker_id: int = 1
+
+
+def _detect_speaker(line: str):
+    """Detect speaker from line prefix using auto-assignment.
+
+    First unique label seen = Host 1, second = Host 2.
+    Returns (speaker_id, text) or (None, line) if no label detected.
+    """
+    global _next_speaker_id
+    m = _SPEAKER_LABEL_RE.match(line)
+    if not m:
+        return None, line
+
+    label = m.group(1).strip()
+    text = m.group(2).strip()
+
+    # Skip if label looks like a sentence fragment (too long or contains common words)
+    if len(label) > 15 and ' ' in label:
+        return None, line
+
+    if label not in _speaker_map:
+        if _next_speaker_id > 2:
+            # Only support 2 speakers; additional labels default to Host 1
+            _speaker_map[label] = 1
+        else:
+            _speaker_map[label] = _next_speaker_id
+            _next_speaker_id += 1
+
+    return _speaker_map[label], text
+
 def generate_audio_from_script(script_text: str, output_filename: str = "final_podcast.wav", lang_code: str = 'a') -> str:
     """
     Parses a script looking for 'Host 1:' and 'Host 2:' lines,
@@ -57,6 +97,11 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
     logger.info("=" * 60)
     logger.info("KOKORO TTS AUDIO GENERATION")
     logger.info("=" * 60)
+
+    # Reset speaker auto-detection state for this script
+    global _speaker_map, _next_speaker_id
+    _speaker_map = {}
+    _next_speaker_id = 1
 
     # Resolve voices for this language
     voices = VOICE_MAP.get(lang_code, VOICE_MAP['a'])
@@ -109,9 +154,11 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         if re.match(r'^-{3,}$', line):
             continue
 
-        # Check for Speaker Switch
-        if line.startswith("Host 1:") or line.startswith("Dr. Data:") or line.startswith("Kaz:"):
-            # Process previous buffer
+        # Detect speaker from line prefix (supports English + Japanese labels)
+        detected_speaker, detected_text = _detect_speaker(line)
+
+        if detected_speaker is not None:
+            # Process previous buffer before switching speakers
             if buffer_text and current_speaker:
                 voice = voice_host_1 if current_speaker == 1 else voice_host_2
                 try:
@@ -123,30 +170,11 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
                     logger.warning(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
 
             # Insert silence gap between speaker switches (not before first speaker)
-            if current_speaker is not None and current_speaker != 1:
+            if current_speaker is not None and current_speaker != detected_speaker:
                 audio_segments.append(silence_gap)
 
-            current_speaker = 1
-            buffer_text = line.split(":", 1)[1].strip() if ":" in line else ""
-
-        elif line.startswith("Host 2:") or line.startswith("Dr. Doubt:") or line.startswith("Erika:"):
-            # Process previous buffer
-            if buffer_text and current_speaker:
-                voice = voice_host_1 if current_speaker == 1 else voice_host_2
-                try:
-                    generator = pipeline(buffer_text, voice=voice, speed=1.0, split_pattern=r'\n+')
-                    for _, _, audio in generator:
-                        audio_segments.append(audio)
-                        segment_count += 1
-                except Exception as e:
-                    logger.warning(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
-
-            # Insert silence gap between speaker switches (not before first speaker)
-            if current_speaker is not None and current_speaker != 2:
-                audio_segments.append(silence_gap)
-
-            current_speaker = 2
-            buffer_text = line.split(":", 1)[1].strip() if ":" in line else ""
+            current_speaker = detected_speaker
+            buffer_text = detected_text
 
         else:
             # Continuation of current speaker (or unlabeled opening — default to Host 1)
@@ -301,6 +329,7 @@ def clean_script_for_tts(script_text: str) -> str:
         '\u201c': '"', '\u201d': '"',  # Smart double quotes
         '\u2014': ' - ', '\u2013': ' - ',  # Em/en dash
         '\u2026': '...',  # Ellipsis
+        '\uff1a': ':',  # Full-width colon → half-width
     }
     for old, new in unicode_map.items():
         clean = clean.replace(old, new)
