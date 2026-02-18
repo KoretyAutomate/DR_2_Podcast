@@ -808,6 +808,16 @@ def home(username: str = Depends(verify_credentials)):
                     </div>
 
                     <div style="margin-top: 30px;">
+                        <label style="margin-bottom: 12px;">Research Options</label>
+                        <div style="display: flex; gap: 24px; margin-bottom: 15px;">
+                            <label class="checkbox-wrapper">
+                                <input type="checkbox" id="leveragePast" />
+                                Leverage previous research from the past 7 days if available
+                            </label>
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 30px;">
                         <label style="margin-bottom: 12px;">Publishing Options</label>
                         
                         <div style="display: flex; gap: 24px; margin-bottom: 15px;">
@@ -1102,6 +1112,7 @@ def home(username: str = Depends(verify_credentials)):
                     accessibility_level: document.getElementById('accessibility').value,
                     podcast_length: document.getElementById('length').value,
                     podcast_hosts: document.getElementById('hosts').value,
+                    leverage_past: document.getElementById('leveragePast').checked,
                     upload_to_buzzsprout: document.getElementById('uploadBuzzsprout').checked,
                     upload_to_youtube: document.getElementById('uploadYoutube').checked,
                     buzzsprout_api_key: document.getElementById('buzzsproutApiKey').value || '',
@@ -1119,39 +1130,32 @@ def home(username: str = Depends(verify_credentials)):
 
                 document.getElementById('error').style.display = 'none';
 
-                // Step 1: Check for similar previous runs
-                try {{
-                    button.disabled = true;
-                    button.textContent = 'Checking for similar topics...';
-                    const reuseRes = await fetch('/api/check-reuse', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{ topic }})
-                    }});
-                    const reuseData = await reuseRes.json();
+                // Step 1: Check for similar previous runs (only if "leverage past" is checked)
+                const leveragePast = document.getElementById('leveragePast').checked;
+                if (leveragePast) {{
+                    try {{
+                        button.disabled = true;
+                        button.textContent = 'Checking for similar topics...';
+                        const reuseRes = await fetch('/api/check-reuse', {{
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/json' }},
+                            body: JSON.stringify({{ topic }})
+                        }});
+                        const reuseData = await reuseRes.json();
 
-                    if (reuseData.has_match && reuseData.matches.length > 0) {{
-                        button.disabled = false;
-                        button.textContent = 'Initiate Production Sequence';
-
-                        const decision = await showReuseModal(reuseData.matches[0]);
-
-                        if (decision.action === 'cancel') {{
-                            return;
-                        }}
-
-                        if (decision.action === 'reuse') {{
-                            // Submit via reuse endpoint
+                        if (reuseData.has_match && reuseData.matches.length > 0) {{
+                            // Auto-reuse: skip modal, go directly to reuse endpoint
                             button.disabled = true;
-                            button.textContent = 'Submitting (Reuse)...';
+                            button.textContent = 'Reusing previous research...';
                             const params = getFormParams();
+                            const match = reuseData.matches[0];
                             const reuseResp = await fetch('/api/generate-reuse', {{
                                 method: 'POST',
                                 headers: {{ 'Content-Type': 'application/json' }},
                                 body: JSON.stringify({{
                                     ...params,
-                                    reuse_task_id: decision.match.task_id || '',
-                                    reuse_output_dir: decision.match.output_dir || ''
+                                    reuse_task_id: match.task_id || '',
+                                    reuse_output_dir: match.output_dir || ''
                                 }})
                             }});
                             if (!reuseResp.ok) throw new Error('Failed to start reuse generation');
@@ -1160,11 +1164,17 @@ def home(username: str = Depends(verify_credentials)):
                             button.textContent = 'Initiate Production Sequence';
                             startTracking(reuseResult.task_id);
                             return;
+                        }} else {{
+                            // No match found — show brief toast and proceed with fresh generation
+                            const toast = document.createElement('div');
+                            toast.textContent = 'No similar past research found. Running fresh generation.';
+                            toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#334155;color:#e2e8f0;padding:12px 20px;border-radius:8px;z-index:9999;font-size:14px;';
+                            document.body.appendChild(toast);
+                            setTimeout(() => toast.remove(), 4000);
                         }}
-                        // action === 'fresh' — fall through to normal flow
+                    }} catch (err) {{
+                        console.warn('Reuse check failed, proceeding with fresh generation:', err);
                     }}
-                }} catch (err) {{
-                    console.warn('Reuse check failed, proceeding with fresh generation:', err);
                 }}
 
                 // Step 2: Queue status check
@@ -1554,10 +1564,16 @@ async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify
             prompt += f"  {i+1}. {t}\n"
         prompt += f"\nReturn ONLY a JSON array of {len(candidate_topics)} integers. Example: [85, 30, 72]"
 
+        # Discover the model name from the vLLM server
+        llm_base = os.getenv("LLM_BASE_URL", "http://localhost:8000/v1")
+        models_resp = httpx.get(f"{llm_base}/models", timeout=10.0)
+        models_resp.raise_for_status()
+        model_name = models_resp.json()["data"][0]["id"]
+
         resp = httpx.post(
-            "http://localhost:8000/v1/chat/completions",
+            f"{llm_base}/chat/completions",
             json={
-                "model": "Qwen/Qwen2.5-32B-Instruct-AWQ",
+                "model": model_name,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
                 "max_tokens": 512,
