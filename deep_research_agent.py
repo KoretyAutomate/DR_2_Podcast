@@ -67,9 +67,37 @@ JUNK_DOMAINS = {
     "dailythemedcrosswordanswers.com", "crosswordanswers.com",
 }
 
+# Commercial/industry domains that sell the product being researched.
+# Sources from these are NOT filtered out but tagged as low-trust commercial.
+COMMERCIAL_BIAS_DOMAINS = {
+    "jorganiccoffee.com", "jporganiccoffee.com",
+    "moriondocoffee.com", "moriondo.coffee",
+    "nespresso.com", "keurig.com", "lavazza.com",
+    "bulletproof.com", "foursigmatic.com",
+}
+
+# Patterns in page content that indicate commercial/promotional intent
+COMMERCIAL_INDICATORS = [
+    "buy now", "shop now", "add to cart", "order now", "use code",
+    "our products", "subscribe & save", "free shipping",
+    "affiliate", "sponsored post", "paid partnership",
+]
+
 def is_junk_url(url: str) -> bool:
     domain = urlparse(url).netloc.lower()
     return any(junk in domain for junk in JUNK_DOMAINS)
+
+def is_commercial_source(url: str, content: str = "") -> bool:
+    """Check if a URL is from a commercial entity selling the product being researched."""
+    domain = urlparse(url).netloc.lower()
+    if any(bias in domain for bias in COMMERCIAL_BIAS_DOMAINS):
+        return True
+    if content:
+        content_lower = content[:5000].lower()
+        matches = sum(1 for indicator in COMMERCIAL_INDICATORS if indicator in content_lower)
+        if matches >= 2:
+            return True
+    return False
 
 
 # --- URL Cache ---
@@ -171,6 +199,7 @@ class SummarizedSource:
     goal: str
     error: Optional[str] = None
     metadata: Optional[StudyMetadata] = None
+    cited_references: List[Dict] = field(default_factory=list)  # [{"author":"..","year":..,"title":".."}]
 
 @dataclass
 class SearchMetrics:
@@ -433,17 +462,53 @@ class FastWorker:
         self.model = model
         self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUMMARIES)
 
-    def _parse_metadata_from_response(self, raw_text: str) -> Tuple[str, Optional[StudyMetadata]]:
-        """Parse FACTS and METADATA sections from fast model response.
+    def _parse_metadata_from_response(self, raw_text: str) -> Tuple[str, Optional[StudyMetadata], List[Dict]]:
+        """Parse FACTS, METADATA, and CITED_REFERENCES sections from fast model response.
 
-        Returns (facts_text, metadata_or_none). On parse failure, returns
-        original text with None metadata (graceful fallback).
+        Returns (facts_text, metadata_or_none, cited_references_list).
+        On parse failure, returns original text with None metadata and empty refs (graceful fallback).
         """
+        cited_refs = []
+
+        # Extract CITED_REFERENCES section first (so we can remove it before METADATA parsing)
+        refs_marker = "CITED_REFERENCES:"
+        refs_idx = raw_text.find(refs_marker)
+        remaining_after_refs = ""
+        if refs_idx != -1:
+            refs_part = raw_text[refs_idx + len(refs_marker):].strip()
+            # Find the JSON array
+            bracket_start = refs_part.find("[")
+            if bracket_start != -1:
+                depth = 0
+                bracket_end = -1
+                for i in range(bracket_start, len(refs_part)):
+                    if refs_part[i] == "[":
+                        depth += 1
+                    elif refs_part[i] == "]":
+                        depth -= 1
+                        if depth == 0:
+                            bracket_end = i
+                            break
+                if bracket_end != -1:
+                    try:
+                        cited_refs = json.loads(refs_part[bracket_start:bracket_end + 1])
+                        if not isinstance(cited_refs, list):
+                            cited_refs = []
+                        # Filter to only valid entries with author and year
+                        cited_refs = [
+                            r for r in cited_refs
+                            if isinstance(r, dict) and r.get("author") and r.get("year")
+                        ]
+                    except json.JSONDecodeError:
+                        cited_refs = []
+            # Remove CITED_REFERENCES section from raw_text for METADATA parsing
+            raw_text = raw_text[:refs_idx].strip()
+
         # Split on METADATA: marker
         marker = "METADATA:"
         marker_idx = raw_text.find(marker)
         if marker_idx == -1:
-            return raw_text.strip(), None
+            return raw_text.strip(), None, cited_refs
 
         facts_text = raw_text[:marker_idx].strip()
         # Remove "FACTS:" prefix if present
@@ -455,7 +520,7 @@ class FastWorker:
         # Extract JSON using brace-depth tracking
         brace_start = json_part.find("{")
         if brace_start == -1:
-            return facts_text, None
+            return facts_text, None, cited_refs
 
         depth = 0
         brace_end = -1
@@ -469,7 +534,7 @@ class FastWorker:
                     break
 
         if brace_end == -1:
-            return facts_text, None
+            return facts_text, None, cited_refs
 
         json_str = json_part[brace_start:brace_end + 1]
 
@@ -477,7 +542,7 @@ class FastWorker:
             data = json.loads(json_str)
         except json.JSONDecodeError:
             logger.debug(f"Failed to parse metadata JSON: {json_str[:200]}")
-            return facts_text, None
+            return facts_text, None, cited_refs
 
         # Convert "null" strings and null values to None
         cleaned = {}
@@ -487,13 +552,13 @@ class FastWorker:
             cleaned[k] = v
 
         if not cleaned:
-            return facts_text, None
+            return facts_text, None, cited_refs
 
         try:
             metadata = StudyMetadata.from_dict(cleaned)
-            return facts_text, metadata
+            return facts_text, metadata, cited_refs
         except Exception:
-            return facts_text, None
+            return facts_text, None, cited_refs
 
     async def summarize(self, page: FetchedPage, goal: str, query: str) -> SummarizedSource:
         if page.error or not page.content.strip():
@@ -520,10 +585,14 @@ class FastWorker:
             f'"limitations":"key limitation or null",'
             f'"demographics":"age range, sex ratio, population description or null",'
             f'"funding_source":"Industry/Government/Independent/Unknown or null"}}\n\n'
+            f"CITED_REFERENCES:\n"
+            f'[{{"author":"First Author et al.","year":YYYY,"title":"paper title or brief description"}}]\n'
+            f"(List studies/papers explicitly referenced or cited in the text. Empty list [] if none found.)\n\n"
             f"Rules:\n"
             f"- Be extremely concise in facts\n"
             f"- Use null (not quotes) for unknown metadata fields\n"
-            f"- If no relevant information: output 'NO RELEVANT DATA' with no metadata"
+            f"- If no relevant information: output 'NO RELEVANT DATA' with no metadata\n"
+            f"- For CITED_REFERENCES, only include studies explicitly named in the text with author/year"
         )
         async with self.semaphore:
             try:
@@ -536,10 +605,11 @@ class FastWorker:
                     max_tokens=1536, temperature=0.1, timeout=180
                 )
                 raw_text = resp.choices[0].message.content.strip()
-                facts_text, metadata = self._parse_metadata_from_response(raw_text)
+                facts_text, metadata, cited_refs = self._parse_metadata_from_response(raw_text)
                 return SummarizedSource(
                     url=page.url, title=page.title, summary=facts_text,
-                    query=query, goal=goal, metadata=metadata
+                    query=query, goal=goal, metadata=metadata,
+                    cited_references=cited_refs
                 )
             except Exception as e:
                 logger.warning(f"Fast model failed for {page.url}: {str(e)[:100]}")
@@ -611,7 +681,8 @@ class ResearchAgent:
             return "No evidence collected yet."
         blocks = []
         for s in good:
-            blocks.append(f"- [{s.title or 'Untitled'}]({s.url}): {s.summary[:300]}")
+            tag = "[COMMERCIAL] " if (s.metadata and s.metadata.funding_source and "COMMERCIAL_BIAS" in s.metadata.funding_source) else ""
+            blocks.append(f"- {tag}[{s.title or 'Untitled'}]({s.url}): {s.summary[:300]}")
         return "\n".join(blocks)
 
     async def _search_and_summarize(
@@ -669,11 +740,98 @@ class ResearchAgent:
                     except Exception as e:
                         batch.append(SummarizedSource(url=p.url, title=p.title, summary="", query=rq.query, goal=rq.goal, error=str(e)[:200]))
 
+            # Tag commercial sources with low_commercial trust level
+            for i, s in enumerate(batch):
+                page_content = good_pages[i].content if i < len(good_pages) else ""
+                if is_commercial_source(s.url, page_content):
+                    if s.metadata is None:
+                        s.metadata = StudyMetadata()
+                    s.metadata.funding_source = (s.metadata.funding_source or "") + " [COMMERCIAL_BIAS]"
+                    log(f"      [COMMERCIAL] {s.url}")
+
             good = sum(1 for s in batch if s.summary and not s.error)
             log(f"      [{rq.goal[:40]}] {good}/{len(good_pages)} summarized")
             all_summaries.extend(batch)
 
         return all_summaries, total_fetched, total_errors
+
+    async def _follow_up_references(
+        self, summaries: List[SummarizedSource], seen_urls: set, log, max_follow_ups: int = 10
+    ) -> Tuple[List[SummarizedSource], int, int]:
+        """Search for and fetch original studies cited in summarized web articles.
+
+        Collects all cited_references from summaries, deduplicates by (author, year),
+        generates targeted PubMed/Scholar search queries, and fetches the original papers.
+
+        Returns (follow_up_summaries, total_fetched, total_errors).
+        """
+        # Collect all cited references from new summaries
+        all_refs = []
+        seen_ref_keys = set()
+        for s in summaries:
+            if not s.cited_references:
+                continue
+            for ref in s.cited_references:
+                author = ref.get("author", "")
+                year = ref.get("year", "")
+                key = (author.lower(), str(year))
+                if key not in seen_ref_keys and author and year:
+                    seen_ref_keys.add(key)
+                    all_refs.append(ref)
+
+        if not all_refs:
+            return [], 0, 0
+
+        # Limit to max_follow_ups
+        all_refs = all_refs[:max_follow_ups]
+        log(f"      [FOLLOW-UP] Found {len(all_refs)} cited references to search for")
+
+        # Generate targeted search queries
+        follow_up_queries = []
+        for ref in all_refs:
+            author = ref.get("author", "")
+            year = ref.get("year", "")
+            title = ref.get("title", "")
+            # Build a focused search query
+            query_parts = []
+            if author:
+                # Use first author surname
+                surname = author.split(",")[0].split(" et ")[0].strip()
+                query_parts.append(surname)
+            if year:
+                query_parts.append(str(year))
+            if title:
+                # Use first few meaningful words of title
+                title_words = [w for w in title.split()[:5] if len(w) > 3]
+                query_parts.extend(title_words[:3])
+            if query_parts:
+                follow_up_queries.append(
+                    ResearchQuery(
+                        query=" ".join(query_parts),
+                        goal=f"Find original study: {author} ({year})"
+                    )
+                )
+
+        if not follow_up_queries:
+            return [], 0, 0
+
+        log(f"      [FOLLOW-UP] Searching for {len(follow_up_queries)} original studies...")
+
+        # Use existing search-and-summarize pipeline
+        follow_up_summaries, fetched, errors = await self._search_and_summarize(
+            follow_up_queries, seen_urls, log
+        )
+
+        # Tag follow-up sources
+        for s in follow_up_summaries:
+            if s.metadata is None:
+                s.metadata = StudyMetadata()
+            s.metadata.limitations = (s.metadata.limitations or "") + " [FOLLOW_UP_SOURCE]"
+
+        good = sum(1 for s in follow_up_summaries if s.summary and not s.error)
+        log(f"      [FOLLOW-UP] Retrieved {good}/{len(follow_up_summaries)} original studies")
+
+        return follow_up_summaries, fetched, errors
 
     async def research(self, topic: str, role: str, role_instructions: str, log=print) -> ResearchReport:
         """
@@ -744,6 +902,15 @@ class ResearchAgent:
             all_summaries.extend(batch_summaries)
             total_fetched += batch_fetched
             total_errors += batch_errors
+
+            # Step 2b: Follow up on cited references found in summarized articles
+            follow_ups, fu_fetched, fu_errors = await self._follow_up_references(
+                batch_summaries, seen_urls, log
+            )
+            if follow_ups:
+                all_summaries.extend(follow_ups)
+                total_fetched += fu_fetched
+                total_errors += fu_errors
 
             good_count = len([s for s in all_summaries if s.summary and not s.error])
             log(f"    Iteration {iteration + 1} complete: {good_count} total good sources")
