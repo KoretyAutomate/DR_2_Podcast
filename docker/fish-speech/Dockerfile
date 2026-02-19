@@ -108,17 +108,17 @@ RUN pip install --no-cache-dir packaging ninja && \
 # cu121/cu124 wheel that has no sm_121 kernels.
 RUN pip install --no-cache-dir --no-deps -e .
 
-# Fix up any remaining deps that --no-deps skipped (everything except torch family)
+# Install remaining Fish Speech deps not covered in earlier layers.
+# Listed explicitly — the dynamic pyproject.toml approach caused Dockerfile
+# parse errors because Docker misread the Python code as RUN instructions.
 RUN pip install --no-cache-dir \
-        $(python -c "
-import tomllib, sys
-with open('pyproject.toml','rb') as f:
-    d=tomllib.load(f)
-deps=d.get('project',{}).get('dependencies',[])
-skip={'torch','torchaudio','torchvision'}
-filtered=[x for x in deps if not any(s in x.lower() for s in skip)]
-print(' '.join(repr(x) for x in filtered))
-" 2>/dev/null || echo "") || true
+        "hydra-core>=1.3.2" \
+        "omegaconf>=2.3.0" \
+        "pypinyin>=0.50.0" \
+        "jieba" \
+        "opencc-python-reimplemented" \
+        "wandb" \
+    2>/dev/null || true
 
 # ── Checkpoints directory ────────────────────────────────────
 # Model weights are mounted from the host at runtime.
