@@ -92,6 +92,11 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         return None
 
     # 2. Parse Script
+    # Generic speaker detection: any line starting with "Name:" or "Name："
+    # First unique name → Host 1 voice, second unique name → Host 2 voice
+    speaker_pattern = re.compile(r'^(.+?)[:：]\s*(.*)')
+    speaker_map = {}  # name → speaker number (1 or 2)
+
     lines = script_text.split('\n')
     audio_segments = []
     silence_gap = np.zeros(int(0.3 * 24000), dtype=np.float32)  # 300ms silence at 24kHz
@@ -99,6 +104,20 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
     current_speaker = None
     buffer_text = ""
     segment_count = 0
+
+    def _flush_buffer():
+        """Flush the current text buffer into audio segments."""
+        nonlocal buffer_text, segment_count
+        if buffer_text and current_speaker:
+            voice = voice_host_1 if current_speaker == 1 else voice_host_2
+            try:
+                generator = pipeline(buffer_text, voice=voice, speed=1.0, split_pattern=r'\n+')
+                for _, _, audio in generator:
+                    audio_segments.append(audio)
+                    segment_count += 1
+            except Exception as e:
+                logger.warning(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
+        buffer_text = ""
 
     for line_num, line in enumerate(lines, 1):
         line = line.strip()
@@ -109,64 +128,44 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         if re.match(r'^-{3,}$', line):
             continue
 
-        # Check for Speaker Switch
-        if line.startswith("Host 1:") or line.startswith("Dr. Data:") or line.startswith("Kaz:"):
-            # Process previous buffer
-            if buffer_text and current_speaker:
-                voice = voice_host_1 if current_speaker == 1 else voice_host_2
-                try:
-                    generator = pipeline(buffer_text, voice=voice, speed=1.0, split_pattern=r'\n+')
-                    for _, _, audio in generator:
-                        audio_segments.append(audio)
-                        segment_count += 1
-                except Exception as e:
-                    logger.warning(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
+        # Check for Speaker Switch: any "Name:" or "Name：" prefix
+        match = speaker_pattern.match(line)
+        if match:
+            name = match.group(1).strip()
+            text_after = match.group(2).strip()
 
-            # Insert silence gap between speaker switches (not before first speaker)
-            if current_speaker is not None and current_speaker != 1:
+            # Assign speaker number on first occurrence (max 2 speakers)
+            if name not in speaker_map:
+                if len(speaker_map) < 2:
+                    speaker_map[name] = len(speaker_map) + 1
+                    logger.info(f"  Speaker detected: '{name}' → Host {speaker_map[name]}")
+                else:
+                    # More than 2 unique names — treat as continuation text
+                    if current_speaker is None:
+                        current_speaker = 1
+                    buffer_text = f"{buffer_text} {line}".strip()
+                    continue
+
+            new_speaker = speaker_map[name]
+
+            # Flush previous buffer before switching
+            _flush_buffer()
+
+            # Insert silence gap on speaker change (not before first speaker)
+            if current_speaker is not None and current_speaker != new_speaker:
                 audio_segments.append(silence_gap)
 
-            current_speaker = 1
-            buffer_text = line.split(":", 1)[1].strip() if ":" in line else ""
-
-        elif line.startswith("Host 2:") or line.startswith("Dr. Doubt:") or line.startswith("Erika:"):
-            # Process previous buffer
-            if buffer_text and current_speaker:
-                voice = voice_host_1 if current_speaker == 1 else voice_host_2
-                try:
-                    generator = pipeline(buffer_text, voice=voice, speed=1.0, split_pattern=r'\n+')
-                    for _, _, audio in generator:
-                        audio_segments.append(audio)
-                        segment_count += 1
-                except Exception as e:
-                    logger.warning(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
-
-            # Insert silence gap between speaker switches (not before first speaker)
-            if current_speaker is not None and current_speaker != 2:
-                audio_segments.append(silence_gap)
-
-            current_speaker = 2
-            buffer_text = line.split(":", 1)[1].strip() if ":" in line else ""
+            current_speaker = new_speaker
+            buffer_text = text_after
 
         else:
             # Continuation of current speaker (or unlabeled opening — default to Host 1)
             if current_speaker is None:
                 current_speaker = 1
-            if buffer_text:
-                buffer_text += " " + line
-            else:
-                buffer_text = line
+            buffer_text = f"{buffer_text} {line}".strip()
 
     # Process final buffer
-    if buffer_text and current_speaker:
-        voice = voice_host_1 if current_speaker == 1 else voice_host_2
-        try:
-            generator = pipeline(buffer_text, voice=voice, speed=1.0, split_pattern=r'\n+')
-            for _, _, audio in generator:
-                audio_segments.append(audio)
-                segment_count += 1
-        except Exception as e:
-            logger.warning(f"  ⚠ Warning: Failed to generate final segment: {e}")
+    _flush_buffer()
 
     logger.info(f"Generated {segment_count} audio segments")
 
@@ -208,12 +207,14 @@ def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav") -
         Path to the mastered WAV file, or None if processing failed
     """
     try:
-        # Import here to avoid circular dependencies
-        from music_engine import MusicGenerator
-        from audio_mixer import AudioMixer
-        
+        # Ensure archived_scripts is importable (music_engine, audio_mixer live there)
+        import sys
+        archived = str(Path(__file__).parent / "archived_scripts")
+        if archived not in sys.path:
+            sys.path.insert(0, archived)
+
         logger.info(f"Post-processing audio: {wav_path}")
-        
+
         BGM_LIBRARY_DIR = Path(__file__).parent / "Podcast BGM"
         music_path = None
 
@@ -228,45 +229,53 @@ def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav") -
                     logger.info(f"Selected random BGM from library: {selected.name}")
                 else:
                     logger.warning("BGM Library is empty. Falling back to generation.")
-            
+
             elif (BGM_LIBRARY_DIR / bgm_target).exists():
                 # Specific file found
                 music_path = str(BGM_LIBRARY_DIR / bgm_target)
                 logger.info(f"Selected specific BGM from library: {bgm_target}")
-            
+
             elif bgm_target.endswith(".wav"):
                  # Requested specific file but not found
                  logger.warning(f"Requested BGM '{bgm_target}' not found in library.")
-                 # Fallback to random if possible? Or interesting?
-                 # User said: "When nothing is mentioned, default ... Interesting BGM.wav"
-                 # If specifically requested file is missing, let's try Interesting BGM.wav
                  default_bgm = BGM_LIBRARY_DIR / "Interesting BGM.wav"
                  if default_bgm.exists():
                      music_path = str(default_bgm)
                      logger.warning(f"Falling back to default: Interesting BGM.wav")
-        
+
         # 2. Fallback to MusicGen if no music selected yet
         if not music_path:
             logger.info("Generating new BGM (Library file not found or empty)...")
+            try:
+                from music_engine import MusicGenerator
+            except ImportError as e:
+                logger.warning(f"MusicGenerator unavailable ({e}), skipping BGM generation.")
+                return wav_path
             music_gen = MusicGenerator()
-            
+
             # Use bgm_target as prompt if it doesn't look like a filename, otherwise default prompt
             prompt = bgm_target if " " in bgm_target and not bgm_target.endswith(".wav") else "lofi hip hop beat, chill, study"
-            
+
             music_path = str(Path(wav_path).parent / "bgm_generated.wav")
             if not os.path.exists(music_path):
                 generated_music = music_gen.generate_music(prompt, duration=30, output_filename=music_path)
                 if not generated_music:
                     logger.warning("Music generation failed. Skipping BGM.")
-                    return wav_path 
+                    return wav_path
                 music_path = generated_music
 
         # 3. Mix
+        try:
+            from audio_mixer import AudioMixer
+        except ImportError as e:
+            logger.error(f"AudioMixer unavailable ({e}), returning original audio.")
+            return wav_path
+
         mixer = AudioMixer()
         mixed_path = wav_path.replace(".wav", "_mixed.wav")
-        
+
         success = mixer.mix_podcast(wav_path, music_path, mixed_path)
-        
+
         if success:
             logger.info(f"Mastered audio saved: {mixed_path}")
             return mixed_path

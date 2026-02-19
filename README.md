@@ -67,7 +67,9 @@ A FastAPI-based web interface (`podcast_web_ui.py`) for managing podcast product
 - **Task queue**: submit multiple requests — confirmation dialog shows queue position, running task progress stays visible
 - **Production History**: collapsible list of past runs with download links
 - **Upload integration**: optional Buzzsprout (draft) and YouTube (private) publishing
-- Basic authentication support
+- **Research reuse**: reuse previous research artifacts with optional LLM-assessed supplemental research
+- **System status**: checks vLLM and Ollama availability before submission
+- Basic authentication support (auto-generated credentials or via env vars)
 
 Launch:
 ```bash
@@ -83,10 +85,10 @@ The pipeline orchestrates **7 specialized CrewAI agents**, each with a distinct 
 | Agent | Role | Tools |
 |-------|------|-------|
 | **Research Framing Specialist** | Defines scope, core questions, evidence criteria before any searching begins | — |
-| **Principal Investigator (Lead Researcher)** | Gathers supporting evidence organized by mechanism of action and clinical evidence | BraveSearch, DeepSearch, Research Library |
-| **Adversarial Researcher (The Skeptic)** | Hunts for contradictory evidence, methodology flaws, and null results | BraveSearch, DeepSearch, Research Library |
-| **Scientific Auditor (The Grader)** | Grades research quality, runs PASS/FAIL gate, synthesizes source-of-truth, checks script for scientific drift | BraveSearch, DeepSearch, LinkValidator, Research Library |
-| **Scientific Source Verifier** | Validates every cited URL via HEAD requests, verifies claim-to-source accuracy | LinkValidator |
+| **Principal Investigator (Lead Researcher)** | Gathers supporting evidence organized by mechanism of action and clinical evidence | RequestSearch, ListResearchSources, ReadResearchSource, ReadFullReport |
+| **Adversarial Researcher (The Skeptic)** | Hunts for contradictory evidence, methodology flaws, and null results | RequestSearch, ListResearchSources, ReadResearchSource, ReadFullReport |
+| **Scientific Auditor (The Grader)** | Grades research quality, runs PASS/FAIL gate, synthesizes source-of-truth, checks script for scientific drift | LinkValidator, ListResearchSources, ReadResearchSource, ReadFullReport |
+| **Scientific Source Verifier** | Validates every cited URL via HEAD requests, verifies claim-to-source accuracy | LinkValidator, ReadValidationResults |
 | **Podcast Producer (The Showrunner)** | Transforms research into a debate script targeting Masters/PhD-level depth | — |
 | **Podcast Personality (The Editor)** | Polishes script for natural verbal delivery, enforces word count and depth | — |
 
@@ -94,12 +96,19 @@ The pipeline orchestrates **7 specialized CrewAI agents**, each with a distinct 
 
 The system uses two local LLMs working in tandem:
 
-| Model | Hosted On | Role |
-|-------|-----------|------|
-| **Qwen2.5-32B-Instruct-AWQ** | vLLM (port 8000) | Planning, research synthesis, script writing, auditing (32k context) |
-| **phi4-mini** | Ollama (port 11434) | Parallel page summarization during deep research, report condensation before injection |
+| Role | Default Model | Hosted On | Purpose |
+|------|---------------|-----------|---------|
+| **Smart model** | `deepseek-r1:32b` | Ollama (port 11434) | Planning, research synthesis, script writing, auditing |
+| **Fast model** | `llama3.2:1b` | Ollama (port 11434) | Parallel page summarization during deep research, report condensation before injection |
 
-If phi4-mini is unavailable, the smart model handles all summarization (slower but functional).
+Defaults are Ollama-only for zero-config startup. For higher quality, configure vLLM + a larger fast model via environment variables:
+
+| Role | Recommended Model | Hosted On | Env Vars |
+|------|-------------------|-----------|----------|
+| Smart model | `Qwen/Qwen2.5-14B-Instruct-AWQ` | vLLM (port 8000) | `MODEL_NAME`, `LLM_BASE_URL` |
+| Fast model | `phi4-mini` | Ollama (port 11434) | `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL` |
+
+If the fast model is unavailable, the smart model handles all summarization (slower but functional).
 
 ## Tiered Academic Search
 
@@ -121,7 +130,7 @@ After the deep research pre-scan, all source-level data is saved to `deep_resear
 - **ReadResearchSource** — Read the full extracted summary for any specific source by index
 - **ReadFullReport** — Read an entire research report from disk
 
-Before injection into agent task descriptions, full reports are **condensed by phi4-mini** (~2000 words) instead of being hard-truncated.
+Before injection into agent task descriptions, full reports are **condensed by the fast model** (~2000 words) instead of being hard-truncated.
 
 ## Scientific Report Structure
 
@@ -209,22 +218,33 @@ The pipeline supports English and Japanese output:
 
 ### Required Services
 
-**vLLM** — Smart model (Qwen2.5-32B-Instruct-AWQ):
+**Ollama** — Default backend (smart + fast models):
+```bash
+ollama serve
+ollama pull deepseek-r1:32b   # Smart model (default)
+ollama pull llama3.2:1b        # Fast model (default)
+```
+
+**vLLM** — Optional, recommended for higher throughput (replaces Ollama smart model):
 ```bash
 ./start_vllm_docker.sh
 # or manually:
-docker run --gpus all -p 8000:8000 \
-  --name vllm-final \
+docker run --runtime nvidia --gpus all -p 8000:8000 \
+  --name vllm-server \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  --ipc=host \
   vllm/vllm-openai:latest \
-  python -m vllm.entrypoints.openai.api_server \
-  --model Qwen/Qwen2.5-32B-Instruct-AWQ \
-  --max-model-len 32768
+  --model Qwen/Qwen2.5-14B-Instruct-AWQ \
+  --max-model-len 32768 \
+  --gpu-memory-utilization 0.8 \
+  --dtype auto --trust-remote-code --enforce-eager
+# Then set: export MODEL_NAME="Qwen/Qwen2.5-14B-Instruct-AWQ" LLM_BASE_URL="http://localhost:8000/v1"
 ```
 
-**Ollama** — Fast model (phi4-mini, optional but recommended):
+**Ollama fast model upgrade** (optional, recommended with vLLM):
 ```bash
-ollama serve
 ollama pull phi4-mini
+# Then set: export FAST_MODEL_NAME="phi4-mini"
 ```
 
 **SearXNG** — Self-hosted search (optional, improves source diversity):
@@ -237,7 +257,8 @@ docker run -d -p 8080:8080 searxng/searxng:latest
 ```bash
 conda activate podcast_flow
 pip install -r requirements.txt
-python -m unidic download  # Required for Kokoro TTS
+pip install -r web_ui_requirements.txt  # For the web UI
+python -m unidic download               # Required for Kokoro TTS
 ```
 
 ## Environment Variables
@@ -251,14 +272,23 @@ export PUBMED_API_KEY="your_ncbi_api_key"  # Higher rate limits for PubMed
 export PODCAST_TOPIC="effects of intermittent fasting on cognitive performance"
 export PODCAST_LANGUAGE="en"          # en or ja
 export ACCESSIBILITY_LEVEL="simple"   # simple | moderate | technical
-export PODCAST_LENGTH="medium"        # short | medium | long
+export PODCAST_LENGTH="long"          # short | medium | long
 export PODCAST_HOSTS="random"         # random | kaz_erika | erika_kaz
 
 # Model config (defaults shown)
-export MODEL_NAME="Qwen/Qwen2.5-32B-Instruct-AWQ"
-export LLM_BASE_URL="http://localhost:8000/v1"
-export FAST_MODEL_NAME="phi4-mini"
+export MODEL_NAME="deepseek-r1:32b"
+export LLM_BASE_URL="http://localhost:11434/v1"
+export FAST_MODEL_NAME="llama3.2:1b"
 export FAST_LLM_BASE_URL="http://localhost:11434/v1"
+
+# Web UI authentication (auto-generated if not set)
+export PODCAST_WEB_USER="admin"
+export PODCAST_WEB_PASSWORD="your_password"
+
+# Upload integration (optional)
+export BUZZSPROUT_API_KEY="your_buzzsprout_api_key"
+export BUZZSPROUT_PODCAST_ID="your_podcast_id"
+export YOUTUBE_CLIENT_SECRET_PATH="/path/to/client_secret.json"
 ```
 
 ## Usage
@@ -269,6 +299,12 @@ export FAST_LLM_BASE_URL="http://localhost:11434/v1"
 
 # Via CLI
 python podcast_crew.py --topic "neuroplasticity and exercise" --language en
+
+# Reuse previous research (skip research phases, regenerate podcast only)
+python podcast_crew.py --reuse-dir research_outputs/2025-01-15_10-30-00 --crew3-only
+
+# Reuse with LLM-assessed supplemental research if needed
+python podcast_crew.py --reuse-dir research_outputs/2025-01-15_10-30-00 --check-supplemental
 ```
 
 ## Accessibility Levels
@@ -316,8 +352,8 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 
 ## Project Structure
 
-| File | Purpose |
-|------|---------|
+| File / Directory | Purpose |
+|------------------|---------|
 | `podcast_crew.py` | Main pipeline — agents, tasks, 10-phase orchestration, research library tools |
 | `podcast_web_ui.py` | FastAPI web UI with live progress tracking, task queue, and upload integration |
 | `deep_research_agent.py` | Dual-model map-reduce research engine with tiered academic search and PRISMA tracking |
@@ -328,6 +364,13 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 | `upload_utils.py` | Buzzsprout and YouTube upload utilities |
 | `start_podcast_web_ui.sh` | Web UI launcher script |
 | `start_vllm_docker.sh` | vLLM Docker container launcher |
+| `requirements.txt` | Core Python dependencies |
+| `web_ui_requirements.txt` | Additional dependencies for the web UI (FastAPI, uvicorn, Google API) |
+| `environment.yml` | Conda environment specification (Python 3.11, `podcast_flow`) |
+| `podcast_tasks.json` | Persistent task queue for the web UI |
+| `Podcast BGM/` | Pre-built WAV background music library for BGM mixing |
+| `asset/` | Kokoro TTS model weights (safetensors, voice files, tokenizer) |
+| `archived_scripts/` | Deprecated utilities (audio_mixer, music_engine, older startup scripts) |
 
 ## License
 
