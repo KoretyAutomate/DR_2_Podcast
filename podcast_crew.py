@@ -1455,40 +1455,44 @@ recording_task = Task(
         f"  5. Interactive host dialogue (e.g., 'Wait, let me make sure I've got this right...', 'That's fascinating, tell me more about...')\n"
         f"Expand the conversation. Do not just list facts. Have the hosts explore the 'So what?' and 'What now?' for the audience.\n"
         f"Maintain consistent roles throughout. NO role switching mid-conversation. "
-        f"{english_instruction}"
+        f"{target_instruction}"
     ),
     expected_output=(
         f"A {target_words_en if language != 'ja' else target_chars_ja}-{'word' if language != 'ja' else 'character'} teaching-style dialogue about {topic_name} between "
         f"{SESSION_ROLES['presenter']['character']} (presents and explains) "
         f"and {SESSION_ROLES['questioner']['character']} (asks bridging questions). "
         f"Opens with welcome → hook → topic shift. Every line discusses the topic. "
-        f"{english_instruction}"
+        f"{target_instruction}"
     ),
     agent=scriptwriter,
     context=[audit_task]
 )
 
-# --- TRANSLATION TASK (only when language != 'en') ---
-translation_task = None
+# --- SOT TRANSLATION TASK (only when language != 'en') ---
+# Translates the English Source-of-Truth into the target language BEFORE script writing.
+# This ensures the podcast script is derived from translated research, not translated afterwards.
+sot_translation_task = None
 if language != 'en':
-    translation_task = Task(
+    sot_translation_task = Task(
         description=(
-            f"Translate the podcast script and key Source-of-Truth findings about "
-            f"{topic_name} into {language_config['name']}.\n\n"
-            f"RULES:\n"
-            f"- Preserve {SESSION_ROLES['presenter']['character']}: / {SESSION_ROLES['questioner']['character']}: format exactly\n"
-            f"- Preserve scientific terminology accuracy\n"
-            f"- Translate for natural spoken delivery, not literal translation\n"
-            f"- Keep proper nouns, study names, journal names in English\n"
-            f"- Maintain teaching structure and conversational flow\n"
+            f"Translate the entire Source-of-Truth document about {topic_name} into {language_config['name']}.\n\n"
+            f"TRANSLATION RULES:\n"
+            f"- Translate ALL sections faithfully: Executive Summary, Key Claims, Evidence, Bibliography\n"
+            f"- Preserve scientific accuracy — translate meaning, not word-for-word\n"
+            f"- Keep confidence labels (HIGH/MEDIUM/LOW/CONTESTED) intact\n"
+            f"- Keep study names, journal names, and URLs in English\n"
+            f"- Maintain all markdown formatting (headers, tables, bullet points)\n"
             + (f"- CRITICAL: Output MUST be in Japanese (日本語) only. Do NOT switch to Chinese (中文).\n"
-               f"  Use katakana for host names: カズ and エリカ (NOT 卡兹/埃里卡).\n"
+               f"  Use standard Japanese kanji (e.g., 気 not 气, 楽 not 乐).\n"
                if language == 'ja' else '')
             + f"{target_instruction}"
         ),
-        expected_output=f"Complete translated script in {language_config['name']} with {SESSION_ROLES['presenter']['character']}:/{SESSION_ROLES['questioner']['character']}: format.",
+        expected_output=(
+            f"Complete {language_config['name']} translation of the Source-of-Truth document, "
+            f"preserving all sections, claims, confidence levels, and evidence citations."
+        ),
         agent=scriptwriter,
-        context=[recording_task, audit_task],
+        context=[audit_task],
     )
 
 natural_language_task = Task(
@@ -1602,14 +1606,16 @@ planning_task = show_notes_task
 # 7: Post-Processing (was natural_language_task)
 post_process_task = natural_language_task
 
-# --- TRANSLATION PIPELINE: Update contexts when translating ---
-if translation_task is not None:
-    # Polish reads from translated script instead of English script
-    post_process_task.context = [translation_task, audit_task]
-    # Show notes use translated SOT context
-    planning_task.context = [translation_task, audit_task]
-    # Accuracy check compares polished (target lang) against translated script
-    accuracy_check_task.context = [post_process_task, translation_task]
+# --- SOT TRANSLATION PIPELINE: Update contexts when translating ---
+if sot_translation_task is not None:
+    # Recording task writes script directly in target language using the translated SOT
+    recording_task.context = [sot_translation_task]
+    # Show notes use the translated SOT as their reference
+    planning_task.context = [sot_translation_task]
+    # Polish reads from the target-language script with translated SOT as reference
+    post_process_task.context = [recording_task, sot_translation_task]
+    # Accuracy check compares polished script against translated SOT
+    accuracy_check_task.context = [post_process_task, sot_translation_task]
 
 # --- PHASE MARKERS FOR PROGRESS TRACKING ---
 PHASE_MARKERS = [
@@ -1926,10 +1932,11 @@ if args.reuse_dir:
 
         print(f"\nCREW 3: PHASES 5-8 (PODCAST PRODUCTION)")
 
-        if translation_task is not None:
+        if sot_translation_task is not None:
             crew_3_tasks = [
-                recording_task, translation_task,
-                planning_task, post_process_task, accuracy_check_task,
+                sot_translation_task,
+                planning_task, recording_task,
+                post_process_task, accuracy_check_task,
             ]
         else:
             crew_3_tasks = [
@@ -1950,6 +1957,7 @@ if args.reuse_dir:
         print("\n--- Saving Outputs ---")
         script_text = post_process_task.output.raw if hasattr(post_process_task, 'output') and post_process_task.output else result.raw
         for label, source, filename in [
+            ("Source of Truth (Translated)", sot_translation_task, "source_of_truth.md"),
             ("Podcast Planning", planning_task, "show_notes.md"),
             ("Podcast Recording (Raw)", recording_task, "podcast_script_raw.md"),
             ("Podcast Recording (Polished)", post_process_task, "podcast_script_polished.md"),
@@ -2138,10 +2146,11 @@ if args.reuse_dir:
 
             print(f"\nCREW 3: PHASES 5-8 (PODCAST PRODUCTION)")
 
-            if translation_task is not None:
+            if sot_translation_task is not None:
                 crew_3_tasks = [
-                    recording_task, translation_task,
-                    planning_task, post_process_task, accuracy_check_task,
+                    sot_translation_task,
+                    planning_task, recording_task,
+                    post_process_task, accuracy_check_task,
                 ]
             else:
                 crew_3_tasks = [
@@ -2162,6 +2171,7 @@ if args.reuse_dir:
             print("\n--- Saving Outputs ---")
             script_text = post_process_task.output.raw if hasattr(post_process_task, 'output') and post_process_task.output else result.raw
             for label, source, filename in [
+                ("Source of Truth (Translated)", sot_translation_task, "source_of_truth.md"),
                 ("Podcast Planning", planning_task, "show_notes.md"),
                 ("Podcast Recording (Raw)", recording_task, "podcast_script_raw.md"),
                 ("Podcast Recording (Polished)", post_process_task, "podcast_script_polished.md"),
@@ -2703,13 +2713,13 @@ print(f"\n{'='*70}")
 print(f"CREW 3: PHASES 5-8 (PODCAST PRODUCTION)")
 print(f"{'='*70}")
 
-if translation_task is not None:
-    print(f"\nTRANSLATION PHASE: Translating to {language_config['name']}")
+if sot_translation_task is not None:
+    print(f"\nSOT TRANSLATION: Translating Source-of-Truth to {language_config['name']} before script writing")
     crew_3_tasks = [
-        recording_task,         # Phase 6
-        translation_task,
-        planning_task,          # Phase 5 (depends on translation)
-        post_process_task,      # Phase 7 (depends on translation)
+        sot_translation_task,   # Translate SOT first (Phase 4c)
+        planning_task,          # Phase 5 (show notes from translated SOT)
+        recording_task,         # Phase 6 (script written directly in target language)
+        post_process_task,      # Phase 7
         accuracy_check_task,    # Phase 8
     ]
 else:
@@ -2776,7 +2786,7 @@ markdown_outputs = [
     ("Gap-Fill Research", gap_fill_output, "gap_fill_research.md"),
     ("Adversarial Research", adversarial_task, "adversarial_research.md"),
     ("Source Verification", source_verification_task, "source_verification.md"),
-    ("Source of Truth", audit_task, "source_of_truth.md"),
+    ("Source of Truth", sot_translation_task if sot_translation_task is not None else audit_task, "source_of_truth.md"),
     ("Accuracy Check", accuracy_check_task, "accuracy_check.md"),
     ("Podcast Planning", planning_task, "show_notes.md"),
     ("Podcast Recording (Raw)", recording_task, "podcast_script_raw.md"),
