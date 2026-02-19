@@ -28,3 +28,10 @@ archived_scripts/
 home/
 reflections/
 .pytest_cache/
+
+# Fish Speech Docker — large files excluded from git
+docker/fish-speech/checkpoints/
+docker/fish-speech/reference_audio/
+docker/fish-speech/outputs/
+docker/fish-speech/.env
+docker/fish-speech/build.log
