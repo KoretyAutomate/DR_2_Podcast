@@ -143,8 +143,10 @@ ENV TOKENIZERS_PARALLELISM=false
 ENV CHECKPOINTS_PATH=/app/checkpoints/fish-speech-1.5
 
 # ── Ports ────────────────────────────────────────────────────
-EXPOSE 8080   # REST / OpenAI-compat API server
-EXPOSE 7860   # Gradio WebUI
+# 8080: REST / OpenAI-compat API server
+# 7860: Gradio WebUI
+EXPOSE 8080
+EXPOSE 7860
 
 # ── Entrypoint ───────────────────────────────────────────────
 COPY entrypoint.sh /entrypoint.sh
