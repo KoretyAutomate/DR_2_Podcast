@@ -31,7 +31,8 @@ reflections/
 
 # Fish Speech Docker — large files excluded from git
 docker/fish-speech/checkpoints/
-docker/fish-speech/reference_audio/
+docker/fish-speech/reference_audio/*.wav
+docker/fish-speech/reference_audio/*.mp3
 docker/fish-speech/outputs/
 docker/fish-speech/.env
 docker/fish-speech/build.log

@@ -1,14 +1,17 @@
 """
-Kokoro TTS Audio Engine for Deep Research Podcast
-==================================================
+TTS Audio Engine for Deep Research Podcast
+===========================================
 
-Generates high-quality, multi-speaker podcast audio using Kokoro-82M (local TTS).
+Generates high-quality, multi-speaker podcast audio with automatic TTS engine selection:
+
+  - English:  Kokoro TTS (local, CPU, proven quality)
+  - Japanese: Fish Speech V1.5 (GPU via Docker, native Japanese support)
 
 Features:
-- Dual-voice system: Host 1 (am_fenrir - American Male Expert)
-                     Host 2 (af_heart - American Female Skeptic)
-- Script parsing with speaker detection
-- Audio stitching and WAV export
+- Dual-voice system with speaker detection
+- Automatic language routing (lang_code='a' → Kokoro, 'j' → Fish Speech)
+- Script parsing and audio stitching
+- WAV export with BGM support
 """
 
 import logging
@@ -36,15 +39,220 @@ VOICE_MAP = {
     'j': {'host1': 'jm_kumo',   'host2': 'jf_alpha'},    # Japanese
 }
 
+# Fish Speech TTS Configuration (for Japanese only — English uses Kokoro)
+FISH_SPEECH_API_URL = os.getenv("FISH_SPEECH_API_URL", "http://localhost:8082")
+FISH_SPEECH_REF_DIR = Path(__file__).parent / "docker" / "fish-speech" / "reference_audio"
+
+
+def _call_fish_speech_segment(text: str, speaker: int) -> tuple:
+    """
+    Call Fish Speech API to synthesize one text segment.
+
+    Args:
+        text: Text to synthesize
+        speaker: 1 (カズ, presenter) or 2 (エリカ, questioner)
+
+    Returns:
+        (audio_array: np.ndarray float32, sample_rate: int) or (None, None) on failure
+    """
+    try:
+        import requests
+        import io as _io
+        import base64
+    except ImportError as e:
+        logger.error(f"Missing dependency for Fish Speech: {e}")
+        return None, None
+
+    payload = {
+        "text": text,
+        "format": "wav",
+        "normalize": True,
+        "latency": "normal",
+        "chunk_length": 200,
+    }
+
+    # Attach reference audio for speaker persona if available
+    ref_name = "kaz.wav" if speaker == 1 else "erika.wav"
+    ref_path = FISH_SPEECH_REF_DIR / ref_name
+    if ref_path.exists():
+        payload["references"] = [{
+            "audio": base64.b64encode(ref_path.read_bytes()).decode(),
+            "text": "",  # transcript of reference audio (optional)
+        }]
+        logger.debug(f"  Using voice reference: {ref_name}")
+
+    try:
+        resp = requests.post(
+            f"{FISH_SPEECH_API_URL}/v1/tts",
+            json=payload,
+            timeout=120,
+        )
+        resp.raise_for_status()
+
+        # Parse WAV bytes
+        audio, sr = sf.read(_io.BytesIO(resp.content))
+        if audio.ndim > 1:  # stereo → mono
+            audio = audio.mean(axis=1)
+        return audio.astype(np.float32), sr
+
+    except requests.exceptions.ConnectionError:
+        logger.error(
+            f"Fish Speech API unreachable at {FISH_SPEECH_API_URL}. "
+            f"Start it with: docker compose -f docker/fish-speech/docker-compose.yml up fish-speech-api"
+        )
+        return None, None
+    except Exception as e:
+        logger.error(f"Fish Speech API error: {e}")
+        return None, None
+
+
+def _generate_audio_fish_speech(script_text: str, output_filename: str) -> str:
+    """
+    Japanese TTS via Fish Speech API.
+
+    Handles multi-speaker script parsing identically to the Kokoro path,
+    but calls Fish Speech REST API instead of the local Kokoro pipeline.
+
+    Args:
+        script_text: Full podcast script with speaker labels
+        output_filename: Output WAV file path
+
+    Returns:
+        Path to generated audio file, or None if generation failed
+    """
+    logger.info("=" * 60)
+    logger.info("FISH SPEECH TTS — JAPANESE AUDIO GENERATION")
+    logger.info("=" * 60)
+    logger.info(f"API endpoint: {FISH_SPEECH_API_URL}")
+
+    # Health check
+    try:
+        import requests
+        health = requests.get(f"{FISH_SPEECH_API_URL}/v1/health", timeout=5)
+        if health.status_code == 200:
+            logger.info("✓ Fish Speech API is healthy")
+        else:
+            logger.warning(f"  Fish Speech API health check returned {health.status_code}")
+    except Exception:
+        logger.error(
+            f"✗ Fish Speech API not reachable at {FISH_SPEECH_API_URL}\n"
+            f"  Start it: docker compose -f docker/fish-speech/docker-compose.yml up fish-speech-api"
+        )
+        return None
+
+    # Parse script (same logic as Kokoro path)
+    speaker_pattern = re.compile(r'^(.+?)[:：]\s*(.*)')
+    speaker_map = {}
+
+    lines = script_text.split('\n')
+    audio_segments = []
+    sample_rate = None  # determined from first API response
+
+    current_speaker = None
+    buffer_text = ""
+    segment_count = 0
+
+    def _flush_buffer():
+        nonlocal buffer_text, segment_count, sample_rate
+        if buffer_text and current_speaker:
+            logger.info(f"  Segment {segment_count + 1} (Speaker {current_speaker}): {buffer_text[:50]}...")
+            audio, sr = _call_fish_speech_segment(buffer_text, current_speaker)
+            if audio is not None:
+                if sample_rate is None:
+                    sample_rate = sr
+                    logger.info(f"  Sample rate: {sample_rate} Hz")
+                audio_segments.append(audio)
+                segment_count += 1
+            else:
+                logger.warning(f"  ⚠ Segment {segment_count + 1} failed — skipping")
+        buffer_text = ""
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Skip section separators
+        if re.match(r'^-{3,}$', line):
+            continue
+
+        # Check for speaker switch
+        match = speaker_pattern.match(line)
+        if match:
+            name = match.group(1).strip()
+            text_after = match.group(2).strip()
+
+            if name not in speaker_map:
+                if len(speaker_map) < 2:
+                    speaker_map[name] = len(speaker_map) + 1
+                    logger.info(f"  Speaker detected: '{name}' → Host {speaker_map[name]}")
+                else:
+                    # More than 2 speakers — treat as continuation
+                    if current_speaker is None:
+                        current_speaker = 1
+                    buffer_text = f"{buffer_text} {line}".strip()
+                    continue
+
+            new_speaker = speaker_map[name]
+            _flush_buffer()
+
+            # Insert silence gap on speaker change
+            if current_speaker is not None and current_speaker != new_speaker and sample_rate:
+                silence = np.zeros(int(0.3 * sample_rate), dtype=np.float32)
+                audio_segments.append(silence)
+
+            current_speaker = new_speaker
+            buffer_text = text_after
+        else:
+            # Continuation or unlabeled opening
+            if current_speaker is None:
+                current_speaker = 1
+            buffer_text = f"{buffer_text} {line}".strip()
+
+    # Process final buffer
+    _flush_buffer()
+
+    logger.info(f"Generated {segment_count} audio segments")
+
+    # Stitch and save
+    if audio_segments and sample_rate:
+        try:
+            final_audio = np.concatenate(audio_segments)
+            sf.write(output_filename, final_audio, sample_rate)
+
+            file_size = Path(output_filename).stat().st_size
+            duration_sec = len(final_audio) / sample_rate
+            duration_min = duration_sec / 60
+
+            logger.info(f"\n✓ Audio generated successfully (Fish Speech):")
+            logger.info(f"  File: {output_filename}")
+            logger.info(f"  Size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
+            logger.info(f"  Duration: {duration_min:.2f} minutes ({duration_sec:.1f} seconds)")
+            logger.info(f"  Sample rate: {sample_rate} Hz")
+            logger.info("=" * 60 + "\n")
+
+            return output_filename
+        except Exception as e:
+            logger.error(f"✗ ERROR: Failed to save audio: {e}")
+            return None
+    else:
+        logger.error("✗ ERROR: No audio segments generated")
+        return None
+
+
 def generate_audio_from_script(script_text: str, output_filename: str = "final_podcast.wav", lang_code: str = 'a') -> str:
     """
     Parses a script looking for 'Host 1:' and 'Host 2:' lines,
-    generates audio segments using Kokoro, and stitches them together.
+    generates audio segments, and stitches them together.
+
+    TTS Engine selection:
+      - English (lang_code='a'): Kokoro TTS (local, CPU, proven)
+      - Japanese (lang_code='j'): Fish Speech V1.5 API (GPU via Docker, high quality)
 
     Args:
         script_text: Full podcast script with "Host 1:" and "Host 2:" labels
         output_filename: Output WAV file name (default: "final_podcast.wav")
-        lang_code: Kokoro language code ('a' for English, 'j' for Japanese, etc.)
+        lang_code: Language code ('a' for English, 'j' for Japanese, etc.)
 
     Returns:
         Path to generated audio file, or None if generation failed
@@ -54,6 +262,11 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         Host 2: But is coffee actually good for you? Let's examine the evidence.
         Host 1: Studies show that moderate coffee intake...
     """
+    # Route to Fish Speech for Japanese (GPU-accelerated, higher quality)
+    if lang_code == 'j':
+        return _generate_audio_fish_speech(script_text, output_filename)
+
+    # English and all other languages use Kokoro TTS
     logger.info("=" * 60)
     logger.info("KOKORO TTS AUDIO GENERATION")
     logger.info("=" * 60)
