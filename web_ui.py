@@ -1751,15 +1751,19 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
 # Phase markers parsed from pipeline.py stdout
 PHASE_MARKERS = [
     ("PHASE 0: RESEARCH FRAMING", "Research Framing", 5),
-    # Clinical pipeline steps (deep research)
-    ("STEP 1: SEARCH STRATEGY", "Search Strategy Formulation", 8),
-    ("STEP 2: WIDE NET", "Wide Net Search", 10),
-    ("STEP 3: SCREENING", "Study Screening", 13),
-    ("STEP 4: DEEP EXTRACTION", "Deep Extraction", 15),
-    ("STEP 5: BUILDING AFFIRMATIVE", "Building Affirmative Case", 17),
-    ("STEP 6: BUILDING FALSIFICATION", "Building Falsification Case", 17),
-    ("STEP 7: DETERMINISTIC MATH", "Deterministic Math", 18),
-    ("STEP 8: GRADE SYNTHESIS", "GRADE Synthesis", 19),
+    # Clinical pipeline steps (parallel a/b tracks)
+    ("STEP 1a:", "Search Strategy (Affirmative)", 8),
+    ("STEP 1b:", "Search Strategy (Falsification)", 8),
+    ("STEP 2a:", "Wide Net (Affirmative)", 10),
+    ("STEP 2b:", "Wide Net (Falsification)", 10),
+    ("STEP 3a:", "Screening (Affirmative)", 13),
+    ("STEP 3b:", "Screening (Falsification)", 13),
+    ("STEP 4a:", "Deep Extraction (Affirmative)", 15),
+    ("STEP 4b:", "Deep Extraction (Falsification)", 15),
+    ("STEP 5a:", "Affirmative Case", 17),
+    ("STEP 5b:", "Falsification Case", 17),
+    ("STEP 6:", "Deterministic Math", 18),
+    ("STEP 7:", "GRADE Synthesis", 19),
     ("ALL RESEARCH COMPLETE", "Clinical Research Complete", 20),
     ("PHASE 1: CLINICAL RESEARCH", "Clinical Research", 15),
     ("Source of Truth generated", "Source of Truth", 45),

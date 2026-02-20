@@ -5,14 +5,15 @@ Optimized for Nvidia DGX Spark (128GB Unified Memory):
 - SMART MODEL (Qwen2.5-32B-Instruct-AWQ) on port 8000: Reasoning, planning, evaluation
 - FAST MODEL (Phi-4 Mini via Ollama) on port 11434: Parallel content summarization
 
-Architecture (8-Step Clinical Pipeline):
-  Step 1: PICO/MeSH/Boolean search strategy (Smart Model)
-  Step 2: Wide net — up to 500 results (PubMed + Scholar + Fast Model screening)
-  Step 3: Screen → top 20 (Smart Model)
-  Step 4: Deep extraction — full text retrieval + clinical variable extraction (Fast Model)
-  Step 5/6: Affirmative & Falsification cases (Smart Model, parallel tracks)
-  Step 7: Deterministic math — ARR/NNT (Python, no LLM)
-  Step 8: GRADE synthesis (Smart Model)
+Architecture (7-Step Clinical Pipeline — parallel a/b tracks):
+  Steps 1a–5a (Affirmative) run in parallel with Steps 1b–5b (Falsification):
+    Step 1: PICO/MeSH/Boolean search strategy (Smart Model)
+    Step 2: Wide net — up to 500 results (PubMed + Scholar + Fast Model screening)
+    Step 3: Screen → top 20 (Smart Model)
+    Step 4: Deep extraction — full text retrieval + clinical variable extraction (Fast Model)
+    Step 5: Case synthesis (Smart Model) — affirmative (5a) or falsification (5b)
+  Step 6: Deterministic math — ARR/NNT (Python, no LLM)
+  Step 7: GRADE synthesis (Smart Model)
 
 Author: DR_2_Podcast Team
 """
@@ -1622,11 +1623,11 @@ class Orchestrator:
     """
     Runs the full DR_2_Podcast evidence-based clinical research pipeline.
 
-    8-Step Pipeline (runs affirmative + falsification tracks in parallel):
-    Steps 1-5: Affirmative track (PICO → wide net → screen → extract → case)
-    Steps 1'-4',6: Falsification track (adversarial PICO → same pipeline → falsification case)
-    Step 7: Deterministic math (ARR/NNT from Python, no LLM)
-    Step 8: GRADE synthesis (Smart Model)
+    7-Step Pipeline (affirmative + falsification tracks run in parallel):
+    Steps 1a–5a: Affirmative track (PICO → wide net → screen → extract → case)
+    Steps 1b–5b: Falsification track (adversarial PICO → same pipeline → case)
+    Step 6: Deterministic math (ARR/NNT from Python, no LLM)
+    Step 7: GRADE synthesis (Smart Model)
     """
 
     def __init__(
@@ -1665,7 +1666,7 @@ class Orchestrator:
 
     async def run(self, topic: str, framing_context: str = "", progress_callback=None,
                   output_dir: str = None) -> Dict[str, ResearchReport]:
-        """Run the full 8-step clinical research pipeline.
+        """Run the full 7-step clinical research pipeline.
 
         Args:
             topic: Research topic
@@ -1710,26 +1711,26 @@ class Orchestrator:
             nonlocal aff_wide_net_total, aff_screened_in, aff_fulltext_ok, aff_fulltext_err
 
             log(f"\n{'='*70}")
-            log(f"STEP 1: SEARCH STRATEGY FORMULATION (Affirmative)")
+            log(f"STEP 1a: SEARCH STRATEGY (Affirmative)")
             log(f"{'='*70}")
             strategy = await self.lead_researcher._formulate_search_strategy(
                 topic, "affirmative", framing_context, log
             )
 
             log(f"\n{'='*70}")
-            log(f"STEP 2: WIDE NET SEARCH (Affirmative)")
+            log(f"STEP 2a: WIDE NET SEARCH (Affirmative)")
             log(f"{'='*70}")
             records = await self.lead_researcher._wide_net_search(strategy, log)
             aff_wide_net_total = len(records)
 
             log(f"\n{'='*70}")
-            log(f"STEP 3: SCREENING ({len(records)} → top 20) (Affirmative)")
+            log(f"STEP 3a: SCREENING ({len(records)} → top 20) (Affirmative)")
             log(f"{'='*70}")
             top_records = await self.lead_researcher._screen_and_prioritize(records, strategy, log=log)
             aff_screened_in = len(top_records)
 
             log(f"\n{'='*70}")
-            log(f"STEP 4: DEEP EXTRACTION ({len(top_records)} articles) (Affirmative)")
+            log(f"STEP 4a: DEEP EXTRACTION ({len(top_records)} articles) (Affirmative)")
             log(f"{'='*70}")
             fulltexts = await self.fulltext_fetcher.fetch_all(top_records)
             aff_fulltext_ok = sum(1 for ft in fulltexts if not ft.error)
@@ -1741,7 +1742,7 @@ class Orchestrator:
             )
 
             log(f"\n{'='*70}")
-            log(f"STEP 5: BUILDING AFFIRMATIVE CASE")
+            log(f"STEP 5a: AFFIRMATIVE CASE")
             log(f"{'='*70}")
             case_report = await self.lead_researcher._build_case(
                 topic, strategy, extractions, "affirmative", log
@@ -1754,26 +1755,26 @@ class Orchestrator:
             nonlocal fal_wide_net_total, fal_screened_in, fal_fulltext_ok, fal_fulltext_err
 
             log(f"\n{'='*70}")
-            log(f"STEP 1': SEARCH STRATEGY FORMULATION (Adversarial)")
+            log(f"STEP 1b: SEARCH STRATEGY (Falsification)")
             log(f"{'='*70}")
             strategy = await self.counter_researcher._formulate_search_strategy(
                 topic, "adversarial", framing_context, log
             )
 
             log(f"\n{'='*70}")
-            log(f"STEP 2': WIDE NET SEARCH (Adversarial)")
+            log(f"STEP 2b: WIDE NET SEARCH (Falsification)")
             log(f"{'='*70}")
             records = await self.counter_researcher._wide_net_search(strategy, log)
             fal_wide_net_total = len(records)
 
             log(f"\n{'='*70}")
-            log(f"STEP 3': SCREENING ({len(records)} → top 20) (Adversarial)")
+            log(f"STEP 3b: SCREENING ({len(records)} → top 20) (Falsification)")
             log(f"{'='*70}")
             top_records = await self.counter_researcher._screen_and_prioritize(records, strategy, log=log)
             fal_screened_in = len(top_records)
 
             log(f"\n{'='*70}")
-            log(f"STEP 4': DEEP EXTRACTION ({len(top_records)} articles) (Adversarial)")
+            log(f"STEP 4b: DEEP EXTRACTION ({len(top_records)} articles) (Falsification)")
             log(f"{'='*70}")
             fulltexts = await self.fulltext_fetcher.fetch_all(top_records)
             fal_fulltext_ok = sum(1 for ft in fulltexts if not ft.error)
@@ -1785,7 +1786,7 @@ class Orchestrator:
             )
 
             log(f"\n{'='*70}")
-            log(f"STEP 6: BUILDING FALSIFICATION CASE")
+            log(f"STEP 5b: FALSIFICATION CASE")
             log(f"{'='*70}")
             case_report = await self.counter_researcher._build_case(
                 topic, strategy, extractions, "falsification", log
@@ -1805,7 +1806,7 @@ class Orchestrator:
 
         # --- Step 7: Deterministic Math ---
         log(f"\n{'='*70}")
-        log(f"STEP 7: DETERMINISTIC MATH (ARR/NNT)")
+        log(f"STEP 6: DETERMINISTIC MATH (ARR/NNT)")
         log(f"{'='*70}")
         all_extractions = aff_extractions + fal_extractions
         impacts = clinical_math.batch_calculate(all_extractions)
@@ -1817,7 +1818,7 @@ class Orchestrator:
 
         # --- Step 8: GRADE Synthesis ---
         log(f"\n{'='*70}")
-        log(f"STEP 8: GRADE SYNTHESIS")
+        log(f"STEP 7: GRADE SYNTHESIS")
         log(f"{'='*70}")
 
         search_date = datetime.date.today().isoformat()
@@ -1952,7 +1953,7 @@ class Orchestrator:
         search_date: str, log=print
     ) -> str:
         """Step 8: GRADE framework synthesis by the Auditor."""
-        log(f"    [Step 8] GRADE synthesis...")
+        log(f"    [Step 7] GRADE synthesis...")
 
         pico_str = json.dumps(aff_strategy.pico)
 
@@ -2030,7 +2031,7 @@ class Orchestrator:
                 max_tokens=8000, temperature=0.2, timeout=300
             )
             audit_text = resp.choices[0].message.content.strip()
-            log(f"    [Step 8] GRADE synthesis complete ({len(audit_text)} chars)")
+            log(f"    [Step 7] GRADE synthesis complete ({len(audit_text)} chars)")
             return audit_text
         except Exception as e:
             logger.error(f"GRADE synthesis failed: {e}")

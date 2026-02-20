@@ -1222,7 +1222,7 @@ TASK_METADATA = {
         'crew': 1
     },
     'clinical_research': {
-        'name': 'Clinical Research (8-Step Pipeline)',
+        'name': 'Clinical Research (7-Step Pipeline)',
         'phase': '1',
         'estimated_duration_min': 6,
         'description': 'PICO strategy, wide net, screening, extraction, cases, math, GRADE synthesis',
@@ -1862,7 +1862,7 @@ except Exception as e:
     framing_output = ""
 
 # ================================================================
-# PHASE 1: CLINICAL RESEARCH (8-Step Pipeline)
+# PHASE 1: CLINICAL RESEARCH (7-Step Pipeline)
 # ================================================================
 print(f"\n{'='*70}")
 print(f"PHASE 1: CLINICAL RESEARCH")

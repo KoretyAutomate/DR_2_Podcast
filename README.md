@@ -14,27 +14,22 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
                   │  Phase 0 — Research Framing (Crew 1)  │
                   └──────────────┬───────────────────────┘
                                  ▼
-       ┌──────────────────────────────────────────────────────────┐
-       │  Phase 1 — 8-Step Clinical Pipeline                      │
-       │                                                          │
-       │  ┌─ AFFIRMATIVE TRACK ──────────────────────────────┐   │
-       │  │ Step 1: PICO/MeSH/Boolean strategy (Smart)       │   │
-       │  │ Step 2: Wide net — up to 500 results (PubMed +   │   │
-       │  │         Google Scholar + Fast model screening)    │   │
-       │  │ Step 3: Screen → top 20 (Smart)                  │   │
-       │  │ Step 4: Full-text extraction + clinical vars      │   │
-       │  │         (PMC/EuropePMC/Unpaywall + Fast model)    │   │
-       │  │ Step 5: Affirmative case (Smart)                  │   │
-       │  └───────────────────────────────────────────────────┘   │
-       │  ┌─ FALSIFICATION TRACK ───────────────────────────┐    │
-       │  │ Steps 1'–4': Same pipeline, adversarial framing  │    │
-       │  │ Step 6: Falsification case (Smart)               │    │
-       │  └───────────────────────────────────────────────────┘   │
-       │  (Both tracks run in parallel)                           │
-       │                          ▼                               │
-       │  Step 7: Deterministic math — ARR/NNT (Python, no LLM)  │
-       │  Step 8: GRADE synthesis — Auditor (Smart)               │
-       └──────────────┬───────────────────────────────────────────┘
+       ┌──────────────────────────────────────────────────────────────┐
+       │  Phase 1 — Clinical Research Pipeline                         │
+       │                                                               │
+       │  ┌─ AFFIRMATIVE (a) ──────────┐ ┌─ FALSIFICATION (b) ──────┐ │
+       │  │ 1a: Search strategy (Smart) │ │ 1b: Search strategy       │ │
+       │  │ 2a: Wide net — 500 results  │ │ 2b: Wide net — 500        │ │
+       │  │ 3a: Screen → top 20 (Smart) │ │ 3b: Screen → top 20       │ │
+       │  │ 4a: Full-text extraction     │ │ 4b: Full-text extraction   │ │
+       │  │     (PMC/Unpaywall + Fast)   │ │     (PMC/Unpaywall + Fast) │ │
+       │  │ 5a: Affirmative case (Smart) │ │ 5b: Falsification case     │ │
+       │  └──────────────────────────────┘ └────────────────────────────┘ │
+       │          (both tracks run in parallel via asyncio.gather)        │
+       │                              ▼                                  │
+       │  Step 6: Deterministic math — ARR/NNT (Python, no LLM)         │
+       │  Step 7: GRADE synthesis — Auditor (Smart)                      │
+       └──────────────┬─────────────────────────────────────────────────┘
                       ▼
      ┌───────────────────────────────────────────────────────────────┐
      │  Phase 2 — Source Validation (batch HEAD requests)            │
@@ -82,7 +77,7 @@ python web_ui.py --port 8501
 
 ## Agents
 
-The pipeline uses **4 CrewAI agents** (down from 7 — the 8-step clinical pipeline replaced the Lead Researcher, Adversarial Researcher, and Source Verifier):
+The pipeline uses **4 CrewAI agents** (down from 7 — the clinical pipeline replaced the Lead Researcher, Adversarial Researcher, and Source Verifier):
 
 | Agent | Variable | Role | Tools |
 |-------|----------|------|-------|
@@ -106,22 +101,22 @@ If the fast model is unavailable, the smart model handles all summarization (slo
 
 ## Evidence-Based Research Pipeline
 
-The deep research pre-scan implements an 8-step systematic review methodology modelled on clinical trial standards. Both the affirmative and falsification tracks run in parallel.
+The deep research pre-scan implements a 7-step systematic review methodology modelled on clinical trial standards. Steps 1–5 run as parallel affirmative (a) and falsification (b) tracks.
 
-### Step 1 — Search Strategy Formulation (Smart Model, ~15s)
+### Steps 1–5 — Parallel Tracks (a = Affirmative, b = Falsification)
 
-Translates the topic into a structured **PICO framework** (Population, Intervention, Comparison, Outcome), generates **MeSH terms**, and writes **Boolean search strings** for PubMed, Cochrane CENTRAL, and Google Scholar. The adversarial track adds adverse-effects, null-result, toxicity, and funding-bias terms.
+Steps 1–5 run identically for both tracks via `asyncio.gather()`. The only differences are the search terms (b adds adverse-effects, null-result, and bias terms) and the final case mandate (a argues FOR, b argues AGAINST).
 
-### Step 2 — Wide Net Search (PubMed + Fast Model, ~90s)
+**Step 1 — Search Strategy Formulation (Smart Model, ~15s)**
+Translates the topic into a structured **PICO framework** (Population, Intervention, Comparison, Outcome), generates **MeSH terms**, and writes **Boolean search strings** for PubMed, Cochrane CENTRAL, and Google Scholar. The falsification track (1b) adds adverse-effects, null-result, toxicity, and funding-bias terms.
 
+**Step 2 — Wide Net Search (PubMed + Fast Model, ~90s)**
 Queries PubMed with three Boolean variants (primary, broad, Cochrane subset `cochrane[sb]`) and Google Scholar, collecting up to 500 results. **`PublicationType` in the PubMed XML is used directly** to classify study type (RCT, meta-analysis, systematic review, etc.) without LLM calls. The fast model only processes the ~50% of records where type cannot be determined from XML, extracting `sample_size` and `primary_objective` from the abstract — reducing fast-model calls by ~50%.
 
-### Step 3 — Screening (Smart Model, ~20s)
-
+**Step 3 — Screening (Smart Model, ~20s)**
 The smart model scans all records and selects the **top 20 most rigorous human clinical studies**. Inclusion: RCTs, meta-analyses, systematic reviews, large cohort studies (n ≥ 30, prefer n ≥ 100). Exclusion: animal models, in vitro, case reports, conference abstracts, retractions. Context-window overflow (>28K tokens) is handled by chunked screening with a merge step.
 
-### Step 4 — Full-Text Deep Extraction (Fast Model, ~120s)
-
+**Step 4 — Full-Text Deep Extraction (Fast Model, ~120s)**
 For each of the top 20 studies, the full text is retrieved via a 4-tier fallback:
 1. **PubMed Central OA API** (`oai:pubmedcentral.nih.gov`)
 2. **Europe PMC REST API** (free full-text XML for OA articles)
@@ -130,11 +125,12 @@ For each of the top 20 studies, the full text is retrieved via a 4-tier fallback
 
 The fast model then extracts 20 clinical variables per article: `control_event_rate` (CER), `experimental_event_rate` (EER), effect size with CI, attrition, blinding, randomization, ITT analysis, funding source, conflicts of interest, risk of bias, demographics, follow-up period, and biological mechanism.
 
-### Steps 5 & 6 — Affirmative & Falsification Cases (Smart Model, ~30s each)
+**Step 5 — Case Synthesis (Smart Model, ~30s each)**
+Each track writes a structured case report from the extracted data:
+- **5a (Affirmative):** argues FOR the hypothesis — clinical significance, biological plausibility, consistency, dose-response
+- **5b (Falsification):** argues AGAINST — adverse effects, null results, methodological concerns, funding bias, publication bias
 
-Each track's smart model writes a structured case report from the extracted data — the affirmative case argues FOR the hypothesis (clinical significance, biological plausibility, consistency, dose-response), the falsification case argues AGAINST it (adverse effects, null results, methodological concerns, funding bias, publication bias).
-
-### Step 7 — Deterministic Math (Python, <1ms)
+### Step 6 — Deterministic Math (Python, <1ms)
 
 **No LLM involved.** A pure-Python calculator computes from the extracted CER/EER values:
 - **ARR** = CER − EER (Absolute Risk Reduction)
@@ -143,7 +139,7 @@ Each track's smart model writes a structured case report from the extracted data
 
 This eliminates LLM math hallucinations. Only studies where both CER and EER were extracted contribute to the NNT table.
 
-### Step 8 — GRADE Synthesis (Smart Model, ~45s)
+### Step 7 — GRADE Synthesis (Smart Model, ~45s)
 
 The Auditor reads both cases and the Python-calculated NNT table, then issues a **GRADE-framework synthesis** (High / Moderate / Low / Very Low evidence quality) with evidence profile, downgrade/upgrade justifications, clinical impact interpretation, PRISMA flow diagram, and consolidated evidence table. The Auditor is instructed never to recalculate ARR/NNT — it uses the Python-provided numbers exactly.
 
@@ -161,7 +157,7 @@ Before injection into agent task descriptions, full reports are **condensed by t
 
 ## GRADE Audit Report Structure
 
-The Step 8 GRADE synthesis follows this structure:
+The Step 7 GRADE synthesis follows this structure:
 
 1. **Executive Summary** (3–4 sentences)
 2. **Evidence Profile** (study designs, total N, risk of bias, consistency, directness, precision, publication bias)
@@ -178,7 +174,7 @@ The Step 8 GRADE synthesis follows this structure:
 ### Phase 0 — Research Framing (Crew 1)
 The Research Framing Specialist defines scope boundaries, core research questions, evidence criteria, suggested search directions, and hypotheses to test.
 
-### Phase 1 — Clinical Research (8-Step Pipeline)
+### Phase 1 — Clinical Research (7-Step Pipeline)
 See [Evidence-Based Research Pipeline](#evidence-based-research-pipeline) above. Produces affirmative case (`affirmative_case.md`), falsification case (`falsification_case.md`), GRADE synthesis (`grade_synthesis.md`), deterministic math (`clinical_math.md`), and the research library (`research_sources.json`).
 
 ### Phase 2 — Source Validation
@@ -345,14 +341,14 @@ All outputs are saved to a timestamped directory under `research_outputs/`:
 research_outputs/YYYY-MM-DD_HH-MM-SS/
 ├── research_framing.md               Phase 0 — scope and hypotheses
 ├── research_framing.pdf
-├── affirmative_case.md               Step 5 — affirmative case
-├── falsification_case.md             Step 6 — falsification case
-├── grade_synthesis.md                Step 8 — GRADE synthesis
+├── affirmative_case.md               Step 5a — affirmative case
+├── falsification_case.md             Step 5b — falsification case
+├── grade_synthesis.md                Step 7 — GRADE synthesis
 ├── research_sources.json             Research library (structured source data)
-├── clinical_math.md                  Step 7 — deterministic ARR/NNT table
-├── search_strategy_aff.json          Step 1 — affirmative PICO/MeSH/Boolean
-├── search_strategy_neg.json          Step 1' — adversarial PICO/MeSH/Boolean
-├── screening_results.json            Step 3 — screening decisions (500 → 20)
+├── clinical_math.md                  Step 6 — deterministic ARR/NNT table
+├── search_strategy_aff.json          Step 1a — affirmative PICO/MeSH/Boolean
+├── search_strategy_neg.json          Step 1b — falsification PICO/MeSH/Boolean
+├── screening_results.json            Step 3a/3b — screening decisions (500 → 20)
 ├── source_of_truth.md                Synthesized from deep research outputs
 ├── source_of_truth.pdf
 ├── url_validation_results.json       Phase 2 — batch URL validation results
@@ -373,7 +369,7 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 |------------------|---------|
 | `pipeline.py` | Main pipeline — agents, tasks, orchestration, research library tools |
 | `web_ui.py` | FastAPI web UI with live progress tracking, task queue, and upload integration |
-| `clinical_research.py` | 8-step clinical research pipeline (PICO → wide net → screen → extract → cases → math → GRADE) |
+| `clinical_research.py` | 7-step clinical research pipeline (PICO → wide net → screen → extract → cases → math → GRADE) |
 | `clinical_math.py` | Deterministic ARR/NNT calculator — pure Python, zero LLM involvement |
 | `fulltext_fetcher.py` | 4-tier full-text fetcher: PMC OA → Europe PMC → Unpaywall → publisher scrape |
 | `search_service.py` | SearXNG client, page scraping, content extraction |
