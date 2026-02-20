@@ -15,6 +15,7 @@ __pycache__/
 # Project Outputs & Logs
 research_outputs/
 web_ui.log
+web_ui.pid
 *.log
 podcast_tasks.json
 tasks_db.json

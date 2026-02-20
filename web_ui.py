@@ -1491,9 +1491,10 @@ def get_system_status(username: str = Depends(verify_credentials)):
     """Check git status for unpushed changes."""
     status = {"git_clean": True, "message": "Up to date"}
     try:
-        # Check for uncommitted changes
+        # Check for uncommitted changes (exclude untracked files — they don't affect run integrity)
         proc = subprocess.run(["git", "status", "--porcelain"], cwd=SCRIPT_DIR, capture_output=True, text=True)
-        if proc.stdout.strip():
+        tracked_changes = [l for l in proc.stdout.splitlines() if not l.startswith("??")]
+        if tracked_changes:
             status["git_clean"] = False
             status["message"] = "⚠️ Uncommitted changes detected"
             return status
