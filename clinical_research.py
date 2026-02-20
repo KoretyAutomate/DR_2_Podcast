@@ -56,6 +56,7 @@ MAX_CONCURRENT_SUMMARIES = 10
 MAX_RESEARCH_ITERATIONS = 3
 SCRAPING_TIMEOUT = 20.0
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+TIER_CASCADE_THRESHOLD = 50   # Tier 3 ultrawide fires if T1+T2 candidates < this
 
 JUNK_DOMAINS = {
     "dictionary.com", "merriam-webster.com", "thefreedictionary.com",
@@ -1081,8 +1082,48 @@ class ResearchAgent:
                 raw = match.group(1).strip()
         return json.loads(raw)
 
+    async def _decompose_topic(self, topic: str, framing_context: str = "") -> dict:
+        """Pre-PICO: fast model extracts canonical scientific terms from folk-language topic."""
+        system = (
+            "You are a biomedical terminology specialist. Given a research topic (possibly in "
+            "colloquial form), extract canonical scientific terms used in PubMed/MeSH searches.\n"
+            "Return ONLY valid JSON:\n"
+            "{\n"
+            '  "canonical_terms": ["term1", ...],\n'
+            '  "related_concepts": ["concept1", ...],\n'
+            '  "population_terms": ["term1", ...]\n'
+            "}\n"
+            "canonical_terms: 4-8 scientific synonyms for the intervention/exposure.\n"
+            "related_concepts: 3-5 related research areas that may have evidence.\n"
+            "population_terms: 2-4 population descriptors.\n"
+            "Use only real MeSH-compatible scientific terminology."
+        )
+        context = f"\n\nRESEARCH FRAMING CONTEXT:\n{framing_context[:2000]}" if framing_context else ""
+        user = f"Research topic: {topic}{context}"
+        try:
+            # Use fast model if available, else fall back to smart
+            if self.fast_worker:
+                resp = await self.fast_worker.client.chat.completions.create(
+                    model=self.fast_worker.model,
+                    messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                    max_tokens=512, temperature=0.2, timeout=60
+                )
+                raw = resp.choices[0].message.content.strip()
+            else:
+                raw = await self._call_smart(system, user, max_tokens=512, temperature=0.2)
+            data = self._parse_json_response(raw)
+            return {
+                "canonical_terms": data.get("canonical_terms", []),
+                "related_concepts": data.get("related_concepts", []),
+                "population_terms": data.get("population_terms", []),
+            }
+        except Exception as e:
+            logger.warning(f"Topic decomposition failed: {e}")
+            return {"canonical_terms": [], "related_concepts": [], "population_terms": []}
+
     async def _formulate_search_strategy(
-        self, topic: str, role_type: str, framing_context: str = "", log=print
+        self, topic: str, role_type: str, framing_context: str = "",
+        decomposition: dict = None, log=print
     ) -> SearchStrategy:
         """Step 1: Smart model generates PICO framework, MeSH terms, and Boolean search strings."""
         log(f"    [Step 1] Formulating {role_type} search strategy...")
@@ -1090,18 +1131,36 @@ class ResearchAgent:
         adversarial_addendum = ""
         if role_type == "adversarial":
             adversarial_addendum = (
-                "\n\nADVERSARIAL FOCUS: You must ALSO include:\n"
-                '- Adverse effects terms: "adverse effects"[Subheading], "toxicity"[MeSH], '
-                '"drug-related side effects and adverse reactions"[MeSH]\n'
-                '- Null result terms: "no significant difference", "lack of efficacy", "negative results"\n'
-                '- Retraction filter: "Retracted Publication"[pt]\n'
-                '- Bias terms: "conflict of interest", "industry-funded", "publication bias"\n'
-                "Add these to the Boolean strings alongside the standard PICO terms."
+                "\n\nADVERSARIAL FOCUS: This search must find CONTRADICTING or NULL evidence.\n"
+                "Use OR to include terms that surface:\n"
+                '- Null results: "no significant difference"[tiab] OR "lack of efficacy"[tiab]\n'
+                '  OR "negative results"[tiab] OR "failed to show"[tiab]\n'
+                '- Adverse effects: "adverse effects"[Subheading] OR "toxicity"[MeSH]\n'
+                '  OR "drug-related side effects and adverse reactions"[MeSH]\n'
+                '- Methodological concerns: "publication bias"[tiab] OR "industry-funded"[tiab]\n'
+                '  OR "conflict of interest"[tiab]\n'
+                '- Retractions: "Retracted Publication"[pt]\n'
+                "DO NOT use NOT filters. Combine these with OR alongside the standard PICO terms."
             )
 
         framing_section = ""
         if framing_context:
             framing_section = f"\n\nRESEARCH FRAMING CONTEXT:\n{framing_context[:4000]}\n"
+
+        # Build decomposition context block (C2)
+        decomp_section = ""
+        if decomposition and any(decomposition.values()):
+            canonical = ", ".join(decomposition.get("canonical_terms", []))
+            related = ", ".join(decomposition.get("related_concepts", []))
+            population = ", ".join(decomposition.get("population_terms", []))
+            decomp_section = (
+                "\n\nCANONICAL SCIENTIFIC TERMS FOR THIS TOPIC:\n"
+                f"Intervention synonyms (use in MeSH/search strings): {canonical}\n"
+                f"Related concepts to include: {related}\n"
+                f"Population descriptors: {population}\n\n"
+                "IMPORTANT: Build search strings using these canonical terms — NOT the raw "
+                "folk-language phrasing of the topic.\n"
+            )
 
         system = (
             "You are a medical librarian and systematic review specialist.\n\n"
@@ -1119,7 +1178,10 @@ class ResearchAgent:
             '   - PubMed primary: strict Boolean with MeSH + Humans[MeSH] + English[la] + study type filters\n'
             '   - PubMed broad: relaxed Boolean (fewer filters, more recall)\n'
             '   - Cochrane: adapted Boolean for cochrane[sb] subset\n'
-            '   - Scholar: plain-language version for Google Scholar\n\n'
+            '   - Scholar: plain-language version for Google Scholar\n'
+            '   - PubMed ultrawide: ultra-relaxed query — 2-3 key concept groups joined with OR,\n'
+            '     no study type filter, no language filter. Uses synonyms from canonical_terms.\n'
+            '     Goal: maximum recall for sparse-evidence topics.\n\n'
             "Return ONLY valid JSON with this exact structure:\n"
             '{\n'
             '  "pico": {"population": "...", "intervention": "...", "comparison": "...", "outcome": "..."},\n'
@@ -1128,9 +1190,16 @@ class ResearchAgent:
             '    "pubmed_primary": "...",\n'
             '    "pubmed_broad": "...",\n'
             '    "cochrane": "...",\n'
-            '    "scholar": "..."\n'
+            '    "scholar": "...",\n'
+            '    "pubmed_ultrawide": "..."\n'
             '  }\n'
-            '}'
+            '}\n\n'
+            "pubmed_ultrawide must:\n"
+            "- Use OR between concept groups (never AND between all terms)\n"
+            "- Include synonyms from the canonical terms list\n"
+            "- Omit study type, language, and date filters entirely\n"
+            "- Be no more than 3 OR-joined concept groups"
+            f"{decomp_section}"
             f"{adversarial_addendum}"
         )
 
@@ -1146,6 +1215,8 @@ class ResearchAgent:
                 role=role_type,
             )
             log(f"    [Step 1] Strategy generated: PICO={list(strategy.pico.values())[:2]}...")
+            if strategy.search_strings.get("pubmed_ultrawide"):
+                log(f"    [Step 1] Ultrawide query: {strategy.search_strings['pubmed_ultrawide'][:80]}...")
             return strategy
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning(f"Failed to parse search strategy JSON: {e}, raw: {raw[:300]}")
@@ -1158,14 +1229,19 @@ class ResearchAgent:
                     "pubmed_broad": topic,
                     "cochrane": f"{topic} AND cochrane[sb]",
                     "scholar": topic,
+                    "pubmed_ultrawide": topic,
                 },
                 role=role_type,
             )
 
     async def _wide_net_search(
         self, strategy: SearchStrategy, log=print
-    ) -> List[WideNetRecord]:
-        """Step 2: Cast wide net — PubMed (primary+broad+cochrane) + Google Scholar, up to 500 results."""
+    ) -> tuple:
+        """Step 2: Cast wide net — PubMed (primary+broad+cochrane) + Google Scholar, up to 500 results.
+
+        Returns:
+            (List[WideNetRecord], bool) — records and tier3_triggered flag.
+        """
         log(f"    [Step 2] Wide net search ({strategy.role})...")
         all_records: List[WideNetRecord] = []
         seen_pmids: set = set()
@@ -1236,6 +1312,49 @@ class ResearchAgent:
             except Exception as e:
                 logger.warning(f"Google Scholar search failed: {e}")
 
+        log(f"    [Step 2] Tier 1+2 total: {len(all_records)} records")
+
+        # --- Tier 3: Ultrawide cascade (C3) ---
+        tier3_triggered = False
+        if len(all_records) < TIER_CASCADE_THRESHOLD:
+            tier3_query = strategy.search_strings.get("pubmed_ultrawide", "")
+            if tier3_query:
+                log(f"  ⚠ Only {len(all_records)} candidates after Tier 1+2 "
+                    f"(threshold={TIER_CASCADE_THRESHOLD}) — triggering Tier 3 ultrawide search")
+                tier3_triggered = True
+                try:
+                    articles = await pubmed.search_extended(tier3_query, max_results=200)
+                    added = 0
+                    for art in articles:
+                        pmid = art.get("pmid", "")
+                        if pmid and pmid in seen_pmids:
+                            continue
+                        url = art.get("url", "")
+                        if url and url in seen_urls:
+                            continue
+                        if pmid:
+                            seen_pmids.add(pmid)
+                        if url:
+                            seen_urls.add(url)
+                        all_records.append(WideNetRecord(
+                            pmid=pmid,
+                            doi=art.get("doi"),
+                            title=art.get("title", ""),
+                            abstract=art.get("abstract", ""),
+                            study_type=art.get("study_type", "other"),
+                            sample_size=None,
+                            primary_objective=None,
+                            year=art.get("year"),
+                            journal=art.get("journal"),
+                            authors=art.get("authors"),
+                            url=url,
+                            source_db="pubmed_ultrawide",
+                        ))
+                        added += 1
+                    log(f"      [ultrawide] {added} new records added (total: {len(all_records)})")
+                except Exception as e:
+                    logger.warning(f"Tier 3 ultrawide search failed: {e}")
+
         log(f"    [Step 2] Wide net total: {len(all_records)} records")
 
         # 2c: Fast model screening for sample_size and primary_objective
@@ -1256,7 +1375,7 @@ class ResearchAgent:
                     if s.get("primary_objective"):
                         r.primary_objective = s["primary_objective"]
 
-        return all_records[:500]  # Cap at 500
+        return all_records[:500], tier3_triggered  # Cap at 500
 
     async def _fast_screen_abstracts(self, records: List[WideNetRecord]) -> List[Dict]:
         """Use fast model to extract study_type, sample_size, primary_objective from abstracts."""
@@ -1611,10 +1730,51 @@ class ResearchAgent:
                 f"Topic: {topic}\n\nEXTRACTED STUDY DATA:\n\n{extractions_text}",
                 max_tokens=6000, temperature=0.2
             )
+            has_synthetic, flagged = _detect_synthetic_citations(report, extractions)
+            if has_synthetic:
+                warning = (
+                    "\n\n---\n"
+                    "⚠ **SYNTHETIC CITATION WARNING** — the following references were cited but "
+                    f"not found in the {len(extractions)} retrieved studies. "
+                    "They may be hallucinated:\n"
+                    + "\n".join(f"- {r}" for r in flagged)
+                    + "\n---\n"
+                )
+                report = warning + report
+                if not extractions:
+                    logger.critical(f"SYNTHETIC CITATIONS DETECTED (0 studies input): {flagged}")
             return report
         except Exception as e:
             logger.error(f"Build case ({case_type}) failed: {e}")
             return f"# {case_type.title()} Case: {topic}\n\n*Case synthesis failed ({e}).*\n\n{extractions_text}"
+
+
+_CITATION_RE = re.compile(r'\b([A-Z][a-z]+(?:\s+et\s+al\.)?)\s+\((\d{4})\)')
+
+
+def _detect_synthetic_citations(
+    report: str, extractions: list
+) -> tuple:
+    """Cross-check cited references against retrieved study corpus.
+
+    Returns:
+        (has_synthetic: bool, flagged: List[str])
+    """
+    found = _CITATION_RE.findall(report)
+    if not found:
+        return False, []
+    if not extractions:
+        # No studies were input → any citation is hallucinated
+        return True, [f"{a} ({y})" for a, y in found]
+    # Build corpus of known author/title text from extractions
+    known = " ".join(
+        f"{ex.title or ''} {ex.raw_facts or ''}" for ex in extractions
+    ).lower()
+    flagged = [
+        f"{a} ({y})" for a, y in found
+        if a.replace("et al.", "").strip().lower() not in known
+    ]
+    return bool(flagged), flagged
 
 
 # --- Orchestrator: Full Pipeline ---
@@ -1706,6 +1866,16 @@ class Orchestrator:
         fal_fulltext_ok = 0
         fal_fulltext_err = 0
 
+        # --- Phase 0: Concept Decomposition (C2) ---
+        log(f"\n{'='*70}")
+        log(f"PHASE 0: CONCEPT DECOMPOSITION")
+        log(f"{'='*70}")
+        decomposition = await self.lead_researcher._decompose_topic(topic, framing_context)
+        if decomposition.get("canonical_terms"):
+            log(f"  Canonical terms: {', '.join(decomposition['canonical_terms'])}")
+        if decomposition.get("related_concepts"):
+            log(f"  Related concepts: {', '.join(decomposition['related_concepts'])}")
+
         # --- Affirmative Track (Steps 1-5) ---
         async def affirmative_track():
             nonlocal aff_wide_net_total, aff_screened_in, aff_fulltext_ok, aff_fulltext_err
@@ -1714,13 +1884,13 @@ class Orchestrator:
             log(f"STEP 1a: SEARCH STRATEGY (Affirmative)")
             log(f"{'='*70}")
             strategy = await self.lead_researcher._formulate_search_strategy(
-                topic, "affirmative", framing_context, log
+                topic, "affirmative", framing_context, decomposition=decomposition, log=log
             )
 
             log(f"\n{'='*70}")
             log(f"STEP 2a: WIDE NET SEARCH (Affirmative)")
             log(f"{'='*70}")
-            records = await self.lead_researcher._wide_net_search(strategy, log)
+            records, aff_tier3 = await self.lead_researcher._wide_net_search(strategy, log)
             aff_wide_net_total = len(records)
 
             log(f"\n{'='*70}")
@@ -1748,7 +1918,7 @@ class Orchestrator:
                 topic, strategy, extractions, "affirmative", log
             )
 
-            return strategy, records, top_records, extractions, case_report
+            return strategy, records, top_records, extractions, case_report, aff_tier3
 
         # --- Falsification Track (Steps 1'-4', 6) ---
         async def falsification_track():
@@ -1758,13 +1928,13 @@ class Orchestrator:
             log(f"STEP 1b: SEARCH STRATEGY (Falsification)")
             log(f"{'='*70}")
             strategy = await self.counter_researcher._formulate_search_strategy(
-                topic, "adversarial", framing_context, log
+                topic, "adversarial", framing_context, decomposition=decomposition, log=log
             )
 
             log(f"\n{'='*70}")
             log(f"STEP 2b: WIDE NET SEARCH (Falsification)")
             log(f"{'='*70}")
-            records = await self.counter_researcher._wide_net_search(strategy, log)
+            records, fal_tier3 = await self.counter_researcher._wide_net_search(strategy, log)
             fal_wide_net_total = len(records)
 
             log(f"\n{'='*70}")
@@ -1792,15 +1962,15 @@ class Orchestrator:
                 topic, strategy, extractions, "falsification", log
             )
 
-            return strategy, records, top_records, extractions, case_report
+            return strategy, records, top_records, extractions, case_report, fal_tier3
 
         # --- Run both tracks in parallel ---
         log(f"\n{'='*70}")
         log(f"RUNNING AFFIRMATIVE & FALSIFICATION TRACKS IN PARALLEL")
         log(f"{'='*70}")
 
-        (aff_strategy, aff_records, aff_top, aff_extractions, aff_case), \
-        (fal_strategy, fal_records, fal_top, fal_extractions, fal_case) = await asyncio.gather(
+        (aff_strategy, aff_records, aff_top, aff_extractions, aff_case, aff_tier3_triggered), \
+        (fal_strategy, fal_records, fal_top, fal_extractions, fal_case, fal_tier3_triggered) = await asyncio.gather(
             affirmative_track(), falsification_track()
         )
 
@@ -1839,7 +2009,9 @@ class Orchestrator:
             self._save_artifacts(
                 output_dir, aff_strategy, fal_strategy,
                 aff_records, fal_records, aff_top, fal_top,
-                math_report
+                math_report,
+                aff_tier3_triggered=aff_tier3_triggered,
+                fal_tier3_triggered=fal_tier3_triggered,
             )
 
         # --- Build backward-compatible return ---
@@ -2073,7 +2245,9 @@ class Orchestrator:
         aff_strategy: SearchStrategy, fal_strategy: SearchStrategy,
         aff_records: List[WideNetRecord], fal_records: List[WideNetRecord],
         aff_top: List[WideNetRecord], fal_top: List[WideNetRecord],
-        math_report: str
+        math_report: str,
+        aff_tier3_triggered: bool = False,
+        fal_tier3_triggered: bool = False,
     ):
         """Save intermediate pipeline artifacts to output directory."""
         from pathlib import Path
@@ -2093,12 +2267,14 @@ class Orchestrator:
             json.dump({
                 "total_candidates": len(aff_records),
                 "selected": len(aff_top),
+                "tier3_triggered": aff_tier3_triggered,
                 "selected_titles": [r.title for r in aff_top],
             }, f, indent=2, ensure_ascii=False)
         with open(out / "screening_results_neg.json", 'w') as f:
             json.dump({
                 "total_candidates": len(fal_records),
                 "selected": len(fal_top),
+                "tier3_triggered": fal_tier3_triggered,
                 "selected_titles": [r.title for r in fal_top],
             }, f, indent=2, ensure_ascii=False)
 
