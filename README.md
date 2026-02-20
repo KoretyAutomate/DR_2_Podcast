@@ -1,6 +1,6 @@
 # Deep-Research Podcast Crew
 
-An AI-powered pipeline that deeply researches any scientific topic, conducts adversarial peer review across 10 structured phases, and produces a broadcast-ready podcast with Kokoro TTS audio — all running on local models. Includes a FastAPI web UI for one-click production with live progress tracking.
+An AI-powered pipeline that deeply researches any scientific topic using a clinical systematic-review methodology, conducts adversarial peer review across 10 structured phases, and produces a broadcast-ready podcast with Kokoro TTS audio — all running on local models. Includes a FastAPI web UI for one-click production with live progress tracking.
 
 ## System Overview
 
@@ -12,20 +12,37 @@ An AI-powered pipeline that deeply researches any scientific topic, conducts adv
                                       ▼
                   ┌──────────────────────────────────────┐
                   │  Phase 0 — Research Framing           │
-                  │  (Research Framing Specialist)         │
+                  │  (Research Framing Specialist)        │
                   └──────────────┬───────────────────────┘
                                  ▼
-              ┌─────────────────────────────────────────────┐
-              │  Deep Research Pre-Scan (Dual-Model)         │
-              │  Tiered search: PubMed + Google Scholar      │
-              │  → general web (if academic insufficient)    │
-              │  Smart model plans → workers fetch & extract │
-              │  → Fast model summarizes → Smart synthesizes │
-              │  PRISMA-style methodology tracking           │
-              │  Outputs: lead.md, counter.md, audit.md,     │
-              │           deep_research_sources.json          │
-              └──────────────┬──────────────────────────────┘
-                             ▼
+       ┌──────────────────────────────────────────────────────────┐
+       │  Deep Research Pre-Scan (8-Step Clinical Pipeline)       │
+       │                                                          │
+       │  ┌─ AFFIRMATIVE TRACK ──────────────────────────────┐   │
+       │  │ Step 1: PICO/MeSH/Boolean strategy (Smart)       │   │
+       │  │ Step 2: Wide net — up to 500 results (PubMed +   │   │
+       │  │         Google Scholar + Fast model screening)    │   │
+       │  │ Step 3: Screen → top 20 (Smart)                  │   │
+       │  │ Step 4: Full-text extraction + clinical vars      │   │
+       │  │         (PMC/EuropePMC/Unpaywall + Fast model)    │   │
+       │  │ Step 5: Affirmative case (Smart)                  │   │
+       │  └───────────────────────────────────────────────────┘   │
+       │  ┌─ FALSIFICATION TRACK ───────────────────────────┐    │
+       │  │ Steps 1'–4': Same pipeline, adversarial framing  │    │
+       │  │ Step 6: Falsification case (Smart)               │    │
+       │  └───────────────────────────────────────────────────┘   │
+       │  (Both tracks run in parallel)                           │
+       │                          ▼                               │
+       │  Step 7: Deterministic math — ARR/NNT (Python, no LLM)  │
+       │  Step 8: GRADE synthesis — Auditor (Smart)               │
+       │                                                          │
+       │  Outputs: lead.md, counter.md, audit.md,                 │
+       │           deep_research_sources.json,                    │
+       │           deep_research_math.md,                         │
+       │           deep_research_strategy_aff/neg.json,           │
+       │           deep_research_screening.json                   │
+       └──────────────┬───────────────────────────────────────────┘
+                      ▼
      ┌───────────────────────────────────────────────────────────────┐
      │ CREW 1 — Evidence Gathering                                   │
      │                                                               │
@@ -98,24 +115,57 @@ The system uses two local LLMs working in tandem:
 
 | Role | Default Model | Hosted On | Purpose |
 |------|---------------|-----------|---------|
-| **Smart model** | `Qwen/Qwen2.5-14B-Instruct-AWQ` | vLLM (port 8000) | Planning, research synthesis, script writing, auditing |
-| **Fast model** | `llama3.2:1b` | Ollama (port 11434) | Parallel page summarization during deep research, report condensation before injection |
+| **Smart model** | `Qwen/Qwen2.5-32B-Instruct-AWQ` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing |
+| **Fast model** | `phi4-mini` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
 
-Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`). For a fast model upgrade, `phi4-mini` on Ollama is recommended.
+Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
 
 If the fast model is unavailable, the smart model handles all summarization (slower but functional).
 
-## Tiered Academic Search
+## Evidence-Based Research Pipeline
 
-The deep research engine uses a 3-tier search strategy prioritizing academic sources:
+The deep research pre-scan implements an 8-step systematic review methodology modelled on clinical trial standards. Both the affirmative and falsification tracks run in parallel.
 
-1. **Tier 1 (Academic)**: PubMed (via NCBI E-utilities) + Google Scholar (via SearXNG)
-2. **Tier 2 (Sufficiency check)**: If ≥5 academic results found, skip general web
-3. **Tier 3 (General web)**: Google, Bing, Brave (only if academic sources insufficient)
+### Step 1 — Search Strategy Formulation (Smart Model, ~15s)
 
-Each source gets structured metadata extraction: study type, sample size, effect size, journal, authors, publication year, funding source, demographics, and limitations.
+Translates the topic into a structured **PICO framework** (Population, Intervention, Comparison, Outcome), generates **MeSH terms**, and writes **Boolean search strings** for PubMed, Cochrane CENTRAL, and Google Scholar. The adversarial track adds adverse-effects, null-result, toxicity, and funding-bias terms.
 
-**PRISMA-style tracking**: The audit report includes an auto-generated methodology section with search date, databases searched, articles identified → screened → included, and tier breakdown.
+### Step 2 — Wide Net Search (PubMed + Fast Model, ~90s)
+
+Queries PubMed with three Boolean variants (primary, broad, Cochrane subset `cochrane[sb]`) and Google Scholar, collecting up to 500 results. **`PublicationType` in the PubMed XML is used directly** to classify study type (RCT, meta-analysis, systematic review, etc.) without LLM calls. The fast model only processes the ~50% of records where type cannot be determined from XML, extracting `sample_size` and `primary_objective` from the abstract — reducing fast-model calls by ~50%.
+
+### Step 3 — Screening (Smart Model, ~20s)
+
+The smart model scans all records and selects the **top 20 most rigorous human clinical studies**. Inclusion: RCTs, meta-analyses, systematic reviews, large cohort studies (n ≥ 30, prefer n ≥ 100). Exclusion: animal models, in vitro, case reports, conference abstracts, retractions. Context-window overflow (>28K tokens) is handled by chunked screening with a merge step.
+
+### Step 4 — Full-Text Deep Extraction (Fast Model, ~120s)
+
+For each of the top 20 studies, the full text is retrieved via a 4-tier fallback:
+1. **PubMed Central OA API** (`oai:pubmedcentral.nih.gov`)
+2. **Europe PMC REST API** (free full-text XML for OA articles)
+3. **Unpaywall API** (OA PDF location via DOI)
+4. **Publisher page scrape** (existing `ContentFetcher` logic)
+
+The fast model then extracts 20 clinical variables per article: `control_event_rate` (CER), `experimental_event_rate` (EER), effect size with CI, attrition, blinding, randomization, ITT analysis, funding source, conflicts of interest, risk of bias, demographics, follow-up period, and biological mechanism.
+
+### Steps 5 & 6 — Affirmative & Falsification Cases (Smart Model, ~30s each)
+
+Each track's smart model writes a structured case report from the extracted data — the affirmative case argues FOR the hypothesis (clinical significance, biological plausibility, consistency, dose-response), the falsification case argues AGAINST it (adverse effects, null results, methodological concerns, funding bias, publication bias).
+
+### Step 7 — Deterministic Math (Python, <1ms)
+
+**No LLM involved.** A pure-Python calculator computes from the extracted CER/EER values:
+- **ARR** = CER − EER (Absolute Risk Reduction)
+- **RRR** = ARR / CER (Relative Risk Reduction)
+- **NNT** = 1 / |ARR| (Number Needed to Treat)
+
+This eliminates LLM math hallucinations. Only studies where both CER and EER were extracted contribute to the NNT table.
+
+### Step 8 — GRADE Synthesis (Smart Model, ~45s)
+
+The Auditor reads both cases and the Python-calculated NNT table, then issues a **GRADE-framework synthesis** (High / Moderate / Low / Very Low evidence quality) with evidence profile, downgrade/upgrade justifications, clinical impact interpretation, PRISMA flow diagram, and consolidated evidence table. The Auditor is instructed never to recalculate ARR/NNT — it uses the Python-provided numbers exactly.
+
+**Total wall-clock time: ~5–6 minutes** (both tracks in parallel).
 
 ## Research Library
 
@@ -127,35 +177,27 @@ After the deep research pre-scan, all source-level data is saved to `deep_resear
 
 Before injection into agent task descriptions, full reports are **condensed by the fast model** (~2000 words) instead of being hard-truncated.
 
-## Scientific Report Structure
+## GRADE Audit Report Structure
 
-The audit report follows a unified scientific review format:
+The Step 8 GRADE synthesis follows this structure:
 
-1. **Abstract** (200-300 words)
-2. **Introduction** (background, scope, research questions)
-3. **Methodology** (PRISMA flow: databases, search date, source selection, inclusion/exclusion criteria)
-4. **Results** (grouped by evidence tier: meta-analyses → RCTs → cohort → mechanistic → expert opinion)
-5. **Discussion** (synthesis, contradictions, evidence quality, recency analysis, conflicts of interest, cross-study comparison)
-6. **Conclusions**
-7. **Evidence Summary Table** (Author, Year, Study Type, N, Key Finding, Effect Size, Funding, Journal)
-8. **References** (standardized: Author et al. (Year). Title. Journal. DOI/URL)
-
-Citations use "Author et al. (Year)" format in body text. Industry-funded studies are flagged in the discussion.
+1. **Executive Summary** (3–4 sentences)
+2. **Evidence Profile** (study designs, total N, risk of bias, consistency, directness, precision, publication bias)
+3. **GRADE Assessment** (start at HIGH for RCTs / LOW for observational; apply upgrades/downgrades; final grade: ⊕⊕⊕⊕ → ⊕○○○)
+4. **Clinical Impact** (NNT table from deterministic math, interpreted in context)
+5. **Balanced Verdict** (weight of evidence, caveats, what would change the conclusion)
+6. **Recommendations for Further Research**
+7. **PRISMA Flow Diagram** (text-based: identified → screened → eligible → included)
+8. **Consolidated Evidence Table** (Study, Design, N, Effect, CER, EER, ARR, NNT, Bias Risk, GRADE Impact)
+9. **Full Reference List**
 
 ## Pipeline Phases
 
 ### Phase 0 — Research Framing & Hypothesis
 The Research Framing Specialist defines scope boundaries, core research questions, evidence criteria, suggested search directions, and hypotheses to test.
 
-### Deep Research Pre-Scan (Dual-Model Map-Reduce)
-An autonomous `Orchestrator` runs parallel research for lead and counter roles:
-1. Smart model generates targeted search queries based on framing context
-2. Tiered search (PubMed → Google Scholar → general web) fetches results
-3. Pages are scraped and cleaned; fast model extracts structured metadata + key facts
-4. Smart model reviews coverage, identifies gaps, generates follow-up queries (up to 3 iterations)
-5. Smart model writes final synthesis reports
-
-Outputs: `deep_research_lead.md`, `deep_research_counter.md`, `deep_research_audit.md`, `deep_research_sources.json`
+### Deep Research Pre-Scan
+See [Evidence-Based Research Pipeline](#evidence-based-research-pipeline) above.
 
 ### Phase 1 — Systematic Evidence Gathering
 The Lead Researcher conducts a deep dive guided by the framing document and pre-scan evidence. Findings are grouped by evidence tier with "Author et al. (Year)" citations.
@@ -188,6 +230,8 @@ Kokoro TTS renders the polished script with two voices at 24kHz WAV, followed by
 |----------|--------------|----------------|
 | English  | `am_fenrir` (American male) | `af_heart` (American female) |
 | Japanese | `jm_kumo` (Japanese male) | `jf_alpha` (Japanese female) |
+
+An alternative Japanese TTS engine (Qwen3-TTS) is available via a local FastAPI server (`docker/qwen3-tts/`).
 
 ## Multi-Language Support
 
@@ -222,7 +266,7 @@ docker run --runtime nvidia --gpus all -p 8000:8000 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   --ipc=host \
   vllm/vllm-openai:latest \
-  --model Qwen/Qwen2.5-14B-Instruct-AWQ \
+  --model Qwen/Qwen2.5-32B-Instruct-AWQ \
   --max-model-len 32768 \
   --gpu-memory-utilization 0.8 \
   --dtype auto --trust-remote-code --enforce-eager
@@ -231,15 +275,22 @@ docker run --runtime nvidia --gpus all -p 8000:8000 \
 **Ollama** — Required for the fast model:
 ```bash
 ollama serve
-ollama pull llama3.2:1b        # Fast model (default)
-# Optional upgrade:
-ollama pull phi4-mini
+ollama pull phi4-mini               # Recommended fast model
+# or lighter alternative:
+ollama pull llama3.2:1b
 # Then set: export FAST_MODEL_NAME="phi4-mini"
 ```
 
 **SearXNG** — Self-hosted search (optional, improves source diversity):
 ```bash
 docker run -d -p 8080:8080 searxng/searxng:latest
+```
+
+**Qwen3-TTS** — Optional high-quality Japanese TTS (conda env: `qwen3_tts`):
+```bash
+bash docker/qwen3-tts/run_server.sh
+# First-time init:
+bash docker/qwen3-tts/init_and_start.sh
 ```
 
 ## Installation
@@ -257,8 +308,11 @@ python -m unidic download               # Required for Kokoro TTS
 # Required
 export BRAVE_API_KEY="your_brave_search_api_key"
 
-# Optional
-export PUBMED_API_KEY="your_ncbi_api_key"  # Higher rate limits for PubMed
+# Optional — PubMed
+export PUBMED_API_KEY="your_ncbi_api_key"       # Increases rate limit from 3 to 10 req/sec
+export UNPAYWALL_EMAIL="your@email.com"         # Required for Unpaywall OA PDF lookup (free)
+
+# Optional — topic/language
 export PODCAST_TOPIC="effects of intermittent fasting on cognitive performance"
 export PODCAST_LANGUAGE="en"          # en or ja
 export ACCESSIBILITY_LEVEL="simple"   # simple | moderate | technical
@@ -266,9 +320,9 @@ export PODCAST_LENGTH="long"          # short | medium | long
 export PODCAST_HOSTS="random"         # random | kaz_erika | erika_kaz
 
 # Model config (defaults shown)
-export MODEL_NAME="Qwen/Qwen2.5-14B-Instruct-AWQ"
+export MODEL_NAME="Qwen/Qwen2.5-32B-Instruct-AWQ"
 export LLM_BASE_URL="http://localhost:8000/v1"
-export FAST_MODEL_NAME="llama3.2:1b"
+export FAST_MODEL_NAME="phi4-mini"
 export FAST_LLM_BASE_URL="http://localhost:11434/v1"
 
 # Web UI authentication (auto-generated if not set)
@@ -315,10 +369,14 @@ All outputs are saved to a timestamped directory under `research_outputs/`:
 research_outputs/YYYY-MM-DD_HH-MM-SS/
 ├── research_framing.md               Phase 0 — scope and hypotheses
 ├── research_framing.pdf
-├── deep_research_lead.md             Pre-scan — supporting evidence
-├── deep_research_counter.md          Pre-scan — opposing evidence
-├── deep_research_audit.md            Pre-scan — unified scientific review
+├── deep_research_lead.md             Pre-scan — affirmative case (Step 5)
+├── deep_research_counter.md          Pre-scan — falsification case (Step 6)
+├── deep_research_audit.md            Pre-scan — GRADE synthesis (Step 8)
 ├── deep_research_sources.json        Research library (structured source data)
+├── deep_research_math.md             Step 7 — deterministic ARR/NNT table
+├── deep_research_strategy_aff.json   Step 1 — affirmative PICO/MeSH/Boolean
+├── deep_research_strategy_neg.json   Step 1' — adversarial PICO/MeSH/Boolean
+├── deep_research_screening.json      Step 3 — screening decisions (500 → 20)
 ├── gap_analysis.md                   Phase 2 — gap analysis
 ├── supporting_research.md            Phase 1 — lead researcher paper
 ├── supporting_paper.pdf
@@ -346,21 +404,25 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 |------------------|---------|
 | `podcast_crew.py` | Main pipeline — agents, tasks, 10-phase orchestration, research library tools |
 | `podcast_web_ui.py` | FastAPI web UI with live progress tracking, task queue, and upload integration |
-| `deep_research_agent.py` | Dual-model map-reduce research engine with tiered academic search and PRISMA tracking |
+| `deep_research_agent.py` | 8-step clinical research pipeline (PICO → wide net → screen → extract → cases → math → GRADE) |
+| `clinical_math.py` | Deterministic ARR/NNT calculator — pure Python, zero LLM involvement |
+| `fulltext_fetcher.py` | 4-tier full-text fetcher: PMC OA → Europe PMC → Unpaywall → publisher scrape |
 | `search_agent.py` | SearXNG client, page scraping, content extraction |
 | `research_planner.py` | Structured research planning with iterative gap-filling |
 | `audio_engine.py` | Kokoro TTS rendering with dual-voice stitching and BGM post-processing |
 | `link_validator_tool.py` | URL validation via HEAD requests |
 | `upload_utils.py` | Buzzsprout and YouTube upload utilities |
+| `test_clinical_math.py` | Unit tests for clinical_math.py (17 tests) |
 | `start_podcast_web_ui.sh` | Web UI launcher script |
 | `start_vllm_docker.sh` | vLLM Docker container launcher |
+| `docker/qwen3-tts/` | Qwen3-TTS FastAPI server for high-quality Japanese TTS (conda env: `qwen3_tts`) |
 | `requirements.txt` | Core Python dependencies |
 | `web_ui_requirements.txt` | Additional dependencies for the web UI (FastAPI, uvicorn, Google API) |
 | `environment.yml` | Conda environment specification (Python 3.11, `podcast_flow`) |
 | `podcast_tasks.json` | Persistent task queue for the web UI |
 | `Podcast BGM/` | Pre-built WAV background music library for BGM mixing |
 | `asset/` | Kokoro TTS model weights (safetensors, voice files, tokenizer) |
-| `archived_scripts/` | Deprecated utilities (audio_mixer, music_engine, older startup scripts) |
+| `archived_scripts/` | Deprecated utilities |
 
 ## License
 
