@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from deep_research_agent import DeepExtraction
+    from clinical_research import DeepExtraction
 
 
 @dataclass

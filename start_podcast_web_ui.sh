@@ -18,7 +18,7 @@ echo ""
 # Use podcast_flow conda env if available
 CONDA_PYTHON="$HOME/miniconda3/envs/podcast_flow/bin/python3"
 if [ -x "$CONDA_PYTHON" ]; then
-    "$CONDA_PYTHON" podcast_web_ui.py
+    "$CONDA_PYTHON" web_ui.py
 else
-    python3 podcast_web_ui.py
+    python3 web_ui.py
 fi

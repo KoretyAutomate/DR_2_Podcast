@@ -62,16 +62,16 @@ task_queue = queue.Queue()
 # Expected artifacts for progress tracking
 EXPECTED_ARTIFACTS = [
     "research_framing.md", "research_framing.pdf",
-    "deep_research_lead.md", "deep_research_counter.md", "deep_research_audit.md",
-    "deep_research_sources.json", "deep_research_math.md",
-    "deep_research_strategy_aff.json", "deep_research_strategy_neg.json",
-    "deep_research_screening.json",
+    "affirmative_case.md", "falsification_case.md", "grade_synthesis.md",
+    "research_sources.json", "clinical_math.md",
+    "search_strategy_aff.json", "search_strategy_neg.json",
+    "screening_results.json",
     "source_of_truth.md", "source_of_truth.pdf",
     "url_validation_results.json",
-    "podcast_script_raw.md", "podcast_script_polished.md", "podcast_script.txt",
-    "show_notes.md", "accuracy_check.md", "accuracy_check.pdf",
+    "script_draft.md", "script_final.md", "script.txt",
+    "show_outline.md", "accuracy_audit.md", "accuracy_audit.pdf",
     "podcast_generation.log", "session_metadata.txt",
-    "podcast_final_audio.wav"
+    "audio.wav"
 ]
 
 def count_artifacts(directory: Optional[str]) -> tuple[int, int]:
@@ -1367,12 +1367,12 @@ def home(username: str = Depends(verify_credentials)):
                     downloads.innerHTML = `
                         <h3 style="margin-top:20px; font-size:1.1rem; color:var(--text-primary);">Artifacts Generated:</h3>
                         <div style="display:flex; flex-wrap:wrap; gap:10px;">
-                        <a href="/api/download/${{data.task_id}}/podcast_final_audio.wav" class="download-link">🎵 Audio (WAV)</a>
+                        <a href="/api/download/${{data.task_id}}/audio.wav" class="download-link">🎵 Audio (WAV)</a>
                         <a href="/api/download/${{data.task_id}}/source_of_truth.md" class="download-link">📋 Source of Truth</a>
-                        <a href="/api/download/${{data.task_id}}/show_notes.md" class="download-link">📝 Show Notes</a>
-                        <a href="/api/download/${{data.task_id}}/accuracy_check.md" class="download-link">✅ Accuracy Check</a>
-                        <a href="/api/download/${{data.task_id}}/deep_research_lead.md" class="download-link">📄 Lead Research</a>
-                        <a href="/api/download/${{data.task_id}}/deep_research_audit.md" class="download-link">📄 GRADE Audit</a>
+                        <a href="/api/download/${{data.task_id}}/show_outline.md" class="download-link">📝 Show Outline</a>
+                        <a href="/api/download/${{data.task_id}}/accuracy_audit.md" class="download-link">✅ Accuracy Audit</a>
+                        <a href="/api/download/${{data.task_id}}/affirmative_case.md" class="download-link">📄 Affirmative Case</a>
+                        <a href="/api/download/${{data.task_id}}/grade_synthesis.md" class="download-link">📄 GRADE Synthesis</a>
                         <a href="/api/download/${{data.task_id}}/source_of_truth.pdf" class="download-link">📄 Source of Truth PDF</a>
                         ${{uploadsHtml}}
                         </div>
@@ -1419,12 +1419,12 @@ def home(username: str = Depends(verify_credentials)):
                     historyList.innerHTML = tasks.map((task, index) => {{
                          const date = new Date(task.created_at).toLocaleString();
                          const artifacts = [
-                             {{ name: "Audio (WAV)", file: "podcast_final_audio.wav", icon: "🎵" }},
+                             {{ name: "Audio (WAV)", file: "audio.wav", icon: "🎵" }},
                              {{ name: "Source of Truth", file: "source_of_truth.md", icon: "📋" }},
-                             {{ name: "Show Notes", file: "show_notes.md", icon: "📝" }},
-                             {{ name: "Accuracy Check", file: "accuracy_check.md", icon: "✅" }},
-                             {{ name: "Lead Research", file: "deep_research_lead.md", icon: "📄" }},
-                             {{ name: "GRADE Audit", file: "deep_research_audit.md", icon: "⚖️" }}
+                             {{ name: "Show Outline", file: "show_outline.md", icon: "📝" }},
+                             {{ name: "Accuracy Audit", file: "accuracy_audit.md", icon: "✅" }},
+                             {{ name: "Affirmative Case", file: "affirmative_case.md", icon: "📄" }},
+                             {{ name: "GRADE Synthesis", file: "grade_synthesis.md", icon: "⚖️" }}
                          ];
                          
                          const artifactLinks = artifacts.map(a => 
@@ -1748,29 +1748,30 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
 
     return {"task_id": task_id, "status": "queued"}
 
-# Phase markers parsed from podcast_crew.py stdout
+# Phase markers parsed from pipeline.py stdout
 PHASE_MARKERS = [
     ("PHASE 0: RESEARCH FRAMING", "Research Framing", 5),
-    # Clinical pipeline phases (deep research)
-    ("PHASE 1: SEARCH STRATEGY", "Search Strategy Formulation", 8),
-    ("PHASE 2: WIDE NET", "Wide Net Search", 10),
-    ("PHASE 3: SCREENING", "Study Screening", 13),
-    ("PHASE 4: DEEP EXTRACTION", "Deep Extraction", 15),
-    ("PHASE 5: BUILDING AFFIRMATIVE", "Building Affirmative Case", 17),
-    ("PHASE 6: BUILDING FALSIFICATION", "Building Falsification Case", 17),
-    ("PHASE 7: DETERMINISTIC MATH", "Deterministic Math", 18),
-    ("PHASE 8: GRADE SYNTHESIS", "GRADE Synthesis", 19),
-    ("ALL RESEARCH COMPLETE", "Deep Research Complete", 20),
-    ("PHASE 1: DEEP RESEARCH", "Deep Research", 15),  # Legacy fallback
+    # Clinical pipeline steps (deep research)
+    ("STEP 1: SEARCH STRATEGY", "Search Strategy Formulation", 8),
+    ("STEP 2: WIDE NET", "Wide Net Search", 10),
+    ("STEP 3: SCREENING", "Study Screening", 13),
+    ("STEP 4: DEEP EXTRACTION", "Deep Extraction", 15),
+    ("STEP 5: BUILDING AFFIRMATIVE", "Building Affirmative Case", 17),
+    ("STEP 6: BUILDING FALSIFICATION", "Building Falsification Case", 17),
+    ("STEP 7: DETERMINISTIC MATH", "Deterministic Math", 18),
+    ("STEP 8: GRADE SYNTHESIS", "GRADE Synthesis", 19),
+    ("ALL RESEARCH COMPLETE", "Clinical Research Complete", 20),
+    ("PHASE 1: CLINICAL RESEARCH", "Clinical Research", 15),
     ("Source of Truth generated", "Source of Truth", 45),
     # Post-research phases
-    ("PHASE 2: URL VALIDATION", "URL Validation", 50),
-    ("CREW 3:", "Podcast Production", 55),
-    ("PHASE 3: PODCAST PLANNING", "Podcast Planning", 60),
-    ("PHASE 4: PODCAST RECORDING", "Podcast Recording", 70),
-    ("PHASE 5: POST-PROCESSING", "Post-Processing", 85),
-    ("PHASE 6: ACCURACY CHECK", "Accuracy Check", 90),
-    ("Starting BGM Merging Phase", "BGM Merging", 95),
+    ("PHASE 2: SOURCE VALIDATION", "Source Validation", 50),
+    ("PHASE 3: REPORT TRANSLATION", "Report Translation", 55),
+    ("CREW 3:", "Podcast Production", 58),
+    ("PHASE 4: SHOW OUTLINE", "Show Outline", 60),
+    ("PHASE 5: SCRIPT WRITING", "Script Writing", 70),
+    ("PHASE 6: SCRIPT POLISH", "Script Polish", 85),
+    ("PHASE 7: ACCURACY AUDIT", "Accuracy Audit", 90),
+    ("Starting BGM Merging Phase", "Audio Production", 95),
     ("SUCCESS: Audio duration", "Complete", 100),
     # Reuse-mode markers
     ("REUSE MODE:", "Reuse Analysis", 5),
@@ -1782,7 +1783,7 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
                            accessibility_level: str = "simple",
                            podcast_length: str = "long", podcast_hosts: str = "random",
                            upload_buzzsprout: bool = False, upload_youtube: bool = False):
-    """Run podcast_crew.py in background with real-time phase tracking."""
+    """Run pipeline.py in background with real-time phase tracking."""
     try:
         tasks_db[task_id]["status"] = "running"
         tasks_db[task_id]["progress"] = 0
@@ -1797,7 +1798,7 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
         env["PODCAST_HOSTS"] = podcast_hosts
 
         proc = subprocess.Popen(
-            [str(PODCAST_ENV_PYTHON), "podcast_crew.py", "--topic", topic, "--language", language],
+            [str(PODCAST_ENV_PYTHON), "pipeline.py", "--topic", topic, "--language", language],
             cwd=SCRIPT_DIR,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -1897,7 +1898,7 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
 
         # Generation succeeded — run uploads if requested
         resolved_dir = Path(tasks_db[task_id].get("output_dir") or str(OUTPUT_DIR))
-        audio_path = str(resolved_dir / "podcast_final_audio.wav")
+        audio_path = str(resolved_dir / "audio.wav")
         title = topic.strip()
 
         if upload_buzzsprout or upload_youtube:
@@ -1983,7 +1984,7 @@ def run_podcast_reuse(task_data: dict):
 
         # Handle uploads
         resolved_dir = Path(tasks_db[task_id].get("output_dir") or str(OUTPUT_DIR))
-        audio_path = str(resolved_dir / "podcast_final_audio.wav")
+        audio_path = str(resolved_dir / "audio.wav")
 
         if upload_buzzsprout or upload_youtube:
             tasks_db[task_id]["status"] = "uploading"
@@ -2045,7 +2046,7 @@ def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
             shutil.copy2(item, dest)
 
     # Load the polished script
-    script_path = new_output_dir / "podcast_script_polished.md"
+    script_path = new_output_dir / "script_final.md"
     if not script_path.exists():
         script_path = new_output_dir / "PODCAST_SCRIPT_POLISHED.md"
     if not script_path.exists():
@@ -2062,7 +2063,7 @@ def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     lang_code = "a" if task_data.get("language", "en") == "en" else "j"
 
     cleaned_script = clean_script_for_tts(script_text)
-    output_path = new_output_dir / "podcast_final_audio.wav"
+    output_path = new_output_dir / "audio.wav"
 
     audio_file = generate_audio_from_script(cleaned_script, str(output_path), lang_code=lang_code)
     if not audio_file:
@@ -2087,7 +2088,7 @@ def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
 
 
 def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
-    """Run crew3_reuse or check_supplemental via podcast_crew.py subprocess."""
+    """Run crew3_reuse or check_supplemental via pipeline.py subprocess."""
     reuse_mode = task_data["reuse_mode"]
     topic = task_data["topic"]
     language = task_data.get("language", "en")
@@ -2098,7 +2099,7 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     env["PODCAST_HOSTS"] = task_data.get("podcast_hosts", "random")
 
     cmd = [
-        str(PODCAST_ENV_PYTHON), "podcast_crew.py",
+        str(PODCAST_ENV_PYTHON), "pipeline.py",
         "--topic", topic,
         "--language", language,
         "--reuse-dir", str(reuse_dir),

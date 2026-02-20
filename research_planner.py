@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-from search_agent import SearxngClient, DeepResearch, SearchResult, ScrapedContent, ResearchResult
+from search_service import SearxngClient, DeepResearch, SearchResult, ScrapedContent, ResearchResult
 
 logger = logging.getLogger(__name__)
 

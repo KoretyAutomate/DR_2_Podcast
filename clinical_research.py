@@ -38,7 +38,7 @@ import httpx
 from bs4 import BeautifulSoup
 from openai import AsyncOpenAI
 
-from search_agent import SearxngClient, SearchResult
+from search_service import SearxngClient, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -1710,26 +1710,26 @@ class Orchestrator:
             nonlocal aff_wide_net_total, aff_screened_in, aff_fulltext_ok, aff_fulltext_err
 
             log(f"\n{'='*70}")
-            log(f"PHASE 1: SEARCH STRATEGY FORMULATION (Affirmative)")
+            log(f"STEP 1: SEARCH STRATEGY FORMULATION (Affirmative)")
             log(f"{'='*70}")
             strategy = await self.lead_researcher._formulate_search_strategy(
                 topic, "affirmative", framing_context, log
             )
 
             log(f"\n{'='*70}")
-            log(f"PHASE 2: WIDE NET SEARCH (Affirmative)")
+            log(f"STEP 2: WIDE NET SEARCH (Affirmative)")
             log(f"{'='*70}")
             records = await self.lead_researcher._wide_net_search(strategy, log)
             aff_wide_net_total = len(records)
 
             log(f"\n{'='*70}")
-            log(f"PHASE 3: SCREENING ({len(records)} → top 20) (Affirmative)")
+            log(f"STEP 3: SCREENING ({len(records)} → top 20) (Affirmative)")
             log(f"{'='*70}")
             top_records = await self.lead_researcher._screen_and_prioritize(records, strategy, log=log)
             aff_screened_in = len(top_records)
 
             log(f"\n{'='*70}")
-            log(f"PHASE 4: DEEP EXTRACTION ({len(top_records)} articles) (Affirmative)")
+            log(f"STEP 4: DEEP EXTRACTION ({len(top_records)} articles) (Affirmative)")
             log(f"{'='*70}")
             fulltexts = await self.fulltext_fetcher.fetch_all(top_records)
             aff_fulltext_ok = sum(1 for ft in fulltexts if not ft.error)
@@ -1741,7 +1741,7 @@ class Orchestrator:
             )
 
             log(f"\n{'='*70}")
-            log(f"PHASE 5: BUILDING AFFIRMATIVE CASE")
+            log(f"STEP 5: BUILDING AFFIRMATIVE CASE")
             log(f"{'='*70}")
             case_report = await self.lead_researcher._build_case(
                 topic, strategy, extractions, "affirmative", log
@@ -1754,26 +1754,26 @@ class Orchestrator:
             nonlocal fal_wide_net_total, fal_screened_in, fal_fulltext_ok, fal_fulltext_err
 
             log(f"\n{'='*70}")
-            log(f"PHASE 1': SEARCH STRATEGY FORMULATION (Adversarial)")
+            log(f"STEP 1': SEARCH STRATEGY FORMULATION (Adversarial)")
             log(f"{'='*70}")
             strategy = await self.counter_researcher._formulate_search_strategy(
                 topic, "adversarial", framing_context, log
             )
 
             log(f"\n{'='*70}")
-            log(f"PHASE 2': WIDE NET SEARCH (Adversarial)")
+            log(f"STEP 2': WIDE NET SEARCH (Adversarial)")
             log(f"{'='*70}")
             records = await self.counter_researcher._wide_net_search(strategy, log)
             fal_wide_net_total = len(records)
 
             log(f"\n{'='*70}")
-            log(f"PHASE 3': SCREENING ({len(records)} → top 20) (Adversarial)")
+            log(f"STEP 3': SCREENING ({len(records)} → top 20) (Adversarial)")
             log(f"{'='*70}")
             top_records = await self.counter_researcher._screen_and_prioritize(records, strategy, log=log)
             fal_screened_in = len(top_records)
 
             log(f"\n{'='*70}")
-            log(f"PHASE 4': DEEP EXTRACTION ({len(top_records)} articles) (Adversarial)")
+            log(f"STEP 4': DEEP EXTRACTION ({len(top_records)} articles) (Adversarial)")
             log(f"{'='*70}")
             fulltexts = await self.fulltext_fetcher.fetch_all(top_records)
             fal_fulltext_ok = sum(1 for ft in fulltexts if not ft.error)
@@ -1785,7 +1785,7 @@ class Orchestrator:
             )
 
             log(f"\n{'='*70}")
-            log(f"PHASE 6: BUILDING FALSIFICATION CASE")
+            log(f"STEP 6: BUILDING FALSIFICATION CASE")
             log(f"{'='*70}")
             case_report = await self.counter_researcher._build_case(
                 topic, strategy, extractions, "falsification", log
@@ -1805,7 +1805,7 @@ class Orchestrator:
 
         # --- Step 7: Deterministic Math ---
         log(f"\n{'='*70}")
-        log(f"PHASE 7: DETERMINISTIC MATH (ARR/NNT)")
+        log(f"STEP 7: DETERMINISTIC MATH (ARR/NNT)")
         log(f"{'='*70}")
         all_extractions = aff_extractions + fal_extractions
         impacts = clinical_math.batch_calculate(all_extractions)
@@ -1817,7 +1817,7 @@ class Orchestrator:
 
         # --- Step 8: GRADE Synthesis ---
         log(f"\n{'='*70}")
-        log(f"PHASE 8: GRADE SYNTHESIS")
+        log(f"STEP 8: GRADE SYNTHESIS")
         log(f"{'='*70}")
 
         search_date = datetime.date.today().isoformat()
@@ -2080,10 +2080,10 @@ class Orchestrator:
         out.mkdir(parents=True, exist_ok=True)
 
         # Strategy files
-        with open(out / "deep_research_strategy_aff.json", 'w') as f:
+        with open(out / "search_strategy_aff.json", 'w') as f:
             json.dump({"pico": aff_strategy.pico, "mesh_terms": aff_strategy.mesh_terms,
                         "search_strings": aff_strategy.search_strings, "role": aff_strategy.role}, f, indent=2)
-        with open(out / "deep_research_strategy_neg.json", 'w') as f:
+        with open(out / "search_strategy_neg.json", 'w') as f:
             json.dump({"pico": fal_strategy.pico, "mesh_terms": fal_strategy.mesh_terms,
                         "search_strings": fal_strategy.search_strings, "role": fal_strategy.role}, f, indent=2)
 
@@ -2100,11 +2100,11 @@ class Orchestrator:
                 "selected_titles": [r.title for r in fal_top],
             },
         }
-        with open(out / "deep_research_screening.json", 'w') as f:
+        with open(out / "screening_results.json", 'w') as f:
             json.dump(screening, f, indent=2, ensure_ascii=False)
 
         # Math report
-        with open(out / "deep_research_math.md", 'w') as f:
+        with open(out / "clinical_math.md", 'w') as f:
             f.write(math_report)
 
 
@@ -2159,8 +2159,9 @@ async def main():
     )
 
     # Save reports
+    report_filenames = {"lead": "affirmative_case.md", "counter": "falsification_case.md", "audit": "grade_synthesis.md"}
     for role, report in reports.items():
-        filename = output_dir / f"{role}_report.md"
+        filename = output_dir / report_filenames.get(role, f"{role}.md")
         with open(filename, "w") as f:
             f.write(report.report)
         print(f"Saved {role} report: {filename} ({len(report.report)} chars)")

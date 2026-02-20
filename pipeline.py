@@ -16,14 +16,14 @@ from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, LLM
 from crewai.tools import tool
 from fpdf import FPDF
-from link_validator_tool import LinkValidatorTool
+from link_validator import LinkValidatorTool
 from pydantic import BaseModel, HttpUrl, Field
 from typing import List, Optional, Literal
 import soundfile as sf
 import numpy as np
 import wave
 from audio_engine import generate_audio_from_script, clean_script_for_tts, post_process_audio
-from deep_research_agent import run_deep_research
+from clinical_research import run_deep_research
 
 # --- SOURCE TRACKING MODELS ---
 class ScientificSource(BaseModel):
@@ -126,13 +126,13 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python podcast_crew.py --topic "effects of meditation on brain plasticity" --language en
-  python podcast_crew.py --topic "climate change impact on marine ecosystems" --language ja
+  python pipeline.py --topic "effects of meditation on brain plasticity" --language en
+  python pipeline.py --topic "climate change impact on marine ecosystems" --language ja
 
 Environment variables:
   export PODCAST_TOPIC="your topic here"
   export PODCAST_LANGUAGE=ja
-  python podcast_crew.py
+  python pipeline.py
         """
     )
     parser.add_argument(
@@ -273,16 +273,37 @@ SESSION_ROLES = assign_roles()
 # --- REUSE HELPER FUNCTIONS ---
 RESEARCH_ARTIFACTS = [
     "source_of_truth.md", "SOURCE_OF_TRUTH.md",
-    "deep_research_sources.json",
+    "research_sources.json",
     "research_framing.md", "research_framing.pdf",
     "source_of_truth.pdf",
     "url_validation_results.json",
-    "deep_research_lead.md", "deep_research_counter.md", "deep_research_audit.md",
-    "deep_research_math.md",
-    "deep_research_strategy_aff.json",
-    "deep_research_strategy_neg.json",
-    "deep_research_screening.json",
+    "affirmative_case.md", "falsification_case.md", "grade_synthesis.md",
+    "clinical_math.md",
+    "search_strategy_aff.json",
+    "search_strategy_neg.json",
+    "screening_results.json",
 ]
+
+# Legacy artifact names for backward compatibility with old runs
+LEGACY_ARTIFACT_NAMES = {
+    "research_sources.json": "deep_research_sources.json",
+    "affirmative_case.md": "deep_research_lead.md",
+    "falsification_case.md": "deep_research_counter.md",
+    "grade_synthesis.md": "deep_research_audit.md",
+    "clinical_math.md": "deep_research_math.md",
+    "search_strategy_aff.json": "deep_research_strategy_aff.json",
+    "search_strategy_neg.json": "deep_research_strategy_neg.json",
+    "screening_results.json": "deep_research_screening.json",
+    "show_outline.md": "show_notes.md",
+    "SHOW_OUTLINE.md": "SHOW_NOTES.md",
+    "accuracy_audit.md": "accuracy_check.md",
+    "ACCURACY_AUDIT.md": "ACCURACY_CHECK.md",
+    "accuracy_audit.pdf": "accuracy_check.pdf",
+    "script_draft.md": "podcast_script_raw.md",
+    "script_final.md": "podcast_script_polished.md",
+    "audio.wav": "audio.wav",
+    "script.txt": "script.txt",
+}
 
 
 def _copy_research_artifacts(src_dir: Path, dst_dir: Path):
@@ -291,6 +312,11 @@ def _copy_research_artifacts(src_dir: Path, dst_dir: Path):
     copied = 0
     for name in RESEARCH_ARTIFACTS:
         src = src_dir / name
+        if not src.exists():
+            # Fall back to legacy name from old runs
+            legacy = LEGACY_ARTIFACT_NAMES.get(name)
+            if legacy:
+                src = src_dir / legacy
         if src.exists():
             shutil.copy2(src, dst_dir / name)
             copied += 1
@@ -602,9 +628,9 @@ def search_tool(search_query: str):
         return f"Search failed: {e}"
 
 def append_sources_to_library(new_sources: list[dict], role: str, output_dir_path=None):
-    """Append new sources to deep_research_sources.json."""
+    """Append new sources to research_sources.json."""
     src_dir = output_dir_path or output_dir
-    sources_file = Path(src_dir) / "deep_research_sources.json"
+    sources_file = Path(src_dir) / "research_sources.json"
     if sources_file.exists():
         data = json.loads(sources_file.read_text())
     else:
@@ -623,7 +649,7 @@ def append_sources_to_library(new_sources: list[dict], role: str, output_dir_pat
 
 # --- RESEARCH LIBRARY TOOLS ---
 # These tools let agents browse and read individual sources from the
-# deep research pre-scan that was saved to deep_research_sources.json.
+# deep research pre-scan that was saved to research_sources.json.
 
 @tool("ListResearchSources")
 def list_research_sources(role: str) -> str:
@@ -635,7 +661,7 @@ def list_research_sources(role: str) -> str:
     Returns a numbered index with title, URL, and research goal for each source.
     Use ReadResearchSource to read the full summary of any specific source.
     """
-    sources_file = output_dir / "deep_research_sources.json"
+    sources_file = output_dir / "research_sources.json"
     if not sources_file.exists():
         return "No research library available. Deep research pre-scan may not have run."
     try:
@@ -671,7 +697,7 @@ def read_research_source(role_and_index: str) -> str:
     Returns the full extracted summary for that source, including URL, title,
     research goal, and all extracted facts.
     """
-    sources_file = output_dir / "deep_research_sources.json"
+    sources_file = output_dir / "research_sources.json"
     if not sources_file.exists():
         return "No research library available."
     try:
@@ -742,9 +768,9 @@ def read_full_report(report_name: str) -> str:
     to selectively read specific sources instead.
     """
     name_map = {
-        "lead": "deep_research_lead.md",
-        "counter": "deep_research_counter.md",
-        "audit": "deep_research_audit.md",
+        "lead": "affirmative_case.md",
+        "counter": "falsification_case.md",
+        "audit": "grade_synthesis.md",
         "framing": "RESEARCH_FRAMING.md",
     }
     key = report_name.strip().lower()
@@ -829,8 +855,8 @@ def read_validation_results(url: str) -> str:
     except Exception as e:
         return f"Error reading validation data: {e}"
 
-auditor = Agent(
-    role='Scientific Auditor (The Grader)',
+auditor_agent = Agent(
+    role='Scientific Auditor',
     goal=f'Grade the research quality with a Reliability Scorecard. Do NOT write content - GRADE it. {english_instruction}',
     backstory=(
         f'You are a harsh peer reviewer. You do not write content; you GRADE it.\n\n'
@@ -857,8 +883,8 @@ auditor = Agent(
     max_iter=15,
 )
 
-scriptwriter = Agent(
-    role='Podcast Producer (The Showrunner)',
+producer_agent = Agent(
+    role='Podcast Producer',
     goal=(
         f'Transform research into an engaging, in-depth teaching conversation on "{topic_name}". '
         f'Target: Intellectual, curious professionals who want to learn. {english_instruction}'
@@ -891,8 +917,8 @@ scriptwriter = Agent(
     verbose=True
 )
 
-personality = Agent(
-    role='Podcast Personality (The Editor)',
+editor_agent = Agent(
+    role='Podcast Editor',
     goal=(
         f'Polish the "{topic_name}" script for natural verbal delivery at Masters-level. '
         f'Target: Exactly 4,500 words (30 minutes). '
@@ -917,7 +943,7 @@ personality = Agent(
     verbose=True
 )
 
-research_framer = Agent(
+framing_agent = Agent(
     role='Research Framing Specialist',
     goal=f'Define the research scope, core questions, and evidence criteria for investigating {topic_name}. {english_instruction}',
     backstory=(
@@ -965,13 +991,13 @@ framing_task = Task(
         f"Structured research framing document with core questions, scope boundaries, "
         f"evidence criteria, search directions, and hypotheses. {english_instruction}"
     ),
-    agent=research_framer,
+    agent=framing_agent,
     output_file=str(output_dir / "RESEARCH_FRAMING.md")
 )
 
 print(f"Podcast Length Mode: {duration_label}")
 
-recording_task = Task(
+script_task = Task(
     description=(
         f"Using the audit report, write a comprehensive {target_script}-{target_unit_singular} podcast dialogue about \"{topic_name}\" "
         f"featuring {SESSION_ROLES['presenter']['character']} (presenter) and {SESSION_ROLES['questioner']['character']} (questioner).\n\n"
@@ -1024,16 +1050,16 @@ recording_task = Task(
         f"Opens with welcome → hook → topic shift. Every line discusses the topic. "
         f"{target_instruction}"
     ),
-    agent=scriptwriter,
+    agent=producer_agent,
     context=[]
 )
 
 # --- SOT TRANSLATION TASK (only when language != 'en') ---
 # Translates the English Source-of-Truth into the target language BEFORE script writing.
 # This ensures the podcast script is derived from translated research, not translated afterwards.
-sot_translation_task = None
+translation_task = None
 if language != 'en':
-    sot_translation_task = Task(
+    translation_task = Task(
         description=(
             f"Translate the entire Source-of-Truth document about {topic_name} into {language_config['name']}.\n\n"
             f"TRANSLATION RULES:\n"
@@ -1051,11 +1077,11 @@ if language != 'en':
             f"Complete {language_config['name']} translation of the Source-of-Truth document, "
             f"preserving all sections, claims, confidence levels, and evidence citations."
         ),
-        agent=scriptwriter,
+        agent=producer_agent,
         context=[],
     )
 
-natural_language_task = Task(
+polish_task = Task(
     description=(
         f"Polish the \"{topic_name}\" dialogue for natural spoken delivery at Masters-level.\n\n"
         f"MASTERS-LEVEL REQUIREMENTS:\n"
@@ -1087,11 +1113,11 @@ natural_language_task = Task(
         f"No basic definitions. Teaching style with engaging 3-part opening. "
         f"{target_instruction}"
     ),
-    agent=personality,
-    context=[recording_task]
+    agent=editor_agent,
+    context=[script_task]
 )
 
-accuracy_check_task = Task(
+audit_task = Task(
     description=(
         f"Compare the POLISHED SCRIPT against the Source-of-Truth document for {topic_name}.\n\n"
         f"This is a POST-POLISH accuracy check. The script has been edited for natural delivery, "
@@ -1121,14 +1147,14 @@ accuracy_check_task = Task(
         f"Accuracy check report comparing polished script against source-of-truth, "
         f"listing any scientific drift with severity ratings. {target_instruction}"
     ),
-    agent=auditor,
-    context=[natural_language_task],
-    output_file=str(output_dir / "ACCURACY_CHECK.md")
+    agent=auditor_agent,
+    context=[polish_task],
+    output_file=str(output_dir / "ACCURACY_AUDIT.md")
 )
 
-show_notes_task = Task(
+outline_task = Task(
     description=(
-        f"Generate comprehensive show notes (SHOW_NOTES.md) for the podcast episode on {topic_name}.\n\n"
+        f"Generate comprehensive show outline (SHOW_OUTLINE.md) for the podcast episode on {topic_name}.\n\n"
         f"Using the Source-of-Truth document and its bibliography, create a bulleted list with:\n"
         f"1. Episode title and topic\n"
         f"2. Key takeaways (3-5 bullet points)\n"
@@ -1155,104 +1181,107 @@ show_notes_task = Task(
         f"- Evidence type labels (RCT/Observational/Animal Model)\n"
         f"{target_instruction}"
     ),
-    agent=scriptwriter,
+    agent=producer_agent,
     context=[],
-    output_file=str(output_dir / "SHOW_NOTES.md")
+    output_file=str(output_dir / "SHOW_OUTLINE.md")
 )
 
-# --- RENAMED & REORDERED TASKS FOR NEW WORKFLOW ---
-# 5: Podcast Planning (was show_notes_task)
-planning_task = show_notes_task
-# 6: Podcast Recording (Already defined as recording_task above)
-# 7: Post-Processing (was natural_language_task)
-post_process_task = natural_language_task
-
 # --- SOT TRANSLATION PIPELINE: Update contexts when translating ---
-if sot_translation_task is not None:
+if translation_task is not None:
     # Recording task writes script directly in target language using the translated SOT
-    recording_task.context = [sot_translation_task]
+    script_task.context = [translation_task]
     # Show notes use the translated SOT as their reference
-    planning_task.context = [sot_translation_task]
+    outline_task.context = [translation_task]
     # Polish reads from the target-language script with translated SOT as reference
-    post_process_task.context = [recording_task, sot_translation_task]
+    polish_task.context = [script_task, translation_task]
     # Accuracy check compares polished script against translated SOT
-    accuracy_check_task.context = [post_process_task, sot_translation_task]
+    audit_task.context = [polish_task, translation_task]
 
 # --- PHASE MARKERS FOR PROGRESS TRACKING ---
 PHASE_MARKERS = [
     ("PHASE 0: RESEARCH FRAMING", "Research Framing", 5),
-    ("PHASE 1: DEEP RESEARCH", "Deep Research", 10),
-    ("PHASE 2: URL VALIDATION", "URL Validation", 50),
-    ("PHASE 3: PODCAST PLANNING", "Podcast Planning", 60),
-    ("PHASE 4: PODCAST RECORDING", "Podcast Recording", 75),
-    ("PHASE 5: POST-PROCESSING", "Post-Processing", 90),
-    ("PHASE 6: ACCURACY CHECK", "Accuracy Check", 95),
-    ("PHASE 7: BGM MERGING", "BGM Merging", 98),
+    ("PHASE 1: CLINICAL RESEARCH", "Clinical Research", 10),
+    ("PHASE 2: SOURCE VALIDATION", "Source Validation", 50),
+    ("PHASE 3: REPORT TRANSLATION", "Report Translation", 55),
+    ("PHASE 4: SHOW OUTLINE", "Show Outline", 60),
+    ("PHASE 5: SCRIPT WRITING", "Script Writing", 75),
+    ("PHASE 6: SCRIPT POLISH", "Script Polish", 90),
+    ("PHASE 7: ACCURACY AUDIT", "Accuracy Audit", 95),
+    ("PHASE 8: AUDIO PRODUCTION", "Audio Production", 98),
 ]
 
 # --- TASK METADATA & WORKFLOW PLANNING ---
 TASK_METADATA = {
     'framing_task': {
-        'name': 'Research Framing & Hypothesis',
+        'name': 'Research Framing',
         'phase': '0',
         'estimated_duration_min': 2,
         'description': 'Defining scope, questions, and evidence criteria',
         'agent': 'Research Framing Specialist',
         'dependencies': [],
-        'crew': 0
+        'crew': 1
     },
-    'deep_research': {
-        'name': 'Deep Research (8-Step Clinical Pipeline)',
+    'clinical_research': {
+        'name': 'Clinical Research (8-Step Pipeline)',
         'phase': '1',
         'estimated_duration_min': 6,
         'description': 'PICO strategy, wide net, screening, extraction, cases, math, GRADE synthesis',
         'agent': 'Dual-Model Pipeline',
         'dependencies': ['framing_task'],
-        'crew': 0
+        'crew': 'procedural'
     },
-    'url_validation': {
-        'name': 'URL Validation',
+    'source_validation': {
+        'name': 'Source Validation',
         'phase': '2',
         'estimated_duration_min': 1,
         'description': 'Batch HEAD requests to validate all cited URLs',
         'agent': 'Automated',
-        'dependencies': ['deep_research'],
-        'crew': 0
+        'dependencies': ['clinical_research'],
+        'crew': 'procedural'
     },
-    'planning_task': {
-        'name': 'Podcast Planning',
+    'translation_task': {
+        'name': 'Report Translation',
         'phase': '3',
         'estimated_duration_min': 3,
-        'description': 'Developing show notes, outline, and narrative arc',
+        'description': 'Translate SOT to target language (conditional)',
         'agent': 'Podcast Producer',
-        'dependencies': ['framing_task'],
+        'dependencies': ['source_validation'],
+        'crew': 2
+    },
+    'outline_task': {
+        'name': 'Show Outline',
+        'phase': '4',
+        'estimated_duration_min': 3,
+        'description': 'Developing show outline, citations, and narrative arc',
+        'agent': 'Podcast Producer',
+        'dependencies': ['translation_task'],
         'crew': 3
     },
-    'recording_task': {
-        'name': 'Podcast Recording',
-        'phase': '4',
+    'script_task': {
+        'name': 'Script Writing',
+        'phase': '5',
         'estimated_duration_min': 6,
         'description': 'Script writing and conversation generation',
         'agent': 'Podcast Producer',
-        'dependencies': ['planning_task'],
+        'dependencies': ['outline_task'],
         'crew': 3
     },
-    'post_process_task': {
-        'name': 'Post-Processing',
-        'phase': '5',
+    'polish_task': {
+        'name': 'Script Polish',
+        'phase': '6',
         'estimated_duration_min': 5,
         'description': 'Script polishing for natural verbal delivery',
-        'agent': 'Podcast Personality',
-        'dependencies': ['recording_task'],
+        'agent': 'Podcast Editor',
+        'dependencies': ['script_task'],
         'crew': 3
     },
-    'accuracy_check': {
-        'name': 'Accuracy Check',
-        'phase': '6',
+    'audit_task': {
+        'name': 'Accuracy Audit',
+        'phase': '7',
         'estimated_duration_min': 3,
         'description': 'Advisory drift detection against Source-of-Truth',
         'agent': 'Scientific Auditor',
-        'dependencies': ['post_process_task'],
+        'dependencies': ['polish_task'],
         'crew': 3
     },
 }
@@ -1433,37 +1462,37 @@ if args.reuse_dir:
             f"{sot_content[:8000]}\n"
             f"--- END PREVIOUS RESEARCH ---\n"
         )
-        recording_task.description = f"{recording_task.description}{sot_injection}"
-        planning_task.description = f"{planning_task.description}{sot_injection}"
-        accuracy_check_task.description = f"{accuracy_check_task.description}{sot_injection}"
+        script_task.description = f"{script_task.description}{sot_injection}"
+        outline_task.description = f"{outline_task.description}{sot_injection}"
+        audit_task.description = f"{audit_task.description}{sot_injection}"
 
         # Update output_dir for file outputs
         # Reassign global output_dir so output_file paths work
         import builtins
         # Update task output_file paths to new dir
-        for task_obj in [accuracy_check_task, show_notes_task]:
+        for task_obj in [audit_task, outline_task]:
             if hasattr(task_obj, '_original_output_file') or hasattr(task_obj, 'output_file'):
                 old_path = getattr(task_obj, 'output_file', '')
                 if old_path:
                     filename = Path(old_path).name
                     task_obj.output_file = str(new_output_dir / filename)
 
-        print(f"\nCREW 3: PHASES 5-8 (PODCAST PRODUCTION)")
+        print(f"\nCREW 3: PODCAST PRODUCTION")
 
-        if sot_translation_task is not None:
-            crew_3_tasks = [
-                sot_translation_task,
-                planning_task, recording_task,
-                post_process_task, accuracy_check_task,
-            ]
-        else:
-            crew_3_tasks = [
-                planning_task, recording_task,
-                post_process_task, accuracy_check_task,
-            ]
+        if translation_task is not None:
+            print(f"\nPHASE 3: REPORT TRANSLATION")
+            crew_2 = Crew(
+                agents=[producer_agent],
+                tasks=[translation_task],
+                verbose=True,
+                process='sequential'
+            )
+            crew_2.kickoff()
+
+        crew_3_tasks = [outline_task, script_task, polish_task, audit_task]
 
         crew_3 = Crew(
-            agents=[scriptwriter, personality, auditor],
+            agents=[producer_agent, editor_agent, auditor_agent],
             tasks=crew_3_tasks,
             verbose=True,
             process='sequential'
@@ -1473,13 +1502,13 @@ if args.reuse_dir:
 
         # Save markdown outputs
         print("\n--- Saving Outputs ---")
-        script_text = post_process_task.output.raw if hasattr(post_process_task, 'output') and post_process_task.output else result.raw
+        script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
         for label, source, filename in [
-            ("Source of Truth (Translated)", sot_translation_task, "source_of_truth.md"),
-            ("Podcast Planning", planning_task, "show_notes.md"),
-            ("Podcast Recording (Raw)", recording_task, "podcast_script_raw.md"),
-            ("Podcast Recording (Polished)", post_process_task, "podcast_script_polished.md"),
-            ("Accuracy Check", accuracy_check_task, "accuracy_check.md"),
+            ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
+            ("Show Outline", outline_task, "show_outline.md"),
+            ("Script Draft", script_task, "script_draft.md"),
+            ("Script Final", polish_task, "script_final.md"),
+            ("Accuracy Audit", audit_task, "accuracy_audit.md"),
         ]:
             try:
                 if isinstance(source, str):
@@ -1496,22 +1525,22 @@ if args.reuse_dir:
             except Exception as e:
                 print(f"  Warning: Could not save {filename}: {e}")
 
-        # Generate PDF for accuracy check
+        # Generate PDF for accuracy audit
         try:
-            acc_content = accuracy_check_task.output.raw if hasattr(accuracy_check_task, 'output') and accuracy_check_task.output else ""
+            acc_content = audit_task.output.raw if hasattr(audit_task, 'output') and audit_task.output else ""
             if acc_content:
-                create_pdf("Accuracy Check", acc_content, "accuracy_check.pdf")
+                create_pdf("Accuracy Audit", acc_content, "accuracy_audit.pdf")
         except Exception:
             pass
 
         # TTS + BGM
         print("\n--- Generating Multi-Voice Podcast Audio (Kokoro TTS) ---")
         cleaned_script = clean_script_for_tts(script_text)
-        script_file = new_output_dir / "podcast_script.txt"
+        script_file = new_output_dir / "script.txt"
         with open(script_file, 'w') as f:
             f.write(script_text)
 
-        audio_output_path = new_output_dir / "podcast_final_audio.wav"
+        audio_output_path = new_output_dir / "audio.wav"
         audio_file = generate_audio_from_script(cleaned_script, str(audio_output_path), lang_code=language_config['tts_code'])
         if audio_file:
             audio_file = Path(audio_file)
@@ -1640,33 +1669,33 @@ if args.reuse_dir:
                 f"{sot_content[:8000]}\n"
                 f"--- END SOURCE OF TRUTH ---\n"
             )
-            recording_task.description = f"{recording_task.description}{sot_injection}"
-            planning_task.description = f"{planning_task.description}{sot_injection}"
-            accuracy_check_task.description = f"{accuracy_check_task.description}{sot_injection}"
+            script_task.description = f"{script_task.description}{sot_injection}"
+            outline_task.description = f"{outline_task.description}{sot_injection}"
+            audit_task.description = f"{audit_task.description}{sot_injection}"
 
             # Update output_file paths
-            for task_obj in [accuracy_check_task, show_notes_task]:
+            for task_obj in [audit_task, outline_task]:
                 old_path = getattr(task_obj, 'output_file', '')
                 if old_path:
                     filename = Path(old_path).name
                     task_obj.output_file = str(new_output_dir / filename)
 
-            print(f"\nCREW 3: PHASES 5-8 (PODCAST PRODUCTION)")
+            print(f"\nCREW 3: PODCAST PRODUCTION")
 
-            if sot_translation_task is not None:
-                crew_3_tasks = [
-                    sot_translation_task,
-                    planning_task, recording_task,
-                    post_process_task, accuracy_check_task,
-                ]
-            else:
-                crew_3_tasks = [
-                    planning_task, recording_task,
-                    post_process_task, accuracy_check_task,
-                ]
+            if translation_task is not None:
+                print(f"\nPHASE 3: REPORT TRANSLATION")
+                crew_2 = Crew(
+                    agents=[producer_agent],
+                    tasks=[translation_task],
+                    verbose=True,
+                    process='sequential'
+                )
+                crew_2.kickoff()
+
+            crew_3_tasks = [outline_task, script_task, polish_task, audit_task]
 
             crew_3 = Crew(
-                agents=[scriptwriter, personality, auditor],
+                agents=[producer_agent, editor_agent, auditor_agent],
                 tasks=crew_3_tasks,
                 verbose=True,
                 process='sequential'
@@ -1676,13 +1705,13 @@ if args.reuse_dir:
 
             # Save outputs
             print("\n--- Saving Outputs ---")
-            script_text = post_process_task.output.raw if hasattr(post_process_task, 'output') and post_process_task.output else result.raw
+            script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
             for label, source, filename in [
-                ("Source of Truth (Translated)", sot_translation_task, "source_of_truth.md"),
-                ("Podcast Planning", planning_task, "show_notes.md"),
-                ("Podcast Recording (Raw)", recording_task, "podcast_script_raw.md"),
-                ("Podcast Recording (Polished)", post_process_task, "podcast_script_polished.md"),
-                ("Accuracy Check", accuracy_check_task, "accuracy_check.md"),
+                ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
+                ("Show Outline", outline_task, "show_outline.md"),
+                ("Script Draft", script_task, "script_draft.md"),
+                ("Script Final", polish_task, "script_final.md"),
+                ("Accuracy Audit", audit_task, "accuracy_audit.md"),
             ]:
                 try:
                     if isinstance(source, str):
@@ -1702,11 +1731,11 @@ if args.reuse_dir:
             # TTS + BGM
             print("\n--- Generating Multi-Voice Podcast Audio (Kokoro TTS) ---")
             cleaned_script = clean_script_for_tts(script_text)
-            script_file = new_output_dir / "podcast_script.txt"
+            script_file = new_output_dir / "script.txt"
             with open(script_file, 'w') as f:
                 f.write(script_text)
 
-            audio_output_path = new_output_dir / "podcast_final_audio.wav"
+            audio_output_path = new_output_dir / "audio.wav"
             audio_file = generate_audio_from_script(cleaned_script, str(audio_output_path), lang_code=language_config['tts_code'])
             if audio_file:
                 audio_file = Path(audio_file)
@@ -1762,10 +1791,10 @@ progress_tracker.start_workflow()
 # Combined task list for tracking
 all_task_list = [
     framing_task,
-    planning_task,
-    recording_task,
-    post_process_task,
-    accuracy_check_task,
+    outline_task,
+    script_task,
+    polish_task,
+    audit_task,
 ]
 
 print(f"\n--- Initiating Scientific Research Pipeline on DGX Spark ---")
@@ -1810,21 +1839,21 @@ class CrewMonitor(threading.Thread):
         self.running = False
 
 # ================================================================
-# PHASE 0: Research Framing & Hypothesis
+# PHASE 0: Research Framing
 # ================================================================
 print(f"\n{'='*70}")
-print(f"PHASE 0: RESEARCH FRAMING & HYPOTHESIS")
+print(f"PHASE 0: RESEARCH FRAMING")
 print(f"{'='*70}")
 
-crew_0 = Crew(
-    agents=[research_framer],
+crew_1 = Crew(
+    agents=[framing_agent],
     tasks=[framing_task],
     verbose=True,
     process='sequential'
 )
 
 try:
-    crew_0_result = crew_0.kickoff()
+    crew_1_result = crew_1.kickoff()
     framing_output = framing_task.output.raw if hasattr(framing_task, 'output') and framing_task.output else ""
     print(f"✓ Phase 0 complete: Research framing generated ({len(framing_output)} chars)")
 except Exception as e:
@@ -1833,10 +1862,10 @@ except Exception as e:
     framing_output = ""
 
 # ================================================================
-# PHASE 1: DEEP RESEARCH (8-Step Clinical Pipeline)
+# PHASE 1: CLINICAL RESEARCH (8-Step Pipeline)
 # ================================================================
 print(f"\n{'='*70}")
-print(f"PHASE 1: DEEP RESEARCH")
+print(f"PHASE 1: CLINICAL RESEARCH")
 print(f"{'='*70}")
 
 brave_key = os.getenv("BRAVE_API_KEY", "")
@@ -1868,8 +1897,9 @@ try:
     ))
 
     # Save all reports (lead, counter, audit)
+    REPORT_FILENAMES = {"lead": "affirmative_case.md", "counter": "falsification_case.md", "audit": "grade_synthesis.md"}
     for role_name, report in deep_reports.items():
-        report_file = output_dir / f"deep_research_{role_name}.md"
+        report_file = output_dir / REPORT_FILENAMES.get(role_name, f"{role_name}.md")
         with open(report_file, 'w') as f:
             f.write(report.report)
         print(f"✓ {role_name.capitalize()} report saved: {report_file} ({report.total_summaries} sources)")
@@ -1892,7 +1922,7 @@ try:
                 "metadata": src.metadata.to_dict() if src.metadata else None,
             })
         sources_json[role_name] = role_sources
-    sources_file = output_dir / "deep_research_sources.json"
+    sources_file = output_dir / "research_sources.json"
     with open(sources_file, 'w') as f:
         json.dump(sources_json, f, indent=2, ensure_ascii=False)
     print(f"✓ Research library saved: {sources_file} "
@@ -1910,7 +1940,7 @@ try:
     sot_content += f"## Contradicting Evidence (Falsification Case)\n\n{counter_report.report}\n\n"
     sot_content += f"## Evidence Quality Assessment (GRADE)\n\n{deep_audit_report.report}\n\n"
     # Add math report if available
-    math_file = output_dir / "deep_research_math.md"
+    math_file = output_dir / "clinical_math.md"
     if math_file.exists():
         sot_content += f"## Clinical Impact (Deterministic Math)\n\n{math_file.read_text()}\n\n"
 
@@ -1931,19 +1961,19 @@ except Exception as e:
     sot_summary = ""
 
 # ================================================================
-# PHASE 2: URL VALIDATION (batch, parallel)
+# PHASE 2: SOURCE VALIDATION (batch, parallel)
 # ================================================================
 print(f"\n{'='*70}")
-print(f"PHASE 2: URL VALIDATION")
+print(f"PHASE 2: SOURCE VALIDATION")
 print(f"{'='*70}")
 
-from link_validator_tool import validate_multiple_urls_parallel
+from link_validator import validate_multiple_urls_parallel
 
 all_urls = set()
 url_pattern = re.compile(r'https?://[^\s\)\]\"\'<>]+')
 
 # Collect URLs from source library
-sources_file = output_dir / "deep_research_sources.json"
+sources_file = output_dir / "research_sources.json"
 if sources_file.exists():
     try:
         src_data = json.loads(sources_file.read_text())
@@ -1982,13 +2012,13 @@ if sot_summary:
         f"For detailed sources, use ListResearchSources('lead') and ListResearchSources('counter').\n"
         f"--- END SOURCE OF TRUTH ---\n"
     )
-    recording_task.description += sot_injection
-    planning_task.description += sot_injection
-    accuracy_check_task.description += sot_injection
+    script_task.description += sot_injection
+    outline_task.description += sot_injection
+    audit_task.description += sot_injection
 
 # For translation: inject full SOT (not summary) since translation needs complete text
-if sot_translation_task is not None and sot_content:
-    sot_translation_task.description += f"\n\nSOURCE OF TRUTH TO TRANSLATE:\n{sot_content}\n--- END ---\n"
+if translation_task is not None and sot_content:
+    translation_task.description += f"\n\nSOURCE OF TRUTH TO TRANSLATE:\n{sot_content}\n--- END ---\n"
 
 # ================================================================
 # CREW 3: Podcast Production
@@ -1997,25 +2027,21 @@ print(f"\n{'='*70}")
 print(f"CREW 3: PODCAST PRODUCTION")
 print(f"{'='*70}")
 
-if sot_translation_task is not None:
-    print(f"\nSOT TRANSLATION: Translating Source-of-Truth to {language_config['name']} before script writing")
-    crew_3_tasks = [
-        sot_translation_task,   # Translate SOT first
-        planning_task,          # Show notes from translated SOT
-        recording_task,         # Script written directly in target language
-        post_process_task,      # Polish
-        accuracy_check_task,    # Drift check
-    ]
-else:
-    crew_3_tasks = [
-        planning_task,          # Phase 3: Show notes
-        recording_task,         # Phase 4: Script
-        post_process_task,      # Phase 5: Polish
-        accuracy_check_task,    # Phase 6: Drift check
-    ]
+if translation_task is not None:
+    print(f"\nPHASE 3: REPORT TRANSLATION")
+    print(f"Translating Source-of-Truth to {language_config['name']}")
+    crew_2 = Crew(
+        agents=[producer_agent],
+        tasks=[translation_task],
+        verbose=True,
+        process='sequential'
+    )
+    crew_2.kickoff()
+
+crew_3_tasks = [outline_task, script_task, polish_task, audit_task]
 
 crew_3 = Crew(
-    agents=[scriptwriter, personality, auditor],
+    agents=[producer_agent, editor_agent, auditor_agent],
     tasks=crew_3_tasks,
     verbose=True,
     process='sequential'
@@ -2044,7 +2070,7 @@ print("\n--- Generating Documentation PDFs ---")
 pdf_tasks = [
     ("Research Framing", framing_output, "research_framing.pdf"),
     ("Source of Truth", sot_content, "source_of_truth.pdf"),
-    ("Accuracy Check", accuracy_check_task, "accuracy_check.pdf"),
+    ("Accuracy Audit", audit_task, "accuracy_audit.pdf"),
 ]
 for title, source, filename in pdf_tasks:
     try:
@@ -2063,10 +2089,10 @@ print("\n--- Saving Research Outputs (Markdown) ---")
 markdown_outputs = [
     ("Research Framing", framing_output, "research_framing.md"),
     # source_of_truth.md already saved from deep research outputs
-    ("Accuracy Check", accuracy_check_task, "accuracy_check.md"),
-    ("Podcast Planning", planning_task, "show_notes.md"),
-    ("Podcast Recording (Raw)", recording_task, "podcast_script_raw.md"),
-    ("Podcast Recording (Polished)", post_process_task, "podcast_script_polished.md"),
+    ("Accuracy Audit", audit_task, "accuracy_audit.md"),
+    ("Show Outline", outline_task, "show_outline.md"),
+    ("Script Draft", script_task, "script_draft.md"),
+    ("Script Final", polish_task, "script_final.md"),
 ]
 for label, source, filename in markdown_outputs:
     try:
@@ -2128,7 +2154,7 @@ print(f"Session metadata: {metadata_file}")
 # MetaVoice-1B has been replaced by Kokoro TTS (audio_engine.py)
 # The old functions below are commented out but kept for reference
 
-# def generate_audio_metavoice(dialogue_segments: list, output_filename: str = "podcast_final_audio.wav"):
+# def generate_audio_metavoice(dialogue_segments: list, output_filename: str = "audio.wav"):
 #     """DEPRECATED: Use audio_engine.generate_audio_from_script() instead"""
 #     pass
 
@@ -2140,8 +2166,8 @@ print(f"Session metadata: {metadata_file}")
 print("\n--- Generating Multi-Voice Podcast Audio (Kokoro TTS) ---")
 
 # Check script length before generation
-# Get the polished script from natural_language_task (not the last crew result, which is accuracy_check)
-script_text = natural_language_task.output.raw if hasattr(natural_language_task, 'output') and natural_language_task.output else result.raw
+# Get the polished script from polish_task (not the last crew result, which is audit_task)
+script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
 
 # Language-aware script length measurement — rates and targets derived from SUPPORTED_LANGUAGES
 speech_rate  = language_config['speech_rate']
@@ -2174,10 +2200,10 @@ if script_length < target_low:
             f"Expanded podcast script of at least {target_length} {length_unit}. "
             f"Same speaker label: dialogue format as input. No summaries, no truncation."
         ),
-        agent=scriptwriter,
+        agent=producer_agent,
     )
     from crewai import Crew as _Crew
-    expansion_result = _Crew(agents=[scriptwriter], tasks=[expansion_task], verbose=False).kickoff()
+    expansion_result = _Crew(agents=[producer_agent], tasks=[expansion_task], verbose=False).kickoff()
     expanded = expansion_result.raw if hasattr(expansion_result, 'raw') else str(expansion_result)
     if length_unit == 'chars' or length_unit.startswith('char'):
         expanded_length = len(re.sub(r'[\s\n\r\t　：:「」、。・（）\-\—\*#]', '', expanded))
@@ -2213,12 +2239,12 @@ print(f"{'='*60}\n")
 cleaned_script = clean_script_for_tts(script_text)
 
 # Save podcast script for review
-script_file = output_dir / "podcast_script.txt"
+script_file = output_dir / "script.txt"
 with open(script_file, 'w') as f:
     f.write(script_text)
 print(f"Podcast script saved: {script_file} ({script_length} {length_unit})")
 
-output_path = output_dir / "podcast_final_audio.wav"
+output_path = output_dir / "audio.wav"
 
 audio_file = None
 

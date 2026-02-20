@@ -60,7 +60,7 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
 
 ## Web UI
 
-A FastAPI-based web interface (`podcast_web_ui.py`) for managing podcast production:
+A FastAPI-based web interface (`web_ui.py`) for managing podcast production:
 
 - One-click topic submission with language, accessibility level, and host selection
 - **Live progress tracking**: phase name, progress bar, ETA, artifact count, source favicon grid
@@ -75,7 +75,7 @@ Launch:
 ```bash
 ./start_podcast_web_ui.sh
 # or directly:
-python podcast_web_ui.py --port 8501
+python web_ui.py --port 8501
 ```
 
 ## Agents
@@ -310,13 +310,13 @@ export YOUTUBE_CLIENT_SECRET_PATH="/path/to/client_secret.json"
 ./start_podcast_web_ui.sh
 
 # Via CLI
-python podcast_crew.py --topic "neuroplasticity and exercise" --language en
+python pipeline.py --topic "neuroplasticity and exercise" --language en
 
 # Reuse previous research (skip research phases, regenerate podcast only)
-python podcast_crew.py --reuse-dir research_outputs/2025-01-15_10-30-00 --crew3-only
+python pipeline.py --reuse-dir research_outputs/2025-01-15_10-30-00 --crew3-only
 
 # Reuse with LLM-assessed supplemental research if needed
-python podcast_crew.py --reuse-dir research_outputs/2025-01-15_10-30-00 --check-supplemental
+python pipeline.py --reuse-dir research_outputs/2025-01-15_10-30-00 --check-supplemental
 ```
 
 ## Accessibility Levels
@@ -363,15 +363,15 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 
 | File / Directory | Purpose |
 |------------------|---------|
-| `podcast_crew.py` | Main pipeline — agents, tasks, 10-phase orchestration, research library tools |
-| `podcast_web_ui.py` | FastAPI web UI with live progress tracking, task queue, and upload integration |
-| `deep_research_agent.py` | 8-step clinical research pipeline (PICO → wide net → screen → extract → cases → math → GRADE) |
+| `pipeline.py` | Main pipeline — agents, tasks, orchestration, research library tools |
+| `web_ui.py` | FastAPI web UI with live progress tracking, task queue, and upload integration |
+| `clinical_research.py` | 8-step clinical research pipeline (PICO → wide net → screen → extract → cases → math → GRADE) |
 | `clinical_math.py` | Deterministic ARR/NNT calculator — pure Python, zero LLM involvement |
 | `fulltext_fetcher.py` | 4-tier full-text fetcher: PMC OA → Europe PMC → Unpaywall → publisher scrape |
-| `search_agent.py` | SearXNG client, page scraping, content extraction |
+| `search_service.py` | SearXNG client, page scraping, content extraction |
 | `research_planner.py` | Structured research planning with iterative gap-filling |
 | `audio_engine.py` | Kokoro TTS rendering with dual-voice stitching and BGM post-processing |
-| `link_validator_tool.py` | URL validation via HEAD requests |
+| `link_validator.py` | URL validation via HEAD requests |
 | `upload_utils.py` | Buzzsprout and YouTube upload utilities |
 | `test_clinical_math.py` | Unit tests for clinical_math.py (17 tests) |
 | `start_podcast_web_ui.sh` | Web UI launcher script |
