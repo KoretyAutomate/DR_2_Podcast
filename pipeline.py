@@ -25,6 +25,60 @@ import wave
 from audio_engine import generate_audio_from_script, clean_script_for_tts, post_process_audio
 from clinical_research import run_deep_research
 
+# --- EVIDENCE QUALITY CONSTANTS ---
+EVIDENCE_LIMITED_THRESHOLD = 30  # evidence_quality = "limited" if aff_candidates < this
+
+
+class InsufficientEvidenceError(RuntimeError):
+    """Raised when the affirmative research track finds zero candidates."""
+    pass
+
+
+def _write_insufficient_evidence_report(topic, aff_n, neg_n, output_dir_path):
+    """Write a structured failure report when evidence is completely absent."""
+    report_path = output_dir_path / "insufficient_evidence_report.md"
+    strat_aff = strat_neg = "(not available)"
+    strat_data = {}
+    for fname, var in [("search_strategy_aff.json", "aff"), ("search_strategy_neg.json", "neg")]:
+        p = output_dir_path / fname
+        if p.exists():
+            try:
+                data = json.loads(p.read_text())
+                strat_data[var] = json.dumps(data.get("search_strings", {}), indent=2)
+            except Exception:
+                pass
+    strat_aff = strat_data.get("aff", strat_aff)
+    strat_neg = strat_data.get("neg", strat_neg)
+    content = f"""# Insufficient Evidence Report
+
+**Topic:** {topic}
+**Run:** {output_dir_path.name}
+
+## Search Results
+- Affirmative track candidates: {aff_n}
+- Adversarial track candidates: {neg_n}
+
+## Diagnosis
+The affirmative research track found **zero candidate studies**. This typically means:
+1. The search strings used folk-language phrasing instead of canonical MeSH terms.
+2. The topic is too narrow — no studies directly test the exact intervention.
+
+## Suggested Rephrasing
+Try rephrasing the topic using canonical scientific terms such as:
+- "chrono-nutrition", "early time-restricted feeding", "caloric front-loading"
+- "circadian meal timing", "meal timing and metabolic outcomes"
+
+## Search Strategies Used
+### Affirmative
+{strat_aff}
+
+### Adversarial
+{strat_neg}
+"""
+    report_path.write_text(content)
+    print(f"✗ Insufficient evidence report written → {report_path.name}")
+
+
 # --- SOURCE TRACKING MODELS ---
 class ScientificSource(BaseModel):
     """Structured scientific source."""
@@ -1889,6 +1943,9 @@ except Exception:
     print("⚠ Fast model not available, using smart-only mode")
 
 sot_content = ""  # Will hold the synthesized Source-of-Truth
+aff_candidates = 0
+neg_candidates = 0
+evidence_quality = "sufficient"
 
 try:
     deep_reports = asyncio.run(run_deep_research(
@@ -1899,6 +1956,30 @@ try:
         framing_context=framing_output,
         output_dir=str(output_dir)
     ))
+
+    # C5: Gate — abort if affirmative track found zero candidates
+    for fname, varname in [("screening_results_aff.json", "aff"), ("screening_results_neg.json", "neg")]:
+        p = output_dir / fname
+        if p.exists():
+            try:
+                val = json.loads(p.read_text()).get("total_candidates", 0)
+                if varname == "aff":
+                    aff_candidates = val
+                else:
+                    neg_candidates = val
+            except Exception:
+                pass
+    if aff_candidates == 0:
+        _write_insufficient_evidence_report(topic_name, 0, neg_candidates, output_dir)
+        raise InsufficientEvidenceError(
+            f"Affirmative track: 0 candidates for '{topic_name}'. "
+            f"Adversarial found {neg_candidates}. "
+            "See insufficient_evidence_report.md for suggested rephrasing."
+        )
+
+    # C6: Evidence quality flag
+    if 0 < aff_candidates < EVIDENCE_LIMITED_THRESHOLD:
+        evidence_quality = "limited"
 
     # Save all reports (lead, counter, audit)
     REPORT_FILENAMES = {"lead": "affirmative_case.md", "counter": "falsification_case.md", "audit": "grade_synthesis.md"}
@@ -1948,6 +2029,16 @@ try:
     if math_file.exists():
         sot_content += f"## Clinical Impact (Deterministic Math)\n\n{math_file.read_text()}\n\n"
 
+    # C6: Prepend evidence quality banner if limited
+    if evidence_quality == "limited":
+        sot_content = (
+            "## ⚠ Evidence Quality Notice\n\n"
+            f"The affirmative research track retrieved only **{aff_candidates} candidate studies** "
+            f"(threshold: {EVIDENCE_LIMITED_THRESHOLD}). "
+            "The following synthesis is based on limited direct evidence. "
+            "Claims should be interpreted cautiously.\n\n"
+        ) + sot_content
+
     # Save as source_of_truth.md
     sot_file = output_dir / "source_of_truth.md"
     with open(sot_file, 'w') as f:
@@ -1958,6 +2049,8 @@ try:
     print("Summarizing Source-of-Truth with fast model...")
     sot_summary = summarize_report_with_fast_model(sot_content, "sot", topic_name)
 
+except InsufficientEvidenceError:
+    raise
 except Exception as e:
     print(f"⚠ Deep research pre-scan failed: {e}")
     print("Continuing without deep research...")
@@ -2023,6 +2116,41 @@ if sot_summary:
 # For translation: inject full SOT (not summary) since translation needs complete text
 if translation_task is not None and sot_content:
     translation_task.description += f"\n\nSOURCE OF TRUTH TO TRANSLATE:\n{sot_content}\n--- END ---\n"
+
+# C6: Check GRADE file for LOW quality (may upgrade evidence_quality even if aff_candidates >= threshold)
+grade_file = output_dir / "grade_synthesis.md"
+if grade_file.exists():
+    try:
+        if "GRADE: LOW" in grade_file.read_text():
+            evidence_quality = "limited"
+    except Exception:
+        pass
+
+# C6: Inject evidence disclosure into tasks if limited
+if evidence_quality == "limited":
+    script_task.description += (
+        "\n\nEVIDENCE QUALITY NOTE — READ CAREFULLY:\n"
+        "The systematic review found limited direct scientific evidence for this question.\n"
+        "Your script MUST:\n"
+        "1. Acknowledge this in the OPENING: "
+        "   'While direct studies on this are limited, related research gives us clues...'\n"
+        "2. In each body segment, distinguish: "
+        "(a) what limited direct evidence shows, "
+        "(b) what related evidence suggests, "
+        "(c) what remains unknown.\n"
+        "3. Frame CLOSING takeaways as 'based on current evidence' — not 'proven'.\n"
+        "4. Do NOT invent citations. If few studies exist, say so in the dialogue.\n"
+        "Example dialogue:\n"
+        "  Presenter: 'Direct studies on this exact pattern are surprisingly rare. "
+        "But here's what the broader science on meal timing tells us...'\n"
+        "  Questioner: 'So we're working with partial evidence here. "
+        "What do we actually know for certain?'\n"
+    )
+    outline_task.description += (
+        "\n\nEVIDENCE NOTE: Research was limited. "
+        "Mark citations with [LIMITED EVIDENCE] where the research base is sparse. "
+        "Add a 'Research Limitations' section to the outline."
+    )
 
 # ================================================================
 # CREW 3: Podcast Production
