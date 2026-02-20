@@ -116,7 +116,7 @@ The system uses two local LLMs working in tandem:
 | Role | Default Model | Hosted On | Purpose |
 |------|---------------|-----------|---------|
 | **Smart model** | `Qwen/Qwen2.5-32B-Instruct-AWQ` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing |
-| **Fast model** | `phi4-mini` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
+| **Fast model** | `llama3.2:1b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
 
 Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
 
@@ -275,9 +275,9 @@ docker run --runtime nvidia --gpus all -p 8000:8000 \
 **Ollama** — Required for the fast model:
 ```bash
 ollama serve
-ollama pull phi4-mini               # Recommended fast model
-# or lighter alternative:
-ollama pull llama3.2:1b
+ollama pull llama3.2:1b             # Fast model (default)
+# Optional upgrade:
+ollama pull phi4-mini
 # Then set: export FAST_MODEL_NAME="phi4-mini"
 ```
 
@@ -322,7 +322,7 @@ export PODCAST_HOSTS="random"         # random | kaz_erika | erika_kaz
 # Model config (defaults shown)
 export MODEL_NAME="Qwen/Qwen2.5-32B-Instruct-AWQ"
 export LLM_BASE_URL="http://localhost:8000/v1"
-export FAST_MODEL_NAME="phi4-mini"
+export FAST_MODEL_NAME="llama3.2:1b"
 export FAST_LLM_BASE_URL="http://localhost:11434/v1"
 
 # Web UI authentication (auto-generated if not set)
