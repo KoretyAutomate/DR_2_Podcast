@@ -1,9 +1,10 @@
 """
-Full-text article fetcher with 4-tier fallback:
-1. PubMed Central Open Access API
+Full-text article fetcher with 5-tier fallback:
+1. PubMed Central — NCBI ELink + EFetch (modern eutils API)
 2. Europe PMC REST API
 3. Unpaywall API
-4. Publisher page scrape (reuses ContentFetcher logic)
+4. NCBI EFetch abstract XML (reliable API fallback)
+5. Publisher page scrape (last resort)
 
 Used by the deep research pipeline (Step 4) to retrieve full-text
 articles for the top-20 screened studies.
@@ -33,7 +34,7 @@ class FullTextArticle:
     doi: Optional[str]
     title: str
     full_text: str
-    source: str         # "pmc", "europepmc", "unpaywall", "scrape"
+    source: str         # "pmc", "europepmc", "unpaywall", "ncbi_abstract", "scrape"
     word_count: int
     url: str
     error: Optional[str] = None
@@ -45,13 +46,14 @@ class FullTextFetcher:
     def __init__(self, max_concurrent: int = 5, cache=None):
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self.unpaywall_email = os.getenv("UNPAYWALL_EMAIL", "research@example.com")
+        self.ncbi_api_key = os.getenv("PUBMED_API_KEY", "")
         self.cache = cache  # PageCache instance (optional)
 
     async def fetch_fulltext(self, pmid: Optional[str], doi: Optional[str],
                              title: str, url: str) -> FullTextArticle:
-        """Try PMC → Europe PMC → Unpaywall → publisher scrape."""
+        """Try PMC EFetch → Europe PMC → Unpaywall → NCBI Abstract → publisher scrape."""
         async with self.semaphore:
-            # Tier 1: PubMed Central OA
+            # Tier 1: PMC full text via NCBI ELink + EFetch
             if pmid:
                 text = await self._try_pmc(pmid)
                 if text:
@@ -78,7 +80,16 @@ class FullTextFetcher:
                         source="unpaywall", word_count=len(text.split()), url=url
                     )
 
-            # Tier 4: Publisher page scrape
+            # Tier 4: NCBI EFetch abstract (reliable API, no bot detection)
+            if pmid:
+                text = await self._try_ncbi_abstract(pmid)
+                if text:
+                    return FullTextArticle(
+                        pmid=pmid, doi=doi, title=title, full_text=text,
+                        source="ncbi_abstract", word_count=len(text.split()), url=url
+                    )
+
+            # Tier 5: Publisher page scrape (last resort)
             text = await self._try_scrape(url)
             if text:
                 return FullTextArticle(
@@ -106,46 +117,50 @@ class FullTextFetcher:
         return await asyncio.gather(*tasks)
 
     async def _try_pmc(self, pmid: str) -> Optional[str]:
-        """Tier 1: PubMed Central Open Access — get full-text XML."""
+        """Tier 1: PMC full text via NCBI ELink + EFetch (replaces broken OAI endpoint)."""
         try:
-            async with httpx.AsyncClient(timeout=15) as http:
-                # Check if article is in PMC
+            base_params = {"api_key": self.ncbi_api_key} if self.ncbi_api_key else {}
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as http:
+                # Step 1: Find PMCID via ELink
                 resp = await http.get(
-                    "https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/",
-                    params={"ids": pmid, "format": "json"}
+                    "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi",
+                    params={"dbfrom": "pubmed", "db": "pmc", "id": pmid,
+                            "retmode": "json", **base_params}
                 )
                 if resp.status_code != 200:
                     return None
                 data = resp.json()
-                records = data.get("records", [])
-                if not records or "pmcid" not in records[0]:
-                    return None
+                pmcid = None
+                for ls in data.get("linksets", []):
+                    for lsdb in ls.get("linksetdbs", []):
+                        if lsdb.get("dbto") == "pmc":
+                            links = lsdb.get("links", [])
+                            if links:
+                                pmcid = str(links[0])
+                                break
+                    if pmcid:
+                        break
+                if not pmcid:
+                    return None  # Article not in PMC OA
 
-                pmcid = records[0]["pmcid"]
-
-                # Fetch full-text XML from PMC
-                resp = await http.get(
-                    f"https://www.ncbi.nlm.nih.gov/pmc/oai/oai.cgi",
-                    params={
-                        "verb": "GetRecord",
-                        "identifier": f"oai:pubmedcentral.nih.gov:{pmcid.replace('PMC', '')}",
-                        "metadataPrefix": "pmc"
-                    }
+                # Step 2: Fetch full-text XML via EFetch
+                resp2 = await http.get(
+                    "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+                    params={"db": "pmc", "id": pmcid, "rettype": "full",
+                            "retmode": "xml", **base_params}
                 )
-                if resp.status_code != 200:
+                if resp2.status_code != 200:
                     return None
-
-                # Extract text from XML
-                text = self._extract_text_from_xml(resp.text)
+                text = self._extract_text_from_xml(resp2.text)
                 return text[:MAX_TEXT_CHARS] if text else None
         except Exception as e:
-            logger.debug(f"PMC fetch failed for PMID {pmid}: {e}")
+            logger.warning(f"PMC EFetch failed for PMID {pmid}: {e}")
             return None
 
     async def _try_europepmc(self, pmid: str) -> Optional[str]:
         """Tier 2: Europe PMC REST API — full-text XML for OA articles."""
         try:
-            async with httpx.AsyncClient(timeout=15) as http:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as http:
                 resp = await http.get(
                     f"https://www.ebi.ac.uk/europepmc/webservices/rest/{pmid}/fullTextXML"
                 )
@@ -154,13 +169,13 @@ class FullTextFetcher:
                 text = self._extract_text_from_xml(resp.text)
                 return text[:MAX_TEXT_CHARS] if text else None
         except Exception as e:
-            logger.debug(f"Europe PMC fetch failed for PMID {pmid}: {e}")
+            logger.warning(f"Europe PMC fetch failed for PMID {pmid}: {e}")
             return None
 
     async def _try_unpaywall(self, doi: str) -> Optional[str]:
         """Tier 3: Unpaywall API — find OA PDF URL, then scrape it."""
         try:
-            async with httpx.AsyncClient(timeout=15) as http:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as http:
                 resp = await http.get(
                     f"https://api.unpaywall.org/v2/{doi}",
                     params={"email": self.unpaywall_email}
@@ -180,11 +195,31 @@ class FullTextFetcher:
                 # Scrape the OA URL
                 return await self._try_scrape(pdf_url)
         except Exception as e:
-            logger.debug(f"Unpaywall fetch failed for DOI {doi}: {e}")
+            logger.warning(f"Unpaywall fetch failed for DOI {doi}: {e}")
+            return None
+
+    async def _try_ncbi_abstract(self, pmid: str) -> Optional[str]:
+        """Tier 4: NCBI EFetch abstract XML — reliable fallback when full text unavailable."""
+        try:
+            params: dict = {"db": "pubmed", "id": pmid, "rettype": "abstract",
+                            "retmode": "xml"}
+            if self.ncbi_api_key:
+                params["api_key"] = self.ncbi_api_key
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as http:
+                resp = await http.get(
+                    "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+                    params=params
+                )
+                if resp.status_code != 200:
+                    return None
+                text = self._extract_text_from_xml(resp.text)
+                return text[:MAX_TEXT_CHARS] if text else None
+        except Exception as e:
+            logger.warning(f"NCBI abstract fetch failed for PMID {pmid}: {e}")
             return None
 
     async def _try_scrape(self, url: str) -> Optional[str]:
-        """Tier 4: Publisher page scrape (same logic as ContentFetcher)."""
+        """Tier 5: Publisher page scrape (last resort)."""
         if not url:
             return None
         try:
@@ -211,17 +246,18 @@ class FullTextFetcher:
                 text = content_el.get_text(separator=" ", strip=True) if content_el else ""
                 return text[:MAX_TEXT_CHARS] if text else None
         except Exception as e:
-            logger.debug(f"Scrape failed for {url}: {e}")
+            logger.warning(f"Scrape failed for {url}: {e}")
             return None
 
     def _extract_text_from_xml(self, xml_text: str) -> Optional[str]:
-        """Extract readable text from PMC/Europe PMC XML."""
+        """Extract readable text from PMC/Europe PMC/NCBI EFetch XML."""
         try:
             root = ET.fromstring(xml_text)
-            # Collect text from body paragraphs
+            # Collect text from body paragraphs — strip namespace prefixes before matching
             parts = []
             for elem in root.iter():
-                if elem.tag in ("p", "title", "sec", "abstract", "body"):
+                local_tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+                if local_tag in ("p", "title", "sec", "abstract", "body", "AbstractText"):
                     text = "".join(elem.itertext()).strip()
                     if text:
                         parts.append(text)
