@@ -11,12 +11,11 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
                        └──────────────┬──────────────┘
                                       ▼
                   ┌──────────────────────────────────────┐
-                  │  Phase 0 — Research Framing           │
-                  │  (Research Framing Specialist)        │
+                  │  Phase 0 — Research Framing (Crew 1)  │
                   └──────────────┬───────────────────────┘
                                  ▼
        ┌──────────────────────────────────────────────────────────┐
-       │  8-Step Clinical Pipeline (Deep Research)                 │
+       │  Phase 1 — 8-Step Clinical Pipeline                      │
        │                                                          │
        │  ┌─ AFFIRMATIVE TRACK ──────────────────────────────┐   │
        │  │ Step 1: PICO/MeSH/Boolean strategy (Smart)       │   │
@@ -38,23 +37,26 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
        └──────────────┬───────────────────────────────────────────┘
                       ▼
      ┌───────────────────────────────────────────────────────────────┐
-     │  URL Validation (batch HEAD requests)                         │
+     │  Phase 2 — Source Validation (batch HEAD requests)            │
      │  Source-of-Truth synthesis (from deep research outputs)       │
+     └───────────────────────┬───────────────────────────────────────┘
+                             ▼
+     ┌───────────────────────────────────────────────────────────────┐
+     │  Phase 3 — Report Translation (Crew 2, conditional)          │
      └───────────────────────┬───────────────────────────────────────┘
                              ▼
      ┌───────────────────────────────────────────────────────────────┐
      │ Crew 3 — Podcast Production                                   │
      │                                                               │
-     │  Phase 3: Show Notes & Citations (Producer)                   │
-     │  Phase 4: Podcast Script Generation (Producer)               │
-     │  Phase 5: Script Polishing (Personality Editor)              │
-     │  Phase 6: Accuracy Check (Auditor) [advisory]               │
-     │  [Translation task inserted before 3/5 for non-English]      │
+     │  Phase 4: Show Outline & Citations (Producer)                │
+     │  Phase 5: Script Writing (Producer)                          │
+     │  Phase 6: Script Polish (Editor)                             │
+     │  Phase 7: Accuracy Audit (Auditor) [advisory]               │
      └───────────────────────┬───────────────────────────────────────┘
                              ▼
               ┌─────────────────────────────────────────────┐
-              │  Audio Generation — Kokoro TTS               │
-              │  Two voices, 24kHz WAV + BGM mixing          │
+              │  Phase 8 — Audio Production                  │
+              │  Kokoro TTS, two voices, 24kHz WAV + BGM     │
               └─────────────────────────────────────────────┘
 ```
 
@@ -82,12 +84,12 @@ python web_ui.py --port 8501
 
 The pipeline uses **4 CrewAI agents** (down from 7 — the 8-step clinical pipeline replaced the Lead Researcher, Adversarial Researcher, and Source Verifier):
 
-| Agent | Role | Tools |
-|-------|------|-------|
-| **Research Framing Specialist** | Defines scope, core questions, evidence criteria before any searching begins | — |
-| **Scientific Auditor (The Grader)** | Checks polished script for scientific drift against the Source-of-Truth | LinkValidator, ListResearchSources, ReadResearchSource, ReadFullReport |
-| **Podcast Producer (The Showrunner)** | Transforms research into a debate script targeting Masters/PhD-level depth | — |
-| **Podcast Personality (The Editor)** | Polishes script for natural verbal delivery, enforces word count and depth | — |
+| Agent | Variable | Role | Tools |
+|-------|----------|------|-------|
+| **Research Framing Specialist** | `framing_agent` | Defines scope, core questions, evidence criteria before any searching begins | — |
+| **Scientific Auditor** | `auditor_agent` | Checks polished script for scientific drift against the Source-of-Truth | LinkValidator, ListResearchSources, ReadResearchSource, ReadFullReport |
+| **Podcast Producer** | `producer_agent` | Transforms research into a debate script targeting Masters/PhD-level depth | — |
+| **Podcast Editor** | `editor_agent` | Polishes script for natural verbal delivery, enforces word count and depth | — |
 
 ## Dual-Model Architecture
 
@@ -149,7 +151,7 @@ The Auditor reads both cases and the Python-calculated NNT table, then issues a 
 
 ## Research Library
 
-After the deep research pre-scan, all source-level data is saved to `deep_research_sources.json`. Three CrewAI tools let agents browse and drill into this library during their tasks:
+After the deep research pre-scan, all source-level data is saved to `research_sources.json`. Three CrewAI tools let agents browse and drill into this library during their tasks:
 
 - **ListResearchSources** — Browse a numbered index of all sources (title, URL, research goal)
 - **ReadResearchSource** — Read the full extracted summary for any specific source by index
@@ -173,25 +175,31 @@ The Step 8 GRADE synthesis follows this structure:
 
 ## Pipeline Phases
 
-### Phase 0 — Research Framing & Hypothesis
+### Phase 0 — Research Framing (Crew 1)
 The Research Framing Specialist defines scope boundaries, core research questions, evidence criteria, suggested search directions, and hypotheses to test.
 
-### Phase 1 — Deep Research (8-Step Clinical Pipeline)
-See [Evidence-Based Research Pipeline](#evidence-based-research-pipeline) above. Produces affirmative case (lead.md), falsification case (counter.md), GRADE synthesis (audit.md), deterministic math (math.md), and the research library (deep_research_sources.json).
+### Phase 1 — Clinical Research (8-Step Pipeline)
+See [Evidence-Based Research Pipeline](#evidence-based-research-pipeline) above. Produces affirmative case (`affirmative_case.md`), falsification case (`falsification_case.md`), GRADE synthesis (`grade_synthesis.md`), deterministic math (`clinical_math.md`), and the research library (`research_sources.json`).
 
-### Phase 2 — URL Validation & Source-of-Truth Synthesis
-Batch HEAD requests validate all cited URLs. The Source-of-Truth is synthesized by concatenating the deep research outputs (affirmative case + falsification case + GRADE audit + deterministic math). This replaces the former Crew 1/2 agents.
+### Phase 2 — Source Validation
+Batch HEAD requests validate all cited URLs. The Source-of-Truth is synthesized by concatenating the deep research outputs (affirmative case + falsification case + GRADE audit + deterministic math).
 
-### Phase 3 — Show Notes & Script
-The Producer generates show notes with citations and a debate script. The Source-of-Truth summary is injected directly into task descriptions. The script uses `Host 1:` / `Host 2:` dialogue format.
+### Phase 3 — Report Translation (Crew 2, conditional)
+For non-English output, the Producer translates the Source-of-Truth into the target language. This runs as a separate Crew 2 before Crew 3. Skipped for English.
 
-### Phase 4 — Script Polishing
-The Personality Editor refines for natural verbal delivery and ensures balanced coverage.
+### Phase 4 — Show Outline (Crew 3)
+The Producer generates a show outline with citations. The Source-of-Truth summary is injected directly into task descriptions.
 
-### Phase 5 — Accuracy Check (advisory)
+### Phase 5 — Script Writing (Crew 3)
+The Producer generates the debate script. The script uses `Host 1:` / `Host 2:` dialogue format.
+
+### Phase 6 — Script Polish (Crew 3)
+The Editor refines for natural verbal delivery and ensures balanced coverage.
+
+### Phase 7 — Accuracy Audit (Crew 3, advisory)
 The Auditor scans the polished script for drift patterns: correlation-to-causation, hedge removal, confidence inflation, cherry-picking, and contested-as-settled. Non-blocking.
 
-### Audio Generation
+### Phase 8 — Audio Production
 Kokoro TTS renders the polished script with two voices at 24kHz WAV, followed by BGM mixing:
 
 | Language | Host 1 (Kaz) | Host 2 (Erika) |
@@ -205,7 +213,7 @@ An alternative Japanese TTS engine (Qwen3-TTS) is available via a local FastAPI 
 
 The pipeline supports English and Japanese output:
 - **English**: Default. All research, scripts, and audio in English.
-- **Japanese**: A translation task is inserted into Crew 3 before script polishing and show notes. Kokoro uses Japanese voice models. Host names use katakana (カズ / エリカ).
+- **Japanese**: A translation task runs in Crew 2 before Crew 3. Kokoro uses Japanese voice models. Host names use katakana (カズ / エリカ).
 
 ## Podcast Characters
 
@@ -337,24 +345,24 @@ All outputs are saved to a timestamped directory under `research_outputs/`:
 research_outputs/YYYY-MM-DD_HH-MM-SS/
 ├── research_framing.md               Phase 0 — scope and hypotheses
 ├── research_framing.pdf
-├── deep_research_lead.md             Step 5 — affirmative case
-├── deep_research_counter.md          Step 6 — falsification case
-├── deep_research_audit.md            Step 8 — GRADE synthesis
-├── deep_research_sources.json        Research library (structured source data)
-├── deep_research_math.md             Step 7 — deterministic ARR/NNT table
-├── deep_research_strategy_aff.json   Step 1 — affirmative PICO/MeSH/Boolean
-├── deep_research_strategy_neg.json   Step 1' — adversarial PICO/MeSH/Boolean
-├── deep_research_screening.json      Step 3 — screening decisions (500 → 20)
+├── affirmative_case.md               Step 5 — affirmative case
+├── falsification_case.md             Step 6 — falsification case
+├── grade_synthesis.md                Step 8 — GRADE synthesis
+├── research_sources.json             Research library (structured source data)
+├── clinical_math.md                  Step 7 — deterministic ARR/NNT table
+├── search_strategy_aff.json          Step 1 — affirmative PICO/MeSH/Boolean
+├── search_strategy_neg.json          Step 1' — adversarial PICO/MeSH/Boolean
+├── screening_results.json            Step 3 — screening decisions (500 → 20)
 ├── source_of_truth.md                Synthesized from deep research outputs
 ├── source_of_truth.pdf
-├── url_validation_results.json       Batch URL validation results
-├── show_notes.md                     Phase 3 — show notes and citations
-├── podcast_script_raw.md             Phase 4 — raw script
-├── podcast_script_polished.md        Phase 5 — polished script
-├── podcast_script.txt                Final script for TTS
-├── accuracy_check.md                 Phase 6 — drift detection
-├── accuracy_check.pdf
-├── podcast_final_audio.wav           Final podcast audio (24kHz WAV + BGM)
+├── url_validation_results.json       Phase 2 — batch URL validation results
+├── show_outline.md                   Phase 4 — show outline and citations
+├── script_draft.md                   Phase 5 — draft script
+├── script_final.md                   Phase 6 — polished script
+├── script.txt                        Final script for TTS
+├── accuracy_audit.md                 Phase 7 — drift detection
+├── accuracy_audit.pdf
+├── audio.wav                         Phase 8 — final podcast audio (24kHz WAV + BGM)
 ├── session_metadata.txt              Topic, language, character assignments
 └── podcast_generation.log            Execution log
 ```
