@@ -4,6 +4,10 @@
 youtube_token.pickle
 client_secret.json
 
+# Claude-generated planning & project docs (local only)
+PLAN.md
+CLAUDE.md
+
 # Python & Environment
 __pycache__/
 *.pyc
