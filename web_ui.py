@@ -65,7 +65,7 @@ EXPECTED_ARTIFACTS = [
     "affirmative_case.md", "falsification_case.md", "grade_synthesis.md",
     "research_sources.json", "clinical_math.md",
     "search_strategy_aff.json", "search_strategy_neg.json",
-    "screening_results.json",
+    "screening_results_aff.json", "screening_results_neg.json",
     "source_of_truth.md", "source_of_truth.pdf",
     "url_validation_results.json",
     "script_draft.md", "script_final.md", "script.txt",
@@ -74,17 +74,19 @@ EXPECTED_ARTIFACTS = [
     "audio.wav"
 ]
 
-def count_artifacts(directory: Optional[str]) -> tuple[int, int]:
+# Language-specific extra artifacts (added on top of EXPECTED_ARTIFACTS)
+EXPECTED_ARTIFACTS_EXTRA = {
+    "ja": ["source_of_truth_ja.md", "source_of_truth_ja.pdf"],
+}
+
+def count_artifacts(directory: Optional[str], language: str = "en") -> tuple[int, int]:
     """Count generated artifacts vs expected total."""
+    all_artifacts = EXPECTED_ARTIFACTS + EXPECTED_ARTIFACTS_EXTRA.get(language, [])
     if not directory or not os.path.exists(directory):
-        return 0, len(EXPECTED_ARTIFACTS)
-    
-    found = 0
-    for filename in EXPECTED_ARTIFACTS:
-        if (Path(directory) / filename).exists():
-            found += 1
-            
-    return found, len(EXPECTED_ARTIFACTS)
+        return 0, len(all_artifacts)
+
+    found = sum(1 for f in all_artifacts if (Path(directory) / f).exists())
+    return found, len(all_artifacts)
 
 current_task_id = None
 
@@ -2201,12 +2203,12 @@ async def get_status(task_id: str, username: str = Depends(verify_credentials)):
     
     # Calculate artifact counts on-the-fly
     if task.get("output_dir"):
-        created, total = count_artifacts(task["output_dir"])
+        created, total = count_artifacts(task["output_dir"], task.get("language", "en"))
         task["artifacts_created"] = created
         task["artifacts_total"] = total
     else:
         task["artifacts_created"] = 0
-        task["artifacts_total"] = len(EXPECTED_ARTIFACTS)
+        task["artifacts_total"] = len(EXPECTED_ARTIFACTS + EXPECTED_ARTIFACTS_EXTRA.get(task.get("language", "en"), []))
 
     # Calculate current step duration
     current_step_duration = 0
@@ -2231,12 +2233,12 @@ async def get_history(username: str = Depends(verify_credentials)):
     # Calculate artifact counts for history items
     for task in sorted_tasks:
         if task.get("output_dir"):
-            created, total = count_artifacts(task["output_dir"])
+            created, total = count_artifacts(task["output_dir"], task.get("language", "en"))
             task["artifacts_created"] = created
             task["artifacts_total"] = total
         else:
             task["artifacts_created"] = 0
-            task["artifacts_total"] = len(EXPECTED_ARTIFACTS)
+            task["artifacts_total"] = len(EXPECTED_ARTIFACTS + EXPECTED_ARTIFACTS_EXTRA.get(task.get("language", "en"), []))
             
     # Return last 20 tasks, newest first
     return sorted_tasks[:20]

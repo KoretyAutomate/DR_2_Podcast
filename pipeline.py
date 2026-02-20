@@ -276,12 +276,15 @@ RESEARCH_ARTIFACTS = [
     "research_sources.json",
     "research_framing.md", "research_framing.pdf",
     "source_of_truth.pdf",
+    "source_of_truth_ja.md",
+    "source_of_truth_ja.pdf",
     "url_validation_results.json",
     "affirmative_case.md", "falsification_case.md", "grade_synthesis.md",
     "clinical_math.md",
     "search_strategy_aff.json",
     "search_strategy_neg.json",
-    "screening_results.json",
+    "screening_results_aff.json",
+    "screening_results_neg.json",
 ]
 
 # Legacy artifact names for backward compatibility with old runs
@@ -293,7 +296,8 @@ LEGACY_ARTIFACT_NAMES = {
     "clinical_math.md": "deep_research_math.md",
     "search_strategy_aff.json": "deep_research_strategy_aff.json",
     "search_strategy_neg.json": "deep_research_strategy_neg.json",
-    "screening_results.json": "deep_research_screening.json",
+    "screening_results_aff.json": "deep_research_screening.json",  # aff falls back to old unified file
+    "screening_results_neg.json": "deep_research_screening.json",  # neg falls back to old unified file
     "show_outline.md": "show_notes.md",
     "SHOW_OUTLINE.md": "SHOW_NOTES.md",
     "accuracy_audit.md": "accuracy_check.md",
@@ -2027,6 +2031,7 @@ print(f"\n{'='*70}")
 print(f"CREW 3: PODCAST PRODUCTION")
 print(f"{'='*70}")
 
+translated_sot = None  # set below if translation runs
 if translation_task is not None:
     print(f"\nPHASE 3: REPORT TRANSLATION")
     print(f"Translating Source-of-Truth to {language_config['name']}")
@@ -2037,6 +2042,19 @@ if translation_task is not None:
         process='sequential'
     )
     crew_2.kickoff()
+
+    # Save translated SOT to disk
+    if hasattr(translation_task, 'output') and translation_task.output and \
+            hasattr(translation_task.output, 'raw') and translation_task.output.raw:
+        translated_sot = translation_task.output.raw
+        lang_suffix = language  # e.g. "ja"
+        sot_translated_file = output_dir / f"source_of_truth_{lang_suffix}.md"
+        with open(sot_translated_file, 'w', encoding='utf-8') as f:
+            f.write(translated_sot)
+        print(f"✓ Translated SOT saved ({len(translated_sot)} chars) → {sot_translated_file.name}")
+    else:
+        print(f"  Warning: Translation task produced no output — translated SOT not saved")
+        translated_sot = None
 
 crew_3_tasks = [outline_task, script_task, polish_task, audit_task]
 
@@ -2071,6 +2089,11 @@ pdf_tasks = [
     ("Research Framing", framing_output, "research_framing.pdf"),
     ("Source of Truth", sot_content, "source_of_truth.pdf"),
     ("Accuracy Audit", audit_task, "accuracy_audit.pdf"),
+    # Translated SOT PDF — only generated when translation ran and produced output
+    *([(f"Source of Truth ({language_config['name']})",
+        translated_sot,
+        f"source_of_truth_{language}.pdf")]
+      if translation_task is not None and translated_sot else []),
 ]
 for title, source, filename in pdf_tasks:
     try:

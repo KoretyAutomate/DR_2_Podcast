@@ -2088,21 +2088,19 @@ class Orchestrator:
             json.dump({"pico": fal_strategy.pico, "mesh_terms": fal_strategy.mesh_terms,
                         "search_strings": fal_strategy.search_strings, "role": fal_strategy.role}, f, indent=2)
 
-        # Screening decisions
-        screening = {
-            "affirmative": {
+        # Screening decisions (one file per track)
+        with open(out / "screening_results_aff.json", 'w') as f:
+            json.dump({
                 "total_candidates": len(aff_records),
                 "selected": len(aff_top),
                 "selected_titles": [r.title for r in aff_top],
-            },
-            "adversarial": {
+            }, f, indent=2, ensure_ascii=False)
+        with open(out / "screening_results_neg.json", 'w') as f:
+            json.dump({
                 "total_candidates": len(fal_records),
                 "selected": len(fal_top),
                 "selected_titles": [r.title for r in fal_top],
-            },
-        }
-        with open(out / "screening_results.json", 'w') as f:
-            json.dump(screening, f, indent=2, ensure_ascii=False)
+            }, f, indent=2, ensure_ascii=False)
 
         # Math report
         with open(out / "clinical_math.md", 'w') as f:
