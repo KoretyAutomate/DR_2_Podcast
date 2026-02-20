@@ -63,12 +63,11 @@ task_queue = queue.Queue()
 EXPECTED_ARTIFACTS = [
     "research_framing.md", "research_framing.pdf",
     "deep_research_lead.md", "deep_research_counter.md", "deep_research_audit.md",
-    "deep_research_sources.json",
-    "gap_analysis.md",
-    "adversarial_research.md", "adversarial_paper.pdf",
-    "supporting_research.md", "supporting_paper.pdf",
-    "source_verification.md", "verified_sources_bibliography.pdf",
+    "deep_research_sources.json", "deep_research_math.md",
+    "deep_research_strategy_aff.json", "deep_research_strategy_neg.json",
+    "deep_research_screening.json",
     "source_of_truth.md", "source_of_truth.pdf",
+    "url_validation_results.json",
     "podcast_script_raw.md", "podcast_script_polished.md", "podcast_script.txt",
     "show_notes.md", "accuracy_check.md", "accuracy_check.pdf",
     "podcast_generation.log", "session_metadata.txt",
@@ -1372,8 +1371,8 @@ def home(username: str = Depends(verify_credentials)):
                         <a href="/api/download/${{data.task_id}}/source_of_truth.md" class="download-link">📋 Source of Truth</a>
                         <a href="/api/download/${{data.task_id}}/show_notes.md" class="download-link">📝 Show Notes</a>
                         <a href="/api/download/${{data.task_id}}/accuracy_check.md" class="download-link">✅ Accuracy Check</a>
-                        <a href="/api/download/${{data.task_id}}/supporting_paper.pdf" class="download-link">📄 Supporting Paper</a>
-                        <a href="/api/download/${{data.task_id}}/adversarial_paper.pdf" class="download-link">📄 Adversarial Paper</a>
+                        <a href="/api/download/${{data.task_id}}/deep_research_lead.md" class="download-link">📄 Lead Research</a>
+                        <a href="/api/download/${{data.task_id}}/deep_research_audit.md" class="download-link">📄 GRADE Audit</a>
                         <a href="/api/download/${{data.task_id}}/source_of_truth.pdf" class="download-link">📄 Source of Truth PDF</a>
                         ${{uploadsHtml}}
                         </div>
@@ -1424,8 +1423,8 @@ def home(username: str = Depends(verify_credentials)):
                              {{ name: "Source of Truth", file: "source_of_truth.md", icon: "📋" }},
                              {{ name: "Show Notes", file: "show_notes.md", icon: "📝" }},
                              {{ name: "Accuracy Check", file: "accuracy_check.md", icon: "✅" }},
-                             {{ name: "Script PDF", file: "supporting_paper.pdf", icon: "📄" }},
-                             {{ name: "Adversarial Check", file: "adversarial_paper.pdf", icon: "⚖️" }}
+                             {{ name: "Lead Research", file: "deep_research_lead.md", icon: "📄" }},
+                             {{ name: "GRADE Audit", file: "deep_research_audit.md", icon: "⚖️" }}
                          ];
                          
                          const artifactLinks = artifacts.map(a => 
@@ -1750,10 +1749,9 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
     return {"task_id": task_id, "status": "queued"}
 
 # Phase markers parsed from podcast_crew.py stdout
-# Phase markers parsed from podcast_crew.py stdout
 PHASE_MARKERS = [
     ("PHASE 0: RESEARCH FRAMING", "Research Framing", 5),
-    # New clinical pipeline phases (deep research)
+    # Clinical pipeline phases (deep research)
     ("PHASE 1: SEARCH STRATEGY", "Search Strategy Formulation", 8),
     ("PHASE 2: WIDE NET", "Wide Net Search", 10),
     ("PHASE 3: SCREENING", "Study Screening", 13),
@@ -1763,19 +1761,16 @@ PHASE_MARKERS = [
     ("PHASE 7: DETERMINISTIC MATH", "Deterministic Math", 18),
     ("PHASE 8: GRADE SYNTHESIS", "GRADE Synthesis", 19),
     ("ALL RESEARCH COMPLETE", "Deep Research Complete", 20),
-    # Legacy markers (still emitted by some code paths)
-    ("PHASE 1: DEEP RESEARCH", "Deep Research", 15),
-    ("Lead report saved", "Lead Researcher Report", 20),
-    ("Gate verdict:", "Research Gate Check", 25),
-    ("PHASE 2b: GAP-FILL", "Gap-Fill Research", 30),
-    ("CREW 2:", "Evidence Validation", 35),
-    ("PHASE 3: ADVERSARIAL", "Adversarial Research", 40),
-    ("PHASE 4: FAIRNESS", "Source-of-Truth Synthesis", 50),
+    ("PHASE 1: DEEP RESEARCH", "Deep Research", 15),  # Legacy fallback
+    ("Source of Truth generated", "Source of Truth", 45),
+    # Post-research phases
+    ("PHASE 2: URL VALIDATION", "URL Validation", 50),
     ("CREW 3:", "Podcast Production", 55),
-    ("PHASE 5: PODCAST PLANNING", "Podcast Planning", 60),
-    ("PHASE 6: PODCAST RECORDING", "Podcast Recording", 70),
-    ("PHASE 7: POST-PROCESSING", "Post-Processing", 85),
-    ("Starting BGM Merging Phase", "BGM Merging", 90),
+    ("PHASE 3: PODCAST PLANNING", "Podcast Planning", 60),
+    ("PHASE 4: PODCAST RECORDING", "Podcast Recording", 70),
+    ("PHASE 5: POST-PROCESSING", "Post-Processing", 85),
+    ("PHASE 6: ACCURACY CHECK", "Accuracy Check", 90),
+    ("Starting BGM Merging Phase", "BGM Merging", 95),
     ("SUCCESS: Audio duration", "Complete", 100),
     # Reuse-mode markers
     ("REUSE MODE:", "Reuse Analysis", 5),

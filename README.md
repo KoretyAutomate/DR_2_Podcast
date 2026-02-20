@@ -1,6 +1,6 @@
 # Deep-Research Podcast Crew
 
-An AI-powered pipeline that deeply researches any scientific topic using a clinical systematic-review methodology, conducts adversarial peer review across 10 structured phases, and produces a broadcast-ready podcast with Kokoro TTS audio — all running on local models. Includes a FastAPI web UI for one-click production with live progress tracking.
+An AI-powered pipeline that deeply researches any scientific topic using a clinical systematic-review methodology (PICO/GRADE), synthesizes evidence from both affirmative and adversarial perspectives, and produces a broadcast-ready podcast with Kokoro TTS audio — all running on local models. Includes a FastAPI web UI for one-click production with live progress tracking.
 
 ## System Overview
 
@@ -16,7 +16,7 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
                   └──────────────┬───────────────────────┘
                                  ▼
        ┌──────────────────────────────────────────────────────────┐
-       │  Deep Research Pre-Scan (8-Step Clinical Pipeline)       │
+       │  8-Step Clinical Pipeline (Deep Research)                 │
        │                                                          │
        │  ┌─ AFFIRMATIVE TRACK ──────────────────────────────┐   │
        │  │ Step 1: PICO/MeSH/Boolean strategy (Smart)       │   │
@@ -35,38 +35,21 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
        │                          ▼                               │
        │  Step 7: Deterministic math — ARR/NNT (Python, no LLM)  │
        │  Step 8: GRADE synthesis — Auditor (Smart)               │
-       │                                                          │
-       │  Outputs: lead.md, counter.md, audit.md,                 │
-       │           deep_research_sources.json,                    │
-       │           deep_research_math.md,                         │
-       │           deep_research_strategy_aff/neg.json,           │
-       │           deep_research_screening.json                   │
        └──────────────┬───────────────────────────────────────────┘
                       ▼
      ┌───────────────────────────────────────────────────────────────┐
-     │ CREW 1 — Evidence Gathering                                   │
-     │                                                               │
-     │  Phase 1: Systematic Evidence Gathering (Lead Researcher)     │
-     │  Phase 2: Research Gate & Gap Analysis (Auditor) → PASS/FAIL  │
-     │  Phase 2b: Gap-Fill Research (Lead Researcher) [if FAIL]      │
+     │  URL Validation (batch HEAD requests)                         │
+     │  Source-of-Truth synthesis (from deep research outputs)       │
      └───────────────────────┬───────────────────────────────────────┘
                              ▼
      ┌───────────────────────────────────────────────────────────────┐
-     │ CREW 2 — Evidence Validation                                  │
+     │ Crew 3 — Podcast Production                                   │
      │                                                               │
-     │  Phase 3: Counter-Evidence Research (Adversarial Researcher)  │
-     │  Phase 4a: Source Validation (Source Verifier)                │
-     │  Phase 4b: Source-of-Truth Synthesis (Auditor)               │
-     └───────────────────────┬───────────────────────────────────────┘
-                             ▼
-     ┌───────────────────────────────────────────────────────────────┐
-     │ CREW 3 — Podcast Production                                   │
-     │                                                               │
-     │  Phase 5: Show Notes & Citations (Producer)                   │
-     │  Phase 6: Podcast Script Generation (Producer)               │
-     │  Phase 7: Script Polishing (Personality Editor)              │
-     │  Phase 8: Accuracy Check (Auditor) [advisory]               │
-     │  [Translation task inserted before 5/7 for non-English]      │
+     │  Phase 3: Show Notes & Citations (Producer)                   │
+     │  Phase 4: Podcast Script Generation (Producer)               │
+     │  Phase 5: Script Polishing (Personality Editor)              │
+     │  Phase 6: Accuracy Check (Auditor) [advisory]               │
+     │  [Translation task inserted before 3/5 for non-English]      │
      └───────────────────────┬───────────────────────────────────────┘
                              ▼
               ┌─────────────────────────────────────────────┐
@@ -97,15 +80,12 @@ python podcast_web_ui.py --port 8501
 
 ## Agents
 
-The pipeline orchestrates **7 specialized CrewAI agents**, each with a distinct role:
+The pipeline uses **4 CrewAI agents** (down from 7 — the 8-step clinical pipeline replaced the Lead Researcher, Adversarial Researcher, and Source Verifier):
 
 | Agent | Role | Tools |
 |-------|------|-------|
 | **Research Framing Specialist** | Defines scope, core questions, evidence criteria before any searching begins | — |
-| **Principal Investigator (Lead Researcher)** | Gathers supporting evidence organized by mechanism of action and clinical evidence | RequestSearch, ListResearchSources, ReadResearchSource, ReadFullReport |
-| **Adversarial Researcher (The Skeptic)** | Hunts for contradictory evidence, methodology flaws, and null results | RequestSearch, ListResearchSources, ReadResearchSource, ReadFullReport |
-| **Scientific Auditor (The Grader)** | Grades research quality, runs PASS/FAIL gate, synthesizes source-of-truth, checks script for scientific drift | LinkValidator, ListResearchSources, ReadResearchSource, ReadFullReport |
-| **Scientific Source Verifier** | Validates every cited URL via HEAD requests, verifies claim-to-source accuracy | LinkValidator, ReadValidationResults |
+| **Scientific Auditor (The Grader)** | Checks polished script for scientific drift against the Source-of-Truth | LinkValidator, ListResearchSources, ReadResearchSource, ReadFullReport |
 | **Podcast Producer (The Showrunner)** | Transforms research into a debate script targeting Masters/PhD-level depth | — |
 | **Podcast Personality (The Editor)** | Polishes script for natural verbal delivery, enforces word count and depth | — |
 
@@ -196,31 +176,19 @@ The Step 8 GRADE synthesis follows this structure:
 ### Phase 0 — Research Framing & Hypothesis
 The Research Framing Specialist defines scope boundaries, core research questions, evidence criteria, suggested search directions, and hypotheses to test.
 
-### Deep Research Pre-Scan
-See [Evidence-Based Research Pipeline](#evidence-based-research-pipeline) above.
+### Phase 1 — Deep Research (8-Step Clinical Pipeline)
+See [Evidence-Based Research Pipeline](#evidence-based-research-pipeline) above. Produces affirmative case (lead.md), falsification case (counter.md), GRADE synthesis (audit.md), deterministic math (math.md), and the research library (deep_research_sources.json).
 
-### Phase 1 — Systematic Evidence Gathering
-The Lead Researcher conducts a deep dive guided by the framing document and pre-scan evidence. Findings are grouped by evidence tier with "Author et al. (Year)" citations.
+### Phase 2 — URL Validation & Source-of-Truth Synthesis
+Batch HEAD requests validate all cited URLs. The Source-of-Truth is synthesized by concatenating the deep research outputs (affirmative case + falsification case + GRADE audit + deterministic math). This replaces the former Crew 1/2 agents.
 
-### Phase 2 — Research Gate & Gap Analysis
-The Scientific Auditor evaluates coverage completeness and issues a **PASS/FAIL verdict**. If FAIL, Phase 2b triggers targeted gap-fill research.
+### Phase 3 — Show Notes & Script
+The Producer generates show notes with citations and a debate script. The Source-of-Truth summary is injected directly into task descriptions. The script uses `Host 1:` / `Host 2:` dialogue format.
 
-### Phase 3 — Counter-Evidence Research
-The Adversarial Researcher challenges lead findings by searching for contradictory RCTs, null results, confounders, and methodology flaws.
-
-### Phase 4a — Source Validation
-The Source Verifier validates every cited URL (HEAD requests) and checks that claims match sources.
-
-### Phase 4b — Source-of-Truth Synthesis
-The Auditor combines all evidence into an authoritative reference document with confidence levels (HIGH / MEDIUM / LOW / CONTESTED), a Reliability Scorecard, and a Caveat Box.
-
-### Phase 5/6 — Show Notes & Script
-The Producer generates show notes with citations and a debate script. The script uses `Kaz:` / `Erika:` dialogue format.
-
-### Phase 7 — Script Polishing
+### Phase 4 — Script Polishing
 The Personality Editor refines for natural verbal delivery and ensures balanced coverage.
 
-### Phase 8 — Accuracy Check (advisory)
+### Phase 5 — Accuracy Check (advisory)
 The Auditor scans the polished script for drift patterns: correlation-to-causation, hedge removal, confidence inflation, cherry-picking, and contested-as-settled. Non-blocking.
 
 ### Audio Generation
@@ -369,33 +337,26 @@ All outputs are saved to a timestamped directory under `research_outputs/`:
 research_outputs/YYYY-MM-DD_HH-MM-SS/
 ├── research_framing.md               Phase 0 — scope and hypotheses
 ├── research_framing.pdf
-├── deep_research_lead.md             Pre-scan — affirmative case (Step 5)
-├── deep_research_counter.md          Pre-scan — falsification case (Step 6)
-├── deep_research_audit.md            Pre-scan — GRADE synthesis (Step 8)
+├── deep_research_lead.md             Step 5 — affirmative case
+├── deep_research_counter.md          Step 6 — falsification case
+├── deep_research_audit.md            Step 8 — GRADE synthesis
 ├── deep_research_sources.json        Research library (structured source data)
 ├── deep_research_math.md             Step 7 — deterministic ARR/NNT table
 ├── deep_research_strategy_aff.json   Step 1 — affirmative PICO/MeSH/Boolean
 ├── deep_research_strategy_neg.json   Step 1' — adversarial PICO/MeSH/Boolean
 ├── deep_research_screening.json      Step 3 — screening decisions (500 → 20)
-├── gap_analysis.md                   Phase 2 — gap analysis
-├── supporting_research.md            Phase 1 — lead researcher paper
-├── supporting_paper.pdf
-├── adversarial_research.md           Phase 3 — counter-evidence paper
-├── adversarial_paper.pdf
-├── source_verification.md            Phase 4a — URL validation results
-├── verified_sources_bibliography.pdf
-├── source_of_truth.md                Phase 4b — authoritative reference
+├── source_of_truth.md                Synthesized from deep research outputs
 ├── source_of_truth.pdf
-├── show_notes.md                     Phase 5 — show notes and citations
-├── podcast_script_raw.md             Phase 6 — raw script
-├── podcast_script_polished.md        Phase 7 — polished script
+├── url_validation_results.json       Batch URL validation results
+├── show_notes.md                     Phase 3 — show notes and citations
+├── podcast_script_raw.md             Phase 4 — raw script
+├── podcast_script_polished.md        Phase 5 — polished script
 ├── podcast_script.txt                Final script for TTS
-├── accuracy_check.md                 Phase 8 — drift detection
+├── accuracy_check.md                 Phase 6 — drift detection
 ├── accuracy_check.pdf
 ├── podcast_final_audio.wav           Final podcast audio (24kHz WAV + BGM)
 ├── session_metadata.txt              Topic, language, character assignments
-├── podcast_generation.log            Execution log
-└── url_validation_results.json       Source URL validation data
+└── podcast_generation.log            Execution log
 ```
 
 ## Project Structure
