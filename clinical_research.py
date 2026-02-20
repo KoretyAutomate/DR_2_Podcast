@@ -2262,21 +2262,47 @@ class Orchestrator:
             json.dump({"pico": fal_strategy.pico, "mesh_terms": fal_strategy.mesh_terms,
                         "search_strings": fal_strategy.search_strings, "role": fal_strategy.role}, f, indent=2)
 
-        # Screening decisions (one file per track)
+        # Screening decisions (one file per track) — full candidate list for debugging
+        def _record_to_dict(r, selected: bool) -> dict:
+            return {
+                "selected": selected,
+                "pmid": r.pmid,
+                "doi": r.doi,
+                "title": r.title,
+                "study_type": r.study_type,
+                "sample_size": r.sample_size,
+                "year": r.year,
+                "journal": r.journal,
+                "authors": r.authors,
+                "source_db": r.source_db,
+                "url": r.url,
+                "abstract_snippet": (r.abstract or "")[:300],
+            }
+
+        def _screening_payload(records, top, tier3_triggered):
+            selected_set = {id(r) for r in top}
+            by_source: dict = {}
+            for r in records:
+                by_source[r.source_db] = by_source.get(r.source_db, 0) + 1
+            return {
+                # Top-level summary (kept for backward compat with pipeline.py gate check)
+                "total_candidates": len(records),
+                "selected_count": len(top),
+                "tier3_triggered": tier3_triggered,
+                "by_source_db": by_source,
+                # Full record lists for debugging
+                "selected_records": [_record_to_dict(r, True) for r in top],
+                "all_candidates": [
+                    _record_to_dict(r, id(r) in selected_set) for r in records
+                ],
+            }
+
         with open(out / "screening_results_aff.json", 'w') as f:
-            json.dump({
-                "total_candidates": len(aff_records),
-                "selected": len(aff_top),
-                "tier3_triggered": aff_tier3_triggered,
-                "selected_titles": [r.title for r in aff_top],
-            }, f, indent=2, ensure_ascii=False)
+            json.dump(_screening_payload(aff_records, aff_top, aff_tier3_triggered),
+                      f, indent=2, ensure_ascii=False)
         with open(out / "screening_results_neg.json", 'w') as f:
-            json.dump({
-                "total_candidates": len(fal_records),
-                "selected": len(fal_top),
-                "tier3_triggered": fal_tier3_triggered,
-                "selected_titles": [r.title for r in fal_top],
-            }, f, indent=2, ensure_ascii=False)
+            json.dump(_screening_payload(fal_records, fal_top, fal_tier3_triggered),
+                      f, indent=2, ensure_ascii=False)
 
         # Math report
         with open(out / "clinical_math.md", 'w') as f:
