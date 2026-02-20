@@ -1753,6 +1753,17 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
 # Phase markers parsed from podcast_crew.py stdout
 PHASE_MARKERS = [
     ("PHASE 0: RESEARCH FRAMING", "Research Framing", 5),
+    # New clinical pipeline phases (deep research)
+    ("PHASE 1: SEARCH STRATEGY", "Search Strategy Formulation", 8),
+    ("PHASE 2: WIDE NET", "Wide Net Search", 10),
+    ("PHASE 3: SCREENING", "Study Screening", 13),
+    ("PHASE 4: DEEP EXTRACTION", "Deep Extraction", 15),
+    ("PHASE 5: BUILDING AFFIRMATIVE", "Building Affirmative Case", 17),
+    ("PHASE 6: BUILDING FALSIFICATION", "Building Falsification Case", 17),
+    ("PHASE 7: DETERMINISTIC MATH", "Deterministic Math", 18),
+    ("PHASE 8: GRADE SYNTHESIS", "GRADE Synthesis", 19),
+    ("ALL RESEARCH COMPLETE", "Deep Research Complete", 20),
+    # Legacy markers (still emitted by some code paths)
     ("PHASE 1: DEEP RESEARCH", "Deep Research", 15),
     ("Lead report saved", "Lead Researcher Report", 20),
     ("Gate verdict:", "Research Gate Check", 25),

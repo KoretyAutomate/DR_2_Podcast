@@ -5,11 +5,12 @@ TTS Audio Engine for Deep Research Podcast
 Generates high-quality, multi-speaker podcast audio with automatic TTS engine selection:
 
   - English:  Kokoro TTS (local, CPU, proven quality)
-  - Japanese: Fish Speech V1.5 (GPU via Docker, native Japanese support)
+  - Japanese: Qwen3-TTS CustomVoice (GPU via Docker, built-in preset voices)
+              Voices: Kaz → Aiden (male), Erika → Ono_Anna (native Japanese female)
 
 Features:
 - Dual-voice system with speaker detection
-- Automatic language routing (lang_code='a' → Kokoro, 'j' → Fish Speech)
+- Automatic language routing (lang_code='a' → Kokoro, 'j' → Qwen3-TTS)
 - Script parsing and audio stitching
 - WAV export with BGM support
 """
@@ -39,79 +40,62 @@ VOICE_MAP = {
     'j': {'host1': 'jm_kumo',   'host2': 'jf_alpha'},    # Japanese
 }
 
-# Fish Speech TTS Configuration (for Japanese only — English uses Kokoro)
-FISH_SPEECH_API_URL = os.getenv("FISH_SPEECH_API_URL", "http://localhost:8082")
-FISH_SPEECH_REF_DIR = Path(__file__).parent / "docker" / "fish-speech" / "reference_audio"
+# Qwen3-TTS Configuration (for Japanese only — English uses Kokoro)
+QWEN3_TTS_API_URL = os.getenv("QWEN3_TTS_API_URL", "http://localhost:8082")
 
 
-def _call_fish_speech_segment(text: str, speaker: int) -> tuple:
-    """
-    Call Fish Speech API to synthesize one text segment.
+def _chunk_japanese_text(text: str, max_chars: int = 80) -> list:
+    """Split Japanese text at sentence-end punctuation to keep each TTS call under max_chars."""
+    sentences = re.split(r'(?<=[。！？\n])', text)
+    chunks, current = [], ""
+    for s in sentences:
+        if len(current) + len(s) > max_chars and current:
+            chunks.append(current.strip())
+            current = s
+        else:
+            current += s
+    if current.strip():
+        chunks.append(current.strip())
+    return [c for c in chunks if c]
 
-    Args:
-        text: Text to synthesize
-        speaker: 1 (カズ, presenter) or 2 (エリカ, questioner)
 
-    Returns:
-        (audio_array: np.ndarray float32, sample_rate: int) or (None, None) on failure
-    """
+def _call_qwen3_tts_segment(text: str, speaker: int) -> tuple:
+    """Call Qwen3-TTS API. speaker: 1=Kaz(Aiden), 2=Erika(Ono_Anna). Returns (audio, sr) or (None, None)."""
     try:
         import requests
         import io as _io
-        import base64
     except ImportError as e:
-        logger.error(f"Missing dependency for Fish Speech: {e}")
+        logger.error(f"Missing dependency for Qwen3-TTS: {e}")
         return None, None
 
-    payload = {
-        "text": text,
-        "format": "wav",
-        "normalize": True,
-        "latency": "normal",
-        "chunk_length": 200,
-    }
-
-    # Attach reference audio for speaker persona if available
-    ref_name = "kaz.wav" if speaker == 1 else "erika.wav"
-    ref_path = FISH_SPEECH_REF_DIR / ref_name
-    if ref_path.exists():
-        payload["references"] = [{
-            "audio": base64.b64encode(ref_path.read_bytes()).decode(),
-            "text": "",  # transcript of reference audio (optional)
-        }]
-        logger.debug(f"  Using voice reference: {ref_name}")
-
+    speaker_name = "Kaz" if speaker == 1 else "Erika"
     try:
         resp = requests.post(
-            f"{FISH_SPEECH_API_URL}/v1/tts",
-            json=payload,
-            timeout=120,
+            f"{QWEN3_TTS_API_URL}/tts",
+            json={"text": text, "speaker": speaker_name, "language": "Japanese"},
         )
         resp.raise_for_status()
-
-        # Parse WAV bytes
         audio, sr = sf.read(_io.BytesIO(resp.content))
-        if audio.ndim > 1:  # stereo → mono
+        if audio.ndim > 1:
             audio = audio.mean(axis=1)
         return audio.astype(np.float32), sr
-
     except requests.exceptions.ConnectionError:
         logger.error(
-            f"Fish Speech API unreachable at {FISH_SPEECH_API_URL}. "
-            f"Start it with: docker compose -f docker/fish-speech/docker-compose.yml up fish-speech-api"
+            f"Qwen3-TTS API unreachable at {QWEN3_TTS_API_URL}. "
+            f"Start it: docker compose -f docker/qwen3-tts/docker-compose.yml up -d"
         )
         return None, None
     except Exception as e:
-        logger.error(f"Fish Speech API error: {e}")
+        logger.error(f"Qwen3-TTS API error: {e}")
         return None, None
 
 
-def _generate_audio_fish_speech(script_text: str, output_filename: str) -> str:
+def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
     """
-    Japanese TTS via Fish Speech API.
+    Japanese TTS via Qwen3-TTS API.
 
     Handles multi-speaker script parsing identically to the Kokoro path,
-    but calls Fish Speech REST API instead of the local Kokoro pipeline.
+    but calls Qwen3-TTS REST API instead of the local Kokoro pipeline.
 
     Args:
         script_text: Full podcast script with speaker labels
@@ -121,22 +105,23 @@ def _generate_audio_fish_speech(script_text: str, output_filename: str) -> str:
         Path to generated audio file, or None if generation failed
     """
     logger.info("=" * 60)
-    logger.info("FISH SPEECH TTS — JAPANESE AUDIO GENERATION")
+    logger.info("QWEN3-TTS — JAPANESE AUDIO GENERATION")
     logger.info("=" * 60)
-    logger.info(f"API endpoint: {FISH_SPEECH_API_URL}")
+    logger.info(f"API endpoint: {QWEN3_TTS_API_URL}")
+    logger.info("Voices: Kaz → Aiden (male), Erika → Ono_Anna (Japanese female)")
 
     # Health check
     try:
         import requests
-        health = requests.get(f"{FISH_SPEECH_API_URL}/v1/health", timeout=5)
+        health = requests.get(f"{QWEN3_TTS_API_URL}/health", timeout=5)
         if health.status_code == 200:
-            logger.info("✓ Fish Speech API is healthy")
+            logger.info("✓ Qwen3-TTS API is healthy")
         else:
-            logger.warning(f"  Fish Speech API health check returned {health.status_code}")
+            logger.warning(f"  Qwen3-TTS API health check returned {health.status_code}")
     except Exception:
         logger.error(
-            f"✗ Fish Speech API not reachable at {FISH_SPEECH_API_URL}\n"
-            f"  Start it: docker compose -f docker/fish-speech/docker-compose.yml up fish-speech-api"
+            f"✗ Qwen3-TTS API not reachable at {QWEN3_TTS_API_URL}\n"
+            f"  Start it: docker compose -f docker/qwen3-tts/docker-compose.yml up -d"
         )
         return None
 
@@ -156,12 +141,17 @@ def _generate_audio_fish_speech(script_text: str, output_filename: str) -> str:
         nonlocal buffer_text, segment_count, sample_rate
         if buffer_text and current_speaker:
             logger.info(f"  Segment {segment_count + 1} (Speaker {current_speaker}): {buffer_text[:50]}...")
-            audio, sr = _call_fish_speech_segment(buffer_text, current_speaker)
-            if audio is not None:
+            chunks = _chunk_japanese_text(buffer_text)
+            chunk_audios = []
+            for chunk in chunks:
+                a, sr_chunk = _call_qwen3_tts_segment(chunk, current_speaker)
+                if a is not None:
+                    chunk_audios.append(a)
+            if chunk_audios:
                 if sample_rate is None:
-                    sample_rate = sr
+                    sample_rate = sr_chunk
                     logger.info(f"  Sample rate: {sample_rate} Hz")
-                audio_segments.append(audio)
+                audio_segments.append(np.concatenate(chunk_audios))
                 segment_count += 1
             else:
                 logger.warning(f"  ⚠ Segment {segment_count + 1} failed — skipping")
@@ -184,7 +174,9 @@ def _generate_audio_fish_speech(script_text: str, output_filename: str) -> str:
 
             if name not in speaker_map:
                 if len(speaker_map) < 2:
-                    speaker_map[name] = len(speaker_map) + 1
+                    host_match = re.match(r'^Host\s*(\d+)$', name, re.IGNORECASE)
+                    slot = int(host_match.group(1)) if host_match else len(speaker_map) + 1
+                    speaker_map[name] = slot
                     logger.info(f"  Speaker detected: '{name}' → Host {speaker_map[name]}")
                 else:
                     # More than 2 speakers — treat as continuation
@@ -224,7 +216,7 @@ def _generate_audio_fish_speech(script_text: str, output_filename: str) -> str:
             duration_sec = len(final_audio) / sample_rate
             duration_min = duration_sec / 60
 
-            logger.info(f"\n✓ Audio generated successfully (Fish Speech):")
+            logger.info(f"\n✓ Audio generated successfully (Qwen3-TTS):")
             logger.info(f"  File: {output_filename}")
             logger.info(f"  Size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
             logger.info(f"  Duration: {duration_min:.2f} minutes ({duration_sec:.1f} seconds)")
@@ -247,7 +239,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
 
     TTS Engine selection:
       - English (lang_code='a'): Kokoro TTS (local, CPU, proven)
-      - Japanese (lang_code='j'): Fish Speech V1.5 API (GPU via Docker, high quality)
+      - Japanese (lang_code='j'): Qwen3-TTS API (GPU via Docker, distinct preset voices)
 
     Args:
         script_text: Full podcast script with "Host 1:" and "Host 2:" labels
@@ -262,9 +254,9 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         Host 2: But is coffee actually good for you? Let's examine the evidence.
         Host 1: Studies show that moderate coffee intake...
     """
-    # Route to Fish Speech for Japanese (GPU-accelerated, higher quality)
+    # Route to Qwen3-TTS for Japanese (GPU-accelerated, distinct preset voices)
     if lang_code == 'j':
-        return _generate_audio_fish_speech(script_text, output_filename)
+        return _generate_audio_qwen3_tts(script_text, output_filename)
 
     # English and all other languages use Kokoro TTS
     logger.info("=" * 60)
@@ -350,7 +342,9 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             # Assign speaker number on first occurrence (max 2 speakers)
             if name not in speaker_map:
                 if len(speaker_map) < 2:
-                    speaker_map[name] = len(speaker_map) + 1
+                    host_match = re.match(r'^Host\s*(\d+)$', name, re.IGNORECASE)
+                    slot = int(host_match.group(1)) if host_match else len(speaker_map) + 1
+                    speaker_map[name] = slot
                     logger.info(f"  Speaker detected: '{name}' → Host {speaker_map[name]}")
                 else:
                     # More than 2 unique names — treat as continuation text

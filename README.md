@@ -98,15 +98,10 @@ The system uses two local LLMs working in tandem:
 
 | Role | Default Model | Hosted On | Purpose |
 |------|---------------|-----------|---------|
-| **Smart model** | `deepseek-r1:32b` | Ollama (port 11434) | Planning, research synthesis, script writing, auditing |
+| **Smart model** | `Qwen/Qwen2.5-14B-Instruct-AWQ` | vLLM (port 8000) | Planning, research synthesis, script writing, auditing |
 | **Fast model** | `llama3.2:1b` | Ollama (port 11434) | Parallel page summarization during deep research, report condensation before injection |
 
-Defaults are Ollama-only for zero-config startup. For higher quality, configure vLLM + a larger fast model via environment variables:
-
-| Role | Recommended Model | Hosted On | Env Vars |
-|------|-------------------|-----------|----------|
-| Smart model | `Qwen/Qwen2.5-14B-Instruct-AWQ` | vLLM (port 8000) | `MODEL_NAME`, `LLM_BASE_URL` |
-| Fast model | `phi4-mini` | Ollama (port 11434) | `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL` |
+Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`). For a fast model upgrade, `phi4-mini` on Ollama is recommended.
 
 If the fast model is unavailable, the smart model handles all summarization (slower but functional).
 
@@ -218,14 +213,7 @@ The pipeline supports English and Japanese output:
 
 ### Required Services
 
-**Ollama** — Default backend (smart + fast models):
-```bash
-ollama serve
-ollama pull deepseek-r1:32b   # Smart model (default)
-ollama pull llama3.2:1b        # Fast model (default)
-```
-
-**vLLM** — Optional, recommended for higher throughput (replaces Ollama smart model):
+**vLLM** — Default backend for the smart model:
 ```bash
 ./start_vllm_docker.sh
 # or manually:
@@ -238,11 +226,13 @@ docker run --runtime nvidia --gpus all -p 8000:8000 \
   --max-model-len 32768 \
   --gpu-memory-utilization 0.8 \
   --dtype auto --trust-remote-code --enforce-eager
-# Then set: export MODEL_NAME="Qwen/Qwen2.5-14B-Instruct-AWQ" LLM_BASE_URL="http://localhost:8000/v1"
 ```
 
-**Ollama fast model upgrade** (optional, recommended with vLLM):
+**Ollama** — Required for the fast model:
 ```bash
+ollama serve
+ollama pull llama3.2:1b        # Fast model (default)
+# Optional upgrade:
 ollama pull phi4-mini
 # Then set: export FAST_MODEL_NAME="phi4-mini"
 ```
@@ -276,8 +266,8 @@ export PODCAST_LENGTH="long"          # short | medium | long
 export PODCAST_HOSTS="random"         # random | kaz_erika | erika_kaz
 
 # Model config (defaults shown)
-export MODEL_NAME="deepseek-r1:32b"
-export LLM_BASE_URL="http://localhost:11434/v1"
+export MODEL_NAME="Qwen/Qwen2.5-14B-Instruct-AWQ"
+export LLM_BASE_URL="http://localhost:8000/v1"
 export FAST_MODEL_NAME="llama3.2:1b"
 export FAST_LLM_BASE_URL="http://localhost:11434/v1"
 

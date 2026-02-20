@@ -1,18 +1,18 @@
 """
-Deep Research Agent - Dual-Model Iterative Delegation Architecture
+Deep Research Agent - Evidence-Based Clinical Research Pipeline
 
 Optimized for Nvidia DGX Spark (128GB Unified Memory):
 - SMART MODEL (Qwen2.5-32B-Instruct-AWQ) on port 8000: Reasoning, planning, evaluation
 - FAST MODEL (Phi-4 Mini via Ollama) on port 11434: Parallel content summarization
 
-Architecture (Option B - Agent-driven iterative delegation):
-  The Smart Model acts as a researcher with a specific role (lead/counter).
-  It iteratively:
-    1. Plans what to search next
-    2. Delegates search + summarization to workers (SearXNG + Fast Model)
-    3. Evaluates gathered evidence, identifies gaps
-    4. Repeats until evidence is sufficient or max iterations reached
-    5. Writes final report from all gathered evidence
+Architecture (8-Step Clinical Pipeline):
+  Step 1: PICO/MeSH/Boolean search strategy (Smart Model)
+  Step 2: Wide net — up to 500 results (PubMed + Scholar + Fast Model screening)
+  Step 3: Screen → top 20 (Smart Model)
+  Step 4: Deep extraction — full text retrieval + clinical variable extraction (Fast Model)
+  Step 5/6: Affirmative & Falsification cases (Smart Model, parallel tracks)
+  Step 7: Deterministic math — ARR/NNT (Python, no LLM)
+  Step 8: GRADE synthesis (Smart Model)
 
 Author: DR_2_Podcast Team
 """
@@ -185,8 +185,12 @@ class SearchMetrics:
     total_summarized: int               # successfully summarized
     academic_sources: int               # pubmed + scholar count
     general_web_sources: int            # general web count
-    tier1_sufficient_count: int         # queries where Tier 1 was sufficient
-    tier3_expanded_count: int           # queries that needed Tier 3
+    tier1_sufficient_count: int = 0     # queries where Tier 1 was sufficient
+    tier3_expanded_count: int = 0       # queries that needed Tier 3
+    wide_net_total: int = 0             # total records from wide net search (Step 2)
+    screened_in: int = 0                # records selected after screening (Step 3)
+    fulltext_retrieved: int = 0         # full-text articles successfully retrieved (Step 4)
+    fulltext_errors: int = 0            # full-text retrieval failures
 
 @dataclass
 class ResearchReport:
@@ -202,6 +206,70 @@ class ResearchReport:
     search_metrics: Optional[SearchMetrics] = None
 
 
+# --- New Pipeline Data Models ---
+
+@dataclass
+class SearchStrategy:
+    """PICO framework + MeSH terms + Boolean search strings from Step 1."""
+    pico: Dict[str, str]                    # P, I, C, O
+    mesh_terms: Dict[str, List[str]]        # population/intervention/outcome MeSH
+    search_strings: Dict[str, str]          # pubmed_primary, pubmed_broad, cochrane, scholar
+    role: str                               # "affirmative" or "adversarial"
+
+@dataclass
+class WideNetRecord:
+    """Lightweight screening record — no full text, just title + abstract metadata."""
+    pmid: Optional[str]
+    doi: Optional[str]
+    title: str
+    abstract: str
+    study_type: str
+    sample_size: Optional[str]
+    primary_objective: Optional[str]
+    year: Optional[int]
+    journal: Optional[str]
+    authors: Optional[str]
+    url: str
+    source_db: str                          # "pubmed", "cochrane_central", "scholar"
+    relevance_score: Optional[float] = None
+
+@dataclass
+class DeepExtraction:
+    """Clinical variable extraction from full-text articles (Step 4)."""
+    pmid: Optional[str]
+    doi: Optional[str]
+    title: str
+    url: str
+    attrition_pct: Optional[str] = None
+    effect_size: Optional[str] = None
+    demographics: Optional[str] = None
+    follow_up_period: Optional[str] = None
+    funding_source: Optional[str] = None
+    conflicts_of_interest: Optional[str] = None
+    biological_mechanism: Optional[str] = None
+    control_event_rate: Optional[float] = None      # CER — needed for Step 7
+    experimental_event_rate: Optional[float] = None  # EER — needed for Step 7
+    primary_outcome: Optional[str] = None
+    secondary_outcomes: Optional[List[str]] = None
+    blinding: Optional[str] = None
+    randomization_method: Optional[str] = None
+    intention_to_treat: Optional[bool] = None
+    sample_size_total: Optional[int] = None
+    sample_size_intervention: Optional[int] = None
+    sample_size_control: Optional[int] = None
+    study_design: Optional[str] = None
+    risk_of_bias: Optional[str] = None
+    raw_facts: str = ""
+
+    def to_dict(self) -> dict:
+        d = {}
+        for f in fields(self):
+            v = getattr(self, f.name)
+            if v is not None and v != "" and v != []:
+                d[f.name] = v
+        return d
+
+
 # --- Worker Services (IO + Fast Model) ---
 
 PUBMED_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
@@ -209,68 +277,216 @@ MIN_ACADEMIC_RESULTS = 5  # Sufficiency threshold for Tier 1
 
 
 class PubMedClient:
-    """Search PubMed via NCBI E-utilities (free, no API key needed for <3 req/sec)."""
+    """Search PubMed via NCBI E-utilities (free, no API key needed for <3 req/sec).
+
+    Enhanced for clinical pipeline: supports Boolean/MeSH queries, retmax up to 500,
+    and extracts PublicationType, DOI, MeSH headings, and structured abstracts.
+    """
 
     def __init__(self):
         self.api_key = os.getenv("PUBMED_API_KEY")
 
     async def search(self, query: str, max_results: int = 10) -> List[Dict[str, str]]:
+        """Legacy search — returns simple dicts for backward compatibility."""
+        records = await self.search_extended(query, max_results=max_results)
+        return [
+            {"url": r["url"], "title": r.get("title", ""), "snippet": r.get("abstract", "")[:500]}
+            for r in records
+        ]
+
+    async def search_extended(self, query: str, max_results: int = 500,
+                               sort: str = "relevance") -> List[Dict[str, Any]]:
+        """Enhanced search returning rich article records with metadata.
+
+        Returns list of dicts with: pmid, doi, title, abstract (full), study_type,
+        publication_types, mesh_headings, journal, authors, year, url, abstract_sections.
+        """
         results = []
         try:
-            async with httpx.AsyncClient(timeout=15) as http:
+            async with httpx.AsyncClient(timeout=30) as http:
                 # Step 1: esearch to get PMIDs
                 params = {
                     "db": "pubmed",
                     "term": query,
-                    "retmax": max_results,
-                    "retmode": "json"
+                    "retmax": min(max_results, 500),
+                    "retmode": "json",
+                    "sort": sort,
                 }
                 if self.api_key:
                     params["api_key"] = self.api_key
 
-                resp = await http.get(
-                    f"{PUBMED_BASE_URL}/esearch.fcgi",
-                    params=params
-                )
+                resp = await http.get(f"{PUBMED_BASE_URL}/esearch.fcgi", params=params)
                 resp.raise_for_status()
-                id_list = resp.json().get("esearchresult", {}).get("idlist", [])
+                search_result = resp.json().get("esearchresult", {})
+                id_list = search_result.get("idlist", [])
                 if not id_list:
                     return []
 
-                # Step 2: efetch to get article details
-                fetch_params = {
-                    "db": "pubmed",
-                    "id": ",".join(id_list),
-                    "retmode": "xml"
-                }
-                if self.api_key:
-                    fetch_params["api_key"] = self.api_key
+                logger.info(f"PubMed esearch returned {len(id_list)} IDs for query: {query[:80]}")
 
-                resp = await http.get(
-                    f"{PUBMED_BASE_URL}/efetch.fcgi",
-                    params=fetch_params
-                )
-                resp.raise_for_status()
+                # Step 2: efetch in batches of 200 (NCBI recommended max)
+                for batch_start in range(0, len(id_list), 200):
+                    batch_ids = id_list[batch_start:batch_start + 200]
+                    fetch_params = {
+                        "db": "pubmed",
+                        "id": ",".join(batch_ids),
+                        "retmode": "xml"
+                    }
+                    if self.api_key:
+                        fetch_params["api_key"] = self.api_key
 
-                root = ET.fromstring(resp.text)
-                for article in root.findall(".//PubmedArticle"):
-                    pmid_el = article.find(".//PMID")
-                    title_el = article.find(".//ArticleTitle")
-                    abstract_el = article.find(".//AbstractText")
+                    resp = await http.get(f"{PUBMED_BASE_URL}/efetch.fcgi", params=fetch_params)
+                    resp.raise_for_status()
 
-                    pmid = pmid_el.text if pmid_el is not None else ""
-                    title = title_el.text if title_el is not None else ""
-                    abstract = abstract_el.text if abstract_el is not None else ""
+                    results.extend(self._parse_articles_xml(resp.text))
 
-                    if pmid:
-                        results.append({
-                            "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
-                            "title": title or "",
-                            "snippet": (abstract or "")[:500]
-                        })
+                    # Rate limiting: 0.4s delay between batches (3 req/sec without API key)
+                    if not self.api_key and batch_start + 200 < len(id_list):
+                        await asyncio.sleep(0.4)
+
         except Exception as e:
             logger.warning(f"PubMed search failed: {e}")
         return results
+
+    def _parse_articles_xml(self, xml_text: str) -> List[Dict[str, Any]]:
+        """Parse PubMed efetch XML into rich article records."""
+        results = []
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as e:
+            logger.warning(f"PubMed XML parse error: {e}")
+            return []
+
+        for article in root.findall(".//PubmedArticle"):
+            try:
+                record = self._parse_single_article(article)
+                if record:
+                    results.append(record)
+            except Exception as e:
+                logger.debug(f"Failed to parse article: {e}")
+        return results
+
+    def _parse_single_article(self, article) -> Optional[Dict[str, Any]]:
+        """Parse a single PubmedArticle XML element."""
+        pmid_el = article.find(".//PMID")
+        if pmid_el is None:
+            return None
+        pmid = pmid_el.text
+
+        # Title
+        title_el = article.find(".//ArticleTitle")
+        title = "".join(title_el.itertext()) if title_el is not None else ""
+
+        # Abstract — handle structured abstracts (multiple AbstractText elements with labels)
+        abstract_parts = []
+        abstract_sections = {}
+        for abs_el in article.findall(".//AbstractText"):
+            label = abs_el.get("Label", "")
+            text = "".join(abs_el.itertext()).strip()
+            if label:
+                abstract_sections[label] = text
+                abstract_parts.append(f"{label}: {text}")
+            else:
+                abstract_parts.append(text)
+        abstract = " ".join(abstract_parts)
+
+        # DOI
+        doi = None
+        for id_el in article.findall(".//ArticleId"):
+            if id_el.get("IdType") == "doi":
+                doi = id_el.text
+                break
+        # Also check ELocationID
+        if not doi:
+            for eloc in article.findall(".//ELocationID"):
+                if eloc.get("EIdType") == "doi":
+                    doi = eloc.text
+                    break
+
+        # Publication types
+        pub_types = []
+        for pt in article.findall(".//PublicationType"):
+            if pt.text:
+                pub_types.append(pt.text)
+
+        # Derive study_type from PublicationType (no LLM needed)
+        study_type = self._classify_study_type(pub_types)
+
+        # MeSH headings
+        mesh_headings = []
+        for mh in article.findall(".//MeshHeading/DescriptorName"):
+            if mh.text:
+                mesh_headings.append(mh.text)
+
+        # Journal
+        journal_el = article.find(".//Journal/Title")
+        journal = journal_el.text if journal_el is not None else None
+
+        # Year
+        year = None
+        year_el = article.find(".//PubDate/Year")
+        if year_el is not None and year_el.text:
+            try:
+                year = int(year_el.text)
+            except ValueError:
+                pass
+        if not year:
+            medline_year = article.find(".//MedlineDate")
+            if medline_year is not None and medline_year.text:
+                import re as _re
+                m = _re.search(r"(\d{4})", medline_year.text)
+                if m:
+                    year = int(m.group(1))
+
+        # Authors
+        author_list = article.findall(".//Author")
+        authors = None
+        if author_list:
+            first = author_list[0]
+            last_name = first.findtext("LastName", "")
+            if last_name:
+                authors = f"{last_name} et al." if len(author_list) > 1 else last_name
+
+        return {
+            "pmid": pmid,
+            "doi": doi,
+            "title": title,
+            "abstract": abstract,
+            "study_type": study_type,
+            "publication_types": pub_types,
+            "mesh_headings": mesh_headings,
+            "journal": journal,
+            "authors": authors,
+            "year": year,
+            "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+            "abstract_sections": abstract_sections,
+        }
+
+    @staticmethod
+    def _classify_study_type(pub_types: List[str]) -> str:
+        """Classify study type from PubMed PublicationType elements (no LLM)."""
+        pt_lower = [p.lower() for p in pub_types]
+        if any("meta-analysis" in p for p in pt_lower):
+            return "meta-analysis"
+        if any("systematic review" in p for p in pt_lower):
+            return "systematic-review"
+        if any("randomized controlled trial" in p for p in pt_lower):
+            return "RCT"
+        if any("clinical trial" in p for p in pt_lower):
+            return "clinical-trial"
+        if any("observational study" in p for p in pt_lower):
+            return "observational"
+        if any("cohort" in p for p in pt_lower):
+            return "cohort"
+        if any("case report" in p for p in pt_lower):
+            return "case-report"
+        if any("review" in p for p in pt_lower):
+            return "review"
+        if any("guideline" in p or "practice guideline" in p for p in pt_lower):
+            return "guideline"
+        if any("retracted publication" in p for p in pt_lower):
+            return "retracted"
+        return "other"
 
 
 def _dedup_and_filter(results: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -854,18 +1070,563 @@ class ResearchAgent:
             search_metrics=metrics,
         )
 
+    # --- New Clinical Pipeline Methods (Steps 1-6) ---
+
+    def _parse_json_response(self, raw: str) -> Any:
+        """Parse JSON from smart model output, handling code blocks."""
+        if "```" in raw:
+            match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
+            if match:
+                raw = match.group(1).strip()
+        return json.loads(raw)
+
+    async def _formulate_search_strategy(
+        self, topic: str, role_type: str, framing_context: str = "", log=print
+    ) -> SearchStrategy:
+        """Step 1: Smart model generates PICO framework, MeSH terms, and Boolean search strings."""
+        log(f"    [Step 1] Formulating {role_type} search strategy...")
+
+        adversarial_addendum = ""
+        if role_type == "adversarial":
+            adversarial_addendum = (
+                "\n\nADVERSARIAL FOCUS: You must ALSO include:\n"
+                '- Adverse effects terms: "adverse effects"[Subheading], "toxicity"[MeSH], '
+                '"drug-related side effects and adverse reactions"[MeSH]\n'
+                '- Null result terms: "no significant difference", "lack of efficacy", "negative results"\n'
+                '- Retraction filter: "Retracted Publication"[pt]\n'
+                '- Bias terms: "conflict of interest", "industry-funded", "publication bias"\n'
+                "Add these to the Boolean strings alongside the standard PICO terms."
+            )
+
+        framing_section = ""
+        if framing_context:
+            framing_section = f"\n\nRESEARCH FRAMING CONTEXT:\n{framing_context[:4000]}\n"
+
+        system = (
+            "You are a medical librarian and systematic review specialist.\n\n"
+            "Given the research topic below, produce a search strategy.\n\n"
+            "1. PICO FRAMEWORK:\n"
+            "   - P (Population): [target population]\n"
+            "   - I (Intervention): [intervention/exposure]\n"
+            "   - C (Comparison): [control/comparator]\n"
+            "   - O (Outcome): [primary outcome measures]\n\n"
+            "2. MeSH TERMS (for PubMed):\n"
+            "   - Population MeSH: [term1[MeSH], term2[MeSH], ...]\n"
+            "   - Intervention MeSH: [term1[MeSH], term2[MeSH], ...]\n"
+            "   - Outcome MeSH: [term1[MeSH], term2[MeSH], ...]\n\n"
+            "3. BOOLEAN SEARCH STRINGS:\n"
+            '   - PubMed primary: strict Boolean with MeSH + Humans[MeSH] + English[la] + study type filters\n'
+            '   - PubMed broad: relaxed Boolean (fewer filters, more recall)\n'
+            '   - Cochrane: adapted Boolean for cochrane[sb] subset\n'
+            '   - Scholar: plain-language version for Google Scholar\n\n'
+            "Return ONLY valid JSON with this exact structure:\n"
+            '{\n'
+            '  "pico": {"population": "...", "intervention": "...", "comparison": "...", "outcome": "..."},\n'
+            '  "mesh_terms": {"population": [...], "intervention": [...], "outcome": [...]},\n'
+            '  "search_strings": {\n'
+            '    "pubmed_primary": "...",\n'
+            '    "pubmed_broad": "...",\n'
+            '    "cochrane": "...",\n'
+            '    "scholar": "..."\n'
+            '  }\n'
+            '}'
+            f"{adversarial_addendum}"
+        )
+
+        user = f"Research topic: {topic}{framing_section}"
+
+        raw = await self._call_smart(system, user, max_tokens=2048, temperature=0.2)
+        try:
+            data = self._parse_json_response(raw)
+            strategy = SearchStrategy(
+                pico=data.get("pico", {}),
+                mesh_terms=data.get("mesh_terms", {}),
+                search_strings=data.get("search_strings", {}),
+                role=role_type,
+            )
+            log(f"    [Step 1] Strategy generated: PICO={list(strategy.pico.values())[:2]}...")
+            return strategy
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning(f"Failed to parse search strategy JSON: {e}, raw: {raw[:300]}")
+            # Fallback: generate a basic strategy from the topic
+            return SearchStrategy(
+                pico={"population": "general", "intervention": topic, "comparison": "placebo/control", "outcome": "health outcomes"},
+                mesh_terms={"population": [], "intervention": [], "outcome": []},
+                search_strings={
+                    "pubmed_primary": topic,
+                    "pubmed_broad": topic,
+                    "cochrane": f"{topic} AND cochrane[sb]",
+                    "scholar": topic,
+                },
+                role=role_type,
+            )
+
+    async def _wide_net_search(
+        self, strategy: SearchStrategy, log=print
+    ) -> List[WideNetRecord]:
+        """Step 2: Cast wide net — PubMed (primary+broad+cochrane) + Google Scholar, up to 500 results."""
+        log(f"    [Step 2] Wide net search ({strategy.role})...")
+        all_records: List[WideNetRecord] = []
+        seen_pmids: set = set()
+        seen_urls: set = set()
+
+        pubmed = self.search.pubmed
+
+        # 2a: PubMed primary query
+        queries = [
+            ("pubmed_primary", strategy.search_strings.get("pubmed_primary", "")),
+            ("pubmed_broad", strategy.search_strings.get("pubmed_broad", "")),
+            ("cochrane", strategy.search_strings.get("cochrane", "")),
+        ]
+
+        for query_name, query_str in queries:
+            if not query_str:
+                continue
+            source_db = "cochrane_central" if query_name == "cochrane" else "pubmed"
+            try:
+                articles = await pubmed.search_extended(query_str, max_results=200)
+                for art in articles:
+                    pmid = art.get("pmid", "")
+                    if pmid in seen_pmids:
+                        continue
+                    seen_pmids.add(pmid)
+                    seen_urls.add(art.get("url", ""))
+                    all_records.append(WideNetRecord(
+                        pmid=pmid,
+                        doi=art.get("doi"),
+                        title=art.get("title", ""),
+                        abstract=art.get("abstract", ""),
+                        study_type=art.get("study_type", "other"),
+                        sample_size=None,  # will be extracted by fast model if needed
+                        primary_objective=None,
+                        year=art.get("year"),
+                        journal=art.get("journal"),
+                        authors=art.get("authors"),
+                        url=art.get("url", ""),
+                        source_db=source_db,
+                    ))
+                log(f"      [{query_name}] {len(articles)} results from PubMed")
+            except Exception as e:
+                logger.warning(f"PubMed {query_name} search failed: {e}")
+
+        # 2b: Google Scholar via SearXNG
+        scholar_query = strategy.search_strings.get("scholar", "")
+        if scholar_query:
+            try:
+                async with SearxngClient() as client:
+                    if await client.validate_connection():
+                        raw = await client.search(scholar_query, engines=['google scholar'], num_results=100)
+                        for r in raw:
+                            url = r.get("url", "") if isinstance(r, dict) else getattr(r, "url", "")
+                            if not url or url in seen_urls or is_junk_url(url):
+                                continue
+                            seen_urls.add(url)
+                            title = r.get("title", "") if isinstance(r, dict) else getattr(r, "title", "")
+                            snippet = r.get("content", "") if isinstance(r, dict) else getattr(r, "snippet", "")
+                            all_records.append(WideNetRecord(
+                                pmid=None, doi=None,
+                                title=title, abstract=snippet,
+                                study_type="other",  # will be screened by fast model
+                                sample_size=None, primary_objective=None,
+                                year=None, journal=None, authors=None,
+                                url=url, source_db="scholar",
+                            ))
+                        log(f"      [scholar] {len(raw)} results from Google Scholar")
+            except Exception as e:
+                logger.warning(f"Google Scholar search failed: {e}")
+
+        log(f"    [Step 2] Wide net total: {len(all_records)} records")
+
+        # 2c: Fast model screening for sample_size and primary_objective
+        # Only for records where study_type was not determined from PubMed XML
+        needs_screening = [r for r in all_records if r.study_type == "other" and r.abstract]
+        if needs_screening and self.fast_worker:
+            log(f"    [Step 2] Fast-model screening {len(needs_screening)} abstracts...")
+            screened = await self._fast_screen_abstracts(needs_screening)
+            # Update records in-place
+            screening_map = {id(r): s for r, s in zip(needs_screening, screened)}
+            for r in all_records:
+                if id(r) in screening_map:
+                    s = screening_map[id(r)]
+                    if s.get("study_type"):
+                        r.study_type = s["study_type"]
+                    if s.get("sample_size"):
+                        r.sample_size = s["sample_size"]
+                    if s.get("primary_objective"):
+                        r.primary_objective = s["primary_objective"]
+
+        return all_records[:500]  # Cap at 500
+
+    async def _fast_screen_abstracts(self, records: List[WideNetRecord]) -> List[Dict]:
+        """Use fast model to extract study_type, sample_size, primary_objective from abstracts."""
+        semaphore = asyncio.Semaphore(10)
+
+        async def screen_one(record: WideNetRecord) -> Dict:
+            async with semaphore:
+                try:
+                    resp = await self.fast_worker.client.chat.completions.create(
+                        model=self.fast_worker.model,
+                        messages=[
+                            {"role": "system", "content": (
+                                "Extract from this abstract:\n"
+                                '- study_type: RCT | meta-analysis | systematic-review | cohort | '
+                                'case-control | cross-sectional | case-report | in-vitro | animal-model | '
+                                'review | guideline | other\n'
+                                '- sample_size: "n=X" or null\n'
+                                '- primary_objective: one sentence or null\n'
+                                'Return JSON only: {"study_type":"...","sample_size":"...","primary_objective":"..."}'
+                            )},
+                            {"role": "user", "content": f"Title: {record.title}\n\nAbstract: {record.abstract[:2000]}"}
+                        ],
+                        max_tokens=256, temperature=0.1, timeout=60
+                    )
+                    raw = resp.choices[0].message.content.strip()
+                    # Parse JSON from response
+                    if "```" in raw:
+                        match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
+                        if match:
+                            raw = match.group(1).strip()
+                    return json.loads(raw)
+                except Exception:
+                    return {}
+
+        results = await asyncio.gather(*[screen_one(r) for r in records])
+        return list(results)
+
+    async def _screen_and_prioritize(
+        self, records: List[WideNetRecord], strategy: SearchStrategy,
+        max_select: int = 20, log=print
+    ) -> List[WideNetRecord]:
+        """Step 3: Smart model screens wide net records → top 20."""
+        if not records:
+            log(f"    [Step 3] No records to screen")
+            return []
+
+        log(f"    [Step 3] Screening {len(records)} records → top {max_select}...")
+
+        # Build compact representation for smart model
+        pico_str = json.dumps(strategy.pico)
+
+        # Chunk if needed (>28K tokens ≈ ~112K chars, ~200 chars per record)
+        chunk_size = 200
+        if len(records) > chunk_size:
+            # Process in chunks, then merge
+            all_selected = []
+            for chunk_start in range(0, len(records), chunk_size):
+                chunk = records[chunk_start:chunk_start + chunk_size]
+                selected = await self._screen_chunk(chunk, chunk_start, pico_str, max_select, log)
+                all_selected.extend(selected)
+
+            if len(all_selected) > max_select:
+                # Re-rank merged selections
+                all_selected = await self._screen_chunk(all_selected, 0, pico_str, max_select, log)
+            return all_selected
+        else:
+            return await self._screen_chunk(records, 0, pico_str, max_select, log)
+
+    async def _screen_chunk(
+        self, records: List[WideNetRecord], offset: int,
+        pico_str: str, max_select: int, log
+    ) -> List[WideNetRecord]:
+        """Screen a chunk of records with the smart model."""
+        compact = []
+        for i, r in enumerate(records):
+            compact.append({
+                "idx": offset + i,
+                "title": r.title[:150],
+                "type": r.study_type,
+                "n": r.sample_size,
+                "year": r.year,
+                "journal": r.journal,
+                "abstract": r.abstract[:300],
+            })
+
+        system = (
+            "You are a systematic review screener performing title/abstract screening.\n\n"
+            f"PICO: {pico_str}\n\n"
+            "INCLUSION CRITERIA:\n"
+            "- Human clinical studies (RCTs, meta-analyses, systematic reviews, large cohort studies)\n"
+            "- Sample size >= 30 participants (prefer >= 100)\n"
+            "- Published in peer-reviewed journals\n"
+            "- Directly relevant to the PICO\n\n"
+            "EXCLUSION CRITERIA:\n"
+            "- Animal models / in vitro studies\n"
+            "- Case reports (n < 5)\n"
+            "- Conference abstracts without full data\n"
+            "- Retracted publications\n"
+            "- Duplicate reports of the same study\n\n"
+            f"From the {len(compact)} studies below, select the TOP {max_select} most rigorous.\n"
+            "Rank by: meta-analyses first, then RCTs (by sample size), then large cohort studies.\n\n"
+            "Return ONLY a JSON array of selected indices:\n"
+            '[{"index": 0, "reason": "Meta-analysis of 45 RCTs, n=12,000"}, ...]'
+        )
+
+        user = json.dumps(compact, ensure_ascii=False)
+
+        raw = await self._call_smart(system, user, max_tokens=2048, temperature=0.1)
+        try:
+            selections = self._parse_json_response(raw)
+            selected_indices = set()
+            for s in selections[:max_select]:
+                idx = s.get("index", s.get("idx", -1))
+                local_idx = idx - offset
+                if 0 <= local_idx < len(records):
+                    selected_indices.add(local_idx)
+
+            result = [records[i] for i in sorted(selected_indices)]
+            log(f"    [Step 3] Selected {len(result)} from {len(records)} records")
+            return result
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning(f"Screening parse failed: {e}, returning top records by study type")
+            # Fallback: prioritize by study type
+            priority = {"meta-analysis": 0, "systematic-review": 1, "RCT": 2,
+                        "clinical-trial": 3, "cohort": 4, "observational": 5}
+            sorted_records = sorted(records, key=lambda r: priority.get(r.study_type, 99))
+            return sorted_records[:max_select]
+
+    async def _deep_extract_batch(
+        self, articles, records: List[WideNetRecord], pico: Dict[str, str], log=print
+    ) -> List[DeepExtraction]:
+        """Step 4: Extract clinical variables from full-text articles using fast model."""
+        log(f"    [Step 4] Deep extraction from {len(articles)} articles...")
+        semaphore = asyncio.Semaphore(10)
+
+        async def extract_one(article, record: WideNetRecord) -> DeepExtraction:
+            text = getattr(article, 'full_text', '') or record.abstract
+            if not text.strip():
+                return DeepExtraction(
+                    pmid=record.pmid, doi=record.doi, title=record.title,
+                    url=record.url, raw_facts="No content available"
+                )
+
+            async with semaphore:
+                try:
+                    content = text[:MAX_INPUT_TOKENS * 4]
+                    system_prompt = (
+                        "You are a clinical data extraction specialist. Read this study and extract "
+                        "ALL of the following variables. Use null for any field not found.\n\n"
+                        "Return ONLY valid JSON:\n"
+                        "{\n"
+                        '  "attrition_pct": "exact dropout percentage or null",\n'
+                        '  "effect_size": "primary effect with CI (e.g. HR 0.76, 95% CI 0.65-0.89) or null",\n'
+                        '  "demographics": "age range, sex ratio, population or null",\n'
+                        '  "follow_up_period": "duration (e.g. 5.2 years median) or null",\n'
+                        '  "funding_source": "exact funding source or null",\n'
+                        '  "conflicts_of_interest": "declared COI or None declared or null",\n'
+                        '  "biological_mechanism": "mechanism/pathway or null",\n'
+                        '  "control_event_rate": 0.15,\n'
+                        '  "experimental_event_rate": 0.10,\n'
+                        '  "primary_outcome": "exact primary endpoint or null",\n'
+                        '  "secondary_outcomes": ["endpoint1", "endpoint2"],\n'
+                        '  "blinding": "double-blind | single-blind | open-label | null",\n'
+                        '  "randomization_method": "method or null",\n'
+                        '  "intention_to_treat": true,\n'
+                        '  "sample_size_total": 1000,\n'
+                        '  "sample_size_intervention": 500,\n'
+                        '  "sample_size_control": 500,\n'
+                        '  "study_design": "parallel RCT | crossover RCT | meta-analysis | cohort | etc.",\n'
+                        '  "risk_of_bias": "low | some concerns | high | unclear",\n'
+                        '  "raw_facts": "3-5 key findings as bullet points"\n'
+                        "}"
+                    )
+
+                    if self.fast_worker:
+                        resp = await self.fast_worker.client.chat.completions.create(
+                            model=self.fast_worker.model,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": f"Title: {record.title}\n\nContent:\n{content}"}
+                            ],
+                            max_tokens=1536, temperature=0.1, timeout=180
+                        )
+                    else:
+                        resp = await self.smart_client.chat.completions.create(
+                            model=self.smart_model,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": f"Title: {record.title}\n\nContent:\n{content}"}
+                            ],
+                            max_tokens=1536, temperature=0.1, timeout=300
+                        )
+
+                    raw = resp.choices[0].message.content.strip()
+                    data = self._parse_json_response(raw)
+
+                    # Safely parse numeric fields
+                    def safe_float(v):
+                        if v is None or v == "null":
+                            return None
+                        try:
+                            return float(v)
+                        except (ValueError, TypeError):
+                            return None
+
+                    def safe_int(v):
+                        if v is None or v == "null":
+                            return None
+                        try:
+                            return int(v)
+                        except (ValueError, TypeError):
+                            return None
+
+                    def safe_bool(v):
+                        if v is None or v == "null":
+                            return None
+                        if isinstance(v, bool):
+                            return v
+                        return None
+
+                    def safe_str(v):
+                        if v is None or v == "null" or v == "":
+                            return None
+                        return str(v)
+
+                    def safe_list(v):
+                        if isinstance(v, list):
+                            return v
+                        return None
+
+                    return DeepExtraction(
+                        pmid=record.pmid,
+                        doi=record.doi,
+                        title=record.title,
+                        url=record.url,
+                        attrition_pct=safe_str(data.get("attrition_pct")),
+                        effect_size=safe_str(data.get("effect_size")),
+                        demographics=safe_str(data.get("demographics")),
+                        follow_up_period=safe_str(data.get("follow_up_period")),
+                        funding_source=safe_str(data.get("funding_source")),
+                        conflicts_of_interest=safe_str(data.get("conflicts_of_interest")),
+                        biological_mechanism=safe_str(data.get("biological_mechanism")),
+                        control_event_rate=safe_float(data.get("control_event_rate")),
+                        experimental_event_rate=safe_float(data.get("experimental_event_rate")),
+                        primary_outcome=safe_str(data.get("primary_outcome")),
+                        secondary_outcomes=safe_list(data.get("secondary_outcomes")),
+                        blinding=safe_str(data.get("blinding")),
+                        randomization_method=safe_str(data.get("randomization_method")),
+                        intention_to_treat=safe_bool(data.get("intention_to_treat")),
+                        sample_size_total=safe_int(data.get("sample_size_total")),
+                        sample_size_intervention=safe_int(data.get("sample_size_intervention")),
+                        sample_size_control=safe_int(data.get("sample_size_control")),
+                        study_design=safe_str(data.get("study_design")),
+                        risk_of_bias=safe_str(data.get("risk_of_bias")),
+                        raw_facts=safe_str(data.get("raw_facts")) or "",
+                    )
+                except Exception as e:
+                    logger.warning(f"Deep extraction failed for {record.title[:50]}: {e}")
+                    return DeepExtraction(
+                        pmid=record.pmid, doi=record.doi, title=record.title,
+                        url=record.url, raw_facts=f"Extraction failed: {str(e)[:100]}"
+                    )
+
+        # Log sources for UI visualization
+        for record in records:
+            log(f"[SOURCE] {record.url}")
+
+        results = await asyncio.gather(*[
+            extract_one(art, rec) for art, rec in zip(articles, records)
+        ])
+        good = sum(1 for r in results if r.raw_facts and "failed" not in r.raw_facts.lower())
+        log(f"    [Step 4] Extracted data from {good}/{len(results)} articles")
+        return list(results)
+
+    async def _build_case(
+        self, topic: str, strategy: SearchStrategy,
+        extractions: List[DeepExtraction], case_type: str, log=print
+    ) -> str:
+        """Step 5/6: Smart model builds affirmative or falsification case from extraction data."""
+        log(f"    [Step {'5' if case_type == 'affirmative' else '6'}] Building {case_type} case...")
+
+        pico_str = json.dumps(strategy.pico)
+
+        # Build extraction data for prompt
+        extraction_blocks = []
+        for i, ex in enumerate(extractions, 1):
+            block = f"Study {i}: {ex.title}\n"
+            if ex.study_design:
+                block += f"  Design: {ex.study_design}\n"
+            if ex.sample_size_total:
+                block += f"  N: {ex.sample_size_total}\n"
+            if ex.effect_size:
+                block += f"  Effect: {ex.effect_size}\n"
+            if ex.control_event_rate is not None:
+                block += f"  CER: {ex.control_event_rate}\n"
+            if ex.experimental_event_rate is not None:
+                block += f"  EER: {ex.experimental_event_rate}\n"
+            if ex.demographics:
+                block += f"  Demographics: {ex.demographics}\n"
+            if ex.follow_up_period:
+                block += f"  Follow-up: {ex.follow_up_period}\n"
+            if ex.blinding:
+                block += f"  Blinding: {ex.blinding}\n"
+            if ex.risk_of_bias:
+                block += f"  Risk of bias: {ex.risk_of_bias}\n"
+            if ex.funding_source:
+                block += f"  Funding: {ex.funding_source}\n"
+            if ex.raw_facts:
+                block += f"  Key findings: {ex.raw_facts}\n"
+            extraction_blocks.append(block)
+
+        extractions_text = "\n".join(extraction_blocks)
+        if len(extractions_text) > 60000:
+            extractions_text = extractions_text[:60000] + "\n[...truncated...]"
+
+        if case_type == "affirmative":
+            system = (
+                "You are a Lead Researcher writing the AFFIRMATIVE case for the following hypothesis.\n\n"
+                f"PICO: {pico_str}\n\n"
+                f"You have deeply extracted data from {len(extractions)} clinical studies. "
+                "Analyze this evidence and write a comprehensive argument FOR the hypothesis.\n\n"
+                "Structure:\n"
+                "1. Clinical Significance: How large are the observed effects? Clinically meaningful?\n"
+                "2. Biological Plausibility: What mechanisms support efficacy?\n"
+                "3. Consistency: Do multiple independent studies converge?\n"
+                "4. Dose-Response: Evidence of a dose-response relationship?\n"
+                "5. Strength of Evidence: Rate as STRONG / MODERATE / WEAK / INSUFFICIENT\n"
+                "6. Evidence Table:\n"
+                "   | Study | Design | N | Effect Size | CER | EER | Follow-up | Bias Risk |\n"
+                "7. Key Supporting Citations (Author et al. (Year) format)\n\n"
+                "Be precise. Cite specific numbers. Do not speculate beyond the data."
+            )
+        else:
+            system = (
+                "You are an Adversarial Researcher writing the FALSIFICATION case against the following hypothesis.\n\n"
+                f"PICO: {pico_str}\n\n"
+                "Your mandate: Find every reason this intervention may NOT work, may cause harm, or may be overstated.\n\n"
+                "Structure:\n"
+                "1. Adverse Effects: What harms have been documented?\n"
+                "2. Null Results: Which studies found NO significant effect?\n"
+                "3. Methodological Concerns: Poor blinding, high attrition, small samples, short follow-up\n"
+                "4. Funding Bias: Industry-funded studies vs. independent results\n"
+                "5. Publication Bias: Evidence of selective reporting or p-hacking\n"
+                "6. Biological Implausibility: Any mechanistic concerns?\n"
+                "7. Evidence Table (same format as affirmative)\n"
+                "8. Strength of Counter-Evidence: STRONG / MODERATE / WEAK / INSUFFICIENT"
+            )
+
+        try:
+            report = await self._call_smart(
+                system,
+                f"Topic: {topic}\n\nEXTRACTED STUDY DATA:\n\n{extractions_text}",
+                max_tokens=6000, temperature=0.2
+            )
+            return report
+        except Exception as e:
+            logger.error(f"Build case ({case_type}) failed: {e}")
+            return f"# {case_type.title()} Case: {topic}\n\n*Case synthesis failed ({e}).*\n\n{extractions_text}"
+
 
 # --- Orchestrator: Full Pipeline ---
 
 class Orchestrator:
     """
-    Runs the full DR_2_Podcast research pipeline with dual-model delegation.
+    Runs the full DR_2_Podcast evidence-based clinical research pipeline.
 
-    Pipeline:
-    1. Lead Researcher: iterative search for supporting evidence
-    2. Counter Researcher: iterative search for opposing evidence
-    3. Auditor: evaluates both reports, identifies remaining gaps
-    4. Final synthesis: combined research report
+    8-Step Pipeline (runs affirmative + falsification tracks in parallel):
+    Steps 1-5: Affirmative track (PICO → wide net → screen → extract → case)
+    Steps 1'-4',6: Falsification track (adversarial PICO → same pipeline → falsification case)
+    Step 7: Deterministic math (ARR/NNT from Python, no LLM)
+    Step 8: GRADE synthesis (Smart Model)
     """
 
     def __init__(
@@ -898,14 +1659,25 @@ class Orchestrator:
         )
         self.fast_model_available = fast_model_available
 
-    async def run(self, topic: str, framing_context: str = "", progress_callback=None) -> Dict[str, ResearchReport]:
-        """Run the full research pipeline. Returns dict of role→report.
+        # Full-text fetcher for Step 4
+        from fulltext_fetcher import FullTextFetcher
+        self.fulltext_fetcher = FullTextFetcher(max_concurrent=5, cache=self._page_cache)
+
+    async def run(self, topic: str, framing_context: str = "", progress_callback=None,
+                  output_dir: str = None) -> Dict[str, ResearchReport]:
+        """Run the full 8-step clinical research pipeline.
 
         Args:
             topic: Research topic
             framing_context: Optional research framing document to guide searches
             progress_callback: Optional callback for progress messages
+            output_dir: Optional directory to save intermediate artifacts
+
+        Returns:
+            Dict[str, ResearchReport] with keys: "lead", "counter", "audit"
         """
+        import clinical_math
+
         start_time = time.time()
 
         def log(msg: str):
@@ -916,188 +1688,244 @@ class Orchestrator:
 
         mode = "DUAL-MODEL" if self.fast_model_available else "SINGLE-MODEL"
         log(f"\n{'='*70}")
-        log(f"DEEP RESEARCH AGENT - Iterative Delegation ({mode})")
+        log(f"DEEP RESEARCH AGENT - Evidence-Based Clinical Pipeline ({mode})")
         log(f"{'='*70}")
         log(f"Topic: {topic}")
         if framing_context:
             log(f"Research framing provided: {len(framing_context)} chars")
         log(f"{'='*70}")
 
-        # Build framing prefix for role instructions
-        framing_prefix = ""
-        if framing_context:
-            framing_prefix = (
-                f"A Research Framing document has been prepared to guide your investigation. "
-                f"Use the core questions, scope boundaries, and evidence criteria below to focus "
-                f"your searches systematically:\n\n{framing_context}\n\n"
-                f"--- END FRAMING ---\n\n"
+        # Counters for metrics
+        aff_wide_net_total = 0
+        aff_screened_in = 0
+        aff_fulltext_ok = 0
+        aff_fulltext_err = 0
+        fal_wide_net_total = 0
+        fal_screened_in = 0
+        fal_fulltext_ok = 0
+        fal_fulltext_err = 0
+
+        # --- Affirmative Track (Steps 1-5) ---
+        async def affirmative_track():
+            nonlocal aff_wide_net_total, aff_screened_in, aff_fulltext_ok, aff_fulltext_err
+
+            log(f"\n{'='*70}")
+            log(f"PHASE 1: SEARCH STRATEGY FORMULATION (Affirmative)")
+            log(f"{'='*70}")
+            strategy = await self.lead_researcher._formulate_search_strategy(
+                topic, "affirmative", framing_context, log
             )
 
-        # Phase 1+2: Lead & Counter Researchers (parallel)
+            log(f"\n{'='*70}")
+            log(f"PHASE 2: WIDE NET SEARCH (Affirmative)")
+            log(f"{'='*70}")
+            records = await self.lead_researcher._wide_net_search(strategy, log)
+            aff_wide_net_total = len(records)
+
+            log(f"\n{'='*70}")
+            log(f"PHASE 3: SCREENING ({len(records)} → top 20) (Affirmative)")
+            log(f"{'='*70}")
+            top_records = await self.lead_researcher._screen_and_prioritize(records, strategy, log=log)
+            aff_screened_in = len(top_records)
+
+            log(f"\n{'='*70}")
+            log(f"PHASE 4: DEEP EXTRACTION ({len(top_records)} articles) (Affirmative)")
+            log(f"{'='*70}")
+            fulltexts = await self.fulltext_fetcher.fetch_all(top_records)
+            aff_fulltext_ok = sum(1 for ft in fulltexts if not ft.error)
+            aff_fulltext_err = sum(1 for ft in fulltexts if ft.error)
+            log(f"    Full-text retrieved: {aff_fulltext_ok}/{len(fulltexts)}")
+
+            extractions = await self.lead_researcher._deep_extract_batch(
+                fulltexts, top_records, strategy.pico, log
+            )
+
+            log(f"\n{'='*70}")
+            log(f"PHASE 5: BUILDING AFFIRMATIVE CASE")
+            log(f"{'='*70}")
+            case_report = await self.lead_researcher._build_case(
+                topic, strategy, extractions, "affirmative", log
+            )
+
+            return strategy, records, top_records, extractions, case_report
+
+        # --- Falsification Track (Steps 1'-4', 6) ---
+        async def falsification_track():
+            nonlocal fal_wide_net_total, fal_screened_in, fal_fulltext_ok, fal_fulltext_err
+
+            log(f"\n{'='*70}")
+            log(f"PHASE 1': SEARCH STRATEGY FORMULATION (Adversarial)")
+            log(f"{'='*70}")
+            strategy = await self.counter_researcher._formulate_search_strategy(
+                topic, "adversarial", framing_context, log
+            )
+
+            log(f"\n{'='*70}")
+            log(f"PHASE 2': WIDE NET SEARCH (Adversarial)")
+            log(f"{'='*70}")
+            records = await self.counter_researcher._wide_net_search(strategy, log)
+            fal_wide_net_total = len(records)
+
+            log(f"\n{'='*70}")
+            log(f"PHASE 3': SCREENING ({len(records)} → top 20) (Adversarial)")
+            log(f"{'='*70}")
+            top_records = await self.counter_researcher._screen_and_prioritize(records, strategy, log=log)
+            fal_screened_in = len(top_records)
+
+            log(f"\n{'='*70}")
+            log(f"PHASE 4': DEEP EXTRACTION ({len(top_records)} articles) (Adversarial)")
+            log(f"{'='*70}")
+            fulltexts = await self.fulltext_fetcher.fetch_all(top_records)
+            fal_fulltext_ok = sum(1 for ft in fulltexts if not ft.error)
+            fal_fulltext_err = sum(1 for ft in fulltexts if ft.error)
+            log(f"    Full-text retrieved: {fal_fulltext_ok}/{len(fulltexts)}")
+
+            extractions = await self.counter_researcher._deep_extract_batch(
+                fulltexts, top_records, strategy.pico, log
+            )
+
+            log(f"\n{'='*70}")
+            log(f"PHASE 6: BUILDING FALSIFICATION CASE")
+            log(f"{'='*70}")
+            case_report = await self.counter_researcher._build_case(
+                topic, strategy, extractions, "falsification", log
+            )
+
+            return strategy, records, top_records, extractions, case_report
+
+        # --- Run both tracks in parallel ---
         log(f"\n{'='*70}")
-        log(f"PHASE 1+2: LEAD & COUNTER RESEARCHERS (PARALLEL)")
+        log(f"RUNNING AFFIRMATIVE & FALSIFICATION TRACKS IN PARALLEL")
         log(f"{'='*70}")
-        lead_report, counter_report = await asyncio.gather(
-            self.lead_researcher.research(
-                topic=topic,
-                role="Lead Researcher (Principal Investigator)",
-                role_instructions=(
-                    f"{framing_prefix}"
-                    "Your job is to find SUPPORTING scientific evidence for the topic. "
-                    "Focus on: mechanisms of action, clinical trials (RCTs), meta-analyses, "
-                    "and expert consensus that SUPPORTS the claim. "
-                    "Prioritize peer-reviewed sources. Include specific data points, "
-                    "study sizes, and effect sizes when available."
-                ),
-                log=log
-            ),
-            self.counter_researcher.research(
-                topic=topic,
-                role="Counter Researcher (The Skeptic)",
-                role_instructions=(
-                    f"{framing_prefix}"
-                    "Your job is to find OPPOSING and CONTRADICTORY evidence for the topic. "
-                    "Focus on: studies showing null effects, negative outcomes, methodological "
-                    "flaws in supporting studies, and expert criticism. "
-                    "Search specifically for 'criticism of [topic]', 'limitations of [topic]', "
-                    "and 'no effect' findings. Be adversarial but evidence-based."
-                ),
-                log=log
-            ),
+
+        (aff_strategy, aff_records, aff_top, aff_extractions, aff_case), \
+        (fal_strategy, fal_records, fal_top, fal_extractions, fal_case) = await asyncio.gather(
+            affirmative_track(), falsification_track()
         )
 
-        # Phase 3: Auditor synthesis
+        # --- Step 7: Deterministic Math ---
         log(f"\n{'='*70}")
-        log(f"PHASE 3: AUDITOR SYNTHESIS")
+        log(f"PHASE 7: DETERMINISTIC MATH (ARR/NNT)")
+        log(f"{'='*70}")
+        all_extractions = aff_extractions + fal_extractions
+        impacts = clinical_math.batch_calculate(all_extractions)
+        math_report = clinical_math.format_math_report(impacts)
+        log(f"    Calculated clinical impact for {len(impacts)} studies with CER+EER data")
+        if impacts:
+            for imp in impacts:
+                log(f"      {imp.study_id}: NNT={imp.nnt:.1f} ({imp.direction})")
+
+        # --- Step 8: GRADE Synthesis ---
+        log(f"\n{'='*70}")
+        log(f"PHASE 8: GRADE SYNTHESIS")
         log(f"{'='*70}")
 
-        # Build combined SearchMetrics for methodology section
-        lead_m = lead_report.search_metrics
-        counter_m = counter_report.search_metrics
         search_date = datetime.date.today().isoformat()
-        if lead_m and counter_m:
-            total_identified = lead_m.total_identified + counter_m.total_identified
-            total_after_dedup = lead_m.total_after_dedup + counter_m.total_after_dedup
-            total_fetched = lead_m.total_fetched + counter_m.total_fetched
-            total_fetch_errors = lead_m.total_fetch_errors + counter_m.total_fetch_errors
-            total_with_content = lead_m.total_with_content + counter_m.total_with_content
-            total_summarized = lead_m.total_summarized + counter_m.total_summarized
-            academic_sources = lead_m.academic_sources + counter_m.academic_sources
-            general_web_sources = lead_m.general_web_sources + counter_m.general_web_sources
-        else:
-            total_identified = lead_report.total_urls_fetched + counter_report.total_urls_fetched
-            total_after_dedup = total_identified
-            total_fetched = total_identified
-            total_fetch_errors = lead_report.total_errors + counter_report.total_errors
-            total_with_content = total_fetched - total_fetch_errors
-            total_summarized = lead_report.total_summaries + counter_report.total_summaries
-            academic_sources = 0
-            general_web_sources = 0
+        total_wide = aff_wide_net_total + fal_wide_net_total
+        total_screened = aff_screened_in + fal_screened_in
+        total_ft_ok = aff_fulltext_ok + fal_fulltext_ok
+        total_ft_err = aff_fulltext_err + fal_fulltext_err
 
-        methodology_context = (
-            f"=== SEARCH METHODOLOGY ===\n"
-            f"Search conducted: {search_date}\n"
-            f"Databases: PubMed, Google Scholar, Google, Bing, Brave\n"
-            f"Articles identified: {total_identified}\n"
-            f"After deduplication: {total_after_dedup}\n"
-            f"Full-text retrieved: {total_fetched}\n"
-            f"Successfully analyzed: {total_summarized}\n"
-            f"Excluded (fetch errors): {total_fetch_errors}\n"
-            f"Academic sources (Tier 1): {academic_sources}\n"
-            f"General web sources (Tier 3): {general_web_sources}\n"
+        audit_text = await self._grade_synthesis(
+            topic, aff_case, fal_case, math_report,
+            aff_strategy, fal_strategy,
+            total_wide, total_screened, total_ft_ok, total_ft_err,
+            search_date, log
         )
 
-        audit_system = (
-            "You are a scientific review author synthesizing supporting and opposing evidence "
-            "into ONE cohesive review article.\n\n"
-            "Structure:\n"
-            "1. Abstract (200-300 words)\n"
-            "2. Introduction (background, scope, research questions)\n"
-            "3. Methodology\n"
-            f"   - Databases searched: PubMed, Google Scholar, Google, Bing, Brave\n"
-            f"   - Search date: {search_date}\n"
-            f"   - Source selection: {total_identified} identified → {total_after_dedup} screened → {total_summarized} included\n"
-            "   - Inclusion criteria: peer-reviewed studies, clinical trials, systematic reviews\n"
-            "   - Exclusion criteria: non-English, purely anecdotal, retracted\n"
-            "4. Results (grouped by evidence tier)\n"
-            "   4.1 Meta-Analyses and Systematic Reviews\n"
-            "   4.2 Randomized Controlled Trials\n"
-            "   4.3 Cohort and Observational Studies\n"
-            "   4.4 Mechanistic / Preclinical Evidence\n"
-            "   4.5 Expert Opinion and Narrative Reviews\n"
-            "5. Discussion\n"
-            "   5.1 Synthesis of Supporting Evidence\n"
-            "   5.2 Contradictory Findings and Limitations\n"
-            "   5.3 Evidence Quality Assessment (reliability scorecard)\n"
-            "   5.4 Recency Analysis (note when older findings superseded by newer evidence)\n"
-            "   5.5 Potential Conflicts of Interest (flag industry-funded studies)\n"
-            "   5.6 Cross-Study Comparison (compare effect sizes across studies reporting same outcome)\n"
-            "6. Conclusions\n"
-            "7. Evidence Summary Table\n"
-            "   | # | Author (Year) | Study Type | N | Key Finding | Effect Size | Funding | Journal |\n"
-            "   | --- | --- | --- | --- | --- | --- | --- | --- |\n"
-            "8. References (Author et al. (Year). Title. Journal. DOI/URL)\n\n"
-            "Rules:\n"
-            "- Cite as 'Author et al. (Year)' in body text, not raw URLs\n"
-            "- Weight meta-analyses > RCTs > cohort > observational > opinion\n"
-            "- Flag industry-funded studies in Discussion 5.5\n"
-            "- When multiple studies report the same metric, explicitly compare their effect sizes\n"
-            "- Note when findings from before 2020 have been updated by more recent evidence"
-        )
-
-        combined_evidence = (
-            f"TOPIC: {topic}\n\n"
-            f"{methodology_context}\n"
-            f"=== SUPPORTING EVIDENCE (Lead Researcher) ===\n"
-            f"{lead_report.report}\n\n"
-            f"=== OPPOSING EVIDENCE (Counter Researcher) ===\n"
-            f"{counter_report.report}"
-        )
-
-        # Truncate if needed
-        if len(combined_evidence) > 80000:
-            combined_evidence = combined_evidence[:80000] + "\n\n[...truncated...]"
-
-        try:
-            resp = await self.smart_client.chat.completions.create(
-                model=self.smart_model,
-                messages=[
-                    {"role": "system", "content": audit_system},
-                    {"role": "user", "content": combined_evidence}
-                ],
-                max_tokens=8000, temperature=0.2, timeout=300
+        # --- Save intermediate artifacts ---
+        if output_dir:
+            self._save_artifacts(
+                output_dir, aff_strategy, fal_strategy,
+                aff_records, fal_records, aff_top, fal_top,
+                math_report
             )
-            audit_text = resp.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"Audit failed: {e}")
-            audit_text = f"Audit synthesis failed: {e}\n\n{combined_evidence}"
 
-        # Build combined search metrics for audit report
-        combined_metrics = None
-        if lead_m and counter_m:
-            combined_metrics = SearchMetrics(
+        # --- Build backward-compatible return ---
+        # Convert extractions to SummarizedSource for compatibility
+        aff_sources = self._extractions_to_sources(aff_extractions, "affirmative")
+        fal_sources = self._extractions_to_sources(fal_extractions, "falsification")
+
+        combined_metrics = SearchMetrics(
+            search_date=search_date,
+            databases_searched=["PubMed", "Google Scholar"],
+            total_identified=total_wide,
+            total_after_dedup=total_wide,  # dedup happens inside PubMedClient
+            total_fetched=total_ft_ok + total_ft_err,
+            total_fetch_errors=total_ft_err,
+            total_with_content=total_ft_ok,
+            total_summarized=len(aff_extractions) + len(fal_extractions),
+            academic_sources=total_wide,
+            general_web_sources=0,
+            wide_net_total=total_wide,
+            screened_in=total_screened,
+            fulltext_retrieved=total_ft_ok,
+            fulltext_errors=total_ft_err,
+        )
+
+        lead_duration = time.time() - start_time
+        lead_report = ResearchReport(
+            topic=topic, role="Lead Researcher",
+            sources=aff_sources,
+            report=aff_case,
+            iterations_used=0,
+            total_urls_fetched=aff_fulltext_ok + aff_fulltext_err,
+            total_summaries=len(aff_extractions),
+            total_errors=aff_fulltext_err,
+            duration_seconds=lead_duration,
+            search_metrics=SearchMetrics(
                 search_date=search_date,
-                databases_searched=["PubMed", "Google Scholar", "Google", "Bing", "Brave"],
-                total_identified=total_identified,
-                total_after_dedup=total_after_dedup,
-                total_fetched=total_fetched,
-                total_fetch_errors=total_fetch_errors,
-                total_with_content=total_with_content,
-                total_summarized=total_summarized,
-                academic_sources=academic_sources,
-                general_web_sources=general_web_sources,
-                tier1_sufficient_count=(lead_m.tier1_sufficient_count + counter_m.tier1_sufficient_count),
-                tier3_expanded_count=(lead_m.tier3_expanded_count + counter_m.tier3_expanded_count),
-            )
+                databases_searched=["PubMed", "Google Scholar"],
+                total_identified=aff_wide_net_total,
+                total_after_dedup=aff_wide_net_total,
+                total_fetched=aff_fulltext_ok + aff_fulltext_err,
+                total_fetch_errors=aff_fulltext_err,
+                total_with_content=aff_fulltext_ok,
+                total_summarized=len(aff_extractions),
+                academic_sources=aff_wide_net_total,
+                general_web_sources=0,
+                wide_net_total=aff_wide_net_total,
+                screened_in=aff_screened_in,
+                fulltext_retrieved=aff_fulltext_ok,
+                fulltext_errors=aff_fulltext_err,
+            ),
+        )
+
+        counter_report = ResearchReport(
+            topic=topic, role="Counter Researcher",
+            sources=fal_sources,
+            report=fal_case,
+            iterations_used=0,
+            total_urls_fetched=fal_fulltext_ok + fal_fulltext_err,
+            total_summaries=len(fal_extractions),
+            total_errors=fal_fulltext_err,
+            duration_seconds=lead_duration,
+            search_metrics=SearchMetrics(
+                search_date=search_date,
+                databases_searched=["PubMed", "Google Scholar"],
+                total_identified=fal_wide_net_total,
+                total_after_dedup=fal_wide_net_total,
+                total_fetched=fal_fulltext_ok + fal_fulltext_err,
+                total_fetch_errors=fal_fulltext_err,
+                total_with_content=fal_fulltext_ok,
+                total_summarized=len(fal_extractions),
+                academic_sources=fal_wide_net_total,
+                general_web_sources=0,
+                wide_net_total=fal_wide_net_total,
+                screened_in=fal_screened_in,
+                fulltext_retrieved=fal_fulltext_ok,
+                fulltext_errors=fal_fulltext_err,
+            ),
+        )
 
         audit_report = ResearchReport(
             topic=topic, role="Auditor",
-            sources=lead_report.sources + counter_report.sources,
+            sources=aff_sources + fal_sources,
             report=audit_text,
             iterations_used=0,
-            total_urls_fetched=lead_report.total_urls_fetched + counter_report.total_urls_fetched,
-            total_summaries=lead_report.total_summaries + counter_report.total_summaries,
-            total_errors=lead_report.total_errors + counter_report.total_errors,
+            total_urls_fetched=(aff_fulltext_ok + aff_fulltext_err + fal_fulltext_ok + fal_fulltext_err),
+            total_summaries=len(aff_extractions) + len(fal_extractions),
+            total_errors=aff_fulltext_err + fal_fulltext_err,
             duration_seconds=time.time() - start_time,
             search_metrics=combined_metrics,
         )
@@ -1105,9 +1933,10 @@ class Orchestrator:
         total_time = time.time() - start_time
         log(f"\n{'='*70}")
         log(f"ALL RESEARCH COMPLETE in {total_time:.0f}s")
-        log(f"  Lead: {lead_report.total_summaries} sources in {lead_report.duration_seconds:.0f}s")
-        log(f"  Counter: {counter_report.total_summaries} sources in {counter_report.duration_seconds:.0f}s")
-        log(f"  Total unique sources: {lead_report.total_summaries + counter_report.total_summaries}")
+        log(f"  Affirmative: {len(aff_extractions)} studies from {aff_wide_net_total} candidates")
+        log(f"  Falsification: {len(fal_extractions)} studies from {fal_wide_net_total} candidates")
+        log(f"  Clinical math: {len(impacts)} studies with NNT data")
+        log(f"  Total articles analyzed: {len(all_extractions)}")
         log(f"{'='*70}\n")
 
         return {
@@ -1115,6 +1944,168 @@ class Orchestrator:
             "counter": counter_report,
             "audit": audit_report,
         }
+
+    async def _grade_synthesis(
+        self, topic: str, aff_case: str, fal_case: str, math_report: str,
+        aff_strategy: SearchStrategy, fal_strategy: SearchStrategy,
+        total_wide: int, total_screened: int, total_ft_ok: int, total_ft_err: int,
+        search_date: str, log=print
+    ) -> str:
+        """Step 8: GRADE framework synthesis by the Auditor."""
+        log(f"    [Step 8] GRADE synthesis...")
+
+        pico_str = json.dumps(aff_strategy.pico)
+
+        audit_system = (
+            "You are The Auditor — an independent scientific arbiter.\n\n"
+            "You have received:\n"
+            "1. The AFFIRMATIVE CASE (arguing FOR the intervention)\n"
+            "2. The FALSIFICATION CASE (arguing AGAINST the intervention)\n"
+            "3. DETERMINISTIC MATH (Python-calculated ARR, RRR, NNT — these numbers are EXACT, not LLM-generated)\n\n"
+            f"PICO Framework: {pico_str}\n\n"
+            "Your task: Issue a GRADE-framework synthesis.\n\n"
+            "Structure:\n"
+            "1. Executive Summary (3-4 sentences)\n"
+            "2. Evidence Profile\n"
+            "   - Study designs: [list study types included]\n"
+            "   - Total participants across key studies: N = X\n"
+            "   - Risk of bias assessment: [summary]\n"
+            "   - Consistency: [do studies agree?]\n"
+            "   - Directness: [do studies directly measure the outcome of interest?]\n"
+            "   - Precision: [are confidence intervals narrow?]\n"
+            "   - Publication bias: [any evidence of selective reporting?]\n\n"
+            "3. GRADE Assessment\n"
+            "   Start at HIGH for RCTs, LOW for observational. Then apply modifiers:\n"
+            "   DOWNGRADE for: Risk of bias, Inconsistency, Indirectness, Imprecision, Publication bias\n"
+            "   UPGRADE for: Large effect, Dose-response, Plausible confounders would reduce effect\n"
+            "   FINAL GRADE: HIGH | MODERATE | LOW | VERY LOW\n\n"
+            "4. Clinical Impact (from deterministic math)\n"
+            "   - Include the NNT table directly (do NOT recalculate — use the exact numbers provided)\n"
+            "   - Interpret the NNT in clinical context\n\n"
+            "5. Balanced Verdict\n"
+            "   - What does the weight of evidence actually say?\n"
+            "   - What are the key caveats?\n"
+            "   - What would change the conclusion?\n\n"
+            "6. Recommendations for Further Research\n\n"
+            "7. PRISMA Flow Diagram (text-based)\n"
+            f"   Records identified: {total_wide}\n"
+            f"   Screened (top studies): {total_screened}\n"
+            f"   Full-text retrieved: {total_ft_ok}\n"
+            f"   Full-text errors: {total_ft_err}\n"
+            f"   Included in synthesis: {total_screened}\n\n"
+            "8. Consolidated Evidence Table\n"
+            "   | Study | Design | N | Effect | CER | EER | ARR | NNT | Bias Risk | GRADE Impact |\n\n"
+            "9. Full Reference List\n\n"
+            "CRITICAL RULES:\n"
+            "- NEVER recalculate ARR or NNT — use the Python-provided numbers exactly\n"
+            "- Be heavily caveated — acknowledge uncertainty\n"
+            "- Flag any potential conflicts of interest\n"
+            "- Distinguish between statistical significance and clinical significance\n"
+            "- Note that absence of evidence is not evidence of absence"
+        )
+
+        combined_input = (
+            f"TOPIC: {topic}\n\n"
+            f"=== SEARCH METHODOLOGY ===\n"
+            f"Search date: {search_date}\n"
+            f"Databases: PubMed (MeSH Boolean), Google Scholar\n"
+            f"Records identified: {total_wide}\n"
+            f"Screened to top studies: {total_screened}\n"
+            f"Full-text retrieved: {total_ft_ok} (errors: {total_ft_err})\n\n"
+            f"=== AFFIRMATIVE CASE ===\n{aff_case}\n\n"
+            f"=== FALSIFICATION CASE ===\n{fal_case}\n\n"
+            f"=== DETERMINISTIC MATH (Python-calculated, NOT LLM) ===\n{math_report}\n"
+        )
+
+        if len(combined_input) > 80000:
+            combined_input = combined_input[:80000] + "\n\n[...truncated...]"
+
+        try:
+            resp = await self.smart_client.chat.completions.create(
+                model=self.smart_model,
+                messages=[
+                    {"role": "system", "content": audit_system},
+                    {"role": "user", "content": combined_input}
+                ],
+                max_tokens=8000, temperature=0.2, timeout=300
+            )
+            audit_text = resp.choices[0].message.content.strip()
+            log(f"    [Step 8] GRADE synthesis complete ({len(audit_text)} chars)")
+            return audit_text
+        except Exception as e:
+            logger.error(f"GRADE synthesis failed: {e}")
+            return (
+                f"# GRADE Synthesis: {topic}\n\n"
+                f"*GRADE synthesis failed ({e}). Raw inputs below.*\n\n"
+                f"{combined_input}"
+            )
+
+    @staticmethod
+    def _extractions_to_sources(extractions: List[DeepExtraction], role: str) -> List[SummarizedSource]:
+        """Convert DeepExtraction list to SummarizedSource for backward compatibility."""
+        sources = []
+        for ex in extractions:
+            metadata = StudyMetadata(
+                study_type=ex.study_design,
+                sample_size=str(ex.sample_size_total) if ex.sample_size_total else None,
+                key_result=ex.effect_size,
+                journal_name=None,
+                authors=None,
+                effect_size=ex.effect_size,
+                limitations=ex.attrition_pct,
+                demographics=ex.demographics,
+                funding_source=ex.funding_source,
+            )
+            sources.append(SummarizedSource(
+                url=ex.url,
+                title=ex.title,
+                summary=ex.raw_facts,
+                query=role,
+                goal=role,
+                metadata=metadata,
+            ))
+        return sources
+
+    @staticmethod
+    def _save_artifacts(
+        output_dir: str,
+        aff_strategy: SearchStrategy, fal_strategy: SearchStrategy,
+        aff_records: List[WideNetRecord], fal_records: List[WideNetRecord],
+        aff_top: List[WideNetRecord], fal_top: List[WideNetRecord],
+        math_report: str
+    ):
+        """Save intermediate pipeline artifacts to output directory."""
+        from pathlib import Path
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        # Strategy files
+        with open(out / "deep_research_strategy_aff.json", 'w') as f:
+            json.dump({"pico": aff_strategy.pico, "mesh_terms": aff_strategy.mesh_terms,
+                        "search_strings": aff_strategy.search_strings, "role": aff_strategy.role}, f, indent=2)
+        with open(out / "deep_research_strategy_neg.json", 'w') as f:
+            json.dump({"pico": fal_strategy.pico, "mesh_terms": fal_strategy.mesh_terms,
+                        "search_strings": fal_strategy.search_strings, "role": fal_strategy.role}, f, indent=2)
+
+        # Screening decisions
+        screening = {
+            "affirmative": {
+                "total_candidates": len(aff_records),
+                "selected": len(aff_top),
+                "selected_titles": [r.title for r in aff_top],
+            },
+            "adversarial": {
+                "total_candidates": len(fal_records),
+                "selected": len(fal_top),
+                "selected_titles": [r.title for r in fal_top],
+            },
+        }
+        with open(out / "deep_research_screening.json", 'w') as f:
+            json.dump(screening, f, indent=2, ensure_ascii=False)
+
+        # Math report
+        with open(out / "deep_research_math.md", 'w') as f:
+            f.write(math_report)
 
 
 # --- Convenience functions ---
@@ -1125,7 +2116,8 @@ async def run_deep_research(
     results_per_query: int = 8,
     max_iterations: int = MAX_RESEARCH_ITERATIONS,
     fast_model_available: bool = True,
-    framing_context: str = ""
+    framing_context: str = "",
+    output_dir: str = None
 ) -> Dict[str, ResearchReport]:
     orchestrator = Orchestrator(
         brave_api_key=brave_api_key,
@@ -1133,11 +2125,11 @@ async def run_deep_research(
         max_iterations=max_iterations,
         fast_model_available=fast_model_available
     )
-    return await orchestrator.run(topic, framing_context=framing_context)
+    return await orchestrator.run(topic, framing_context=framing_context, output_dir=output_dir)
 
 
 async def main():
-    """Test the iterative delegation research agent."""
+    """Test the evidence-based clinical research pipeline."""
     import os
     topic = "does coffee intake improve cognitive performance and productivity?"
     brave_key = os.getenv("BRAVE_API_KEY", "")
@@ -1154,19 +2146,19 @@ async def main():
     if not fast_available:
         print("NOTE: Fast model not available. Using smart-only mode.")
 
-    reports = await run_deep_research(
-        topic=topic,
-        brave_api_key=brave_key,
-        results_per_query=5,
-        max_iterations=2,  # Limit for testing
-        fast_model_available=fast_available
-    )
-
-    # Save reports
     from pathlib import Path
     output_dir = Path("research_outputs/test_deep_agent")
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    reports = await run_deep_research(
+        topic=topic,
+        brave_api_key=brave_key,
+        results_per_query=5,
+        fast_model_available=fast_available,
+        output_dir=str(output_dir)
+    )
+
+    # Save reports
     for role, report in reports.items():
         filename = output_dir / f"{role}_report.md"
         with open(filename, "w") as f:

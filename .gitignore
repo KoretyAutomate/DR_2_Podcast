@@ -29,10 +29,9 @@ home/
 reflections/
 .pytest_cache/
 
-# Fish Speech Docker — large files excluded from git
-docker/fish-speech/checkpoints/
-docker/fish-speech/reference_audio/*.wav
-docker/fish-speech/reference_audio/*.mp3
-docker/fish-speech/outputs/
-docker/fish-speech/.env
-docker/fish-speech/build.log
+# Qwen3-TTS — large files excluded from git
+docker/qwen3-tts/checkpoints/
+docker/qwen3-tts/outputs/
+docker/qwen3-tts/logs/
+docker/qwen3-tts/.env
+docker/qwen3-tts/build.log

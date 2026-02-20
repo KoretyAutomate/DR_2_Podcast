@@ -210,11 +210,13 @@ topic_name = get_topic(args)
 CHARACTERS = {
     "Kaz": {
         "gender": "male",
+        "host_label": "Host 1",       # male → Host 1 voice (always)
         "voice_model": "male_voice",  # TTS-specific, will update in #3
         "base_personality": "Enthusiastic science communicator, clear explainer, data-driven"
     },
     "Erika": {
         "gender": "female",
+        "host_label": "Host 2",       # female → Host 2 voice (always)
         "voice_model": "female_voice",  # TTS-specific, will update in #3
         "base_personality": "Curious and sharp interviewer, asks what the audience is thinking"
     }
@@ -249,11 +251,13 @@ def assign_roles() -> dict:
     role_assignment = {
         "presenter": {
             "character": presenter_name,
+            "label": CHARACTERS[presenter_name]["host_label"],
             "stance": "teaching",
             "personality": CHARACTERS[presenter_name]["base_personality"]
         },
         "questioner": {
             "character": questioner_name,
+            "label": CHARACTERS[questioner_name]["host_label"],
             "stance": "curious",
             "personality": CHARACTERS[questioner_name]["base_personality"]
         }
@@ -280,6 +284,10 @@ RESEARCH_ARTIFACTS = [
     "adversarial_paper.pdf", "verified_sources_bibliography.pdf",
     "source_of_truth.pdf", "gap_fill_research.md",
     "url_validation_results.json",
+    "deep_research_math.md",
+    "deep_research_strategy_aff.json",
+    "deep_research_strategy_neg.json",
+    "deep_research_screening.json",
 ]
 
 
@@ -376,20 +384,33 @@ def check_tts_dependencies():
 check_tts_dependencies()
 
 # --- LANGUAGE CONFIGURATION ---
+# speech_rate: units spoken per minute at a natural conversational pace
+# length_unit: how script length is measured ('words' for space-delimited, 'chars' for character-based)
+# prompt_unit: singular label used in LLM prompts (e.g. "word", "character")
 SUPPORTED_LANGUAGES = {
     'en': {
         'name': 'English',
-        'tts_code': 'a',  # Kokoro American English
+        'tts_code': 'a',            # Kokoro American English
         'instruction': 'Write all content in English.',
-        'pdf_font': 'Helvetica'  # Latin-1 compatible
+        'pdf_font': 'Helvetica',    # Latin-1 compatible
+        'speech_rate': 150,         # ~150 words/min conversational pace
+        'length_unit': 'words',
+        'prompt_unit': 'word',
     },
     'ja': {
         'name': '日本語 (Japanese)',
-        'tts_code': 'j',  # Kokoro Japanese
+        'tts_code': 'j',            # Kokoro Japanese / Qwen3-TTS
         'instruction': 'すべてのコンテンツを日本語で書いてください。(Write all content in Japanese.)',
-        'pdf_font': 'Arial Unicode MS'  # Unicode compatible for Japanese
+        'pdf_font': 'Arial Unicode MS',  # Unicode compatible for Japanese
+        'speech_rate': 500,         # ~500 chars/min conversational pace
+        'length_unit': 'chars',
+        'prompt_unit': 'character',
     }
 }
+
+# Target episode duration per podcast_length mode (in minutes)
+TARGET_MINUTES = {'short': 10, 'medium': 20, 'long': 30}
+SCRIPT_TOLERANCE = 0.10  # ±10% around target length is acceptable
 
 language = get_language(args)
 language_config = SUPPORTED_LANGUAGES[language]
@@ -399,6 +420,16 @@ english_instruction = "Write all content in English."
 target_instruction = language_config['instruction']
 # For backward compatibility and phases that always match the target language
 language_instruction = language_config['instruction']
+
+# --- DURATION TARGETS (computed once from speech rate × target minutes) ---
+length_mode = os.getenv("PODCAST_LENGTH", "long").lower()
+_speech_rate     = language_config['speech_rate']
+_target_min      = TARGET_MINUTES.get(length_mode, TARGET_MINUTES['long'])
+target_length_int    = _target_min * _speech_rate        # numeric, e.g. 4500
+target_script        = f"{target_length_int:,}"          # formatted, e.g. "4,500"
+target_unit_singular = language_config['prompt_unit']    # e.g. "word" / "character"
+target_unit_plural   = language_config['length_unit']    # e.g. "words" / "chars"
+duration_label       = f"{length_mode.capitalize()} ({_target_min} min)"
 
 # --- ACCESSIBILITY LEVEL CONFIG ---
 # Controls how aggressively scientific terms are simplified.
@@ -1078,9 +1109,9 @@ scriptwriter = Agent(
         f'CRITICAL RULES:\n'
         f'  1. NO BASICS: Do NOT define basic terms like "DNA", "inflation", "supply chain", '
         f'     "peer review", "RCT", or "meta-analysis". Assume the listener knows them.\n'
-        f'  2. LENGTH: Generate exactly 4,500 words (approx 30 minutes at 150 wpm). This is CRITICAL.\n'
-        f'  3. FORMAT: Script MUST use "{SESSION_ROLES["presenter"]["character"]}:" (Presenter) '
-        f'     and "{SESSION_ROLES["questioner"]["character"]}:" (Questioner).\n'
+        f'  2. LENGTH: Generate exactly {target_script} {target_unit_plural} (approx {_target_min} minutes at {_speech_rate} {target_unit_plural}/min). This is CRITICAL.\n'
+        f'  3. FORMAT: Script MUST use "{SESSION_ROLES["presenter"]["label"]}:" (Presenter) '
+        f'     and "{SESSION_ROLES["questioner"]["label"]}:" (Questioner).\n'
         f'  4. TEACHING STYLE: The Presenter explains the topic systematically. '
         f'     The Questioner asks bridging questions on behalf of the audience:\n'
         f'     - Clarify jargon or uncommon terms\n'
@@ -1396,26 +1427,11 @@ audit_task = Task(
     output_file=str(output_dir / "SOURCE_OF_TRUTH.md")
 )
 
-# Determine length targets based on env var
-length_mode = os.getenv("PODCAST_LENGTH", "long").lower()
-if length_mode == "short": # ~10-15 mins
-    target_words_en = "1,500"
-    target_chars_ja = "5,000"
-    duration_label = "Short (10-15 min)"
-elif length_mode == "medium": # ~20-25 mins
-    target_words_en = "3,000"
-    target_chars_ja = "10,000"
-    duration_label = "Medium (20-25 min)"
-else: # long / default ~30 mins
-    target_words_en = "4,500"
-    target_chars_ja = "15,000"
-    duration_label = "Long (30+ min)"
-
 print(f"Podcast Length Mode: {duration_label}")
 
 recording_task = Task(
     description=(
-        f"Using the audit report, write a comprehensive {target_words_en if language != 'ja' else target_chars_ja}-{'word' if language != 'ja' else 'character'} podcast dialogue about \"{topic_name}\" "
+        f"Using the audit report, write a comprehensive {target_script}-{target_unit_singular} podcast dialogue about \"{topic_name}\" "
         f"featuring {SESSION_ROLES['presenter']['character']} (presenter) and {SESSION_ROLES['questioner']['character']} (questioner).\n\n"
         f"STRUCTURE:\n"
         f"  1. OPENING (joint welcome):\n"
@@ -1423,13 +1439,15 @@ recording_task = Task(
         f"     b) One host hooks listeners with a relatable question (e.g., 'Have you ever wondered why...?' "
         f"or 'Have you experienced...?') — the other responds naturally\n"
         f"     c) Transition into the topic: 'Today, we're going to explore...'\n\n"
-        f"  2. BODY (teaching style — this is the bulk, cover 3-4 main aspects in depth):\n"
-        f"     - {SESSION_ROLES['presenter']['character']} explains the topic systematically: mechanisms, evidence, practical implications\n"
-        f"     - {SESSION_ROLES['questioner']['character']} asks bridging questions on behalf of listeners:\n"
-        f"       * Clarify jargon or uncommon terms\n"
-        f"       * Ask for real-world examples and analogies\n"
-        f"       * Occasionally push back on weak or debated evidence\n"
-        f"     - Each aspect should include: what the science says, why it matters, and what listeners can do\n\n"
+        f"  2. BODY — write EXACTLY 6 segments, each 500-600 words:\n"
+        f"     SEGMENT 1: First main aspect — the core mechanism (how/why it works scientifically)\n"
+        f"     SEGMENT 2: First aspect — evidence, studies, data\n"
+        f"     SEGMENT 3: Second main aspect — mechanism\n"
+        f"     SEGMENT 4: Second aspect — real-world implications and counter-arguments\n"
+        f"     SEGMENT 5: Third main aspect — practical advice for listeners\n"
+        f"     SEGMENT 6: Fourth main aspect OR synthesis — what it all means\n"
+        f"     Each segment: Presenter explains (5-8 sentences) → Questioner asks 2-3 bridging questions → deeper dive → analogy → real example\n"
+        f"     IMPORTANT: Each host turn must be at least 3-5 sentences. No one-line replies.\n\n"
         f"  3. CLOSING:\n"
         f"     - Summarize key takeaways\n"
         f"     - Practical advice for listeners\n"
@@ -1444,9 +1462,9 @@ recording_task = Task(
         f"  - {SESSION_ROLES['questioner']['character']} (Questioner): asks questions the audience would ask, bridges gaps, "
         f"{SESSION_ROLES['questioner']['personality']}\n\n"
         f"Format STRICTLY as:\n"
-        f"{SESSION_ROLES['presenter']['character']}: [dialogue]\n"
-        f"{SESSION_ROLES['questioner']['character']}: [dialogue]\n\n"
-        f"TARGET LENGTH: {target_words_en if language != 'ja' else target_chars_ja} {'words' if language != 'ja' else 'characters'}. This is CRITICAL — do not write less. The podcast MUST last 30 minutes. If you are too brief, the production will fail.\n"
+        f"{SESSION_ROLES['presenter']['label']}: [dialogue]\n"
+        f"{SESSION_ROLES['questioner']['label']}: [dialogue]\n\n"
+        f"TARGET LENGTH: {target_script} {target_unit_plural}. This is CRITICAL — do not write less. The podcast MUST last {_target_min} minutes. If you are too brief, the production will fail. SEGMENT CHECKLIST: You must write all 6 body segments. Count them as you write.\n"
         f"TO REACH THIS LENGTH: You must be extremely detailed and conversational. For every single claim or mechanism, you MUST provide:\n"
         f"  1. A deep-dive explanation of the specific scientific mechanism (how it works at a molecular/cellular level)\n"
         f"  2. A real-world analogy or metaphor that lasts several lines\n"
@@ -1458,7 +1476,7 @@ recording_task = Task(
         f"{target_instruction}"
     ),
     expected_output=(
-        f"A {target_words_en if language != 'ja' else target_chars_ja}-{'word' if language != 'ja' else 'character'} teaching-style dialogue about {topic_name} between "
+        f"A {target_script}-{target_unit_singular} teaching-style dialogue about {topic_name} between "
         f"{SESSION_ROLES['presenter']['character']} (presents and explains) "
         f"and {SESSION_ROLES['questioner']['character']} (asks bridging questions). "
         f"Opens with welcome → hook → topic shift. Every line discusses the topic. "
@@ -1504,7 +1522,7 @@ natural_language_task = Task(
         f"- Keep technical language intact - NO dumbing down\n"
         f"- Ensure the questioner's questions feel natural and audience-aligned\n"
         f"- Keep technical language intact - NO dumbing down\n"
-        f"- Target exactly {target_words_en if language != 'ja' else target_chars_ja} {'words' if language != 'ja' else 'characters'}\n\n"
+        f"- Target exactly {target_script} {target_unit_plural}\n\n"
         f"MAINTAIN ROLES:\n"
         f"  - {SESSION_ROLES['presenter']['character']} (Presenter): explains and teaches the topic\n"
         f"  - {SESSION_ROLES['questioner']['character']} (Questioner): asks bridging questions, occasionally pushes back\n\n"
@@ -1512,17 +1530,18 @@ natural_language_task = Task(
         f"  1. Both hosts greet listeners warmly\n"
         f"  2. Hook question to engage the audience\n"
         f"  3. Transition into the topic\n\n"
-        f"Format:\n{SESSION_ROLES['presenter']['character']}: [dialogue]\n"
-        f"{SESSION_ROLES['questioner']['character']}: [dialogue]\n\n"
-        f"Remove meta-tags, markdown, stage directions. Dialogue only. "
+        f"Format:\n{SESSION_ROLES['presenter']['label']}: [dialogue]\n"
+        f"{SESSION_ROLES['questioner']['label']}: [dialogue]\n\n"
+        f"Remove meta-tags, markdown, stage directions. Dialogue only.\n"
+        f"- CRITICAL: Do NOT shorten or summarize. Output MUST be at least as long as the input. Add depth where possible.\n"
         + (f"\nCRITICAL: Output MUST be in Japanese (日本語) only. Do NOT switch to Chinese (中文). "
-           f"Use katakana for host names: カズ and エリカ (NOT 卡兹/埃里卡). "
+           f"Keep speaker labels exactly as 'Host 1:' and 'Host 2:' — do NOT replace them with Japanese names. "
            f"Avoid Kanji that is only used in Chinese (e.g., use 気 instead of 气, 楽 instead of 乐). "
            if language == 'ja' else '')
         + f"{target_instruction}"
     ),
     expected_output=(
-        f"Final Masters-level dialogue about {topic_name}, exactly {target_words_en if language != 'ja' else target_chars_ja} {'words' if language != 'ja' else 'characters'}. "
+        f"Final Masters-level dialogue about {topic_name}, exactly {target_script} {target_unit_plural}. "
         f"No basic definitions. Teaching style with engaging 3-part opening. "
         f"{target_instruction}"
     ),
@@ -2357,7 +2376,8 @@ try:
         brave_api_key=brave_key,
         results_per_query=15,
         fast_model_available=fast_model_available,
-        framing_context=framing_output
+        framing_context=framing_output,
+        output_dir=str(output_dir)
     ))
 
     # Save all reports (lead, counter, audit)
@@ -2873,51 +2893,53 @@ print("\n--- Generating Multi-Voice Podcast Audio (Kokoro TTS) ---")
 # Get the polished script from natural_language_task (not the last crew result, which is accuracy_check)
 script_text = natural_language_task.output.raw if hasattr(natural_language_task, 'output') and natural_language_task.output else result.raw
 
-# Language-aware word/character count and duration estimation
-if language == 'ja':
-    # Japanese: count characters (excluding spaces/punctuation/newlines), ~500 chars/min speaking rate
-    import re
-    char_count = len(re.sub(r'[\s\n\r\t　：:「」、。・（）\-\—\*#]', '', script_text))
-    script_length = char_count
-    length_unit = "chars"
-    estimated_duration_min = char_count / 500
-    # 30 min target = 15,000 chars; ±10% = 13,500–16,500
-    length_mode = os.getenv("PODCAST_LENGTH", "long").lower()
-    if length_mode == "short":
-        target_length = 5000
-        target_low = 4000
-        target_high = 6000
-    elif length_mode == "medium":
-        target_length = 10000
-        target_low = 8500
-        target_high = 11500
-    else:
-        target_length = 15000
-        target_low = 13500
-        target_high = 16500
+# Language-aware script length measurement — rates and targets derived from SUPPORTED_LANGUAGES
+speech_rate  = language_config['speech_rate']
+length_unit  = language_config['length_unit']
+if length_unit == 'chars':
+    script_length = len(re.sub(r'[\s\n\r\t　：:「」、。・（）\-\—\*#]', '', script_text))
 else:
-    # English and other space-delimited languages: count words, 150 wpm
-    # Remove speaker labels (e.g. "Kaz: ", "Erika: ") to act as Net Duration
-    # Regex removes "Name:" at start of lines
     content_only = re.sub(r'^[A-Za-z0-9_ ]+:\s*', '', script_text, flags=re.MULTILINE)
     script_length = len(content_only.split())
     length_unit = "words (net)"
-    estimated_duration_min = script_length / 150
-    
-    # Determine targets based on mode
-    length_mode = os.getenv("PODCAST_LENGTH", "long").lower()
-    if length_mode == "short":
-        target_length = 1500
-        target_low = 1200
-        target_high = 1800
-    elif length_mode == "medium":
-        target_length = 3000
-        target_low = 2500
-        target_high = 3500
+estimated_duration_min = script_length / speech_rate
+target_length = target_length_int
+target_low    = int(target_length * (1 - SCRIPT_TOLERANCE))
+target_high   = int(target_length * (1 + SCRIPT_TOLERANCE))
+
+# Expansion retry — triggered if script is below target for any language
+if script_length < target_low:
+    print(f"⚠ WARNING: Script too short ({script_length} {length_unit} < {target_low} target) — running expansion pass")
+    expansion_task = Task(
+        description=(
+            f"The following podcast script is too short ({script_length} {length_unit}, target: {target_length}).\n"
+            f"Expand it to reach {target_length} {length_unit} by:\n"
+            f"  1. For each topic segment, add deeper explanation of the scientific mechanism\n"
+            f"  2. Add one more real-world example or analogy per segment\n"
+            f"  3. Add more back-and-forth host dialogue — questioner should ask 'Why?' and 'What does that mean for listeners?'\n"
+            f"  4. Never cut or reorder existing content — only add.\n\n"
+            f"SCRIPT TO EXPAND:\n{script_text}"
+        ),
+        expected_output=(
+            f"Expanded podcast script of at least {target_length} {length_unit}. "
+            f"Same speaker label: dialogue format as input. No summaries, no truncation."
+        ),
+        agent=scriptwriter,
+    )
+    from crewai import Crew as _Crew
+    expansion_result = _Crew(agents=[scriptwriter], tasks=[expansion_task], verbose=False).kickoff()
+    expanded = expansion_result.raw if hasattr(expansion_result, 'raw') else str(expansion_result)
+    if length_unit == 'chars' or length_unit.startswith('char'):
+        expanded_length = len(re.sub(r'[\s\n\r\t　：:「」、。・（）\-\—\*#]', '', expanded))
     else:
-        target_length = 4500
-        target_low = 4050
-        target_high = 4950
+        expanded_length = len(expanded.split())
+    if expanded_length > script_length:
+        print(f"Expansion pass: {script_length} → {expanded_length} {length_unit}")
+        script_text = expanded
+        script_length = expanded_length
+        estimated_duration_min = script_length / speech_rate
+    else:
+        print(f"⚠ WARNING: Expansion pass did not improve length — using original")
 
 print(f"\n{'='*60}")
 print(f"DURATION CHECK")
