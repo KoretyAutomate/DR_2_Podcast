@@ -115,7 +115,7 @@ The system uses two local LLMs working in tandem:
 
 | Role | Default Model | Hosted On | Purpose |
 |------|---------------|-----------|---------|
-| **Smart model** | `Qwen/Qwen2.5-32B-Instruct-AWQ` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing |
+| **Smart model** | `Qwen/Qwen2.5-14B-Instruct-AWQ` (testing) / `32B` (recommended) | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing |
 | **Fast model** | `llama3.2:1b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
 
 Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
