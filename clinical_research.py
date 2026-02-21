@@ -1175,14 +1175,24 @@ class ResearchAgent:
             "   - Population MeSH: [term1[MeSH], term2[MeSH], ...]\n"
             "   - Intervention MeSH: [term1[MeSH], term2[MeSH], ...]\n"
             "   - Outcome MeSH: [term1[MeSH], term2[MeSH], ...]\n\n"
-            "3. BOOLEAN SEARCH STRINGS:\n"
-            '   - PubMed primary: strict Boolean with MeSH + Humans[MeSH] + English[la] + study type filters\n'
-            '   - PubMed broad: relaxed Boolean (fewer filters, more recall)\n'
-            '   - Cochrane: adapted Boolean for cochrane[sb] subset\n'
-            '   - Scholar: plain-language version for Google Scholar\n'
-            '   - PubMed ultrawide: ultra-relaxed query — 2-3 key concept groups joined with OR,\n'
-            '     no study type filter, no language filter. Uses synonyms from canonical_terms.\n'
-            '     Goal: maximum recall for sparse-evidence topics.\n\n'
+            "3. BOOLEAN SEARCH STRINGS — CRITICAL RULES:\n\n"
+            "   STRUCTURE RULE: pubmed_primary and pubmed_broad MUST use AND to connect "
+            "concept groups (Population, Intervention, Outcome). Each group is parenthesized "
+            "with OR joining synonyms WITHIN the group.\n\n"
+            "   CORRECT example:\n"
+            '   (coffee OR caffeine OR "coffee consumption"[MeSH]) AND '
+            '(productivity OR "cognitive performance" OR "task performance") AND '
+            '(Humans[MeSH])\n\n'
+            "   INCORRECT example (DO NOT DO THIS):\n"
+            '   (coffee OR caffeine) AND Humans[MeSH] OR productivity OR "cognitive function"\n'
+            "   ^^^ WRONG: trailing OR terms outside parentheses match ANY paper about those terms\n\n"
+            "   - pubmed_primary: strict Boolean — (P-terms) AND (I-terms) AND (O-terms) "
+            "with MeSH + Humans[MeSH] + English[la] + study type filters\n"
+            "   - pubmed_broad: relaxed Boolean — (P-terms) AND (I-terms) AND (O-terms) "
+            "with fewer filters, but still AND between concept groups\n"
+            "   - cochrane: adapted Boolean for cochrane[sb] subset\n"
+            "   - scholar: plain-language version for Google Scholar\n"
+            "   - pubmed_ultrawide: widened query for maximum recall — see rules below\n\n"
             "Return ONLY valid JSON with this exact structure:\n"
             '{\n'
             '  "pico": {"population": "...", "intervention": "...", "comparison": "...", "outcome": "..."},\n'
@@ -1195,11 +1205,14 @@ class ResearchAgent:
             '    "pubmed_ultrawide": "..."\n'
             '  }\n'
             '}\n\n'
-            "pubmed_ultrawide must:\n"
-            "- Use OR between concept groups (never AND between all terms)\n"
+            "pubmed_ultrawide rules:\n"
+            "- MUST keep the core intervention as an anchor: (intervention_synonyms) AND (widened_outcome_or_population_terms)\n"
+            "- Widen population and outcome terms freely, but NEVER drop the intervention\n"
             "- Include synonyms from the canonical terms list\n"
             "- Omit study type, language, and date filters entirely\n"
-            "- Be no more than 3 OR-joined concept groups"
+            "- Do NOT use MeSH terms that could match studies completely unrelated to the intervention\n"
+            "- CORRECT ultrawide: (coffee OR caffeine OR \"coffee drinking\") AND (performance OR cognition OR alertness OR fatigue)\n"
+            "- INCORRECT ultrawide: (caffeine) OR (cognition OR alertness) OR (sleep OR fatigue) — this matches any sleep study"
             f"{decomp_section}"
             f"{adversarial_addendum}"
         )
@@ -1215,6 +1228,7 @@ class ResearchAgent:
                 search_strings=data.get("search_strings", {}),
                 role=role_type,
             )
+            strategy = self._validate_search_strategy(strategy, topic, decomposition, log)
             log(f"    [Step 1] Strategy generated: PICO={list(strategy.pico.values())[:2]}...")
             if strategy.search_strings.get("pubmed_ultrawide"):
                 log(f"    [Step 1] Ultrawide query: {strategy.search_strings['pubmed_ultrawide'][:80]}...")
@@ -1234,6 +1248,86 @@ class ResearchAgent:
                 },
                 role=role_type,
             )
+
+    def _validate_search_strategy(
+        self, strategy: SearchStrategy, topic: str,
+        decomposition: Optional[Dict] = None, log=print
+    ) -> SearchStrategy:
+        """Post-generation validation of search strings.
+
+        Checks that core intervention keywords appear in all search tiers and
+        that pubmed_primary/broad use AND between concept groups.  Attempts
+        deterministic repair when possible.
+        """
+        # Build set of core intervention keywords (lowercase)
+        intervention_keywords: set = set()
+        pico_intervention = strategy.pico.get("intervention", "")
+        for term in re.split(r"[,/;]", pico_intervention):
+            word = term.strip().lower()
+            if word and len(word) > 2:
+                intervention_keywords.add(word)
+        if decomposition and decomposition.get("canonical_terms"):
+            for ct in decomposition["canonical_terms"]:
+                word = ct.strip().lower()
+                if word and len(word) > 2:
+                    intervention_keywords.add(word)
+
+        if not intervention_keywords:
+            return strategy
+
+        repaired_strings = dict(strategy.search_strings)
+        any_repair = False
+
+        for tier_name, query in strategy.search_strings.items():
+            if not query:
+                continue
+            query_lower = query.lower()
+
+            # Check 1: Does the query contain at least one intervention keyword?
+            has_intervention = any(kw in query_lower for kw in intervention_keywords)
+
+            if not has_intervention:
+                # Repair: prepend intervention anchor
+                anchor_terms = " OR ".join(f'"{kw}"' for kw in sorted(intervention_keywords)[:4])
+                repaired = f"({anchor_terms}) AND ({query})"
+                repaired_strings[tier_name] = repaired
+                any_repair = True
+                logger.warning(
+                    f"[Validate] {tier_name} missing intervention keywords "
+                    f"{intervention_keywords}. Prepended anchor."
+                )
+                log(f"    [Step 1 Validate] REPAIRED {tier_name}: added intervention anchor")
+
+            # Check 2: pubmed_primary and pubmed_broad should have AND between groups
+            if tier_name in ("pubmed_primary", "pubmed_broad") and has_intervention:
+                # Detect trailing OR terms outside parentheses at end of query
+                # Pattern: ') OR term' or ') OR "term"' at the tail without closing paren
+                # Find the last ')' and check if there are OR-joined terms after it
+                last_close = query.rfind(")")
+                if last_close >= 0 and last_close < len(query) - 1:
+                    tail = query[last_close + 1:].strip()
+                    # If tail starts with OR and has no opening paren, it's a dangling OR
+                    if tail.upper().startswith("OR ") and "(" not in tail:
+                        # Wrap the tail in parens and connect with AND
+                        tail_content = tail[3:].strip()  # strip the "OR "
+                        repaired = query[:last_close + 1] + f" AND ({tail_content})"
+                        repaired_strings[tier_name] = repaired
+                        any_repair = True
+                        logger.warning(
+                            f"[Validate] {tier_name} has dangling OR tail: '{tail[:60]}'. "
+                            f"Wrapped in parens with AND."
+                        )
+                        log(f"    [Step 1 Validate] REPAIRED {tier_name}: fixed dangling OR tail")
+
+        if any_repair:
+            strategy = SearchStrategy(
+                pico=strategy.pico,
+                mesh_terms=strategy.mesh_terms,
+                search_strings=repaired_strings,
+                role=strategy.role,
+            )
+
+        return strategy
 
     async def _wide_net_search(
         self, strategy: SearchStrategy, log=print
@@ -1421,7 +1515,7 @@ class ResearchAgent:
 
     async def _screen_and_prioritize(
         self, records: List[WideNetRecord], strategy: SearchStrategy,
-        max_select: int = 20, log=print
+        max_select: int = 20, topic: str = "", log=print
     ) -> List[WideNetRecord]:
         """Step 3: Smart model screens wide net records → top 20."""
         if not records:
@@ -1440,19 +1534,19 @@ class ResearchAgent:
             all_selected = []
             for chunk_start in range(0, len(records), chunk_size):
                 chunk = records[chunk_start:chunk_start + chunk_size]
-                selected = await self._screen_chunk(chunk, chunk_start, pico_str, max_select, log)
+                selected = await self._screen_chunk(chunk, chunk_start, pico_str, max_select, topic, log)
                 all_selected.extend(selected)
 
             if len(all_selected) > max_select:
                 # Re-rank merged selections
-                all_selected = await self._screen_chunk(all_selected, 0, pico_str, max_select, log)
+                all_selected = await self._screen_chunk(all_selected, 0, pico_str, max_select, topic, log)
             return all_selected
         else:
-            return await self._screen_chunk(records, 0, pico_str, max_select, log)
+            return await self._screen_chunk(records, 0, pico_str, max_select, topic, log)
 
     async def _screen_chunk(
         self, records: List[WideNetRecord], offset: int,
-        pico_str: str, max_select: int, log
+        pico_str: str, max_select: int, topic: str, log
     ) -> List[WideNetRecord]:
         """Screen a chunk of records with the smart model."""
         compact = []
@@ -1467,24 +1561,43 @@ class ResearchAgent:
                 "abstract": r.abstract[:300],
             })
 
+        # Extract intervention text for relevance gate
+        try:
+            pico_data = json.loads(pico_str)
+            intervention_text = pico_data.get("intervention", "the PICO intervention")
+        except (json.JSONDecodeError, AttributeError):
+            intervention_text = "the PICO intervention"
+
+        topic_line = f"RESEARCH TOPIC: {topic}\n" if topic else ""
+
         system = (
             "You are a systematic review screener performing title/abstract screening.\n\n"
+            f"{topic_line}"
             f"PICO: {pico_str}\n\n"
+            "SCREENING IS A TWO-STAGE PROCESS. You MUST apply both stages in order.\n\n"
+            "═══ STAGE 1: RELEVANCE GATE (mandatory, apply first) ═══\n"
+            f"Does the study directly investigate {intervention_text}?\n"
+            "A study MUST explicitly examine, measure, or review the PICO intervention to pass.\n"
+            "Studies about DIFFERENT interventions (e.g., exercise, other drugs, supplements, "
+            "devices, or procedures unrelated to the PICO intervention) MUST be EXCLUDED — "
+            "regardless of how methodologically rigorous they are.\n"
+            "If a study does not pass the relevance gate, do NOT select it.\n\n"
+            "═══ STAGE 2: RIGOR RANKING (among relevant studies only) ═══\n"
+            "From the studies that PASSED Stage 1, apply these criteria:\n"
             "INCLUSION CRITERIA:\n"
             "- Human clinical studies (RCTs, meta-analyses, systematic reviews, large cohort studies)\n"
             "- Sample size >= 30 participants (prefer >= 100)\n"
-            "- Published in peer-reviewed journals\n"
-            "- Directly relevant to the PICO\n\n"
+            "- Published in peer-reviewed journals\n\n"
             "EXCLUSION CRITERIA:\n"
             "- Animal models / in vitro studies\n"
             "- Case reports (n < 5)\n"
             "- Conference abstracts without full data\n"
             "- Retracted publications\n"
             "- Duplicate reports of the same study\n\n"
-            f"From the {len(compact)} studies below, select the TOP {max_select} most rigorous.\n"
+            f"From the relevant studies, select the TOP {max_select} most rigorous.\n"
             "Rank by: meta-analyses first, then RCTs (by sample size), then large cohort studies.\n\n"
             "Return ONLY a JSON array of selected indices:\n"
-            '[{"index": 0, "reason": "Meta-analysis of 45 RCTs, n=12,000"}, ...]'
+            '[{"index": 0, "reason": "Meta-analysis of 45 RCTs, n=12,000, directly studies [intervention]"}, ...]'
         )
 
         user = json.dumps(compact, ensure_ascii=False)
@@ -1902,7 +2015,7 @@ class Orchestrator:
             log(f"\n{'='*70}")
             log(f"STEP 3a: SCREENING ({len(records)} → top 20) (Affirmative)")
             log(f"{'='*70}")
-            top_records = await self.lead_researcher._screen_and_prioritize(records, strategy, log=log)
+            top_records = await self.lead_researcher._screen_and_prioritize(records, strategy, topic=topic, log=log)
             aff_screened_in = len(top_records)
 
             log(f"\n{'='*70}")
@@ -1946,7 +2059,7 @@ class Orchestrator:
             log(f"\n{'='*70}")
             log(f"STEP 3b: SCREENING ({len(records)} → top 20) (Falsification)")
             log(f"{'='*70}")
-            top_records = await self.counter_researcher._screen_and_prioritize(records, strategy, log=log)
+            top_records = await self.counter_researcher._screen_and_prioritize(records, strategy, topic=topic, log=log)
             fal_screened_in = len(top_records)
 
             log(f"\n{'='*70}")
