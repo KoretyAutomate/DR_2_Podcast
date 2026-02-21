@@ -1,6 +1,6 @@
 # Deep-Research Podcast Crew
 
-An AI-powered pipeline that deeply researches any scientific topic using a clinical systematic-review methodology (PICO/GRADE), synthesizes evidence from both affirmative and adversarial perspectives, and produces a broadcast-ready podcast with Kokoro TTS audio — all running on local models. Includes a FastAPI web UI for one-click production with live progress tracking.
+An AI-powered pipeline that deeply researches any scientific topic using a clinical systematic-review methodology (PICO/GRADE), synthesizes evidence from both affirmative and adversarial perspectives, and produces a broadcast-ready podcast with local TTS audio (Kokoro for English, Qwen3-TTS for Japanese) — all running on local models. Includes a FastAPI web UI for one-click production with live progress tracking.
 
 ## System Overview
 
@@ -51,8 +51,8 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
                              ▼
               ┌─────────────────────────────────────────────┐
               │  Phase 8 — Audio Production                 │
-              │  Kokoro TTS (EN/JA), two voices,            │
-              │  Qwen3-TTS (JA alt), 24kHz WAV + BGM        │
+              │  Kokoro TTS (EN), Qwen3-TTS (JA),           │
+              │  two voices, 24kHz WAV + BGM                │
               └─────────────────────────────────────────────┘
 ```
 
@@ -197,20 +197,18 @@ The Editor refines for natural verbal delivery and ensures balanced coverage.
 The Auditor scans the polished script for drift patterns: correlation-to-causation, hedge removal, confidence inflation, cherry-picking, and contested-as-settled. Non-blocking.
 
 ### Phase 8 — Audio Production
-Kokoro TTS renders the polished script with two voices at 24kHz WAV, followed by BGM mixing:
+Audio is rendered with two voices at 24kHz WAV, followed by BGM mixing. TTS engine is selected by language:
 
-| Language | Host 1 (Kaz) | Host 2 (Erika) |
-|----------|--------------|----------------|
-| English  | `am_fenrir` (American male) | `af_heart` (American female) |
-| Japanese | `jm_kumo` (Japanese male) | `jf_alpha` (Japanese female) |
-
-An alternative Japanese TTS engine (Qwen3-TTS) is available via a local FastAPI server (`docker/qwen3-tts/`).
+| Language | TTS Engine | Host 1 (Kaz) | Host 2 (Erika) |
+|----------|------------|--------------|----------------|
+| English  | Kokoro TTS (local, CPU) | `am_fenrir` (American male) | `af_heart` (American female) |
+| Japanese | Qwen3-TTS (GPU via FastAPI server) | Aiden (male) | Ono_Anna (native Japanese female) |
 
 ## Multi-Language Support
 
 The pipeline supports English and Japanese output:
 - **English**: Default. All research, scripts, and audio in English.
-- **Japanese**: A translation task runs in Crew 2 before Crew 3. Kokoro uses Japanese voice models. Host names use katakana (カズ / エリカ).
+- **Japanese**: A translation task runs in Crew 2 before Crew 3. Audio is rendered by **Qwen3-TTS** (GPU, FastAPI server at port 8082) — Kokoro is not used for Japanese. Host names use katakana (カズ / エリカ).
 
 ## Podcast Characters
 
