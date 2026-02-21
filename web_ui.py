@@ -876,7 +876,7 @@ def home(username: str = Depends(verify_credentials)):
                             </tbody>
                         </table>
                         <div style="margin-top: 5px; font-size: 0.85rem; color: var(--accent-primary);">
-                            Current Step: <span id="currentStepTimer">0m 0s</span>
+                            Current Phase: <span id="currentStepTimer">0m 0s</span>
                         </div>
                     </div>
 
@@ -1286,8 +1286,8 @@ def home(username: str = Depends(verify_credentials)):
                     
                     const pct = data.progress || 0;
                     progressBar.style.width = pct + '%';
-                    const phase = data.phase || 'Initializing...';
-                    statusDetails.textContent = `Phase: ${{phase}} >> Progress: ${{pct}}%`;
+                    const step = data.current_step || data.phase || 'Initializing...';
+                    statusDetails.textContent = `Phase: ${{step}} >> Progress: ${{pct}}%`;
                     statusIcon.textContent = '⚙️';
                     
                     // Update numeric ETA
@@ -1752,39 +1752,65 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
     return {"task_id": task_id, "status": "queued"}
 
 # Phase markers parsed from pipeline.py stdout
+# Each entry: (log_marker, display_name, progress_pct, is_phase)
+# is_phase=True  → opens/closes the phase timer, recorded in step_durations
+# is_phase=False → updates the current-step label and progress bar only
 PHASE_MARKERS = [
-    ("PHASE 0: RESEARCH FRAMING", "Research Framing", 5),
-    # Clinical pipeline steps (parallel a/b tracks)
-    ("STEP 1a:", "Search Strategy (Affirmative)", 8),
-    ("STEP 1b:", "Search Strategy (Falsification)", 8),
-    ("STEP 2a:", "Wide Net (Affirmative)", 10),
-    ("STEP 2b:", "Wide Net (Falsification)", 10),
-    ("STEP 3a:", "Screening (Affirmative)", 13),
-    ("STEP 3b:", "Screening (Falsification)", 13),
-    ("STEP 4a:", "Deep Extraction (Affirmative)", 15),
-    ("STEP 4b:", "Deep Extraction (Falsification)", 15),
-    ("STEP 5a:", "Affirmative Case", 17),
-    ("STEP 5b:", "Falsification Case", 17),
-    ("STEP 6:", "Deterministic Math", 18),
-    ("STEP 7:", "GRADE Synthesis", 19),
-    ("ALL RESEARCH COMPLETE", "Clinical Research Complete", 20),
-    ("PHASE 1: CLINICAL RESEARCH", "Clinical Research", 15),
-    ("Source of Truth generated", "Source of Truth", 45),
+    ("PHASE 0: RESEARCH FRAMING", "Research Framing", 5, True),
+    # Clinical sub-steps (parallel a/b) — progress only, no phase timer reset
+    ("STEP 1a:", "Step 1a: Search Strategy (Aff)", 8, False),
+    ("STEP 1b:", "Step 1b: Search Strategy (Fal)", 8, False),
+    ("STEP 2a:", "Step 2a: Wide Net (Aff)", 10, False),
+    ("STEP 2b:", "Step 2b: Wide Net (Fal)", 10, False),
+    ("STEP 3a:", "Step 3a: Screening (Aff)", 13, False),
+    ("STEP 3b:", "Step 3b: Screening (Fal)", 13, False),
+    ("STEP 4a:", "Step 4a: Deep Extraction (Aff)", 15, False),
+    ("STEP 4b:", "Step 4b: Deep Extraction (Fal)", 15, False),
+    ("STEP 5a:", "Step 5a: Affirmative Case", 17, False),
+    ("STEP 5b:", "Step 5b: Falsification Case", 17, False),
+    ("STEP 6:", "Step 6: Deterministic Math", 18, False),
+    ("STEP 7:", "Step 7: GRADE Synthesis", 19, False),
+    # Phase-level markers resume
+    ("PHASE 1: CLINICAL RESEARCH", "Clinical Research", 15, True),
+    ("ALL RESEARCH COMPLETE", "Clinical Research Complete", 40, True),
+    ("Source of Truth generated", "Source of Truth", 45, True),
     # Post-research phases
-    ("PHASE 2: SOURCE VALIDATION", "Source Validation", 50),
-    ("PHASE 3: REPORT TRANSLATION", "Report Translation", 55),
-    ("CREW 3:", "Podcast Production", 58),
-    ("PHASE 4: SHOW OUTLINE", "Show Outline", 60),
-    ("PHASE 5: SCRIPT WRITING", "Script Writing", 70),
-    ("PHASE 6: SCRIPT POLISH", "Script Polish", 85),
-    ("PHASE 7: ACCURACY AUDIT", "Accuracy Audit", 90),
-    ("Starting BGM Merging Phase", "Audio Production", 95),
-    ("SUCCESS: Audio duration", "Complete", 100),
+    ("PHASE 2: SOURCE VALIDATION", "Source Validation", 50, True),
+    ("PHASE 3: REPORT TRANSLATION", "Report Translation", 55, True),
+    ("CREW 3:", "Podcast Production", 58, True),
+    ("PHASE 4: SHOW OUTLINE", "Show Outline", 60, True),
+    ("PHASE 5: SCRIPT WRITING", "Script Writing", 70, True),
+    ("PHASE 6: SCRIPT POLISH", "Script Polish", 85, True),
+    ("PHASE 7: ACCURACY AUDIT", "Accuracy Audit", 90, True),
+    ("Starting BGM Merging Phase", "Audio Production", 95, True),
+    ("SUCCESS: Audio duration", "Complete", 100, True),
     # Reuse-mode markers
-    ("REUSE MODE:", "Reuse Analysis", 5),
-    ("SUPPLEMENTAL RESEARCH", "Supplemental Research", 20),
-    ("REUSE_COMPLETE:", "Complete (Cached)", 100),
+    ("REUSE MODE:", "Reuse Analysis", 5, True),
+    ("SUPPLEMENTAL RESEARCH", "Supplemental Research", 20, True),
+    ("REUSE_COMPLETE:", "Complete (Cached)", 100, True),
 ]
+
+
+def _close_phase(task_id: str):
+    """Record the elapsed time of the current phase into step_durations."""
+    task = tasks_db.get(task_id, {})
+    prev_phase = task.get("phase", "")
+    prev_start = task.get("phase_start_time")
+    if not prev_start or not prev_phase:
+        return
+    duration = time.time() - prev_start
+    step_durations = task.setdefault("step_durations", [])
+    existing = next((s for s in step_durations if s["phase"] == prev_phase), None)
+    if existing:
+        existing["duration"] += duration
+        total = existing["duration"]
+        existing["duration_formatted"] = f"{int(total // 60)}m {int(total % 60)}s"
+    else:
+        step_durations.append({
+            "phase": prev_phase,
+            "duration": duration,
+            "duration_formatted": f"{int(duration // 60)}m {int(duration % 60)}s",
+        })
 
 def run_podcast_generation(task_id: str, topic: str, language: str,
                            accessibility_level: str = "simple",
@@ -1794,7 +1820,8 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
     try:
         tasks_db[task_id]["status"] = "running"
         tasks_db[task_id]["progress"] = 0
-        tasks_db[task_id]["phase"] = "Research Framing"
+        tasks_db[task_id]["phase"] = ""        # set by first is_phase marker
+        tasks_db[task_id]["current_step"] = "Initializing..."
         tasks_db[task_id]["phase_start_time"] = time.time()
         tasks_db[task_id]["step_durations"] = []
         save_tasks()
@@ -1830,39 +1857,27 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
                     output_dir_discovered = True
 
             # 1. Parse Phase Markers
-            for marker, phase_name, progress_pct in PHASE_MARKERS:
+            for marker, phase_name, progress_pct, is_phase in PHASE_MARKERS:
                 if marker in line:
-                    # Calculate duration of previous phase
                     current_time = time.time()
-                    if "phase_start_time" in tasks_db[task_id]:
-                         prev_start = tasks_db[task_id]["phase_start_time"]
-                         duration = current_time - prev_start
-                         prev_phase = tasks_db[task_id]["phase"]
-                         
-                         # Add to step durations if not already recorded (avoid duplicates)
-                         if "step_durations" not in tasks_db[task_id]:
-                             tasks_db[task_id]["step_durations"] = []
-                         
-                         # Check if we already have this phase (some markers might repeat or be close)
-                         if not any(s["phase"] == prev_phase for s in tasks_db[task_id]["step_durations"]):
-                            tasks_db[task_id]["step_durations"].append({
-                                "phase": prev_phase,
-                                "duration": duration,
-                                "duration_formatted": f"{int(duration // 60)}m {int(duration % 60)}s"
-                            })
-
-                    # Update to new phase
-                    tasks_db[task_id]["phase"] = phase_name
+                    # Always update progress bar and current-step label
                     tasks_db[task_id]["progress"] = progress_pct
-                    tasks_db[task_id]["phase_start_time"] = current_time
-                    
+                    tasks_db[task_id]["current_step"] = phase_name
+
+                    if is_phase:
+                        # Close the previous phase's timer and accumulate its duration
+                        _close_phase(task_id)
+                        # Open the new phase's timer
+                        tasks_db[task_id]["phase"] = phase_name
+                        tasks_db[task_id]["phase_start_time"] = current_time
+
                     # Calculate ETA
                     elapsed = current_time - start_time
                     if progress_pct > 5:
-                         total_est = (elapsed / progress_pct) * 100
-                         remaining = total_est - elapsed
-                         tasks_db[task_id]["estimated_remaining"] = max(0, remaining)
-                    
+                        total_est = (elapsed / progress_pct) * 100
+                        remaining = total_est - elapsed
+                        tasks_db[task_id]["estimated_remaining"] = max(0, remaining)
+
                     save_tasks()
                     break
             
@@ -1922,9 +1937,12 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
                 tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(audio_path, title)
                 save_tasks()
 
+        # Record the final phase's duration before marking complete
+        _close_phase(task_id)
         tasks_db[task_id]["status"] = "completed"
         tasks_db[task_id]["progress"] = 100
         tasks_db[task_id]["phase"] = "Complete"
+        tasks_db[task_id]["current_step"] = "Complete"
         tasks_db[task_id]["completed_at"] = datetime.now().isoformat()
 
         # Register in topic index
@@ -1977,7 +1995,8 @@ def run_podcast_reuse(task_data: dict):
     try:
         tasks_db[task_id]["status"] = "running"
         tasks_db[task_id]["progress"] = 0
-        tasks_db[task_id]["phase"] = "Reuse Analysis"
+        tasks_db[task_id]["phase"] = ""
+        tasks_db[task_id]["current_step"] = "Initializing..."
         tasks_db[task_id]["phase_start_time"] = time.time()
         tasks_db[task_id]["step_durations"] = []
         save_tasks()
@@ -2006,9 +2025,11 @@ def run_podcast_reuse(task_data: dict):
                 tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(audio_path, topic)
                 save_tasks()
 
+        _close_phase(task_id)
         tasks_db[task_id]["status"] = "completed"
         tasks_db[task_id]["progress"] = 100
         tasks_db[task_id]["phase"] = "Complete"
+        tasks_db[task_id]["current_step"] = "Complete"
         tasks_db[task_id]["completed_at"] = datetime.now().isoformat()
 
         # Register in topic index
@@ -2136,25 +2157,16 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
                 output_dir_discovered = True
 
         # Parse phase markers (same logic as run_podcast_generation)
-        for marker, phase_name, progress_pct in PHASE_MARKERS:
+        for marker, phase_name, progress_pct, is_phase in PHASE_MARKERS:
             if marker in line:
                 current_time = time.time()
-                if "phase_start_time" in tasks_db[task_id]:
-                    prev_start = tasks_db[task_id]["phase_start_time"]
-                    duration = current_time - prev_start
-                    prev_phase = tasks_db[task_id]["phase"]
-                    if "step_durations" not in tasks_db[task_id]:
-                        tasks_db[task_id]["step_durations"] = []
-                    if not any(s["phase"] == prev_phase for s in tasks_db[task_id]["step_durations"]):
-                        tasks_db[task_id]["step_durations"].append({
-                            "phase": prev_phase,
-                            "duration": duration,
-                            "duration_formatted": f"{int(duration // 60)}m {int(duration % 60)}s"
-                        })
-
-                tasks_db[task_id]["phase"] = phase_name
                 tasks_db[task_id]["progress"] = progress_pct
-                tasks_db[task_id]["phase_start_time"] = current_time
+                tasks_db[task_id]["current_step"] = phase_name
+
+                if is_phase:
+                    _close_phase(task_id)
+                    tasks_db[task_id]["phase"] = phase_name
+                    tasks_db[task_id]["phase_start_time"] = current_time
 
                 elapsed = current_time - start_time
                 if progress_pct > 5:
