@@ -15,7 +15,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, LLM
 from crewai.tools import tool
-from fpdf import FPDF
+from markdown_it import MarkdownIt
+import weasyprint
 from link_validator import LinkValidatorTool
 from pydantic import BaseModel, HttpUrl, Field
 from typing import List, Optional, Literal
@@ -470,7 +471,6 @@ SUPPORTED_LANGUAGES = {
         'name': 'English',
         'tts_code': 'a',            # Kokoro American English
         'instruction': 'Write all content in English.',
-        'pdf_font': 'Helvetica',    # Latin-1 compatible
         'speech_rate': 150,         # ~150 words/min conversational pace
         'length_unit': 'words',
         'prompt_unit': 'word',
@@ -479,7 +479,6 @@ SUPPORTED_LANGUAGES = {
         'name': '日本語 (Japanese)',
         'tts_code': 'j',            # Kokoro Japanese / Qwen3-TTS
         'instruction': 'すべてのコンテンツを日本語で書いてください。(Write all content in Japanese.)',
-        'pdf_font': 'Arial Unicode MS',  # Unicode compatible for Japanese
         'speech_rate': 500,         # ~500 chars/min conversational pace
         'length_unit': 'chars',
         'prompt_unit': 'character',
@@ -850,46 +849,36 @@ def read_full_report(report_name: str) -> str:
 
 
 # --- PDF GENERATOR UTILITY ---
-class SciencePDF(FPDF):
-    def header(self):
-        self.set_font('Helvetica', 'B', 12)
-        self.cell(0, 10, 'DGX Spark Research Intelligence Report', 0, 1, 'C')
-        self.ln(5)
+_MD_PARSER = MarkdownIt().enable("table")
 
-    def footer(self):
-        self.set_y(-15)
-        self.set_font('Helvetica', 'I', 8)
-        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+_PDF_CSS = """
+@page { size: A4; margin: 2cm; }
+body { font-family: 'Noto Sans CJK JP', 'Noto Sans', Helvetica, sans-serif;
+       font-size: 11pt; line-height: 1.5; color: #222; }
+h1 { font-size: 18pt; border-bottom: 2px solid #333; padding-bottom: 4pt; }
+h2 { font-size: 15pt; color: #1a5276; margin-top: 16pt; }
+h3 { font-size: 13pt; color: #2e4053; }
+table { border-collapse: collapse; width: 100%; margin: 8pt 0; font-size: 9pt; }
+th, td { border: 1px solid #999; padding: 4pt 6pt; text-align: left; }
+th { background: #d5dbdb; font-weight: bold; }
+tr:nth-child(even) { background: #f2f3f4; }
+code { font-family: monospace; background: #eee; padding: 1pt 3pt; }
+.header { text-align: center; font-size: 10pt; color: #666; margin-bottom: 12pt; }
+"""
 
 def create_pdf(title, content, filename):
-    """Create PDF with language-appropriate encoding"""
-    pdf = SciencePDF()
-    pdf.add_page()
-
-    # Clean up markdown for PDF
-    clean_content = re.sub(r'<think>.*?</think>', '', str(content), flags=re.DOTALL)
-
-    # Handle encoding based on language
-    if language == 'ja':
-        # For Japanese, keep UTF-8 characters but warn about PDF limitations
-        # FPDF has limited Unicode support - ideally would use fpdf2 or ReportLab
-        clean_title = title.encode('latin-1', 'ignore').decode('latin-1')
-        clean_content = clean_content.encode('latin-1', 'ignore').decode('latin-1')
-        print("Warning: Japanese characters may not display correctly in PDF. Consider upgrading to fpdf2 for full Unicode support.")
-    else:
-        # English - use latin-1 encoding
-        clean_title = title.encode('latin-1', 'ignore').decode('latin-1')
-        clean_content = clean_content.encode('latin-1', 'ignore').decode('latin-1')
-
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, clean_title, 0, 1, 'L')
-    pdf.ln(5)
-
-    pdf.set_font("Helvetica", size=11)
-    pdf.multi_cell(0, 10, clean_content)
-
+    """Convert markdown content to a styled PDF via weasyprint."""
+    clean = re.sub(r'<think>.*?</think>', '', str(content), flags=re.DOTALL)
+    body_html = _MD_PARSER.render(clean)
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>{_PDF_CSS}</style></head>
+<body>
+<div class="header">DGX Spark Research Intelligence Report</div>
+<h1>{title}</h1>
+{body_html}
+</body></html>"""
     file_path = output_dir / filename
-    pdf.output(str(file_path))
+    weasyprint.HTML(string=html).write_pdf(str(file_path))
     print(f"PDF Generated: {file_path}")
     return file_path
 
@@ -2020,14 +2009,44 @@ try:
     # ================================================================
     # Build Source-of-Truth from deep research outputs
     # ================================================================
+    def _extract_conclusion_status(grade_report: str) -> tuple:
+        """Extract GRADE level, conclusion status, and executive summary."""
+        m = re.search(
+            r'Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}',
+            grade_report, re.IGNORECASE)
+        grade = m.group(1).strip() if m else "Not Determined"
+
+        status_map = {
+            "High": "Scientifically Supported",
+            "Moderate": "Partially Supported — Further Research Recommended",
+            "Low": "Insufficient Evidence — More Research Needed",
+            "Very Low": "Not Supported by Current Evidence",
+        }
+        status = status_map.get(grade, "Under Evaluation")
+
+        m2 = re.search(r'Executive\s+Summary[#\s:]*\n+(.+?)(?:\n\n|\n#)',
+                       grade_report, re.DOTALL)
+        summary = m2.group(1).strip() if m2 else ""
+
+        return grade, status, summary
+
+    grade_level, conclusion_status, exec_summary = _extract_conclusion_status(
+        deep_audit_report.report)
+
     sot_content = f"# Source of Truth: {topic_name}\n\n"
-    sot_content += f"## Supporting Evidence (Affirmative Case)\n\n{lead_report.report}\n\n"
-    sot_content += f"## Contradicting Evidence (Falsification Case)\n\n{counter_report.report}\n\n"
+    sot_content += f"## Research Conclusion\n\n"
+    sot_content += f"**Evidence Quality (GRADE): {grade_level}**\n\n"
+    sot_content += f"**Conclusion: {conclusion_status}**\n\n"
+    if exec_summary:
+        sot_content += f"{exec_summary}\n\n"
     sot_content += f"## Evidence Quality Assessment (GRADE)\n\n{deep_audit_report.report}\n\n"
-    # Add math report if available
     math_file = output_dir / "clinical_math.md"
     if math_file.exists():
         sot_content += f"## Clinical Impact (Deterministic Math)\n\n{math_file.read_text()}\n\n"
+    sot_content += (
+        "---\n\n"
+        "*Detailed case reports available in affirmative_case.md and falsification_case.md*\n"
+    )
 
     # C6: Prepend evidence quality banner if limited
     if evidence_quality == "limited":
