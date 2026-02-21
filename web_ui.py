@@ -119,6 +119,11 @@ def save_tasks():
 
 # --- Topic Index: central registry of completed research runs ---
 
+def _sot_exists(output_dir: str) -> bool:
+    """Return True if source_of_truth.md exists in the given output directory."""
+    d = Path(output_dir)
+    return (d / "source_of_truth.md").exists() or (d / "SOURCE_OF_TRUTH.md").exists()
+
 def load_topic_index() -> list:
     """Load the topic index from disk."""
     if TOPIC_INDEX_FILE.exists():
@@ -134,14 +139,40 @@ def save_topic_index(index: list):
     with open(TOPIC_INDEX_FILE, 'w') as f:
         json.dump(index, f, indent=2, ensure_ascii=False)
 
+def prune_topic_index() -> int:
+    """Remove index entries whose output_dir no longer exists on disk.
+
+    Returns the number of entries removed.
+    """
+    index = load_topic_index()
+    before = len(index)
+    index = [e for e in index if Path(e["output_dir"]).exists()]
+    removed = before - len(index)
+    if removed > 0:
+        save_topic_index(index)
+        print(f"Topic index: pruned {removed} stale entries (remaining: {len(index)})")
+    return removed
+
 def register_topic(topic: str, output_dir: str, language: str = "en",
                     accessibility_level: str = "simple", podcast_length: str = "long",
                     podcast_hosts: str = "random"):
-    """Add a completed research run to the topic index. Deduplicates by output_dir."""
+    """Add a completed research run to the topic index.
+
+    Prunes stale entries first, then upserts by output_dir (adds new entry or
+    updates has_sot on an existing one).
+    """
+    prune_topic_index()
     index = load_topic_index()
-    # Deduplicate: don't add if this output_dir is already registered
-    if any(entry["output_dir"] == output_dir for entry in index):
-        return
+    has_sot = _sot_exists(output_dir)
+
+    # Update existing entry if already registered (e.g. has_sot may have changed)
+    for entry in index:
+        if entry["output_dir"] == output_dir:
+            if entry.get("has_sot") != has_sot:
+                entry["has_sot"] = has_sot
+                save_topic_index(index)
+            return
+
     index.append({
         "topic": topic,
         "output_dir": output_dir,
@@ -150,31 +181,37 @@ def register_topic(topic: str, output_dir: str, language: str = "en",
         "podcast_length": podcast_length,
         "podcast_hosts": podcast_hosts,
         "created_at": Path(output_dir).name,  # e.g. "2026-02-17_02-03-50"
+        "has_sot": has_sot,
     })
     save_topic_index(index)
 
 def backfill_topic_index():
-    """Scan existing research_outputs/ dirs and backfill the topic index for any
-    directories that have source_of_truth.md but aren't yet in the index."""
+    """Prune stale entries, then scan research_outputs/ to register any directories
+    not yet in the index and refresh has_sot on all existing entries."""
     import re as _re
+
+    prune_topic_index()
     index = load_topic_index()
     known_dirs = {entry["output_dir"] for entry in index}
     added = 0
+    refreshed = 0
+
+    # Refresh has_sot on all existing entries (field may be missing on older entries)
+    for entry in index:
+        current_sot = _sot_exists(entry["output_dir"])
+        if entry.get("has_sot") != current_sot:
+            entry["has_sot"] = current_sot
+            refreshed += 1
 
     if not OUTPUT_DIR.exists():
+        if refreshed > 0:
+            save_topic_index(index)
         return
 
     for d in OUTPUT_DIR.iterdir():
         if not d.is_dir() or not d.name[:4].isdigit():
             continue
         if str(d) in known_dirs:
-            continue
-
-        # Must have source_of_truth.md
-        sot = d / "source_of_truth.md"
-        if not sot.exists():
-            sot = d / "SOURCE_OF_TRUTH.md"
-        if not sot.exists():
             continue
 
         # Extract topic + language from session_metadata.txt
@@ -220,12 +257,13 @@ def backfill_topic_index():
             "podcast_length": pod_length,
             "podcast_hosts": pod_hosts,
             "created_at": d.name,
+            "has_sot": _sot_exists(str(d)),
         })
         added += 1
 
-    if added > 0:
+    if added > 0 or refreshed > 0:
         save_topic_index(index)
-        print(f"Topic index: backfilled {added} entries (total: {len(index)})")
+        print(f"Topic index: backfilled {added} entries, refreshed has_sot on {refreshed} (total: {len(index)})")
 
 
 def worker_thread():
@@ -273,7 +311,8 @@ threading.Thread(target=worker_thread, daemon=True).start()
 # Load existing tasks on startup
 load_tasks()
 
-# Backfill topic index from existing research_outputs/
+# Sync topic index: prune deleted dirs, then pick up any unregistered runs
+prune_topic_index()
 backfill_topic_index()
 
 class PodcastRequest(BaseModel):
