@@ -2340,15 +2340,18 @@ if script_length < target_low:
     expansion_task = Task(
         description=(
             f"The following podcast script is too short ({script_length} {length_unit}, target: {target_length}).\n"
+            f"{target_instruction}\n"
             f"Expand it to reach {target_length} {length_unit} by:\n"
             f"  1. For each topic segment, add deeper explanation of the scientific mechanism\n"
             f"  2. Add one more real-world example or analogy per segment\n"
             f"  3. Add more back-and-forth host dialogue — questioner should ask 'Why?' and 'What does that mean for listeners?'\n"
-            f"  4. Never cut or reorder existing content — only add.\n\n"
+            f"  4. Never cut or reorder existing content — only add.\n"
+            f"  5. Respond entirely in the same language as the input script.\n\n"
             f"SCRIPT TO EXPAND:\n{script_text}"
         ),
         expected_output=(
             f"Expanded podcast script of at least {target_length} {length_unit}. "
+            f"Respond entirely in the same language as the input script. "
             f"Same speaker label: dialogue format as input. No summaries, no truncation."
         ),
         agent=producer_agent,
