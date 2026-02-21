@@ -33,7 +33,7 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
                       ▼
      ┌───────────────────────────────────────────────────────────────┐
      │  Phase 2 — Source Validation (batch HEAD requests)            │
-     │  Source-of-Truth synthesis (from deep research outputs)       │
+     │  Source-of-Truth synthesis — IMRaD format                     │
      └───────────────────────┬───────────────────────────────────────┘
                              ▼
      ┌───────────────────────────────────────────────────────────────┐
@@ -51,7 +51,8 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
                              ▼
               ┌─────────────────────────────────────────────┐
               │  Phase 8 — Audio Production                 │
-              │  Kokoro TTS, two voices, 24kHz WAV + BGM    │
+              │  Kokoro TTS (EN/JA), two voices,            │
+              │  Qwen3-TTS (JA alt), 24kHz WAV + BGM        │
               └─────────────────────────────────────────────┘
 ```
 
@@ -178,7 +179,7 @@ The Research Framing Specialist defines scope boundaries, core research question
 See [Evidence-Based Research Pipeline](#evidence-based-research-pipeline) above. Produces affirmative case (`affirmative_case.md`), falsification case (`falsification_case.md`), GRADE synthesis (`grade_synthesis.md`), deterministic math (`clinical_math.md`), and the research library (`research_sources.json`).
 
 ### Phase 2 — Source Validation
-Batch HEAD requests validate all cited URLs. The Source-of-Truth is synthesized by concatenating the deep research outputs (affirmative case + falsification case + GRADE audit + deterministic math).
+Batch HEAD requests validate all cited URLs. The Source-of-Truth is then assembled in **IMRaD format** (Introduction, Methods, Results, and Discussion) — a structured scientific paper format derived deterministically from the pipeline's raw outputs. See [Source of Truth (IMRaD Format)](#source-of-truth-imrad-format) below.
 
 ### Phase 3 — Report Translation (Crew 2, conditional)
 For non-English output, the Producer translates the Source-of-Truth into the target language. This runs as a separate Crew 2 before Crew 3. Skipped for English.
@@ -349,7 +350,7 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 ├── search_strategy_aff.json          Step 1a — affirmative PICO/MeSH/Boolean
 ├── search_strategy_neg.json          Step 1b — falsification PICO/MeSH/Boolean
 ├── screening_results.json            Step 3a/3b — screening decisions (500 → 20)
-├── source_of_truth.md                Synthesized from deep research outputs
+├── source_of_truth.md                IMRaD scientific paper (Abstract, Intro, Methods, Results, Discussion, References)
 ├── source_of_truth.pdf
 ├── url_validation_results.json       Phase 2 — batch URL validation results
 ├── show_outline.md                   Phase 4 — show outline and citations
@@ -362,6 +363,21 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 ├── session_metadata.txt              Topic, language, character assignments
 └── podcast_generation.log            Execution log
 ```
+
+## Source of Truth (IMRaD Format)
+
+The `source_of_truth.md` produced after Phase 1 follows the **IMRaD** scientific paper structure. Each section is assembled deterministically from the pipeline's raw outputs — no additional LLM calls are made for the SOT itself.
+
+| IMRaD Section | Pipeline Source | Content |
+|---|---|---|
+| **Abstract** | Steps 1a, 6, 7 | PICO question, methods summary, key NNT finding, GRADE verdict |
+| **1. Introduction** | Phase 0 + Steps 1a/1b | Research framing, clinical gap, dual affirmative/falsification hypotheses |
+| **2. Methods** | Steps 1a/1b–4a/4b, 6–7 | PICO, MeSH terms, Boolean strings, databases, 500-result cap, screening criteria, 4-tier full-text retrieval, ARR/NNT formulas, GRADE methodology |
+| **3. Results** | Steps 2–6 | PRISMA flow table (per-track), study characteristics table (design, N, demographics, follow-up, funding, bias), NNT/ARR table |
+| **4. Discussion** | Steps 5a, 5b, 7 | §4.1 Affirmative case · §4.2 Falsification case · §4.3 GRADE assessment · §4.4 Balanced verdict · §4.5 Limitations · §4.6 Recommendations |
+| **5. References** | Steps 4a/4b | Numbered bibliography from PMID/DOI/authors/journal/year — no LLM hallucination |
+
+The evidence quality banner (`⚠ Evidence Quality Notice`) is prepended when the affirmative track retrieved fewer than 30 candidate studies.
 
 ## Project Structure
 

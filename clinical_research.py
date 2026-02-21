@@ -2116,6 +2116,29 @@ class Orchestrator:
             "lead": lead_report,
             "counter": counter_report,
             "audit": audit_report,
+            # Raw pipeline data for IMRaD SOT assembly (additive — backward-compatible)
+            "pipeline_data": {
+                "aff_strategy": aff_strategy,
+                "fal_strategy": fal_strategy,
+                "aff_extractions": aff_extractions,
+                "fal_extractions": fal_extractions,
+                "aff_top": aff_top,
+                "fal_top": fal_top,
+                "math_report": math_report,
+                "impacts": impacts,
+                "framing_context": framing_context,
+                "search_date": search_date,
+                "metrics": {
+                    "aff_wide_net_total": aff_wide_net_total,
+                    "aff_screened_in": aff_screened_in,
+                    "aff_fulltext_ok": aff_fulltext_ok,
+                    "aff_fulltext_err": aff_fulltext_err,
+                    "fal_wide_net_total": fal_wide_net_total,
+                    "fal_screened_in": fal_screened_in,
+                    "fal_fulltext_ok": fal_fulltext_ok,
+                    "fal_fulltext_err": fal_fulltext_err,
+                },
+            },
         }
 
     async def _grade_synthesis(

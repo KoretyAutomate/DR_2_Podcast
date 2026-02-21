@@ -2007,7 +2007,7 @@ try:
     counter_report = deep_reports["counter"]
 
     # ================================================================
-    # Build Source-of-Truth from deep research outputs
+    # Build Source-of-Truth in IMRaD format from deep research outputs
     # ================================================================
     def _extract_conclusion_status(grade_report: str) -> tuple:
         """Extract GRADE level, conclusion status, and executive summary."""
@@ -2030,22 +2030,412 @@ try:
 
         return grade, status, summary
 
-    grade_level, conclusion_status, exec_summary = _extract_conclusion_status(
-        deep_audit_report.report)
+    def _parse_grade_sections(audit_text: str) -> dict:
+        """Split GRADE synthesis text into named subsections by ### headers."""
+        sections = {}
+        current_key = None
+        current_lines = []
+        for line in audit_text.split('\n'):
+            if line.startswith('### '):
+                if current_key is not None:
+                    sections[current_key] = '\n'.join(current_lines).strip()
+                current_key = line.lstrip('#').strip().lower()
+                current_lines = []
+            else:
+                current_lines.append(line)
+        if current_key is not None:
+            sections[current_key] = '\n'.join(current_lines).strip()
+        return sections
 
-    sot_content = f"# Source of Truth: {topic_name}\n\n"
-    sot_content += f"## Research Conclusion\n\n"
-    sot_content += f"**Evidence Quality (GRADE): {grade_level}**\n\n"
-    sot_content += f"**Conclusion: {conclusion_status}**\n\n"
-    if exec_summary:
-        sot_content += f"{exec_summary}\n\n"
-    sot_content += f"## Evidence Quality Assessment (GRADE)\n\n{deep_audit_report.report}\n\n"
-    math_file = output_dir / "clinical_math.md"
-    if math_file.exists():
-        sot_content += f"## Clinical Impact (Deterministic Math)\n\n{math_file.read_text()}\n\n"
-    sot_content += (
-        "---\n\n"
-        "*Detailed case reports available in affirmative_case.md and falsification_case.md*\n"
+    def _format_study_characteristics_table(extractions: list) -> str:
+        """Build a study characteristics table from DeepExtraction objects."""
+        if not extractions:
+            return "*No studies with full extraction data available.*\n"
+        rows = ["| # | Study | Design | N | Demographics | Follow-up | Funding | Bias Risk |",
+                "|---|-------|--------|---|--------------|-----------|---------|-----------|"]
+        seen = set()
+        idx = 0
+        for ext in extractions:
+            key = ext.pmid or ext.doi or ext.title
+            if key in seen:
+                continue
+            seen.add(key)
+            idx += 1
+            label = f"{ext.title[:50]}{'…' if len(ext.title) > 50 else ''}"
+            if ext.pmid:
+                label += f" ([PMID:{ext.pmid}](https://pubmed.ncbi.nlm.nih.gov/{ext.pmid}/))"
+            rows.append(
+                f"| {idx} "
+                f"| {label} "
+                f"| {ext.study_design or 'N/A'} "
+                f"| {ext.sample_size_total or 'N/A'} "
+                f"| {(ext.demographics or 'N/A')[:40]} "
+                f"| {ext.follow_up_period or 'N/A'} "
+                f"| {(ext.funding_source or 'N/A')[:30]} "
+                f"| {ext.risk_of_bias or 'N/A'} |"
+            )
+        return '\n'.join(rows) + '\n'
+
+    def _format_references(extractions: list, wide_net_records: list) -> str:
+        """Build a numbered reference list from extraction metadata enriched by WideNetRecords."""
+        wnr_by_pmid = {r.pmid: r for r in wide_net_records if r.pmid}
+        wnr_by_title = {r.title.lower().strip(): r for r in wide_net_records if r.title}
+        refs = []
+        seen = set()
+        idx = 0
+        for ext in extractions:
+            key = ext.pmid or ext.doi or ext.title
+            if key in seen:
+                continue
+            seen.add(key)
+            idx += 1
+            wnr = wnr_by_pmid.get(ext.pmid) or wnr_by_title.get((ext.title or "").lower().strip())
+            authors = (wnr.authors if wnr and wnr.authors else "").strip() or "Unknown authors"
+            journal = (wnr.journal if wnr and wnr.journal else "").strip()
+            year = wnr.year if wnr and wnr.year else ""
+            title = ext.title or "Untitled"
+            parts = [f"{idx}. {authors}."]
+            parts.append(f"*{title}*.")
+            if journal:
+                parts.append(f"{journal}.")
+            if year:
+                parts.append(f"({year}).")
+            if ext.pmid:
+                parts.append(f"PMID: [{ext.pmid}](https://pubmed.ncbi.nlm.nih.gov/{ext.pmid}/).")
+            if ext.doi:
+                parts.append(f"DOI: {ext.doi}.")
+            refs.append(" ".join(parts))
+        return '\n'.join(refs) + '\n' if refs else "*No references available.*\n"
+
+    def build_imrad_sot(
+        topic: str,
+        reports: dict,
+        ev_quality: str,
+        aff_cand: int,
+    ) -> str:
+        """Assemble the Source of Truth document in IMRaD scientific paper format."""
+        pd = reports.get("pipeline_data", {})
+        aff_strategy = pd.get("aff_strategy")
+        fal_strategy = pd.get("fal_strategy")
+        aff_extractions = pd.get("aff_extractions", [])
+        fal_extractions = pd.get("fal_extractions", [])
+        aff_top = pd.get("aff_top", [])
+        fal_top = pd.get("fal_top", [])
+        impacts = pd.get("impacts", [])
+        framing = pd.get("framing_context", "")
+        search_date = pd.get("search_date", "")
+        metrics = pd.get("metrics", {})
+        all_extractions = aff_extractions + fal_extractions
+        all_wide = aff_top + fal_top
+
+        audit_text = reports["audit"].report
+        aff_case_text = reports["lead"].report
+        fal_case_text = reports["counter"].report
+
+        grade_level, conclusion_status, exec_summary = _extract_conclusion_status(audit_text)
+        grade_sections = _parse_grade_sections(audit_text)
+
+        m = metrics
+        aff_wide = m.get("aff_wide_net_total", 0)
+        fal_wide = m.get("fal_wide_net_total", 0)
+        aff_screened = m.get("aff_screened_in", 0)
+        fal_screened = m.get("fal_screened_in", 0)
+        aff_ft_ok = m.get("aff_fulltext_ok", 0)
+        fal_ft_ok = m.get("fal_fulltext_ok", 0)
+        aff_ft_err = m.get("aff_fulltext_err", 0)
+        fal_ft_err = m.get("fal_fulltext_err", 0)
+        total_wide = aff_wide + fal_wide
+        total_screened = aff_screened + fal_screened
+        total_ft_ok = aff_ft_ok + fal_ft_ok
+        total_ft_err = aff_ft_err + fal_ft_err
+
+        # Summarize PICO for abstract
+        pico_summary = ""
+        if aff_strategy and hasattr(aff_strategy, 'pico'):
+            p = aff_strategy.pico
+            pico_summary = (
+                f"**P** (Population): {p.get('population', 'N/A')}  \n"
+                f"**I** (Intervention): {p.get('intervention', 'N/A')}  \n"
+                f"**C** (Comparison): {p.get('comparison', 'N/A')}  \n"
+                f"**O** (Outcome): {p.get('outcome', 'N/A')}"
+            )
+
+        # Determine representative NNT for abstract
+        nnt_summary = ""
+        if impacts:
+            benefit = [i for i in impacts if i.direction == "benefit"]
+            ref_impact = benefit[0] if benefit else impacts[0]
+            nnt_summary = (
+                f"The primary quantitative finding is NNT = **{ref_impact.nnt:.1f}** "
+                f"({ref_impact.direction}; ARR = {ref_impact.arr:+.4f})."
+            )
+
+        # ── ABSTRACT ─────────────────────────────────────────────────────────
+        out = [f"# Source of Truth: {topic}\n"]
+        out.append("## Abstract\n")
+        if pico_summary:
+            out.append(f"**Clinical Question (PICO):**  \n{pico_summary}\n")
+        out.append(
+            f"**Methods:** Dual-track systematic review using parallel Affirmative and "
+            f"Falsification search strategies. A total of {total_wide} records were identified "
+            f"across PubMed and Google Scholar; {total_screened} were screened to top candidates "
+            f"per track; {total_ft_ok} full-text articles were retrieved and deeply extracted. "
+            f"Absolute Risk Reduction (ARR) and Number Needed to Treat (NNT) were calculated "
+            f"deterministically in Python (no LLM). Evidence quality was assessed using the "
+            f"GRADE framework.\n"
+        )
+        if nnt_summary:
+            out.append(f"**Key Finding:** {nnt_summary}\n")
+        out.append(
+            f"**Evidence Quality (GRADE):** {grade_level}  \n"
+            f"**Conclusion:** {conclusion_status}\n"
+        )
+        if exec_summary:
+            out.append(f"\n{exec_summary}\n")
+
+        # ── 1. INTRODUCTION ───────────────────────────────────────────────────
+        out.append("\n---\n\n## 1. Introduction\n")
+        if framing:
+            out.append(framing.strip() + "\n")
+        else:
+            out.append(
+                f"This systematic review was initiated to evaluate the scientific evidence "
+                f"for and against the following research question: **{topic}**\n"
+            )
+        out.append(
+            "\nThis review employs a dual-hypothesis design. Two parallel search tracks "
+            "were run simultaneously:\n\n"
+            "- **Affirmative Track**: Seeks evidence supporting the hypothesis.\n"
+            "- **Falsification Track**: Adversarially seeks evidence of null results, harms, "
+            "methodological flaws, and confounders.\n"
+        )
+        if aff_strategy and hasattr(aff_strategy, 'pico'):
+            p = aff_strategy.pico
+            out.append(
+                f"\n**Affirmative Hypothesis:** In {p.get('population', 'the target population')}, "
+                f"does {p.get('intervention', 'the intervention')} improve "
+                f"{p.get('outcome', 'the primary outcome')} compared to "
+                f"{p.get('comparison', 'control')}?\n"
+            )
+        if fal_strategy and hasattr(fal_strategy, 'pico'):
+            fp = fal_strategy.pico
+            out.append(
+                f"\n**Falsification Hypothesis:** Does {fp.get('intervention', 'the intervention')} "
+                f"fail to improve, or actively harm, {fp.get('outcome', 'the primary outcome')} "
+                f"in {fp.get('population', 'the target population')}?\n"
+            )
+
+        # ── 2. METHODS ────────────────────────────────────────────────────────
+        out.append("\n---\n\n## 2. Methods\n")
+
+        # 2.1 Search Strategy
+        out.append("### 2.1 Search Strategy\n")
+        for label, strategy in [("Affirmative", aff_strategy), ("Falsification", fal_strategy)]:
+            if not strategy or not hasattr(strategy, 'pico'):
+                continue
+            out.append(f"#### {label} Track\n")
+            p = strategy.pico
+            out.append(
+                f"**PICO Framework:**  \n"
+                f"- **P** (Population): {p.get('population', 'N/A')}  \n"
+                f"- **I** (Intervention): {p.get('intervention', 'N/A')}  \n"
+                f"- **C** (Comparison): {p.get('comparison', 'N/A')}  \n"
+                f"- **O** (Outcome): {p.get('outcome', 'N/A')}\n"
+            )
+            if hasattr(strategy, 'mesh_terms') and strategy.mesh_terms:
+                mt = strategy.mesh_terms
+                out.append("\n**MeSH Terms:**\n")
+                for cat, terms in mt.items():
+                    if terms:
+                        out.append(f"- *{cat.capitalize()}*: {', '.join(terms)}\n")
+            if hasattr(strategy, 'search_strings') and strategy.search_strings:
+                ss = strategy.search_strings
+                out.append("\n**Boolean Search Strings:**\n")
+                for db, query in ss.items():
+                    if query:
+                        out.append(f"- **{db.replace('_', ' ').title()}**: `{query}`\n")
+            out.append("\n")
+
+        # 2.2 Data Collection
+        out.append("### 2.2 Data Collection\n")
+        out.append(
+            f"- **Databases searched:** PubMed (NCBI E-utilities), Google Scholar (via SearXNG)\n"
+            f"- **Search date:** {search_date}\n"
+            f"- **Maximum results per track:** 500 records (Step 2 wide-net)\n"
+            f"- **Affirmative track records identified:** {aff_wide}\n"
+            f"- **Falsification track records identified:** {fal_wide}\n"
+            f"- **Total records identified:** {total_wide}\n"
+        )
+
+        # 2.3 Screening & Selection
+        out.append("\n### 2.3 Screening & Selection\n")
+        out.append(
+            "Title and abstract screening was performed by the Smart Model (Qwen2.5-32B-Instruct-AWQ) "
+            "using structured inclusion/exclusion criteria:\n\n"
+            "**Inclusion criteria:** Human clinical studies (RCTs, meta-analyses, systematic reviews, "
+            "large cohort studies); sample size ≥ 30 participants; published in peer-reviewed journals; "
+            "directly relevant to the PICO question.\n\n"
+            "**Exclusion criteria:** Animal models; in vitro studies; case reports (n < 5); "
+            "conference abstracts without full data; non-English publications; retracted publications.\n\n"
+            f"- **Affirmative track screened to top candidates:** {aff_screened}\n"
+            f"- **Falsification track screened to top candidates:** {fal_screened}\n"
+            f"- **Total articles selected for full-text retrieval:** {total_screened}\n"
+        )
+
+        # 2.4 Data Extraction
+        out.append("\n### 2.4 Data Extraction\n")
+        out.append(
+            "Full-text articles were retrieved using a 4-tier cascade:\n\n"
+            "1. **PMC EFetch** (NCBI EUtils `elink` + `efetch`): Open-access full XML\n"
+            "2. **Europe PMC REST API**: Full-text XML for OA articles\n"
+            "3. **Unpaywall API**: Open-access PDF/HTML links via DOI\n"
+            "4. **NCBI Abstract EFetch**: Official abstract XML (fallback for paywalled articles)\n\n"
+            f"- **Affirmative track full-text retrieved:** {aff_ft_ok} "
+            f"(errors: {aff_ft_err})\n"
+            f"- **Falsification track full-text retrieved:** {fal_ft_ok} "
+            f"(errors: {fal_ft_err})\n"
+            f"- **Total full texts successfully retrieved:** {total_ft_ok}\n\n"
+            "Clinical variables were extracted from each full text by the Fast Model "
+            "(llama3.2:1b) using a structured extraction template capturing: "
+            "study design, sample sizes, demographics, follow-up period, "
+            "Control Event Rate (CER), Experimental Event Rate (EER), "
+            "effect size with confidence intervals, blinding, randomization method, "
+            "intention-to-treat analysis, funding source, and risk of bias.\n"
+        )
+
+        # 2.5 Statistical Analysis
+        out.append("\n### 2.5 Statistical Analysis\n")
+        out.append(
+            "**Deterministic Clinical Math (Step 6):** ARR, RRR, and NNT were calculated "
+            "using pure Python arithmetic from extracted CER and EER values — no LLM involvement:\n\n"
+            "- ARR (Absolute Risk Reduction) = CER − EER\n"
+            "- RRR (Relative Risk Reduction) = ARR / CER\n"
+            "- NNT (Number Needed to Treat) = 1 / |ARR|\n\n"
+            "**GRADE Framework (Step 7):** Evidence quality was assessed by the Smart Model "
+            "using the Grading of Recommendations, Assessment, Development, and Evaluations "
+            "(GRADE) framework. Starting quality was HIGH for RCTs and LOW for observational "
+            "studies, then adjusted for: risk of bias, inconsistency, indirectness, imprecision, "
+            "and publication bias (downgrade factors); and large effect size, dose-response "
+            "gradient, and plausible confounders (upgrade factors).\n"
+        )
+
+        # ── 3. RESULTS ────────────────────────────────────────────────────────
+        out.append("\n---\n\n## 3. Results\n")
+
+        # 3.1 Study Selection (PRISMA)
+        out.append("### 3.1 Study Selection\n")
+        prisma_from_grade = grade_sections.get("prisma flow diagram", "")
+        out.append(
+            "**PRISMA Flow:**\n\n"
+            f"| Stage | Affirmative | Falsification | Total |\n"
+            f"|-------|-------------|---------------|-------|\n"
+            f"| Records identified | {aff_wide} | {fal_wide} | {total_wide} |\n"
+            f"| Screened (top candidates) | {aff_screened} | {fal_screened} | {total_screened} |\n"
+            f"| Full-text retrieved | {aff_ft_ok} | {fal_ft_ok} | {total_ft_ok} |\n"
+            f"| Full-text errors | {aff_ft_err} | {fal_ft_err} | {total_ft_err} |\n"
+            f"| Included in synthesis | {len(aff_extractions)} | {len(fal_extractions)} | {len(all_extractions)} |\n"
+        )
+        if prisma_from_grade:
+            out.append(f"\n{prisma_from_grade}\n")
+
+        # 3.2 Study Characteristics
+        out.append("\n### 3.2 Study Characteristics\n")
+        out.append(_format_study_characteristics_table(all_extractions))
+
+        # 3.3 Clinical Impact
+        out.append("\n### 3.3 Clinical Impact (Deterministic Math)\n")
+        math_file_path = output_dir / "clinical_math.md"
+        if math_file_path.exists():
+            out.append(math_file_path.read_text().strip() + "\n")
+        elif impacts:
+            rows = ["| Study | CER | EER | ARR | RRR | NNT | Direction |",
+                    "|-------|-----|-----|-----|-----|-----|-----------|"]
+            for i in impacts:
+                rows.append(
+                    f"| {i.study_id} | {i.cer:.3f} | {i.eer:.3f} | "
+                    f"{i.arr:+.4f} | {i.rrr:+.2%} | {i.nnt:.1f} | {i.direction} |"
+                )
+            out.append('\n'.join(rows) + "\n\n")
+            for i in impacts:
+                out.append(f"- **{i.study_id}**: {i.nnt_interpretation}\n")
+        else:
+            out.append("*No studies provided both CER and EER — NNT calculation not available.*\n")
+
+        # ── 4. DISCUSSION ─────────────────────────────────────────────────────
+        out.append("\n---\n\n## 4. Discussion\n")
+
+        # 4.1 Affirmative Case
+        out.append("### 4.1 Affirmative Case\n")
+        out.append(aff_case_text.strip() + "\n")
+
+        # 4.2 Falsification Case
+        out.append("\n### 4.2 Falsification Case\n")
+        out.append(fal_case_text.strip() + "\n")
+
+        # 4.3 GRADE Evidence Assessment
+        out.append("\n### 4.3 GRADE Evidence Assessment\n")
+        ep = grade_sections.get("evidence profile", "")
+        ga = grade_sections.get("grade assessment", "")
+        if ep:
+            out.append(f"**Evidence Profile:**\n\n{ep}\n")
+        if ga:
+            out.append(f"\n**GRADE Assessment:**\n\n{ga}\n")
+        if not ep and not ga:
+            # Fallback: include the full audit text minus already-extracted sections
+            out.append(audit_text.strip() + "\n")
+
+        # 4.4 Balanced Verdict
+        out.append("\n### 4.4 Balanced Verdict\n")
+        bv = grade_sections.get("balanced verdict", "")
+        if bv:
+            out.append(bv + "\n")
+        else:
+            out.append(
+                f"**Evidence Quality (GRADE):** {grade_level}  \n"
+                f"**Conclusion:** {conclusion_status}\n"
+            )
+
+        # 4.5 Limitations
+        out.append("\n### 4.5 Limitations\n")
+        out.append(
+            "The following pipeline-specific limitations apply to this synthesis:\n\n"
+            "- The Fast Model (llama3.2:1b) may have misclassified study designs or "
+            "misextracted clinical variables from complex full-text articles.\n"
+            "- Articles not available via PMC, Europe PMC, or Unpaywall were reduced to "
+            "abstract-level data, limiting extraction depth for paywalled literature.\n"
+            "- The 500-result cap per track may exclude relevant studies not retrieved "
+            "in the top results from PubMed or Google Scholar.\n"
+            "- CER/EER extraction relies on the Fast Model correctly identifying "
+            "event rates in text; studies reporting outcomes without explicit event "
+            "rates could not be included in NNT calculations.\n"
+            "- Non-English language publications were excluded.\n"
+        )
+
+        # 4.6 Recommendations
+        out.append("\n### 4.6 Recommendations for Further Research\n")
+        recs = grade_sections.get("recommendations for further research", "")
+        if recs:
+            out.append(recs + "\n")
+        else:
+            out.append(
+                "- Conduct large-scale, long-term randomized controlled trials with "
+                "rigorous methodologies to address identified evidence gaps.\n"
+                "- Investigate outcomes in under-represented populations.\n"
+                "- Address potential biases and ensure transparency in study design "
+                "and reporting.\n"
+            )
+
+        # ── 5. REFERENCES ──────────────────────────────────────────────────────
+        out.append("\n---\n\n## 5. References\n")
+        out.append(_format_references(all_extractions, all_wide))
+
+        return '\n'.join(out)
+
+    sot_content = build_imrad_sot(
+        topic=topic_name,
+        reports=deep_reports,
+        ev_quality=evidence_quality,
+        aff_cand=aff_candidates,
     )
 
     # C6: Prepend evidence quality banner if limited
@@ -2062,7 +2452,7 @@ try:
     sot_file = output_dir / "source_of_truth.md"
     with open(sot_file, 'w') as f:
         f.write(sot_content)
-    print(f"✓ Source of Truth generated from deep research ({len(sot_content)} chars)")
+    print(f"✓ Source of Truth (IMRaD) generated from deep research ({len(sot_content)} chars)")
 
     # Summarize for injection into Crew 3 task descriptions
     print("Summarizing Source-of-Truth with fast model...")
