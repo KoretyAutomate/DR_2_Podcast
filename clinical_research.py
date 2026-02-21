@@ -233,6 +233,7 @@ class WideNetRecord:
     authors: Optional[str]
     url: str
     source_db: str                          # "pubmed", "cochrane_central", "scholar"
+    research_tier: Optional[int] = None    # 1=focused, 2=broad, 3=ultrawide cascade
     relevance_score: Optional[float] = None
 
 @dataclass
@@ -1256,10 +1257,12 @@ class ResearchAgent:
             ("cochrane", strategy.search_strings.get("cochrane", "")),
         ]
 
+        tier_map = {"pubmed_primary": 1, "pubmed_broad": 2, "cochrane": 2}
         for query_name, query_str in queries:
             if not query_str:
                 continue
             source_db = "cochrane_central" if query_name == "cochrane" else "pubmed"
+            tier = tier_map.get(query_name, 2)
             try:
                 articles = await pubmed.search_extended(query_str, max_results=200)
                 for art in articles:
@@ -1281,6 +1284,7 @@ class ResearchAgent:
                         authors=art.get("authors"),
                         url=art.get("url", ""),
                         source_db=source_db,
+                        research_tier=tier,
                     ))
                 log(f"      [{query_name}] {len(articles)} results from PubMed")
             except Exception as e:
@@ -1307,6 +1311,7 @@ class ResearchAgent:
                                 sample_size=None, primary_objective=None,
                                 year=None, journal=None, authors=None,
                                 url=url, source_db="scholar",
+                                research_tier=1,
                             ))
                         log(f"      [scholar] {len(raw)} results from Google Scholar")
             except Exception as e:
@@ -1349,6 +1354,7 @@ class ResearchAgent:
                             authors=art.get("authors"),
                             url=url,
                             source_db="pubmed_ultrawide",
+                            research_tier=3,
                         ))
                         added += 1
                     log(f"      [ultrawide] {added} new records added (total: {len(all_records)})")
@@ -2298,6 +2304,7 @@ class Orchestrator:
                 "journal": r.journal,
                 "authors": r.authors,
                 "source_db": r.source_db,
+                "research_tier": r.research_tier,
                 "url": r.url,
                 "abstract_snippet": (r.abstract or "")[:300],
             }
