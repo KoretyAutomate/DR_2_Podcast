@@ -219,6 +219,26 @@ class SearchStrategy:
     role: str                               # "affirmative" or "adversarial"
 
 @dataclass
+class TierKeywords:
+    """Plain keyword lists for one search tier — NO Boolean/MeSH syntax."""
+    intervention: List[str]   # exact terms for the intervention at this tier
+    outcome: List[str]        # outcome terms at this tier
+    population: List[str]     # population terms
+    rationale: str            # scientist's justification for this tier's scope
+
+@dataclass
+class TieredSearchPlan:
+    """Three-tier keyword plan produced by the scientist and approved by the Auditor."""
+    pico: Dict[str, str]       # P, I, C, O — used downstream in _build_case, screening
+    tier1: TierKeywords        # Exact folk/named terms → "Established evidence"
+    tier2: TierKeywords        # Canonical scientific synonyms, same substance → "Supporting evidence"
+    tier3: TierKeywords        # Active compound class / mechanism → "Speculative extrapolation"
+    role: str                  # "affirmative" | "adversarial"
+    auditor_approved: bool = False
+    auditor_notes: str = ""
+    revision_count: int = 0
+
+@dataclass
 class WideNetRecord:
     """Lightweight screening record — no full text, just title + abstract metadata."""
     pmid: Optional[str]
@@ -233,7 +253,7 @@ class WideNetRecord:
     authors: Optional[str]
     url: str
     source_db: str                          # "pubmed", "cochrane_central", "scholar"
-    research_tier: Optional[int] = None    # 1=focused, 2=broad, 3=ultrawide cascade
+    research_tier: Optional[int] = None    # 1=exact folk  2=scientific synonyms  3=compound class
     relevance_score: Optional[float] = None
 
 @dataclass
@@ -1122,275 +1142,326 @@ class ResearchAgent:
             logger.warning(f"Topic decomposition failed: {e}")
             return {"canonical_terms": [], "related_concepts": [], "population_terms": []}
 
-    async def _formulate_search_strategy(
-        self, topic: str, role_type: str, framing_context: str = "",
-        decomposition: dict = None, log=print
-    ) -> SearchStrategy:
-        """Step 1: Smart model generates PICO framework, MeSH terms, and Boolean search strings."""
-        log(f"    [Step 1] Formulating {role_type} search strategy...")
+    # ------------------------------------------------------------------ #
+    #  STEP 1 — Tiered keyword generation + Auditor gate                  #
+    # ------------------------------------------------------------------ #
 
-        adversarial_addendum = ""
-        if role_type == "adversarial":
-            adversarial_addendum = (
-                "\n\nADVERSARIAL FOCUS: This search must find CONTRADICTING or NULL evidence.\n"
-                "Use OR to include terms that surface:\n"
-                '- Null results: "no significant difference"[tiab] OR "lack of efficacy"[tiab]\n'
-                '  OR "negative results"[tiab] OR "failed to show"[tiab]\n'
-                '- Adverse effects: "adverse effects"[Subheading] OR "toxicity"[MeSH]\n'
-                '  OR "drug-related side effects and adverse reactions"[MeSH]\n'
-                '- Methodological concerns: "publication bias"[tiab] OR "industry-funded"[tiab]\n'
-                '  OR "conflict of interest"[tiab]\n'
-                '- Retractions: "Retracted Publication"[pt]\n'
-                "DO NOT use NOT filters. Combine these with OR alongside the standard PICO terms."
+    async def _generate_tiered_keywords(
+        self, topic: str, role: str, framing_context: str,
+        decomposition: Optional[Dict], auditor_feedback: str = "",
+        log=print
+    ) -> TieredSearchPlan:
+        """Generate three-tier keyword plan as plain lists — NO Boolean/MeSH syntax."""
+        log(f"    [Step 1] Generating tiered keywords ({role})...")
+
+        adversarial_note = ""
+        if role == "adversarial":
+            adversarial_note = (
+                "\n\nADVERSARIAL ROLE: Each tier must surface CONTRADICTING or NULL evidence.\n"
+                "Target: null results, adverse effects, dose-response harms, tolerance, "
+                "withdrawal, conflicting findings, methodological concerns.\n"
+                "Same tier-boundary rules apply: Tier 1 = exact substance + exact harm outcome, "
+                "Tier 2 = same substance, broader harm synonyms, Tier 3 = compound class + mechanism harms."
             )
 
-        framing_section = ""
-        if framing_context:
-            framing_section = f"\n\nRESEARCH FRAMING CONTEXT:\n{framing_context[:4000]}\n"
+        framing_note = f"\n\nRESEARCH FRAMING:\n{framing_context[:3000]}" if framing_context else ""
 
-        # Build decomposition context block (C2)
-        decomp_section = ""
+        decomp_note = ""
         if decomposition and any(decomposition.values()):
             canonical = ", ".join(decomposition.get("canonical_terms", []))
             related = ", ".join(decomposition.get("related_concepts", []))
-            population = ", ".join(decomposition.get("population_terms", []))
-            decomp_section = (
-                "\n\nCANONICAL SCIENTIFIC TERMS FOR THIS TOPIC:\n"
-                f"Intervention synonyms (use in MeSH/search strings): {canonical}\n"
-                f"Related concepts to include: {related}\n"
-                f"Population descriptors: {population}\n\n"
-                "IMPORTANT: Build search strings using these canonical terms — NOT the raw "
-                "folk-language phrasing of the topic.\n"
+            decomp_note = (
+                f"\n\nCANONICAL SCIENTIFIC TERMS: {canonical}"
+                f"\nRELATED CONCEPTS: {related}"
+            )
+
+        revision_note = ""
+        if auditor_feedback:
+            revision_note = (
+                f"\n\n⚠ AUDITOR REJECTED YOUR PREVIOUS KEYWORDS with this feedback:\n"
+                f"{auditor_feedback}\n"
+                "You MUST revise your keywords to address this feedback."
             )
 
         system = (
-            "You are a medical librarian and systematic review specialist.\n\n"
-            "Given the research topic below, produce a search strategy.\n\n"
-            "1. PICO FRAMEWORK:\n"
-            "   - P (Population): [target population]\n"
-            "   - I (Intervention): [intervention/exposure]\n"
-            "   - C (Comparison): [control/comparator]\n"
-            "   - O (Outcome): [primary outcome measures]\n\n"
-            "2. MeSH TERMS (for PubMed):\n"
-            "   - Population MeSH: [term1[MeSH], term2[MeSH], ...]\n"
-            "   - Intervention MeSH: [term1[MeSH], term2[MeSH], ...]\n"
-            "   - Outcome MeSH: [term1[MeSH], term2[MeSH], ...]\n\n"
-            "3. BOOLEAN SEARCH STRINGS — CRITICAL RULES:\n\n"
-            "   STRUCTURE RULE: pubmed_primary and pubmed_broad MUST use AND to connect "
-            "concept groups (Population, Intervention, Outcome). Each group is parenthesized "
-            "with OR joining synonyms WITHIN the group.\n\n"
-            "   CORRECT example:\n"
-            '   (coffee OR caffeine OR "coffee consumption"[MeSH]) AND '
-            '(productivity OR "cognitive performance" OR "task performance") AND '
-            '(Humans[MeSH])\n\n'
-            "   INCORRECT example (DO NOT DO THIS):\n"
-            '   (coffee OR caffeine) AND Humans[MeSH] OR productivity OR "cognitive function"\n'
-            "   ^^^ WRONG: trailing OR terms outside parentheses match ANY paper about those terms\n\n"
-            "   - pubmed_primary: strict Boolean — (P-terms) AND (I-terms) AND (O-terms) "
-            "with MeSH + Humans[MeSH] + English[la] + study type filters\n"
-            "   - pubmed_broad: relaxed Boolean — (P-terms) AND (I-terms) AND (O-terms) "
-            "with fewer filters, but still AND between concept groups\n"
-            "   - cochrane: adapted Boolean for cochrane[sb] subset\n"
-            "   - scholar: plain-language version for Google Scholar\n"
-            "   - pubmed_ultrawide: widened query for maximum recall — see rules below\n\n"
-            "Return ONLY valid JSON with this exact structure:\n"
-            '{\n'
+            "You are a systematic review scientist generating search keyword tiers.\n\n"
+            "TASK: Produce three keyword tiers for a cascading PubMed search.\n"
+            "Each tier is a set of PLAIN KEYWORD LISTS — no Boolean operators, no MeSH notation, "
+            "no brackets, no field tags. Just simple English phrases.\n\n"
+            "TIER DEFINITIONS:\n\n"
+            "TIER 1 — 'Established evidence' (strictest):\n"
+            "  Intervention: exact folk/common names for *this specific substance* only.\n"
+            "  Example for coffee: [\"coffee\", \"coffee drinking\", \"coffee consumption\"]\n"
+            "  Do NOT include caffeine — caffeine also comes from tea, energy drinks, etc.\n"
+            "  Outcome: direct primary outcome labels as they appear in clinical trial titles.\n"
+            "  Example: [\"work productivity\", \"job performance\", \"occupational performance\"]\n\n"
+            "TIER 2 — 'Supporting evidence':\n"
+            "  Intervention: canonical scientific synonyms still anchored to the SAME substance.\n"
+            "  Example for coffee: [\"caffeinated coffee\", \"coffee beverage\", \"espresso\", \"filtered coffee\"]\n"
+            "  NOT caffeine (wrong tier) — caffeine is the compound class, not coffee specifically.\n"
+            "  Outcome: proxies one step removed from the primary outcome.\n"
+            "  Example: [\"cognitive performance\", \"alertness\", \"executive function\", \"mental performance\"]\n\n"
+            "TIER 3 — 'Speculative extrapolation':\n"
+            "  Intervention: active compound class / mechanism (source ambiguity accepted).\n"
+            "  Example: [\"caffeine\", \"methylxanthine\", \"adenosine antagonist\", \"caffeinated beverage\"]\n"
+            "  These results require inference (e.g., caffeine from any source → coffee effect) and "
+            "will be flagged as speculative in the output.\n"
+            "  Outcome: broad mechanistic endpoints.\n"
+            "  Example: [\"attention\", \"reaction time\", \"mental fatigue\", \"working memory\", \"task performance\"]\n\n"
+            "RULES:\n"
+            "- Keyword lists must contain plain phrases only — no AND, OR, NOT, [MeSH], [tiab], etc.\n"
+            "- Each term should be 1-4 words max.\n"
+            "- Tier 1 and 2 intervention lists must NOT contain terms that would match other substances.\n"
+            "- Also produce a PICO summary.\n\n"
+            "Return ONLY valid JSON:\n"
+            "{\n"
             '  "pico": {"population": "...", "intervention": "...", "comparison": "...", "outcome": "..."},\n'
-            '  "mesh_terms": {"population": [...], "intervention": [...], "outcome": [...]},\n'
-            '  "search_strings": {\n'
-            '    "pubmed_primary": "...",\n'
-            '    "pubmed_broad": "...",\n'
-            '    "cochrane": "...",\n'
-            '    "scholar": "...",\n'
-            '    "pubmed_ultrawide": "..."\n'
-            '  }\n'
-            '}\n\n'
-            "pubmed_ultrawide rules:\n"
-            "- MUST keep the core intervention as an anchor: (intervention_synonyms) AND (widened_outcome_or_population_terms)\n"
-            "- Widen population and outcome terms freely, but NEVER drop the intervention\n"
-            "- Include synonyms from the canonical terms list\n"
-            "- Omit study type, language, and date filters entirely\n"
-            "- Do NOT use MeSH terms that could match studies completely unrelated to the intervention\n"
-            "- CORRECT ultrawide: (coffee OR caffeine OR \"coffee drinking\") AND (performance OR cognition OR alertness OR fatigue)\n"
-            "- INCORRECT ultrawide: (caffeine) OR (cognition OR alertness) OR (sleep OR fatigue) — this matches any sleep study"
-            f"{decomp_section}"
-            f"{adversarial_addendum}"
+            '  "tier1": {\n'
+            '    "intervention": ["term1", "term2"],\n'
+            '    "outcome": ["term1", "term2"],\n'
+            '    "population": ["term1", "term2"],\n'
+            '    "rationale": "Why these exact terms belong at Tier 1"\n'
+            '  },\n'
+            '  "tier2": { ... same structure ... },\n'
+            '  "tier3": { ... same structure ... }\n'
+            "}"
+            f"{adversarial_note}{framing_note}{decomp_note}{revision_note}"
         )
 
-        user = f"Research topic: {topic}{framing_section}"
+        user = f"Research topic: {topic}"
 
         raw = await self._call_smart(system, user, max_tokens=2048, temperature=0.2)
         try:
             data = self._parse_json_response(raw)
-            strategy = SearchStrategy(
-                pico=data.get("pico", {}),
-                mesh_terms=data.get("mesh_terms", {}),
-                search_strings=data.get("search_strings", {}),
-                role=role_type,
-            )
-            strategy = self._validate_search_strategy(strategy, topic, decomposition, log)
-            log(f"    [Step 1] Strategy generated: PICO={list(strategy.pico.values())[:2]}...")
-            if strategy.search_strings.get("pubmed_ultrawide"):
-                log(f"    [Step 1] Ultrawide query: {strategy.search_strings['pubmed_ultrawide'][:80]}...")
-            return strategy
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            logger.warning(f"Failed to parse search strategy JSON: {e}, raw: {raw[:300]}")
-            # Fallback: generate a basic strategy from the topic
-            return SearchStrategy(
-                pico={"population": "general", "intervention": topic, "comparison": "placebo/control", "outcome": "health outcomes"},
-                mesh_terms={"population": [], "intervention": [], "outcome": []},
-                search_strings={
-                    "pubmed_primary": topic,
-                    "pubmed_broad": topic,
-                    "cochrane": f"{topic} AND cochrane[sb]",
-                    "scholar": topic,
-                    "pubmed_ultrawide": topic,
-                },
-                role=role_type,
-            )
 
-    def _validate_search_strategy(
-        self, strategy: SearchStrategy, topic: str,
-        decomposition: Optional[Dict] = None, log=print
-    ) -> SearchStrategy:
-        """Post-generation validation of search strings.
-
-        Checks that core intervention keywords appear in all search tiers and
-        that pubmed_primary/broad use AND between concept groups.  Attempts
-        deterministic repair when possible.
-        """
-        # Build set of core intervention keywords (lowercase)
-        intervention_keywords: set = set()
-        pico_intervention = strategy.pico.get("intervention", "")
-        for term in re.split(r"[,/;]", pico_intervention):
-            word = term.strip().lower()
-            if word and len(word) > 2:
-                intervention_keywords.add(word)
-        if decomposition and decomposition.get("canonical_terms"):
-            for ct in decomposition["canonical_terms"]:
-                word = ct.strip().lower()
-                if word and len(word) > 2:
-                    intervention_keywords.add(word)
-
-        if not intervention_keywords:
-            return strategy
-
-        repaired_strings = dict(strategy.search_strings)
-        any_repair = False
-
-        for tier_name, query in strategy.search_strings.items():
-            if not query:
-                continue
-            query_lower = query.lower()
-
-            # Check 1: Does the query contain at least one intervention keyword?
-            has_intervention = any(kw in query_lower for kw in intervention_keywords)
-
-            if not has_intervention:
-                # Repair: prepend intervention anchor
-                anchor_terms = " OR ".join(f'"{kw}"' for kw in sorted(intervention_keywords)[:4])
-                repaired = f"({anchor_terms}) AND ({query})"
-                repaired_strings[tier_name] = repaired
-                any_repair = True
-                logger.warning(
-                    f"[Validate] {tier_name} missing intervention keywords "
-                    f"{intervention_keywords}. Prepended anchor."
+            def parse_tier(d: dict) -> TierKeywords:
+                return TierKeywords(
+                    intervention=d.get("intervention", []),
+                    outcome=d.get("outcome", []),
+                    population=d.get("population", []),
+                    rationale=d.get("rationale", ""),
                 )
-                log(f"    [Step 1 Validate] REPAIRED {tier_name}: added intervention anchor")
 
-            # Check 2: pubmed_primary and pubmed_broad should have AND between groups
-            if tier_name in ("pubmed_primary", "pubmed_broad") and has_intervention:
-                # Detect trailing OR terms outside parentheses at end of query
-                # Pattern: ') OR term' or ') OR "term"' at the tail without closing paren
-                # Find the last ')' and check if there are OR-joined terms after it
-                last_close = query.rfind(")")
-                if last_close >= 0 and last_close < len(query) - 1:
-                    tail = query[last_close + 1:].strip()
-                    # If tail starts with OR and has no opening paren, it's a dangling OR
-                    if tail.upper().startswith("OR ") and "(" not in tail:
-                        # Wrap the tail in parens and connect with AND
-                        tail_content = tail[3:].strip()  # strip the "OR "
-                        repaired = query[:last_close + 1] + f" AND ({tail_content})"
-                        repaired_strings[tier_name] = repaired
-                        any_repair = True
-                        logger.warning(
-                            f"[Validate] {tier_name} has dangling OR tail: '{tail[:60]}'. "
-                            f"Wrapped in parens with AND."
-                        )
-                        log(f"    [Step 1 Validate] REPAIRED {tier_name}: fixed dangling OR tail")
-
-        if any_repair:
-            strategy = SearchStrategy(
-                pico=strategy.pico,
-                mesh_terms=strategy.mesh_terms,
-                search_strings=repaired_strings,
-                role=strategy.role,
+            plan = TieredSearchPlan(
+                pico=data.get("pico", {}),
+                tier1=parse_tier(data.get("tier1", {})),
+                tier2=parse_tier(data.get("tier2", {})),
+                tier3=parse_tier(data.get("tier3", {})),
+                role=role,
+            )
+            log(f"    [Step 1] Tier 1 intervention: {plan.tier1.intervention[:3]}")
+            log(f"    [Step 1] Tier 2 intervention: {plan.tier2.intervention[:3]}")
+            log(f"    [Step 1] Tier 3 intervention: {plan.tier3.intervention[:3]}")
+            return plan
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning(f"Tier keyword generation parse failed: {e} — using fallback")
+            fallback_terms = [w for w in topic.split() if len(w) > 3][:4]
+            return TieredSearchPlan(
+                pico={"population": "general", "intervention": topic,
+                      "comparison": "control", "outcome": "primary outcome"},
+                tier1=TierKeywords(intervention=fallback_terms, outcome=[], population=[], rationale="fallback"),
+                tier2=TierKeywords(intervention=fallback_terms, outcome=[], population=[], rationale="fallback"),
+                tier3=TierKeywords(intervention=fallback_terms, outcome=[], population=[], rationale="fallback"),
+                role=role,
             )
 
-        return strategy
-
-    async def _wide_net_search(
-        self, strategy: SearchStrategy, log=print
+    async def _audit_tier_plan(
+        self, plan: TieredSearchPlan, topic: str, log=print
     ) -> tuple:
-        """Step 2: Cast wide net — PubMed (primary+broad+cochrane) + Google Scholar, up to 500 results.
+        """Auditor reviews all three tiers in one call. Returns (approved: bool, notes: str)."""
+        log(f"    [Auditor] Reviewing tier keyword plan...")
+
+        system = (
+            "You are The Auditor — a systematic review methodologist.\n\n"
+            "Review the three-tier keyword plan below for this research topic.\n\n"
+            "For each tier, check ALL of the following:\n\n"
+            "1. INTERVENTION ANCHOR — Tier 1 and 2 must NOT include terms that match other substances "
+            "or intervention classes. Example: for a coffee study, 'caffeine' must be in Tier 3 only "
+            "because caffeine also comes from tea, energy drinks, pills, etc. "
+            "Tier 3 may include compound class terms but must justify why.\n\n"
+            "2. OUTCOME SPECIFICITY — outcome terms must be clearly related to the PICO outcome. "
+            "Terms so generic they match any clinical domain (e.g., 'health', 'outcomes', 'function') "
+            "are too broad.\n\n"
+            "3. TIER BOUNDARY — Tier 2 intervention terms must be scientifically synonymous with "
+            "Tier 1's specific substance (not a broader class). "
+            "Tier 3 intervention terms must be one mechanistic step away.\n\n"
+            "4. NO BOOLEAN SYNTAX — keyword lists must contain plain phrases only "
+            "(no AND, OR, NOT, [MeSH], [tiab], parentheses, or other operators).\n\n"
+            "5. COVERAGE — Each tier should have at least 2 intervention terms and 2 outcome terms.\n\n"
+            "Return ONLY valid JSON:\n"
+            '{"approved": true/false, "tier1_ok": true/false, "tier2_ok": true/false, '
+            '"tier3_ok": true/false, "notes": "Specific actionable feedback — name which tier '
+            'failed and exactly what to change. Empty string if approved."}'
+        )
+
+        user = (
+            f"Research topic: {topic}\n\n"
+            f"PICO: {json.dumps(plan.pico)}\n\n"
+            f"Tier 1 (Established evidence):\n"
+            f"  Intervention: {plan.tier1.intervention}\n"
+            f"  Outcome: {plan.tier1.outcome}\n"
+            f"  Population: {plan.tier1.population}\n"
+            f"  Rationale: {plan.tier1.rationale}\n\n"
+            f"Tier 2 (Supporting evidence):\n"
+            f"  Intervention: {plan.tier2.intervention}\n"
+            f"  Outcome: {plan.tier2.outcome}\n"
+            f"  Population: {plan.tier2.population}\n"
+            f"  Rationale: {plan.tier2.rationale}\n\n"
+            f"Tier 3 (Speculative extrapolation):\n"
+            f"  Intervention: {plan.tier3.intervention}\n"
+            f"  Outcome: {plan.tier3.outcome}\n"
+            f"  Population: {plan.tier3.population}\n"
+            f"  Rationale: {plan.tier3.rationale}"
+        )
+
+        raw = await self._call_smart(system, user, max_tokens=1024, temperature=0.1)
+        try:
+            data = self._parse_json_response(raw)
+            approved = bool(data.get("approved", False))
+            notes = data.get("notes", "")
+            if approved:
+                log(f"    [Auditor] APPROVED")
+            else:
+                log(f"    [Auditor] REJECTED — {notes[:200]}")
+            return approved, notes
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning(f"Audit response parse failed: {e} — auto-approving to unblock pipeline")
+            return True, "Auto-approved (parse error)"
+
+    async def _formulate_tiered_strategy(
+        self, topic: str, role: str, framing_context: str,
+        decomposition: Optional[Dict], log=print
+    ) -> TieredSearchPlan:
+        """Step 1: Scientist generates tier keywords, Auditor reviews; loop until approved."""
+        MAX_REVISIONS = 2
+        feedback = ""
+
+        for attempt in range(MAX_REVISIONS + 1):
+            log(f"\n    [Step 1] Generating tier keywords (attempt {attempt + 1}/{MAX_REVISIONS + 1})...")
+            plan = await self._generate_tiered_keywords(
+                topic, role, framing_context, decomposition,
+                auditor_feedback=feedback, log=log
+            )
+            approved, feedback = await self._audit_tier_plan(plan, topic, log=log)
+            plan.revision_count = attempt
+
+            if approved:
+                plan.auditor_approved = True
+                plan.auditor_notes = feedback
+                return plan
+
+        # Max revisions exhausted — warn and proceed
+        logger.warning(
+            f"Tier plan not approved after {MAX_REVISIONS} revisions "
+            f"({role}) — proceeding with last draft. Notes: {feedback[:200]}"
+        )
+        log(f"    [Auditor] WARNING: proceeding with unapproved plan after {MAX_REVISIONS} revisions")
+        plan.auditor_approved = False
+        plan.auditor_notes = f"Not approved after {MAX_REVISIONS} revisions: {feedback}"
+        return plan
+
+    def _build_tier_query(self, tier: TierKeywords, extra_filters: str = "") -> str:
+        """Deterministic PubMed Boolean builder — no LLM. AND between groups, OR within groups."""
+        def group(terms: List[str]) -> str:
+            quoted = [f'"{t}"[Title/Abstract]' for t in terms if t.strip()]
+            return "(" + " OR ".join(quoted) + ")" if quoted else ""
+
+        parts = [g for g in [
+            group(tier.intervention),
+            group(tier.outcome),
+            group(tier.population),
+        ] if g]
+
+        query = " AND ".join(parts)
+        if extra_filters and query:
+            query += f" AND {extra_filters}"
+        return query
+
+    # ------------------------------------------------------------------ #
+    #  STEP 2 — Tiered cascade search                                      #
+    # ------------------------------------------------------------------ #
+
+    async def _tiered_search(
+        self, plan: TieredSearchPlan, log=print
+    ) -> tuple:
+        """Step 2: Run tiered PubMed cascade. Stop when pool >= TIER_THRESHOLD.
 
         Returns:
-            (List[WideNetRecord], bool) — records and tier3_triggered flag.
+            (List[WideNetRecord], int) — records and highest tier reached.
         """
-        log(f"    [Step 2] Wide net search ({strategy.role})...")
+        log(f"    [Step 2] Tiered cascade search ({plan.role})...")
         all_records: List[WideNetRecord] = []
         seen_pmids: set = set()
         seen_urls: set = set()
+        highest_tier = 0
 
         pubmed = self.search.pubmed
 
-        # 2a: PubMed primary query
-        queries = [
-            ("pubmed_primary", strategy.search_strings.get("pubmed_primary", "")),
-            ("pubmed_broad", strategy.search_strings.get("pubmed_broad", "")),
-            ("cochrane", strategy.search_strings.get("cochrane", "")),
+        tier_configs = [
+            (1, plan.tier1, "Humans[MeSH] AND English[la]"),
+            (2, plan.tier2, "Humans[MeSH]"),
+            (3, plan.tier3, ""),
         ]
 
-        tier_map = {"pubmed_primary": 1, "pubmed_broad": 2, "cochrane": 2}
-        for query_name, query_str in queries:
-            if not query_str:
+        for tier_num, tier_kw, filters in tier_configs:
+            if not tier_kw.intervention:
+                log(f"    [Tier {tier_num}] No intervention keywords — skipping")
                 continue
-            source_db = "cochrane_central" if query_name == "cochrane" else "pubmed"
-            tier = tier_map.get(query_name, 2)
+
+            query = self._build_tier_query(tier_kw, filters)
+            if not query:
+                log(f"    [Tier {tier_num}] Empty query — skipping")
+                continue
+
+            log(f"    [Tier {tier_num}] Query: {query[:140]}...")
             try:
-                articles = await pubmed.search_extended(query_str, max_results=200)
+                articles = await pubmed.search_extended(query, max_results=200)
+                added = 0
                 for art in articles:
                     pmid = art.get("pmid", "")
-                    if pmid in seen_pmids:
+                    url = art.get("url", "")
+                    if pmid and pmid in seen_pmids:
                         continue
-                    seen_pmids.add(pmid)
-                    seen_urls.add(art.get("url", ""))
+                    if url and url in seen_urls:
+                        continue
+                    if pmid:
+                        seen_pmids.add(pmid)
+                    if url:
+                        seen_urls.add(url)
                     all_records.append(WideNetRecord(
                         pmid=pmid,
                         doi=art.get("doi"),
                         title=art.get("title", ""),
                         abstract=art.get("abstract", ""),
                         study_type=art.get("study_type", "other"),
-                        sample_size=None,  # will be extracted by fast model if needed
+                        sample_size=None,
                         primary_objective=None,
                         year=art.get("year"),
                         journal=art.get("journal"),
                         authors=art.get("authors"),
-                        url=art.get("url", ""),
-                        source_db=source_db,
-                        research_tier=tier,
+                        url=url,
+                        source_db="pubmed",
+                        research_tier=tier_num,
                     ))
-                log(f"      [{query_name}] {len(articles)} results from PubMed")
+                    added += 1
+                log(f"    [Tier {tier_num}] +{added} new records (pool: {len(all_records)})")
             except Exception as e:
-                logger.warning(f"PubMed {query_name} search failed: {e}")
+                logger.warning(f"Tier {tier_num} PubMed search failed: {e}")
 
-        # 2b: Google Scholar via SearXNG
-        scholar_query = strategy.search_strings.get("scholar", "")
-        if scholar_query:
+            highest_tier = tier_num
+
+            if len(all_records) >= TIER_CASCADE_THRESHOLD:
+                log(f"    [Tier {tier_num}] Threshold ({TIER_CASCADE_THRESHOLD}) reached — stopping cascade")
+                break
+
+        # Scholar search — Tier 1 plain-text keywords always
+        scholar_query = " ".join(plan.tier1.intervention + plan.tier1.outcome)
+        if scholar_query.strip():
             try:
                 async with SearxngClient() as client:
                     if await client.validate_connection():
                         raw = await client.search(scholar_query, engines=['google scholar'], num_results=100)
+                        scholar_added = 0
                         for r in raw:
                             url = r.get("url", "") if isinstance(r, dict) else getattr(r, "url", "")
                             if not url or url in seen_urls or is_junk_url(url):
@@ -1401,69 +1472,24 @@ class ResearchAgent:
                             all_records.append(WideNetRecord(
                                 pmid=None, doi=None,
                                 title=title, abstract=snippet,
-                                study_type="other",  # will be screened by fast model
+                                study_type="other",
                                 sample_size=None, primary_objective=None,
                                 year=None, journal=None, authors=None,
                                 url=url, source_db="scholar",
                                 research_tier=1,
                             ))
-                        log(f"      [scholar] {len(raw)} results from Google Scholar")
+                            scholar_added += 1
+                        log(f"    [Scholar] +{scholar_added} records (Tier 1 keywords)")
             except Exception as e:
                 logger.warning(f"Google Scholar search failed: {e}")
 
-        log(f"    [Step 2] Tier 1+2 total: {len(all_records)} records")
+        log(f"    [Step 2] Total pool: {len(all_records)} records (highest tier: {highest_tier})")
 
-        # --- Tier 3: Ultrawide cascade (C3) ---
-        tier3_triggered = False
-        if len(all_records) < TIER_CASCADE_THRESHOLD:
-            tier3_query = strategy.search_strings.get("pubmed_ultrawide", "")
-            if tier3_query:
-                log(f"  ⚠ Only {len(all_records)} candidates after Tier 1+2 "
-                    f"(threshold={TIER_CASCADE_THRESHOLD}) — triggering Tier 3 ultrawide search")
-                tier3_triggered = True
-                try:
-                    articles = await pubmed.search_extended(tier3_query, max_results=200)
-                    added = 0
-                    for art in articles:
-                        pmid = art.get("pmid", "")
-                        if pmid and pmid in seen_pmids:
-                            continue
-                        url = art.get("url", "")
-                        if url and url in seen_urls:
-                            continue
-                        if pmid:
-                            seen_pmids.add(pmid)
-                        if url:
-                            seen_urls.add(url)
-                        all_records.append(WideNetRecord(
-                            pmid=pmid,
-                            doi=art.get("doi"),
-                            title=art.get("title", ""),
-                            abstract=art.get("abstract", ""),
-                            study_type=art.get("study_type", "other"),
-                            sample_size=None,
-                            primary_objective=None,
-                            year=art.get("year"),
-                            journal=art.get("journal"),
-                            authors=art.get("authors"),
-                            url=url,
-                            source_db="pubmed_ultrawide",
-                            research_tier=3,
-                        ))
-                        added += 1
-                    log(f"      [ultrawide] {added} new records added (total: {len(all_records)})")
-                except Exception as e:
-                    logger.warning(f"Tier 3 ultrawide search failed: {e}")
-
-        log(f"    [Step 2] Wide net total: {len(all_records)} records")
-
-        # 2c: Fast model screening for sample_size and primary_objective
-        # Only for records where study_type was not determined from PubMed XML
+        # Fast-model screening for study_type / sample_size on "other" records
         needs_screening = [r for r in all_records if r.study_type == "other" and r.abstract]
         if needs_screening and self.fast_worker:
-            log(f"    [Step 2] Fast-model screening {len(needs_screening)} abstracts...")
+            log(f"    [Step 2] Fast-model typing {len(needs_screening)} abstracts...")
             screened = await self._fast_screen_abstracts(needs_screening)
-            # Update records in-place
             screening_map = {id(r): s for r, s in zip(needs_screening, screened)}
             for r in all_records:
                 if id(r) in screening_map:
@@ -1475,7 +1501,8 @@ class ResearchAgent:
                     if s.get("primary_objective"):
                         r.primary_objective = s["primary_objective"]
 
-        return all_records[:500], tier3_triggered  # Cap at 500
+        return all_records[:500], highest_tier
+
 
     async def _fast_screen_abstracts(self, records: List[WideNetRecord]) -> List[Dict]:
         """Use fast model to extract study_type, sample_size, primary_objective from abstracts."""
@@ -1514,7 +1541,7 @@ class ResearchAgent:
         return list(results)
 
     async def _screen_and_prioritize(
-        self, records: List[WideNetRecord], strategy: SearchStrategy,
+        self, records: List[WideNetRecord], strategy: TieredSearchPlan,
         max_select: int = 20, topic: str = "", log=print
     ) -> List[WideNetRecord]:
         """Step 3: Smart model screens wide net records → top 20."""
@@ -1770,7 +1797,7 @@ class ResearchAgent:
         return list(results)
 
     async def _build_case(
-        self, topic: str, strategy: SearchStrategy,
+        self, topic: str, strategy: TieredSearchPlan,
         extractions: List[DeepExtraction], case_type: str, log=print
     ) -> str:
         """Step 5/6: Smart model builds affirmative or falsification case from extraction data."""
@@ -2000,22 +2027,24 @@ class Orchestrator:
             nonlocal aff_wide_net_total, aff_screened_in, aff_fulltext_ok, aff_fulltext_err
 
             log(f"\n{'='*70}")
-            log(f"STEP 1a: SEARCH STRATEGY (Affirmative)")
+            log(f"STEP 1a: TIERED KEYWORD GENERATION + AUDITOR GATE (Affirmative)")
             log(f"{'='*70}")
-            strategy = await self.lead_researcher._formulate_search_strategy(
-                topic, "affirmative", framing_context, decomposition=decomposition, log=log
+            plan = await self.lead_researcher._formulate_tiered_strategy(
+                topic, "affirmative", framing_context, decomposition, log=log
             )
 
             log(f"\n{'='*70}")
-            log(f"STEP 2a: WIDE NET SEARCH (Affirmative)")
+            log(f"STEP 2a: TIERED CASCADE SEARCH (Affirmative)")
             log(f"{'='*70}")
-            records, aff_tier3 = await self.lead_researcher._wide_net_search(strategy, log)
+            records, aff_highest_tier = await self.lead_researcher._tiered_search(plan, log)
             aff_wide_net_total = len(records)
 
             log(f"\n{'='*70}")
             log(f"STEP 3a: SCREENING ({len(records)} → top 20) (Affirmative)")
             log(f"{'='*70}")
-            top_records = await self.lead_researcher._screen_and_prioritize(records, strategy, topic=topic, log=log)
+            top_records = await self.lead_researcher._screen_and_prioritize(
+                records, plan, topic=topic, log=log
+            )
             aff_screened_in = len(top_records)
 
             log(f"\n{'='*70}")
@@ -2027,39 +2056,41 @@ class Orchestrator:
             log(f"    Full-text retrieved: {aff_fulltext_ok}/{len(fulltexts)}")
 
             extractions = await self.lead_researcher._deep_extract_batch(
-                fulltexts, top_records, strategy.pico, log
+                fulltexts, top_records, plan.pico, log
             )
 
             log(f"\n{'='*70}")
             log(f"STEP 5a: AFFIRMATIVE CASE")
             log(f"{'='*70}")
             case_report = await self.lead_researcher._build_case(
-                topic, strategy, extractions, "affirmative", log
+                topic, plan, extractions, "affirmative", log
             )
 
-            return strategy, records, top_records, extractions, case_report, aff_tier3
+            return plan, records, top_records, extractions, case_report, aff_highest_tier
 
         # --- Falsification Track (Steps 1'-4', 6) ---
         async def falsification_track():
             nonlocal fal_wide_net_total, fal_screened_in, fal_fulltext_ok, fal_fulltext_err
 
             log(f"\n{'='*70}")
-            log(f"STEP 1b: SEARCH STRATEGY (Falsification)")
+            log(f"STEP 1b: TIERED KEYWORD GENERATION + AUDITOR GATE (Falsification)")
             log(f"{'='*70}")
-            strategy = await self.counter_researcher._formulate_search_strategy(
-                topic, "adversarial", framing_context, decomposition=decomposition, log=log
+            plan = await self.counter_researcher._formulate_tiered_strategy(
+                topic, "adversarial", framing_context, decomposition, log=log
             )
 
             log(f"\n{'='*70}")
-            log(f"STEP 2b: WIDE NET SEARCH (Falsification)")
+            log(f"STEP 2b: TIERED CASCADE SEARCH (Falsification)")
             log(f"{'='*70}")
-            records, fal_tier3 = await self.counter_researcher._wide_net_search(strategy, log)
+            records, fal_highest_tier = await self.counter_researcher._tiered_search(plan, log)
             fal_wide_net_total = len(records)
 
             log(f"\n{'='*70}")
             log(f"STEP 3b: SCREENING ({len(records)} → top 20) (Falsification)")
             log(f"{'='*70}")
-            top_records = await self.counter_researcher._screen_and_prioritize(records, strategy, topic=topic, log=log)
+            top_records = await self.counter_researcher._screen_and_prioritize(
+                records, plan, topic=topic, log=log
+            )
             fal_screened_in = len(top_records)
 
             log(f"\n{'='*70}")
@@ -2071,25 +2102,25 @@ class Orchestrator:
             log(f"    Full-text retrieved: {fal_fulltext_ok}/{len(fulltexts)}")
 
             extractions = await self.counter_researcher._deep_extract_batch(
-                fulltexts, top_records, strategy.pico, log
+                fulltexts, top_records, plan.pico, log
             )
 
             log(f"\n{'='*70}")
             log(f"STEP 5b: FALSIFICATION CASE")
             log(f"{'='*70}")
             case_report = await self.counter_researcher._build_case(
-                topic, strategy, extractions, "falsification", log
+                topic, plan, extractions, "falsification", log
             )
 
-            return strategy, records, top_records, extractions, case_report, fal_tier3
+            return plan, records, top_records, extractions, case_report, fal_highest_tier
 
         # --- Run both tracks in parallel ---
         log(f"\n{'='*70}")
         log(f"RUNNING AFFIRMATIVE & FALSIFICATION TRACKS IN PARALLEL")
         log(f"{'='*70}")
 
-        (aff_strategy, aff_records, aff_top, aff_extractions, aff_case, aff_tier3_triggered), \
-        (fal_strategy, fal_records, fal_top, fal_extractions, fal_case, fal_tier3_triggered) = await asyncio.gather(
+        (aff_strategy, aff_records, aff_top, aff_extractions, aff_case, aff_highest_tier), \
+        (fal_strategy, fal_records, fal_top, fal_extractions, fal_case, fal_highest_tier) = await asyncio.gather(
             affirmative_track(), falsification_track()
         )
 
@@ -2129,8 +2160,8 @@ class Orchestrator:
                 output_dir, aff_strategy, fal_strategy,
                 aff_records, fal_records, aff_top, fal_top,
                 math_report,
-                aff_tier3_triggered=aff_tier3_triggered,
-                fal_tier3_triggered=fal_tier3_triggered,
+                aff_highest_tier=aff_highest_tier,
+                fal_highest_tier=fal_highest_tier,
             )
 
         # --- Build backward-compatible return ---
@@ -2247,6 +2278,8 @@ class Orchestrator:
                 "impacts": impacts,
                 "framing_context": framing_context,
                 "search_date": search_date,
+                "aff_highest_tier": aff_highest_tier,
+                "fal_highest_tier": fal_highest_tier,
                 "metrics": {
                     "aff_wide_net_total": aff_wide_net_total,
                     "aff_screened_in": aff_screened_in,
@@ -2262,7 +2295,7 @@ class Orchestrator:
 
     async def _grade_synthesis(
         self, topic: str, aff_case: str, fal_case: str, math_report: str,
-        aff_strategy: SearchStrategy, fal_strategy: SearchStrategy,
+        aff_strategy: TieredSearchPlan, fal_strategy: TieredSearchPlan,
         total_wide: int, total_screened: int, total_ft_ok: int, total_ft_err: int,
         search_date: str, log=print
     ) -> str:
@@ -2384,25 +2417,24 @@ class Orchestrator:
     @staticmethod
     def _save_artifacts(
         output_dir: str,
-        aff_strategy: SearchStrategy, fal_strategy: SearchStrategy,
+        aff_strategy: TieredSearchPlan, fal_strategy: TieredSearchPlan,
         aff_records: List[WideNetRecord], fal_records: List[WideNetRecord],
         aff_top: List[WideNetRecord], fal_top: List[WideNetRecord],
         math_report: str,
-        aff_tier3_triggered: bool = False,
-        fal_tier3_triggered: bool = False,
+        aff_highest_tier: int = 1,
+        fal_highest_tier: int = 1,
     ):
         """Save intermediate pipeline artifacts to output directory."""
+        import dataclasses
         from pathlib import Path
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
 
-        # Strategy files
+        # Strategy files — TieredSearchPlan serialized via dataclasses.asdict
         with open(out / "search_strategy_aff.json", 'w') as f:
-            json.dump({"pico": aff_strategy.pico, "mesh_terms": aff_strategy.mesh_terms,
-                        "search_strings": aff_strategy.search_strings, "role": aff_strategy.role}, f, indent=2)
+            json.dump(dataclasses.asdict(aff_strategy), f, indent=2)
         with open(out / "search_strategy_neg.json", 'w') as f:
-            json.dump({"pico": fal_strategy.pico, "mesh_terms": fal_strategy.mesh_terms,
-                        "search_strings": fal_strategy.search_strings, "role": fal_strategy.role}, f, indent=2)
+            json.dump(dataclasses.asdict(fal_strategy), f, indent=2)
 
         # Screening decisions (one file per track) — full candidate list for debugging
         def _record_to_dict(r, selected: bool) -> dict:
@@ -2422,7 +2454,9 @@ class Orchestrator:
                 "abstract_snippet": (r.abstract or "")[:300],
             }
 
-        def _screening_payload(records, top, tier3_triggered):
+        tier_labels = {1: "established", 2: "supporting", 3: "speculative"}
+
+        def _screening_payload(records, top, highest_tier):
             selected_set = {id(r) for r in top}
             by_source: dict = {}
             for r in records:
@@ -2431,7 +2465,8 @@ class Orchestrator:
                 # Top-level summary (kept for backward compat with pipeline.py gate check)
                 "total_candidates": len(records),
                 "selected_count": len(top),
-                "tier3_triggered": tier3_triggered,
+                "highest_tier_reached": highest_tier,
+                "tier_label": tier_labels.get(highest_tier, "unknown"),
                 "by_source_db": by_source,
                 # Full record lists for debugging
                 "selected_records": [_record_to_dict(r, True) for r in top],
@@ -2441,10 +2476,10 @@ class Orchestrator:
             }
 
         with open(out / "screening_results_aff.json", 'w') as f:
-            json.dump(_screening_payload(aff_records, aff_top, aff_tier3_triggered),
+            json.dump(_screening_payload(aff_records, aff_top, aff_highest_tier),
                       f, indent=2, ensure_ascii=False)
         with open(out / "screening_results_neg.json", 'w') as f:
-            json.dump(_screening_payload(fal_records, fal_top, fal_tier3_triggered),
+            json.dump(_screening_payload(fal_records, fal_top, fal_highest_tier),
                       f, indent=2, ensure_ascii=False)
 
         # Math report

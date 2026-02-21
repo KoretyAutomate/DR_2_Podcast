@@ -2242,7 +2242,28 @@ try:
                 f"- **C** (Comparison): {p.get('comparison', 'N/A')}  \n"
                 f"- **O** (Outcome): {p.get('outcome', 'N/A')}\n"
             )
-            if hasattr(strategy, 'mesh_terms') and strategy.mesh_terms:
+            # Tiered keyword plan (new architecture)
+            if hasattr(strategy, 'tier1'):
+                tier_map = [
+                    ("Tier 1 — Established evidence (exact folk terms)", strategy.tier1),
+                    ("Tier 2 — Supporting evidence (canonical synonyms)", strategy.tier2),
+                    ("Tier 3 — Speculative extrapolation (compound class)", strategy.tier3),
+                ]
+                out.append("\n**Three-Tier Keyword Plan:**\n")
+                for tier_label, tier_kw in tier_map:
+                    if hasattr(tier_kw, 'intervention') and tier_kw.intervention:
+                        out.append(f"\n*{tier_label}*\n")
+                        out.append(f"- Intervention: {', '.join(tier_kw.intervention)}\n")
+                        out.append(f"- Outcome: {', '.join(tier_kw.outcome)}\n")
+                        if tier_kw.population:
+                            out.append(f"- Population: {', '.join(tier_kw.population)}\n")
+                        out.append(f"- *Rationale: {tier_kw.rationale}*\n")
+                if strategy.auditor_approved:
+                    out.append(f"\n✅ *Auditor approved after {strategy.revision_count} revision(s).*\n")
+                else:
+                    out.append(f"\n⚠ *Auditor not approved (proceeded after max revisions). Notes: {strategy.auditor_notes[:200]}*\n")
+            # Legacy: Boolean search strings (old architecture — kept for backward compat)
+            elif hasattr(strategy, 'mesh_terms') and strategy.mesh_terms:
                 mt = strategy.mesh_terms
                 out.append("\n**MeSH Terms:**\n")
                 for cat, terms in mt.items():
@@ -2258,10 +2279,29 @@ try:
 
         # 2.2 Data Collection
         out.append("### 2.2 Data Collection\n")
+        aff_tier = pd.get("aff_highest_tier", 1)
+        fal_tier = pd.get("fal_highest_tier", 1)
+        tier_labels = {1: "Tier 1 (established — exact folk terms)",
+                       2: "Tier 2 (supporting — canonical synonyms)",
+                       3: "Tier 3 (speculative — compound class)"}
         out.append(
             f"- **Databases searched:** PubMed (NCBI E-utilities), Google Scholar (via SearXNG)\n"
             f"- **Search date:** {search_date}\n"
-            f"- **Maximum results per track:** 500 records (Step 2 wide-net)\n"
+            f"- **Search architecture:** Three-tier cascading keyword search. "
+            f"Tier 1 runs first (exact folk terms). If pool < 50 records, Tier 2 runs "
+            f"(canonical synonyms). If still < 50, Tier 3 runs (compound class/mechanism — "
+            f"results require inference and are flagged as speculative extrapolation).\n"
+            f"- **Affirmative track cascade reached:** {tier_labels.get(aff_tier, str(aff_tier))}\n"
+            f"- **Falsification track cascade reached:** {tier_labels.get(fal_tier, str(fal_tier))}\n"
+        )
+        if aff_tier == 3 or fal_tier == 3:
+            out.append(
+                f"- ⚠ **Note:** One or both tracks reached Tier 3. Tier 3 evidence involves the "
+                f"active compound class (e.g., caffeine from any source, not coffee specifically). "
+                f"These results require an inference step to apply to the original substance and "
+                f"are presented as speculative extrapolation in this review.\n"
+            )
+        out.append(
             f"- **Affirmative track records identified:** {aff_wide}\n"
             f"- **Falsification track records identified:** {fal_wide}\n"
             f"- **Total records identified:** {total_wide}\n"
