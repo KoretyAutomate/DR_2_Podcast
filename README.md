@@ -6,30 +6,30 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
 
 ```
                        ┌─────────────────────────────┐
-                       │     Topic + Language Input   │
-                       │   (Web UI or CLI)            │
+                       │     Topic + Language Input  │
+                       │   (Web UI or CLI)           │
                        └──────────────┬──────────────┘
                                       ▼
                   ┌──────────────────────────────────────┐
-                  │  Phase 0 — Research Framing (Crew 1)  │
+                  │  Phase 0 — Research Framing (Crew 1) │
                   └──────────────┬───────────────────────┘
                                  ▼
-       ┌──────────────────────────────────────────────────────────────┐
-       │  Phase 1 — Clinical Research Pipeline                         │
-       │                                                               │
-       │  ┌─ AFFIRMATIVE (a) ──────────┐ ┌─ FALSIFICATION (b) ──────┐ │
-       │  │ 1a: Search strategy (Smart) │ │ 1b: Search strategy       │ │
-       │  │ 2a: Wide net — 500 results  │ │ 2b: Wide net — 500        │ │
-       │  │ 3a: Screen → top 20 (Smart) │ │ 3b: Screen → top 20       │ │
+       ┌──────────────────────────────────────────────────────────────────┐
+       │  Phase 1 — Clinical Research Pipeline                            │
+       │                                                                  │
+       │  ┌─ AFFIRMATIVE (a) ────────────┐ ┌─ FALSIFICATION (b) ────────┐ │
+       │  │ 1a: Search strategy (Smart)  │ │ 1b: Search strategy        │ │
+       │  │ 2a: Wide net — 500 results   │ │ 2b: Wide net — 500         │ │
+       │  │ 3a: Screen → top 20 (Smart)  │ │ 3b: Screen → top 20        │ │
        │  │ 4a: Full-text extraction     │ │ 4b: Full-text extraction   │ │
        │  │     (PMC/Unpaywall + Fast)   │ │     (PMC/Unpaywall + Fast) │ │
        │  │ 5a: Affirmative case (Smart) │ │ 5b: Falsification case     │ │
        │  └──────────────────────────────┘ └────────────────────────────┘ │
        │          (both tracks run in parallel via asyncio.gather)        │
-       │                              ▼                                  │
-       │  Step 6: Deterministic math — ARR/NNT (Python, no LLM)         │
-       │  Step 7: GRADE synthesis — Auditor (Smart)                      │
-       └──────────────┬─────────────────────────────────────────────────┘
+       │                              ▼                                   │
+       │  Step 6: Deterministic math — ARR/NNT (Python, no LLM)           │
+       │  Step 7: GRADE synthesis — Auditor (Smart)                       │
+       └──────────────┬───────────────────────────────────────────────────┘
                       ▼
      ┌───────────────────────────────────────────────────────────────┐
      │  Phase 2 — Source Validation (batch HEAD requests)            │
@@ -37,21 +37,21 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
      └───────────────────────┬───────────────────────────────────────┘
                              ▼
      ┌───────────────────────────────────────────────────────────────┐
-     │  Phase 3 — Report Translation (Crew 2, conditional)          │
+     │  Phase 3 — Report Translation (Crew 2, conditional)           │
      └───────────────────────┬───────────────────────────────────────┘
                              ▼
      ┌───────────────────────────────────────────────────────────────┐
      │ Crew 3 — Podcast Production                                   │
      │                                                               │
-     │  Phase 4: Show Outline & Citations (Producer)                │
-     │  Phase 5: Script Writing (Producer)                          │
-     │  Phase 6: Script Polish (Editor)                             │
-     │  Phase 7: Accuracy Audit (Auditor) [advisory]               │
+     │  Phase 4: Show Outline & Citations (Producer)                 │
+     │  Phase 5: Script Writing (Producer)                           │
+     │  Phase 6: Script Polish (Editor)                              │
+     │  Phase 7: Accuracy Audit (Auditor) [advisory]                 │
      └───────────────────────┬───────────────────────────────────────┘
                              ▼
               ┌─────────────────────────────────────────────┐
-              │  Phase 8 — Audio Production                  │
-              │  Kokoro TTS, two voices, 24kHz WAV + BGM     │
+              │  Phase 8 — Audio Production                 │
+              │  Kokoro TTS, two voices, 24kHz WAV + BGM    │
               └─────────────────────────────────────────────┘
 ```
 
