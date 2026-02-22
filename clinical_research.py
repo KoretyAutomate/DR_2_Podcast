@@ -57,6 +57,8 @@ MAX_RESEARCH_ITERATIONS = 3
 SCRAPING_TIMEOUT = 20.0
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 TIER_CASCADE_THRESHOLD = 50   # Tier 3 ultrawide fires if T1+T2 candidates < this
+MIN_TIER3_STUDIES = 3          # Minimum Tier 3 (compound-class) studies if available
+MAX_TIER3_RATIO = 0.5          # Tier 3 never exceeds 50% of max_select unless Tier 1+2 insufficient
 
 JUNK_DOMAINS = {
     "dictionary.com", "merriam-webster.com", "thefreedictionary.com",
@@ -1194,26 +1196,31 @@ class ResearchAgent:
             "  Example for coffee: [\"coffee\", \"coffee drinking\", \"coffee consumption\"]\n"
             "  Do NOT include caffeine — caffeine also comes from tea, energy drinks, etc.\n"
             "  Outcome: direct primary outcome labels as they appear in clinical trial titles.\n"
-            "  Example: [\"work productivity\", \"job performance\", \"occupational performance\"]\n\n"
-            "TIER 2 — 'Supporting evidence':\n"
-            "  Intervention: canonical scientific synonyms still anchored to the SAME substance.\n"
-            "  Example for coffee: [\"caffeinated coffee\", \"coffee beverage\", \"espresso\", \"filtered coffee\"]\n"
-            "  NOT caffeine (wrong tier) — caffeine is the compound class, not coffee specifically.\n"
-            "  Outcome: proxies one step removed from the primary outcome.\n"
-            "  Example: [\"cognitive performance\", \"alertness\", \"executive function\", \"mental performance\"]\n\n"
-            "TIER 3 — 'Speculative extrapolation':\n"
+            "  Example: [\"work productivity\", \"job performance\", \"occupational performance\"]\n"
+            "  Population: specific population relevant to the research question.\n"
+            "  Example: [\"working adults\", \"employees\"]\n\n"
+            "TIER 2 — 'Supporting evidence' (broadened scope, same substance):\n"
+            "  Intervention: <<INHERITED FROM TIER 1 — do not generate, will be copied automatically>>\n"
+            "  Outcome: SUPERSET of Tier 1 outcomes. Include ALL Tier 1 outcome terms PLUS broader\n"
+            "    proxy outcomes and related clinical endpoints. Must be strictly broader, never narrower.\n"
+            "  Example: [\"work productivity\", \"job performance\", \"cognitive performance\", "
+            "\"alertness\", \"executive function\", \"mental performance\"]\n"
+            "  Population: BROADER than Tier 1. Widen to more general populations.\n"
+            "  Example: [\"adults\", \"healthy adults\"]\n\n"
+            "TIER 3 — 'Speculative extrapolation' (compound class):\n"
             "  Intervention: active compound class / mechanism (source ambiguity accepted).\n"
             "  Example: [\"caffeine\", \"methylxanthine\", \"adenosine antagonist\", \"caffeinated beverage\"]\n"
             "  These results require inference (e.g., caffeine from any source → coffee effect) and "
             "will be flagged as speculative in the output.\n"
-            "  Outcome: broad mechanistic endpoints.\n"
-            "  Example: [\"attention\", \"reaction time\", \"mental fatigue\", \"working memory\", \"task performance\"]\n\n"
+            "  Outcome: <<INHERITED FROM TIER 2 — do not generate, will be copied automatically>>\n"
+            "  Population: <<INHERITED FROM TIER 2 — do not generate, will be copied automatically>>\n\n"
             "RULES:\n"
             "- Keyword lists must contain plain phrases only — no AND, OR, NOT, [MeSH], [tiab], etc.\n"
             "- Each term should be 1-4 words max.\n"
-            "- Tier 1 and 2 intervention lists must NOT contain terms that would match other substances.\n"
+            "- Tier 1 intervention must NOT contain compound-class terms.\n"
+            "- Tier 2 outcome MUST include ALL Tier 1 outcome terms plus additional broader terms.\n"
             "- Also produce a PICO summary.\n\n"
-            "Return ONLY valid JSON:\n"
+            "Return ONLY valid JSON (note: Tier 2 has no intervention, Tier 3 has no outcome/population):\n"
             "{\n"
             '  "pico": {"population": "...", "intervention": "...", "comparison": "...", "outcome": "..."},\n'
             '  "tier1": {\n'
@@ -1222,8 +1229,8 @@ class ResearchAgent:
             '    "population": ["term1", "term2"],\n'
             '    "rationale": "Why these exact terms belong at Tier 1"\n'
             '  },\n'
-            '  "tier2": { ... same structure ... },\n'
-            '  "tier3": { ... same structure ... }\n'
+            '  "tier2": {"outcome": ["all tier1 outcomes + broader terms"], "population": ["broader"], "rationale": "..."},\n'
+            '  "tier3": {"intervention": ["compound class terms"], "rationale": "..."}\n'
             "}"
             f"{adversarial_note}{framing_note}{decomp_note}{revision_note}"
         )
@@ -1249,9 +1256,19 @@ class ResearchAgent:
                 tier3=parse_tier(data.get("tier3", {})),
                 role=role,
             )
+
+            # --- Deterministic tier inheritance ---
+            # Tier 2 inherits intervention from Tier 1
+            plan.tier2.intervention = list(plan.tier1.intervention)
+            # Tier 3 inherits outcome and population from Tier 2
+            plan.tier3.outcome = list(plan.tier2.outcome)
+            plan.tier3.population = list(plan.tier2.population)
+
             log(f"    [Step 1] Tier 1 intervention: {plan.tier1.intervention[:3]}")
-            log(f"    [Step 1] Tier 2 intervention: {plan.tier2.intervention[:3]}")
+            log(f"    [Step 1] Tier 2 intervention (inherited T1): {plan.tier2.intervention[:3]}")
             log(f"    [Step 1] Tier 3 intervention: {plan.tier3.intervention[:3]}")
+            log(f"    [Step 1] Tier 2 outcome (superset of T1): {plan.tier2.outcome[:5]}")
+            log(f"    [Step 1] Tier 3 outcome (inherited T2): {plan.tier3.outcome[:5]}")
             return plan
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning(f"Tier keyword generation parse failed: {e} — using fallback")
@@ -1273,21 +1290,26 @@ class ResearchAgent:
 
         system = (
             "You are The Auditor — a systematic review methodologist.\n\n"
-            "Review the three-tier keyword plan below for this research topic.\n\n"
+            "Review the three-tier keyword plan below for this research topic.\n"
+            "NOTE: Tier 2 intervention is inherited from Tier 1, and Tier 3 outcome/population "
+            "are inherited from Tier 2 — these are enforced by code. Focus your review on "
+            "the LLM-generated fields.\n\n"
             "For each tier, check ALL of the following:\n\n"
-            "1. INTERVENTION ANCHOR — Tier 1 and 2 must NOT include terms that match other substances "
-            "or intervention classes. Example: for a coffee study, 'caffeine' must be in Tier 3 only "
-            "because caffeine also comes from tea, energy drinks, pills, etc. "
-            "Tier 3 may include compound class terms but must justify why.\n\n"
-            "2. OUTCOME SPECIFICITY — outcome terms must be clearly related to the PICO outcome. "
-            "Terms so generic they match any clinical domain (e.g., 'health', 'outcomes', 'function') "
-            "are too broad.\n\n"
-            "3. TIER BOUNDARY — Tier 2 intervention terms must be scientifically synonymous with "
-            "Tier 1's specific substance (not a broader class). "
-            "Tier 3 intervention terms must be one mechanistic step away.\n\n"
+            "1. INTERVENTION ANCHOR — Tier 1 intervention must NOT include compound-class terms.\n"
+            "   Tier 2 intervention is inherited from Tier 1 (enforced by code, no need to check).\n"
+            "   Tier 3 intervention must be compound class / mechanism, one step removed.\n\n"
+            "2. OUTCOME BROADENING — Tier 2 outcome terms MUST be a strict superset of Tier 1.\n"
+            "   They must include ALL Tier 1 outcome terms plus additional broader proxies.\n"
+            "   Tier 2 must NEVER be narrower than Tier 1.\n"
+            "   Tier 3 outcome is inherited from Tier 2 (enforced by code, no need to check).\n\n"
+            "3. POPULATION BROADENING — Tier 2 population must be BROADER than Tier 1.\n"
+            "   If Tier 1 has 'working adults', Tier 2 should have 'adults' or 'healthy adults'.\n"
+            "   Tier 3 population is inherited from Tier 2 (enforced by code, no need to check).\n\n"
             "4. NO BOOLEAN SYNTAX — keyword lists must contain plain phrases only "
             "(no AND, OR, NOT, [MeSH], [tiab], parentheses, or other operators).\n\n"
-            "5. COVERAGE — Each tier should have at least 2 intervention terms and 2 outcome terms.\n\n"
+            "5. COVERAGE — Tier 1 needs >=2 intervention + >=2 outcome terms.\n"
+            "   Tier 2 needs >=2 outcome terms (more than Tier 1) + >=2 population terms.\n"
+            "   Tier 3 needs >=2 intervention terms.\n\n"
             "Return ONLY valid JSON:\n"
             '{"approved": true/false, "tier1_ok": true/false, "tier2_ok": true/false, '
             '"tier3_ok": true/false, "notes": "Specific actionable feedback — name which tier '
@@ -1302,15 +1324,15 @@ class ResearchAgent:
             f"  Outcome: {plan.tier1.outcome}\n"
             f"  Population: {plan.tier1.population}\n"
             f"  Rationale: {plan.tier1.rationale}\n\n"
-            f"Tier 2 (Supporting evidence):\n"
-            f"  Intervention: {plan.tier2.intervention}\n"
+            f"Tier 2 (Supporting evidence — intervention inherited from Tier 1):\n"
+            f"  Intervention: {plan.tier2.intervention}  [INHERITED from Tier 1]\n"
             f"  Outcome: {plan.tier2.outcome}\n"
             f"  Population: {plan.tier2.population}\n"
             f"  Rationale: {plan.tier2.rationale}\n\n"
-            f"Tier 3 (Speculative extrapolation):\n"
+            f"Tier 3 (Speculative extrapolation — outcome/population inherited from Tier 2):\n"
             f"  Intervention: {plan.tier3.intervention}\n"
-            f"  Outcome: {plan.tier3.outcome}\n"
-            f"  Population: {plan.tier3.population}\n"
+            f"  Outcome: {plan.tier3.outcome}  [INHERITED from Tier 2]\n"
+            f"  Population: {plan.tier3.population}  [INHERITED from Tier 2]\n"
             f"  Rationale: {plan.tier3.rationale}"
         )
 
@@ -1544,36 +1566,70 @@ class ResearchAgent:
         self, records: List[WideNetRecord], strategy: TieredSearchPlan,
         max_select: int = 20, topic: str = "", log=print
     ) -> List[WideNetRecord]:
-        """Step 3: Smart model screens wide net records → top 20."""
+        """Step 3: Smart model screens wide net records → top 20 with tier-aware priority."""
         if not records:
             log(f"    [Step 3] No records to screen")
             return []
 
-        log(f"    [Step 3] Screening {len(records)} records → top {max_select}...")
-
-        # Build compact representation for smart model
         pico_str = json.dumps(strategy.pico)
 
-        # Chunk if needed (>28K tokens ≈ ~112K chars, ~200 chars per record)
-        chunk_size = 200
-        if len(records) > chunk_size:
-            # Process in chunks, then merge
-            all_selected = []
-            for chunk_start in range(0, len(records), chunk_size):
-                chunk = records[chunk_start:chunk_start + chunk_size]
-                selected = await self._screen_chunk(chunk, chunk_start, pico_str, max_select, topic, log)
-                all_selected.extend(selected)
+        # Group records by tier
+        tier_groups: Dict[int, List[WideNetRecord]] = {1: [], 2: [], 3: []}
+        for r in records:
+            tier = r.research_tier if r.research_tier in (1, 2, 3) else 3
+            tier_groups[tier].append(r)
 
-            if len(all_selected) > max_select:
-                # Re-rank merged selections
-                all_selected = await self._screen_chunk(all_selected, 0, pico_str, max_select, topic, log)
-            return all_selected
+        log(f"    [Step 3] Pool by tier: T1={len(tier_groups[1])}, T2={len(tier_groups[2])}, T3={len(tier_groups[3])}")
+
+        # Screen each tier independently with tier-appropriate intervention
+        screened: Dict[int, List[WideNetRecord]] = {}
+        for tier_num in [1, 2, 3]:
+            tier_records = tier_groups[tier_num]
+            if not tier_records:
+                screened[tier_num] = []
+                continue
+            # Use tier-appropriate intervention for relevance gate
+            if tier_num <= 2:
+                tier_intervention = ", ".join(strategy.tier1.intervention)
+            else:
+                tier_intervention = ", ".join(strategy.tier3.intervention)
+            screened[tier_num] = await self._screen_chunk(
+                tier_records, 0, pico_str, max_select, topic, log,
+                intervention_override=tier_intervention,
+            )
+            log(f"    [Step 3] Tier {tier_num}: {len(screened[tier_num])} passed screening")
+
+        # Priority fill: Tier 1 → Tier 2 → Tier 3 (with cap)
+        t3_available = len(screened[3])
+        min_t3 = min(MIN_TIER3_STUDIES, t3_available)
+        tier3_cap = int(max_select * MAX_TIER3_RATIO)
+        tier12_budget = max_select - min_t3
+
+        selected: List[WideNetRecord] = list(screened[1][:tier12_budget])
+        remaining12 = tier12_budget - len(selected)
+        if remaining12 > 0:
+            selected.extend(screened[2][:remaining12])
+
+        remaining = max_select - len(selected)
+        if len(selected) >= tier12_budget:
+            tier3_slots = min_t3
+        elif len(selected) + tier3_cap >= max_select:
+            tier3_slots = min(remaining, tier3_cap)
         else:
-            return await self._screen_chunk(records, 0, pico_str, max_select, topic, log)
+            tier3_slots = remaining
+
+        selected.extend(screened[3][:tier3_slots])
+
+        log(f"    [Step 3] Final selection: T1={sum(1 for s in selected if s.research_tier==1)}, "
+            f"T2={sum(1 for s in selected if s.research_tier==2)}, "
+            f"T3={sum(1 for s in selected if s.research_tier==3)}, total={len(selected)}")
+
+        return selected
 
     async def _screen_chunk(
         self, records: List[WideNetRecord], offset: int,
-        pico_str: str, max_select: int, topic: str, log
+        pico_str: str, max_select: int, topic: str, log,
+        intervention_override: str = ""
     ) -> List[WideNetRecord]:
         """Screen a chunk of records with the smart model."""
         compact = []
@@ -1589,11 +1645,14 @@ class ResearchAgent:
             })
 
         # Extract intervention text for relevance gate
-        try:
-            pico_data = json.loads(pico_str)
-            intervention_text = pico_data.get("intervention", "the PICO intervention")
-        except (json.JSONDecodeError, AttributeError):
-            intervention_text = "the PICO intervention"
+        if intervention_override:
+            intervention_text = intervention_override
+        else:
+            try:
+                pico_data = json.loads(pico_str)
+                intervention_text = pico_data.get("intervention", "the PICO intervention")
+            except (json.JSONDecodeError, AttributeError):
+                intervention_text = "the PICO intervention"
 
         topic_line = f"RESEARCH TOPIC: {topic}\n" if topic else ""
 
