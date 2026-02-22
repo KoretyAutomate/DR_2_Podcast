@@ -17,10 +17,14 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
        ┌──────────────────────────────────────────────────────────────────┐
        │  Phase 1 — Clinical Research Pipeline                            │
        │                                                                  │
+       │  Pre-step: Concept Decomposition (Fast Model)                     │
+       │                              ▼                                   │
        │  ┌─ AFFIRMATIVE (a) ────────────┐ ┌─ FALSIFICATION (b) ────────┐ │
-       │  │ 1a: Search strategy (Smart)  │ │ 1b: Search strategy        │ │
-       │  │ 2a: Wide net — 500 results   │ │ 2b: Wide net — 500         │ │
-       │  │ 3a: Screen → top 20 (Smart)  │ │ 3b: Screen → top 20        │ │
+       │  │ 1a: Tiered keywords (Smart)  │ │ 1b: Tiered keywords        │ │
+       │  │     + Auditor gate → loop    │ │     + Auditor gate → loop  │ │
+       │  │ 2a: Cascade search (PubMed)  │ │ 2b: Cascade search         │ │
+       │  │     T1→T2→T3 + Scholar       │ │     T1→T2→T3 + Scholar     │ │
+       │  │ 3a: Tier-aware screen → 20   │ │ 3b: Tier-aware screen → 20 │ │
        │  │ 4a: Full-text extraction     │ │ 4b: Full-text extraction   │ │
        │  │     (PMC/Unpaywall + Fast)   │ │     (PMC/Unpaywall + Fast) │ │
        │  │ 5a: Affirmative case (Smart) │ │ 5b: Falsification case     │ │
@@ -106,16 +110,39 @@ The deep research pre-scan implements a 7-step systematic review methodology mod
 
 ### Steps 1–5 — Parallel Tracks (a = Affirmative, b = Falsification)
 
-Steps 1–5 run identically for both tracks via `asyncio.gather()`. The only differences are the search terms (b adds adverse-effects, null-result, and bias terms) and the final case mandate (a argues FOR, b argues AGAINST).
+Steps 1–5 run identically for both tracks via `asyncio.gather()`. The only differences are the search terms (b targets adverse-effects, null-results, harms, and bias terms) and the final case mandate (a argues FOR, b argues AGAINST).
 
-**Step 1 — Search Strategy Formulation (Smart Model, ~15s)**
-Translates the topic into a structured **PICO framework** (Population, Intervention, Comparison, Outcome), generates **MeSH terms**, and writes **Boolean search strings** for PubMed, Cochrane CENTRAL, and Google Scholar. The falsification track (1b) adds adverse-effects, null-result, toxicity, and funding-bias terms.
+**Pre-step — Concept Decomposition (Fast Model, ~5s)**
+Before Step 1, the fast model extracts canonical scientific terms from the folk-language topic (e.g., "coffee" → canonical terms: caffeine, coffea; related concepts: adenosine, methylxanthine). These terms are fed into Step 1 to help the scientist generate accurate tier keywords.
 
-**Step 2 — Wide Net Search (PubMed + Fast Model, ~90s)**
-Queries PubMed with three Boolean variants (primary, broad, Cochrane subset `cochrane[sb]`) and Google Scholar, collecting up to 500 results. **`PublicationType` in the PubMed XML is used directly** to classify study type (RCT, meta-analysis, systematic review, etc.) without LLM calls. The fast model only processes the ~50% of records where type cannot be determined from XML, extracting `sample_size` and `primary_objective` from the abstract — reducing fast-model calls by ~50%.
+**Step 1 — Tiered Keyword Generation + Auditor Gate (Smart Model, ~15s)**
+A Scientist agent (Smart) generates a **3-tier plain keyword plan** — no Boolean operators, no MeSH notation — just simple English phrases organized into three escalating scope tiers:
 
-**Step 3 — Screening (Smart Model, ~20s)**
-The smart model scans all records and selects the **top 20 most rigorous human clinical studies**. Inclusion: RCTs, meta-analyses, systematic reviews, large cohort studies (n ≥ 30, prefer n ≥ 100). Exclusion: animal models, in vitro, case reports, conference abstracts, retractions. Context-window overflow (>28K tokens) is handled by chunked screening with a merge step.
+| Tier | Label | Intervention | Outcome | Population |
+|------|-------|-------------|---------|-----------|
+| **1** | Established evidence | Exact folk/common names (e.g., "coffee") | Direct primary outcome labels | Specific population |
+| **2** | Supporting evidence | *Inherited from Tier 1* | Superset of Tier 1 + broader proxies | Broader than Tier 1 |
+| **3** | Speculative extrapolation | Compound class / mechanism (e.g., "caffeine") | *Inherited from Tier 2* | *Inherited from Tier 2* |
+
+An **Auditor agent** (Smart) then reviews the plan against 5 criteria (intervention anchor, outcome broadening, population broadening, no Boolean syntax, coverage). If rejected, the scientist revises — up to **2 revision rounds** before proceeding with a warning. `_build_tier_query()` then deterministically builds PubMed Boolean strings from the approved plain keywords — no LLM is involved in query construction.
+
+**Step 2 — Cascading PubMed Search + Scholar (PubMed + Fast Model, ~90s)**
+Searches PubMed using a **cascading tier strategy** — the pipeline stops adding tiers once a sufficient candidate pool is reached:
+
+1. **Tier 1** query (with `Humans[MeSH] AND English[la]` filters) → if pool ≥ 50, stop
+2. **Tier 2** query (with `Humans[MeSH]` filter) → if pool ≥ 50, stop
+3. **Tier 3** query (no filters) → ultrawide net
+
+**Google Scholar** always runs using Tier 1 plain-text keywords (via SearXNG). **`PublicationType` in the PubMed XML is used directly** to classify study type (RCT, meta-analysis, systematic review, etc.) without LLM calls. The fast model only processes records where type cannot be determined from XML, extracting `study_type`, `sample_size`, and `primary_objective` from the abstract. Each record is tagged with its `research_tier` (1, 2, or 3) for downstream priority handling.
+
+**Step 3 — Tier-Aware Screening (Smart Model, ~20s)**
+Each tier is screened **independently** with a **two-stage process**:
+1. **Relevance gate** — does the study directly investigate the tier-appropriate intervention?
+2. **Rigor ranking** — among relevant studies, rank by meta-analyses first, then RCTs (by sample size), then large cohort studies.
+
+Inclusion: RCTs, meta-analyses, systematic reviews, large cohort studies (n ≥ 30, prefer n ≥ 100). Exclusion: animal models, in vitro, case reports, conference abstracts, retractions.
+
+The final top 20 are assembled via **priority fill**: Tier 1 first → Tier 2 fills remaining → Tier 3 capped at 50% of slots (minimum 3 if available). This ensures the evidence base is anchored in directly relevant studies while allowing speculative compound-class evidence to contribute.
 
 **Step 4 — Full-Text Deep Extraction (Fast Model, ~120s)**
 For each of the top 20 studies, the full text is retrieved via a 4-tier fallback:
@@ -383,7 +410,7 @@ The evidence quality banner (`⚠ Evidence Quality Notice`) is prepended when th
 |------------------|---------|
 | `pipeline.py` | Main pipeline — agents, tasks, orchestration, research library tools |
 | `web_ui.py` | FastAPI web UI with live progress tracking, task queue, and upload integration |
-| `clinical_research.py` | 7-step clinical research pipeline (PICO → wide net → screen → extract → cases → math → GRADE) |
+| `clinical_research.py` | 7-step clinical research pipeline (concept decomposition → tiered keywords + auditor gate → cascade search → tier-aware screen → extract → cases → math → GRADE) |
 | `clinical_math.py` | Deterministic ARR/NNT calculator — pure Python, zero LLM involvement |
 | `fulltext_fetcher.py` | 4-tier full-text fetcher: PMC OA → Europe PMC → Unpaywall → publisher scrape |
 | `search_service.py` | SearXNG client, page scraping, content extraction |

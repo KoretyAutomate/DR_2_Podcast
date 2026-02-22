@@ -6,10 +6,11 @@ Optimized for Nvidia DGX Spark (128GB Unified Memory):
 - FAST MODEL (Phi-4 Mini via Ollama) on port 11434: Parallel content summarization
 
 Architecture (7-Step Clinical Pipeline — parallel a/b tracks):
+  Pre-step: Concept Decomposition — Fast Model extracts canonical scientific terms from folk topic
   Steps 1a–5a (Affirmative) run in parallel with Steps 1b–5b (Falsification):
-    Step 1: PICO/MeSH/Boolean search strategy (Smart Model)
-    Step 2: Wide net — up to 500 results (PubMed + Scholar + Fast Model screening)
-    Step 3: Screen → top 20 (Smart Model)
+    Step 1: Tiered keyword generation (Scientist, Smart) → Auditor gate (Smart) → loop until approved
+    Step 2: Cascading PubMed search — Tier1 → if pool<50 add Tier2 → if still<50 add Tier3 + Scholar
+    Step 3: Tier-aware screening → top 20 (Smart Model, priority fill T1→T2→T3)
     Step 4: Deep extraction — full text retrieval + clinical variable extraction (Fast Model)
     Step 5: Case synthesis (Smart Model) — affirmative (5a) or falsification (5b)
   Step 6: Deterministic math — ARR/NNT (Python, no LLM)
@@ -211,14 +212,6 @@ class ResearchReport:
 
 
 # --- New Pipeline Data Models ---
-
-@dataclass
-class SearchStrategy:
-    """PICO framework + MeSH terms + Boolean search strings from Step 1."""
-    pico: Dict[str, str]                    # P, I, C, O
-    mesh_terms: Dict[str, List[str]]        # population/intervention/outcome MeSH
-    search_strings: Dict[str, str]          # pubmed_primary, pubmed_broad, cochrane, scholar
-    role: str                               # "affirmative" or "adversarial"
 
 @dataclass
 class TierKeywords:
