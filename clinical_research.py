@@ -1149,15 +1149,7 @@ class ResearchAgent:
         """Generate three-tier keyword plan as plain lists — NO Boolean/MeSH syntax."""
         log(f"    [Step 1] Generating tiered keywords ({role})...")
 
-        adversarial_note = ""
-        if role == "adversarial":
-            adversarial_note = (
-                "\n\nADVERSARIAL ROLE: Each tier must surface CONTRADICTING or NULL evidence.\n"
-                "Target: null results, adverse effects, dose-response harms, tolerance, "
-                "withdrawal, conflicting findings, methodological concerns.\n"
-                "Same tier-boundary rules apply: Tier 1 = exact substance + exact harm outcome, "
-                "Tier 2 = same substance, broader harm synonyms, Tier 3 = compound class + mechanism harms."
-            )
+        is_adversarial = (role == "adversarial")
 
         framing_note = f"\n\nRESEARCH FRAMING:\n{framing_context[:3000]}" if framing_context else ""
 
@@ -1178,8 +1170,46 @@ class ResearchAgent:
                 "You MUST revise your keywords to address this feedback."
             )
 
+        if is_adversarial:
+            role_header = (
+                "You are a systematic review scientist generating search keyword tiers "
+                "for the FALSIFICATION track of a systematic review.\n\n"
+                "YOUR SOLE GOAL: surface studies that CONTRADICT, NULL, or HARM — "
+                "NOT studies that support the intervention.\n"
+                "Outcome terms MUST target adverse effects, null results, harms, tolerance, "
+                "withdrawal, dose-response toxicity, methodological failures, and funding bias.\n"
+                "Do NOT use benefit-oriented outcome terms (e.g., 'productivity', 'performance', "
+                "'alertness'). Those belong in the affirmative track.\n\n"
+            )
+            outcome_ex_t1 = (
+                "  Outcome: direct HARM or NULL outcome labels as they appear in clinical trial titles.\n"
+                "  Example for coffee: [\"sleep disruption\", \"anxiety\", \"caffeine dependence\", "
+                "\"jitteriness\", \"heart palpitation\"]\n"
+            )
+            outcome_ex_t2 = (
+                "  Outcome: SUPERSET of Tier 1 harm outcomes — include ALL Tier 1 harm terms PLUS "
+                "broader adverse-effect and null-result proxies.\n"
+                "  Example: [\"sleep disruption\", \"anxiety\", \"caffeine dependence\", \"jitteriness\", "
+                "\"heart palpitation\", \"cardiovascular risk\", \"hypertension\", \"null result\", "
+                "\"no significant effect\", \"withdrawal symptom\"]\n"
+            )
+        else:
+            role_header = (
+                "You are a systematic review scientist generating search keyword tiers.\n\n"
+            )
+            outcome_ex_t1 = (
+                "  Outcome: direct primary outcome labels as they appear in clinical trial titles.\n"
+                "  Example: [\"work productivity\", \"job performance\", \"occupational performance\"]\n"
+            )
+            outcome_ex_t2 = (
+                "  Outcome: SUPERSET of Tier 1 outcomes. Include ALL Tier 1 outcome terms PLUS broader\n"
+                "    proxy outcomes and related clinical endpoints. Must be strictly broader, never narrower.\n"
+                "  Example: [\"work productivity\", \"job performance\", \"cognitive performance\", "
+                "\"alertness\", \"executive function\", \"mental performance\"]\n"
+            )
+
         system = (
-            "You are a systematic review scientist generating search keyword tiers.\n\n"
+            f"{role_header}"
             "TASK: Produce three keyword tiers for a cascading PubMed search.\n"
             "Each tier is a set of PLAIN KEYWORD LISTS — no Boolean operators, no MeSH notation, "
             "no brackets, no field tags. Just simple English phrases.\n\n"
@@ -1188,16 +1218,12 @@ class ResearchAgent:
             "  Intervention: exact folk/common names for *this specific substance* only.\n"
             "  Example for coffee: [\"coffee\", \"coffee drinking\", \"coffee consumption\"]\n"
             "  Do NOT include caffeine — caffeine also comes from tea, energy drinks, etc.\n"
-            "  Outcome: direct primary outcome labels as they appear in clinical trial titles.\n"
-            "  Example: [\"work productivity\", \"job performance\", \"occupational performance\"]\n"
+            f"{outcome_ex_t1}"
             "  Population: specific population relevant to the research question.\n"
             "  Example: [\"working adults\", \"employees\"]\n\n"
             "TIER 2 — 'Supporting evidence' (broadened scope, same substance):\n"
             "  Intervention: <<INHERITED FROM TIER 1 — do not generate, will be copied automatically>>\n"
-            "  Outcome: SUPERSET of Tier 1 outcomes. Include ALL Tier 1 outcome terms PLUS broader\n"
-            "    proxy outcomes and related clinical endpoints. Must be strictly broader, never narrower.\n"
-            "  Example: [\"work productivity\", \"job performance\", \"cognitive performance\", "
-            "\"alertness\", \"executive function\", \"mental performance\"]\n"
+            f"{outcome_ex_t2}"
             "  Population: BROADER than Tier 1. Widen to more general populations.\n"
             "  Example: [\"adults\", \"healthy adults\"]\n\n"
             "TIER 3 — 'Speculative extrapolation' (compound class):\n"
@@ -1212,7 +1238,8 @@ class ResearchAgent:
             "- Each term should be 1-4 words max.\n"
             "- Tier 1 intervention must NOT contain compound-class terms.\n"
             "- Tier 2 outcome MUST include ALL Tier 1 outcome terms plus additional broader terms.\n"
-            "- Also produce a PICO summary.\n\n"
+            + ("- Outcome terms MUST be harm/null-focused — NOT benefit-oriented.\n" if is_adversarial else "")
+            + "- Also produce a PICO summary.\n\n"
             "Return ONLY valid JSON (note: Tier 2 has no intervention, Tier 3 has no outcome/population):\n"
             "{\n"
             '  "pico": {"population": "...", "intervention": "...", "comparison": "...", "outcome": "..."},\n'
@@ -1225,7 +1252,7 @@ class ResearchAgent:
             '  "tier2": {"outcome": ["all tier1 outcomes + broader terms"], "population": ["broader"], "rationale": "..."},\n'
             '  "tier3": {"intervention": ["compound class terms"], "rationale": "..."}\n'
             "}"
-            f"{adversarial_note}{framing_note}{decomp_note}{revision_note}"
+            f"{framing_note}{decomp_note}{revision_note}"
         )
 
         user = f"Research topic: {topic}"
@@ -1279,7 +1306,7 @@ class ResearchAgent:
         self, plan: TieredSearchPlan, topic: str, log=print
     ) -> tuple:
         """Auditor reviews all three tiers in one call. Returns (approved: bool, notes: str)."""
-        log(f"    [Auditor] Reviewing tier keyword plan...")
+        log(f"    [Auditor] Reviewing tier keyword plan ({plan.role})...")
 
         system = (
             "You are The Auditor — a systematic review methodologist.\n\n"
@@ -1309,8 +1336,17 @@ class ResearchAgent:
             'failed and exactly what to change. Empty string if approved."}'
         )
 
+        adversarial_context = (
+            "\n⚠ ADVERSARIAL TRACK: Outcome terms MUST be harm/null-focused "
+            "(e.g., 'sleep disruption', 'anxiety', 'null result', 'cardiovascular risk'). "
+            "Benefit-oriented outcomes (e.g., 'productivity', 'performance') are WRONG for this track. "
+            "Check that outcomes target adverse effects and contradicting evidence.\n"
+            if plan.role == "adversarial" else ""
+        )
+
         user = (
-            f"Research topic: {topic}\n\n"
+            f"Research topic: {topic}\n"
+            f"Track role: {plan.role.upper()}{adversarial_context}\n"
             f"PICO: {json.dumps(plan.pico)}\n\n"
             f"Tier 1 (Established evidence):\n"
             f"  Intervention: {plan.tier1.intervention}\n"
