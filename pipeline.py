@@ -1272,6 +1272,11 @@ if core_target:
 if channel_mission:
     _audience_context += f"CHANNEL MISSION: {channel_mission}\n"
 
+# Pre-built block for Listener Value Proposition section (avoids backslash in f-string expr)
+_audience_context_block = (
+    _audience_context + "Tailor the value proposition to this specific audience.\n"
+) if _audience_context else ""
+
 # Content framework hint based on channel mission
 _framework_hint = ""
 if channel_mission and any(kw in channel_mission.lower() for kw in ("actionable", "practical", "protocol", "how-to", "how to")):
@@ -1287,7 +1292,7 @@ blueprint_task = Task(
         f"## 1. Episode Thesis\n"
         f"One sentence: what this episode will prove or explore.\n\n"
         f"## 2. Listener Value Proposition\n"
-        f"{_audience_context + 'Tailor the value proposition to this specific audience.\n' if _audience_context else ''}"
+        f"{_audience_context_block}"
         f"- What will the listener GAIN from this episode?\n"
         f"- Why should they listen to THIS episode instead of reading an article?\n"
         f"- What will they be able to DO differently after listening?\n\n"
