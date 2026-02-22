@@ -293,7 +293,9 @@ def worker_thread():
                     task_data["podcast_hosts"],
                     task_data.get("channel_intro", ""),
                     task_data["upload_buzzsprout"],
-                    task_data["upload_youtube"]
+                    task_data["upload_youtube"],
+                    task_data.get("core_target", ""),
+                    task_data.get("channel_mission", ""),
                 )
             
         except Exception as e:
@@ -323,6 +325,8 @@ class PodcastRequest(BaseModel):
     podcast_length: str = "long"
     podcast_hosts: str = "random"
     channel_intro: str = ""
+    core_target: str = ""
+    channel_mission: str = ""
     upload_to_buzzsprout: bool = False
     upload_to_youtube: bool = False
     buzzsprout_api_key: str = ""
@@ -803,7 +807,7 @@ def home(username: str = Depends(verify_credentials)):
             <div class="glass-card">
                 <h2>Create New Episode</h2>
                 <form id="podcastForm">
-                    <label for="topic">Scientific Topic</label>
+                    <label for="topic">Research Question</label>
                     <input
                         type="text"
                         id="topic"
@@ -850,13 +854,46 @@ def home(username: str = Depends(verify_credentials)):
                     </div>
 
                     <div style="margin-top: 20px;">
-                        <label for="channelIntro">Channel Intro <span style="color: var(--text-secondary); font-size: 12px;">(spoken every episode, optional)</span></label>
+                        <label style="margin-bottom: 12px;">Channel Identity <span style="color: var(--text-secondary); font-size: 12px;">(used to auto-generate the Channel Intro)</span></label>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 8px;">
+                            <div>
+                                <label for="channelName" style="font-size: 13px; font-weight: 500;">Channel Name</label>
+                                <input
+                                    type="text"
+                                    id="channelName"
+                                    placeholder="e.g., Deep Research Podcast"
+                                />
+                            </div>
+                            <div>
+                                <label for="coreTarget" style="font-size: 13px; font-weight: 500;">Core Target</label>
+                                <input
+                                    type="text"
+                                    id="coreTarget"
+                                    placeholder="e.g., science enthusiasts seeking actionable insights"
+                                />
+                            </div>
+                        </div>
+                        <div style="margin-top: 12px;">
+                            <label for="channelMission" style="font-size: 13px; font-weight: 500;">Channel Mission</label>
+                            <input
+                                type="text"
+                                id="channelMission"
+                                placeholder="e.g., we turn cutting-edge science into everyday wisdom"
+                            />
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 20px;">
+                        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 6px;">
+                            <label for="channelIntro" style="margin: 0;">Channel Intro <span style="color: var(--text-secondary); font-size: 12px;">(spoken every episode, editable)</span></label>
+                            <button type="button" id="regenIntroBtn" style="font-size: 11px; padding: 2px 10px; background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.4); border-radius: 4px; color: var(--accent); cursor: pointer;">↺ Regenerate</button>
+                        </div>
                         <textarea
                             id="channelIntro"
                             name="channel_intro"
-                            rows="2"
-                            placeholder="e.g., Welcome to Deep Research Podcast, where we turn cutting-edge science into everyday wisdom. I'm Kaz, and with me as always is Erika."
-                            style="resize: vertical; min-height: 60px;"
+                            rows="5"
+                            placeholder="Fill in Channel Name, Core Target, and Channel Mission above to auto-generate — or type your intro here."
+                            style="resize: vertical; min-height: 110px;"
                         ></textarea>
                     </div>
 
@@ -1038,6 +1075,51 @@ def home(username: str = Depends(verify_credentials)):
                 document.getElementById('youtubeFields').style.display = this.checked ? 'block' : 'none';
             }});
 
+            // --- Channel Intro auto-population ---
+            function generateChannelIntro() {{
+                const name    = (document.getElementById('channelName').value || '').trim();
+                const target  = (document.getElementById('coreTarget').value || '').trim();
+                const mission = (document.getElementById('channelMission').value || '').trim();
+                const lang    = document.getElementById('language').value;
+                if (!name && !target && !mission) return '';
+                if (lang === 'ja') {{
+                    let intro = '';
+                    if (name)    intro += name + 'へようこそ。';
+                    if (mission) intro += mission + '。';
+                    if (target)  intro += target + 'のための番組です。';
+                    return intro;
+                }} else {{
+                    let parts = [];
+                    if (name)    parts.push('Welcome to ' + name);
+                    if (mission) parts.push('where ' + mission);
+                    let intro = parts.join(', ');
+                    if (intro) intro += '.';
+                    if (target)  intro += ' Made for ' + target + '.';
+                    return intro.trim();
+                }}
+            }}
+
+            function tryAutoPopulateIntro() {{
+                const el = document.getElementById('channelIntro');
+                if (el.dataset.userEdited === 'true') return;
+                const generated = generateChannelIntro();
+                if (generated) el.value = generated;
+            }}
+
+            ['channelName', 'coreTarget', 'channelMission'].forEach(function(id) {{
+                document.getElementById(id).addEventListener('input', tryAutoPopulateIntro);
+            }});
+            document.getElementById('language').addEventListener('change', tryAutoPopulateIntro);
+            document.getElementById('channelIntro').addEventListener('input', function() {{
+                this.dataset.userEdited = 'true';
+            }});
+            document.getElementById('regenIntroBtn').addEventListener('click', function() {{
+                const el = document.getElementById('channelIntro');
+                el.dataset.userEdited = 'false';
+                const generated = generateChannelIntro();
+                if (generated) el.value = generated;
+            }});
+
             // YouTube OAuth preflight
             document.getElementById('ytAuthBtn').addEventListener('click', async function() {{
                 this.textContent = 'Authorizing...';
@@ -1166,6 +1248,8 @@ def home(username: str = Depends(verify_credentials)):
                     podcast_length: document.getElementById('length').value,
                     podcast_hosts: document.getElementById('hosts').value,
                     channel_intro: document.getElementById('channelIntro').value || '',
+                    core_target: document.getElementById('coreTarget').value || '',
+                    channel_mission: document.getElementById('channelMission').value || '',
                     leverage_past: document.getElementById('leveragePast').checked,
                     upload_to_buzzsprout: document.getElementById('uploadBuzzsprout').checked,
                     upload_to_youtube: document.getElementById('uploadYoutube').checked,
@@ -1775,6 +1859,8 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
         "podcast_length": request.podcast_length,
         "podcast_hosts": request.podcast_hosts,
         "channel_intro": request.channel_intro,
+        "core_target": request.core_target,
+        "channel_mission": request.channel_mission,
         "status": "queued", # Start as queued
         "progress": 0,
         "phase": "Queued",
@@ -1870,7 +1956,8 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
                            accessibility_level: str = "simple",
                            podcast_length: str = "long", podcast_hosts: str = "random",
                            channel_intro: str = "",
-                           upload_buzzsprout: bool = False, upload_youtube: bool = False):
+                           upload_buzzsprout: bool = False, upload_youtube: bool = False,
+                           core_target: str = "", channel_mission: str = ""):
     """Run pipeline.py in background with real-time phase tracking."""
     try:
         tasks_db[task_id]["status"] = "running"
@@ -1887,6 +1974,10 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
         env["PODCAST_HOSTS"] = podcast_hosts
         if channel_intro:
             env["PODCAST_CHANNEL_INTRO"] = channel_intro
+        if core_target:
+            env["PODCAST_CORE_TARGET"] = core_target
+        if channel_mission:
+            env["PODCAST_CHANNEL_MISSION"] = channel_mission
 
         proc = subprocess.Popen(
             [str(PODCAST_ENV_PYTHON), "pipeline.py", "--topic", topic, "--language", language],

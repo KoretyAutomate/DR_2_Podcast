@@ -510,6 +510,8 @@ duration_label       = f"{length_mode.capitalize()} ({_target_min} min)"
 
 # --- CHANNEL INTRO (fixed text, spoken every episode) ---
 channel_intro = os.getenv("PODCAST_CHANNEL_INTRO", "").strip()
+core_target = os.getenv("PODCAST_CORE_TARGET", "").strip()
+channel_mission = os.getenv("PODCAST_CHANNEL_MISSION", "").strip()
 
 # --- ACCESSIBILITY LEVEL CONFIG ---
 # Controls how aggressively scientific terms are simplified.
@@ -1098,12 +1100,12 @@ script_task = Task(
         f"     Translate science into daily life.\n"
         f"     - Specific, practical recommendations\n"
         f"     - 'In practical terms, this means...'\n"
-        f"     - Who should pay attention vs. who can safely ignore this\n"
+        f"{'     - Tailor recommendations specifically to ' + core_target + chr(10) if core_target else '     - Who should pay attention vs. who can safely ignore this' + chr(10)}"
         f"     - Questioner: 'So what should our listeners actually DO with this?'\n\n"
         f"  7. WRAP-UP (~60 {target_unit_plural}, ~25 seconds):\n"
         f"     Three-sentence summary of the most important takeaways.\n\n"
         f"  8. THE 'ONE ACTION' ENDING (~40 {target_unit_plural}, ~15 seconds):\n"
-        f"     {SESSION_ROLES['presenter']['label']}: 'If you take ONE thing from today — [specific action to try this week].'\n"
+        f"     {SESSION_ROLES['presenter']['label']}: 'If you take ONE thing from today — [action{' tailored to ' + core_target if core_target else ' to try this week'}].'\n"
         f"     {SESSION_ROLES['questioner']['label']}: [Brief agreement + sign-off]\n\n"
         f"PERSONALITY DIRECTIVES:\n"
         f"- Use conversational fillers naturally: 'Hm, that's interesting', 'Right, right', 'Wait, really?'\n"
@@ -1263,6 +1265,18 @@ audit_task = Task(
     output_file=str(output_dir / "ACCURACY_AUDIT.md")
 )
 
+# --- Audience context for blueprint & script prompts ---
+_audience_context = ""
+if core_target:
+    _audience_context += f"TARGET AUDIENCE: {core_target}\n"
+if channel_mission:
+    _audience_context += f"CHANNEL MISSION: {channel_mission}\n"
+
+# Content framework hint based on channel mission
+_framework_hint = ""
+if channel_mission and any(kw in channel_mission.lower() for kw in ("actionable", "practical", "protocol", "how-to", "how to")):
+    _framework_hint = "Note: The channel mission suggests PPP (Problem-Proof-Protocol) may be a good fit.\n"
+
 blueprint_task = Task(
     description=(
         f"Create an Episode Blueprint for the podcast episode on \"{topic_name}\".\n\n"
@@ -1273,6 +1287,7 @@ blueprint_task = Task(
         f"## 1. Episode Thesis\n"
         f"One sentence: what this episode will prove or explore.\n\n"
         f"## 2. Listener Value Proposition\n"
+        f"{_audience_context + 'Tailor the value proposition to this specific audience.\n' if _audience_context else ''}"
         f"- What will the listener GAIN from this episode?\n"
         f"- Why should they listen to THIS episode instead of reading an article?\n"
         f"- What will they be able to DO differently after listening?\n\n"
@@ -1282,6 +1297,7 @@ blueprint_task = Task(
         f"BAD: 'Have you ever wondered about coffee?'\n"
         f"GOOD: 'A 2023 meta-analysis of 40 studies found that 3 cups of coffee daily reduces all-cause mortality by 13%.'\n\n"
         f"## 4. Content Framework\n"
+        f"{_framework_hint}"
         f"Choose ONE:\n"
         f"- [PPP] Problem-Proof-Protocol — if the topic has a clear actionable outcome\n"
         f"- [QEI] Question-Evidence-Insight — if the topic is exploratory with no single recommendation\n\n"
