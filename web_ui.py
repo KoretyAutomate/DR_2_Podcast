@@ -23,8 +23,11 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 import uvicorn
 import httpx
+from dotenv import load_dotenv
 
 from upload_utils import validate_upload_config, upload_to_buzzsprout, upload_to_youtube
+
+load_dotenv()
 
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.absolute()
@@ -333,6 +336,12 @@ class PodcastRequest(BaseModel):
     buzzsprout_account_id: str = ""
     youtube_secret_path: str = ""
 
+class GenerateIntroRequest(BaseModel):
+    channel_name: str = ""
+    core_target: str = ""
+    channel_mission: str = ""
+    language: str = "en"
+
 class ReuseCheckRequest(BaseModel):
     topic: str
 
@@ -464,7 +473,7 @@ def home(username: str = Depends(verify_credentials)):
                 margin-top: 20px;
             }}
 
-            input[type="text"], select {{
+            input[type="text"], select, textarea {{
                 width: 100%;
                 background: rgba(15, 23, 42, 0.6);
                 border: 1px solid var(--border-color);
@@ -474,9 +483,10 @@ def home(username: str = Depends(verify_credentials)):
                 font-size: 1rem;
                 font-family: inherit;
                 transition: all 0.3s ease;
+                box-sizing: border-box;
             }}
 
-            input[type="text"]:focus, select:focus {{
+            input[type="text"]:focus, select:focus, textarea:focus {{
                 outline: none;
                 border-color: var(--accent-primary);
                 box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
@@ -886,7 +896,7 @@ def home(username: str = Depends(verify_credentials)):
                     <div style="margin-top: 20px;">
                         <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 6px;">
                             <label for="channelIntro" style="margin: 0;">Channel Intro <span style="color: var(--text-secondary); font-size: 12px;">(spoken every episode, editable)</span></label>
-                            <button type="button" id="regenIntroBtn" style="font-size: 11px; padding: 2px 10px; background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.4); border-radius: 4px; color: var(--accent); cursor: pointer;">↺ Regenerate</button>
+                            <button type="button" id="regenIntroBtn" style="font-size: 11px; padding: 2px 10px; background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.4); border-radius: 4px; color: var(--accent); cursor: pointer;">✨ Auto Generate</button>
                         </div>
                         <textarea
                             id="channelIntro"
@@ -1075,49 +1085,42 @@ def home(username: str = Depends(verify_credentials)):
                 document.getElementById('youtubeFields').style.display = this.checked ? 'block' : 'none';
             }});
 
-            // --- Channel Intro auto-population ---
-            function generateChannelIntro() {{
+            // --- Channel Intro — LLM-powered Auto Generate ---
+            document.getElementById('regenIntroBtn').addEventListener('click', async function() {{
+                const btn     = this;
+                const el      = document.getElementById('channelIntro');
                 const name    = (document.getElementById('channelName').value || '').trim();
                 const target  = (document.getElementById('coreTarget').value || '').trim();
                 const mission = (document.getElementById('channelMission').value || '').trim();
                 const lang    = document.getElementById('language').value;
-                if (!name && !target && !mission) return '';
-                if (lang === 'ja') {{
-                    let intro = '';
-                    if (name)    intro += name + 'へようこそ。';
-                    if (mission) intro += mission + '。';
-                    if (target)  intro += target + 'のための番組です。';
-                    return intro;
-                }} else {{
-                    let parts = [];
-                    if (name)    parts.push('Welcome to ' + name);
-                    if (mission) parts.push('where ' + mission);
-                    let intro = parts.join(', ');
-                    if (intro) intro += '.';
-                    if (target)  intro += ' Made for ' + target + '.';
-                    return intro.trim();
+
+                btn.disabled = true;
+                btn.textContent = '⏳ Generating...';
+
+                try {{
+                    const res = await fetch('/api/generate-intro', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{
+                            channel_name: name,
+                            core_target: target,
+                            channel_mission: mission,
+                            language: lang
+                        }})
+                    }});
+                    if (res.ok) {{
+                        const data = await res.json();
+                        el.value = data.intro || '';
+                    }} else {{
+                        const err = await res.json().catch(() => ({{}}));
+                        alert('Could not generate intro: ' + (err.detail || res.statusText));
+                    }}
+                }} catch (e) {{
+                    alert('Network error: ' + e.message);
+                }} finally {{
+                    btn.disabled = false;
+                    btn.textContent = '✨ Auto Generate';
                 }}
-            }}
-
-            function tryAutoPopulateIntro() {{
-                const el = document.getElementById('channelIntro');
-                if (el.dataset.userEdited === 'true') return;
-                const generated = generateChannelIntro();
-                if (generated) el.value = generated;
-            }}
-
-            ['channelName', 'coreTarget', 'channelMission'].forEach(function(id) {{
-                document.getElementById(id).addEventListener('input', tryAutoPopulateIntro);
-            }});
-            document.getElementById('language').addEventListener('change', tryAutoPopulateIntro);
-            document.getElementById('channelIntro').addEventListener('input', function() {{
-                this.dataset.userEdited = 'true';
-            }});
-            document.getElementById('regenIntroBtn').addEventListener('click', function() {{
-                const el = document.getElementById('channelIntro');
-                el.dataset.userEdited = 'false';
-                const generated = generateChannelIntro();
-                if (generated) el.value = generated;
             }});
 
             // YouTube OAuth preflight
@@ -1843,6 +1846,73 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
 
     task_queue.put(task)
     return {"task_id": task_id, "status": "queued", "reuse_mode": reuse_mode}
+
+
+@app.post("/api/generate-intro")
+async def generate_intro(request: GenerateIntroRequest, username: str = Depends(verify_credentials)):
+    """Generate a channel intro using the LLM (smart model with fast-model fallback)."""
+    lang_label = "Japanese" if request.language == "ja" else "English"
+    name    = request.channel_name    or "our podcast"
+    target  = request.core_target     or "curious listeners"
+    mission = request.channel_mission or "turning science into everyday wisdom"
+
+    if request.language == "ja":
+        prompt = (
+            f"以下の情報をもとに、ポッドキャストの自然なチャンネル紹介文を日本語で書いてください。\n\n"
+            f"チャンネル名: {name}\n"
+            f"ターゲットリスナー: {target}\n"
+            f"チャンネルのミッション: {mission}\n\n"
+            f"2〜3文、約60〜80文字で、ホストが話しているような自然な口語体で書いてください。"
+            f"スピーカーラベルは不要です。紹介文のテキストのみ出力してください。"
+        )
+    else:
+        prompt = (
+            f"Write a natural, engaging channel introduction for a podcast.\n\n"
+            f"Channel Name: {name}\n"
+            f"Target Audience: {target}\n"
+            f"Channel Mission: {mission}\n\n"
+            f"Write 2-3 sentences (~30-40 words) in first person, as if the host is speaking aloud. "
+            f"Sound warm and human — not corporate. Do NOT include speaker labels or quotes. "
+            f"Output ONLY the intro text, nothing else."
+        )
+
+    payload = {
+        "model": "",  # filled per endpoint below
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 120,
+        "temperature": 0.8,
+    }
+
+    llm_base       = os.getenv("LLM_BASE_URL",      "http://localhost:11434/v1").rstrip("/")
+    model_name     = os.getenv("MODEL_NAME",         "deepseek-r1:32b")
+    fast_base      = os.getenv("FAST_LLM_BASE_URL",  "http://localhost:11434/v1").rstrip("/")
+    fast_model     = os.getenv("FAST_MODEL_NAME",    "llama3.2:1b")
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        # Primary: MODEL_NAME / LLM_BASE_URL from .env
+        try:
+            payload["model"] = model_name
+            r = await client.post(f"{llm_base}/chat/completions", json=payload)
+            if r.status_code == 200:
+                intro = r.json()["choices"][0]["message"]["content"].strip()
+                return {"intro": intro}
+            print(f"[generate-intro] primary non-200: {r.status_code} {r.text[:200]}")
+        except Exception as e:
+            print(f"[generate-intro] primary error: {e}")
+
+        # Fallback: FAST_MODEL_NAME / FAST_LLM_BASE_URL from .env
+        if fast_base != llm_base or fast_model != model_name:
+            try:
+                payload["model"] = fast_model
+                r = await client.post(f"{fast_base}/chat/completions", json=payload)
+                if r.status_code == 200:
+                    intro = r.json()["choices"][0]["message"]["content"].strip()
+                    return {"intro": intro}
+                print(f"[generate-intro] fallback non-200: {r.status_code} {r.text[:200]}")
+            except Exception as e:
+                print(f"[generate-intro] fallback error: {e}")
+
+    raise HTTPException(status_code=503, detail="LLM unavailable — fill in the intro manually.")
 
 
 @app.post("/api/generate")
