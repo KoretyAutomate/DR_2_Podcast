@@ -1972,8 +1972,9 @@ try:
 
     # Save all reports (lead, counter, audit)
     REPORT_FILENAMES = {"lead": "affirmative_case.md", "counter": "falsification_case.md", "audit": "grade_synthesis.md"}
-    for role_name, report in deep_reports.items():
-        report_file = output_dir / REPORT_FILENAMES.get(role_name, f"{role_name}.md")
+    for role_name, filename in REPORT_FILENAMES.items():
+        report = deep_reports[role_name]
+        report_file = output_dir / filename
         with open(report_file, 'w') as f:
             f.write(report.report)
         print(f"✓ {role_name.capitalize()} report saved: {report_file} ({report.total_summaries} sources)")
