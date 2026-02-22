@@ -291,6 +291,7 @@ def worker_thread():
                     task_data["accessibility_level"],
                     task_data["podcast_length"],
                     task_data["podcast_hosts"],
+                    task_data.get("channel_intro", ""),
                     task_data["upload_buzzsprout"],
                     task_data["upload_youtube"]
                 )
@@ -321,6 +322,7 @@ class PodcastRequest(BaseModel):
     accessibility_level: str = "simple"
     podcast_length: str = "long"
     podcast_hosts: str = "random"
+    channel_intro: str = ""
     upload_to_buzzsprout: bool = False
     upload_to_youtube: bool = False
     buzzsprout_api_key: str = ""
@@ -847,6 +849,17 @@ def home(username: str = Depends(verify_credentials)):
                         </div>
                     </div>
 
+                    <div style="margin-top: 20px;">
+                        <label for="channelIntro">Channel Intro <span style="color: var(--text-secondary); font-size: 12px;">(spoken every episode, optional)</span></label>
+                        <textarea
+                            id="channelIntro"
+                            name="channel_intro"
+                            rows="2"
+                            placeholder="e.g., Welcome to Deep Research Podcast, where we turn cutting-edge science into everyday wisdom. I'm Kaz, and with me as always is Erika."
+                            style="resize: vertical; min-height: 60px;"
+                        ></textarea>
+                    </div>
+
                     <div style="margin-top: 30px;">
                         <label style="margin-bottom: 12px;">Research Options</label>
                         <div style="display: flex; gap: 24px; margin-bottom: 15px;">
@@ -1152,6 +1165,7 @@ def home(username: str = Depends(verify_credentials)):
                     accessibility_level: document.getElementById('accessibility').value,
                     podcast_length: document.getElementById('length').value,
                     podcast_hosts: document.getElementById('hosts').value,
+                    channel_intro: document.getElementById('channelIntro').value || '',
                     leverage_past: document.getElementById('leveragePast').checked,
                     upload_to_buzzsprout: document.getElementById('uploadBuzzsprout').checked,
                     upload_to_youtube: document.getElementById('uploadYoutube').checked,
@@ -1760,6 +1774,7 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
         "accessibility_level": request.accessibility_level,
         "podcast_length": request.podcast_length,
         "podcast_hosts": request.podcast_hosts,
+        "channel_intro": request.channel_intro,
         "status": "queued", # Start as queued
         "progress": 0,
         "phase": "Queued",
@@ -1854,6 +1869,7 @@ def _close_phase(task_id: str):
 def run_podcast_generation(task_id: str, topic: str, language: str,
                            accessibility_level: str = "simple",
                            podcast_length: str = "long", podcast_hosts: str = "random",
+                           channel_intro: str = "",
                            upload_buzzsprout: bool = False, upload_youtube: bool = False):
     """Run pipeline.py in background with real-time phase tracking."""
     try:
@@ -1869,6 +1885,8 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
         env["ACCESSIBILITY_LEVEL"] = accessibility_level
         env["PODCAST_LENGTH"] = podcast_length
         env["PODCAST_HOSTS"] = podcast_hosts
+        if channel_intro:
+            env["PODCAST_CHANNEL_INTRO"] = channel_intro
 
         proc = subprocess.Popen(
             [str(PODCAST_ENV_PYTHON), "pipeline.py", "--topic", topic, "--language", language],

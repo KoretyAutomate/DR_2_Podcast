@@ -508,6 +508,9 @@ target_unit_singular = language_config['prompt_unit']    # e.g. "word" / "charac
 target_unit_plural   = language_config['length_unit']    # e.g. "words" / "chars"
 duration_label       = f"{length_mode.capitalize()} ({_target_min} min)"
 
+# --- CHANNEL INTRO (fixed text, spoken every episode) ---
+channel_intro = os.getenv("PODCAST_CHANNEL_INTRO", "").strip()
+
 # --- ACCESSIBILITY LEVEL CONFIG ---
 # Controls how aggressively scientific terms are simplified.
 #   simple  – define every term inline, heavy use of analogies (default)
@@ -1044,33 +1047,70 @@ framing_task = Task(
 
 print(f"Podcast Length Mode: {duration_label}")
 
+# Build channel intro directive for script
+if channel_intro:
+    _channel_intro_directive = (
+        f"  2. CHANNEL INTRO (~25 {target_unit_plural}, ~10 seconds):\n"
+        f"     {SESSION_ROLES['presenter']['label']}: {channel_intro}\n"
+        f"     CRITICAL: Use this text EXACTLY as written above. Do NOT rephrase, summarize, or modify it.\n\n"
+    )
+else:
+    _channel_intro_directive = (
+        f"  2. CHANNEL INTRO (~25 {target_unit_plural}, ~10 seconds):\n"
+        f"     Both hosts briefly introduce the show and today's topic.\n"
+        f"     {SESSION_ROLES['presenter']['label']}: Welcome to Deep Research Podcast. Today we're diving deep into {topic_name}.\n\n"
+    )
+
+# Compute approximate word allocations per act
+_act1_target = int(target_length_int * 0.20)
+_act2_target = int(target_length_int * 0.35)
+_act3_target = int(target_length_int * 0.25)
+_act4_target = int(target_length_int * 0.20)
+
 script_task = Task(
     description=(
-        f"Using the audit report, write a comprehensive {target_script}-{target_unit_singular} podcast dialogue about \"{topic_name}\" "
+        f"Using the Episode Blueprint, write a comprehensive {target_script}-{target_unit_singular} podcast dialogue about \"{topic_name}\" "
         f"featuring {SESSION_ROLES['presenter']['character']} (presenter) and {SESSION_ROLES['questioner']['character']} (questioner).\n\n"
-        f"STRUCTURE:\n"
-        f"  1. OPENING (joint welcome):\n"
-        f"     a) Both hosts greet listeners with a short, warm welcome to the channel\n"
-        f"     b) One host hooks listeners with a relatable question (e.g., 'Have you ever wondered why...?' "
-        f"or 'Have you experienced...?') — the other responds naturally\n"
-        f"     c) Transition into the topic: 'Today, we're going to explore...'\n\n"
-        f"  2. BODY — write EXACTLY 6 segments, each 500-600 words:\n"
-        f"     SEGMENT 1: First main aspect — the core mechanism (how/why it works scientifically)\n"
-        f"     SEGMENT 2: First aspect — evidence, studies, data\n"
-        f"     SEGMENT 3: Second main aspect — mechanism\n"
-        f"     SEGMENT 4: Second aspect — real-world implications and counter-arguments\n"
-        f"     SEGMENT 5: Third main aspect — practical advice for listeners\n"
-        f"     SEGMENT 6: Fourth main aspect OR synthesis — what it all means\n"
-        f"     Each segment: Presenter explains (5-8 sentences) → Questioner asks 2-3 bridging questions → deeper dive → analogy → real example\n"
-        f"     IMPORTANT: Each host turn must be at least 3-5 sentences. No one-line replies.\n\n"
-        f"  3. CLOSING:\n"
-        f"     - Summarize key takeaways\n"
-        f"     - Practical advice for listeners\n"
-        f"     - Sign off together\n\n"
-        f"SIMPLIFY THE SCIENCE (not the research process):\n"
-        f"- 'Glycemic index' → 'a score that measures how fast a food raises blood sugar'\n"
-        f"- 'Insulin resistance' → 'when your body stops responding properly to insulin'\n"
-        f"- 'Postprandial glucose spike' → 'a sharp rise in blood sugar after eating'\n\n"
+        f"SCRIPT STRUCTURE (follow this EXACTLY):\n\n"
+        f"  1. THE HOOK (~40 {target_unit_plural}, ~15 seconds):\n"
+        f"     Open with the hook from the Episode Blueprint — a jarring statistic or provocative claim.\n"
+        f"     {SESSION_ROLES['presenter']['label']}: [Jarring statistic or provocative claim from Blueprint]\n"
+        f"     {SESSION_ROLES['questioner']['label']}: [Surprised reaction + 'Tell me more' or 'Wait, really?']\n\n"
+        + _channel_intro_directive +
+        f"  3. ACT 1 — THE CLAIM (~{_act1_target:,} {target_unit_plural}):\n"
+        f"     What people believe. The folk wisdom. Why this matters personally.\n"
+        f"     - Presenter sets up the common belief or question\n"
+        f"     - Questioner validates: 'Right, I've heard that too' / 'That's what everyone says'\n"
+        f"     - Establish emotional stakes: why should the listener care?\n\n"
+        f"  4. ACT 2 — THE EVIDENCE (~{_act2_target:,} {target_unit_plural}):\n"
+        f"     What science actually says. Use BOTH supporting and contradicting evidence from the Blueprint.\n"
+        f"     - Present key studies with GRADE-informed framing from the Blueprint's Section 6\n"
+        f"     - Include specific numbers (NNT, ARR, sample sizes) where available\n"
+        f"     - Questioner challenges: 'But how strong is that evidence?' / 'What about the studies that say otherwise?'\n"
+        f"     - Address contradicting evidence honestly — do NOT cherry-pick\n\n"
+        f"  5. ACT 3 — THE NUANCE (~{_act3_target:,} {target_unit_plural}):\n"
+        f"     Where it gets complicated.\n"
+        f"     - GRADE confidence level and what it means for the listener\n"
+        f"     - Population differences, dose-response relationships, timing factors\n"
+        f"     - Questioner pushes: 'So it's not as simple as people think?'\n"
+        f"     - Acknowledge what we DON'T know — science is honest about its limits\n\n"
+        f"  6. ACT 4 — THE PROTOCOL (~{_act4_target:,} {target_unit_plural}):\n"
+        f"     Translate science into daily life.\n"
+        f"     - Specific, practical recommendations\n"
+        f"     - 'In practical terms, this means...'\n"
+        f"     - Who should pay attention vs. who can safely ignore this\n"
+        f"     - Questioner: 'So what should our listeners actually DO with this?'\n\n"
+        f"  7. WRAP-UP (~60 {target_unit_plural}, ~25 seconds):\n"
+        f"     Three-sentence summary of the most important takeaways.\n\n"
+        f"  8. THE 'ONE ACTION' ENDING (~40 {target_unit_plural}, ~15 seconds):\n"
+        f"     {SESSION_ROLES['presenter']['label']}: 'If you take ONE thing from today — [specific action to try this week].'\n"
+        f"     {SESSION_ROLES['questioner']['label']}: [Brief agreement + sign-off]\n\n"
+        f"PERSONALITY DIRECTIVES:\n"
+        f"- Use conversational fillers naturally: 'Hm, that's interesting', 'Right, right', 'Wait, really?'\n"
+        f"- Pause for emphasis using ellipses: 'And here's where it gets interesting...'\n"
+        f"- After each key finding, translate to daily life: 'In practical terms, this means...'\n"
+        f"- Questioner should genuinely react, not just ask setup questions\n"
+        f"- Short asides are encouraged: 'I actually looked into this myself and...'\n\n"
         f"CHARACTER ROLES:\n"
         f"  - {SESSION_ROLES['presenter']['character']} (Presenter): presents evidence and explains the topic, "
         f"{SESSION_ROLES['presenter']['personality']}\n"
@@ -1079,22 +1119,24 @@ script_task = Task(
         f"Format STRICTLY as:\n"
         f"{SESSION_ROLES['presenter']['label']}: [dialogue]\n"
         f"{SESSION_ROLES['questioner']['label']}: [dialogue]\n\n"
-        f"TARGET LENGTH: {target_script} {target_unit_plural}. This is CRITICAL — do not write less. The podcast MUST last {_target_min} minutes. If you are too brief, the production will fail. SEGMENT CHECKLIST: You must write all 6 body segments. Count them as you write.\n"
+        f"TARGET LENGTH: {target_script} {target_unit_plural}. This is CRITICAL — do not write less. The podcast MUST last {_target_min} minutes. "
+        f"If you are too brief, the production will fail.\n"
+        f"ACT CHECKLIST: You must write all 4 acts plus Hook, Channel Intro, Wrap-up, and One Action. Count them as you write.\n"
         f"TO REACH THIS LENGTH: You must be extremely detailed and conversational. For every single claim or mechanism, you MUST provide:\n"
-        f"  1. A deep-dive explanation of the specific scientific mechanism (how it works at a molecular/cellular level)\n"
+        f"  1. A deep-dive explanation of the specific scientific mechanism\n"
         f"  2. A real-world analogy or metaphor that lasts several lines\n"
         f"  3. A practical, relatable example or case study\n"
-        f"  4. A potential counter-argument or nuance followed by a rebuttal\n"
+        f"  4. A counter-argument or nuance followed by a rebuttal\n"
         f"  5. Interactive host dialogue (e.g., 'Wait, let me make sure I've got this right...', 'That's fascinating, tell me more about...')\n"
         f"Expand the conversation. Do not just list facts. Have the hosts explore the 'So what?' and 'What now?' for the audience.\n"
         f"Maintain consistent roles throughout. NO role switching mid-conversation. "
         f"{target_instruction}"
     ),
     expected_output=(
-        f"A {target_script}-{target_unit_singular} teaching-style dialogue about {topic_name} between "
+        f"A {target_script}-{target_unit_singular} podcast dialogue about {topic_name} between "
         f"{SESSION_ROLES['presenter']['character']} (presents and explains) "
         f"and {SESSION_ROLES['questioner']['character']} (asks bridging questions). "
-        f"Opens with welcome → hook → topic shift. Every line discusses the topic. "
+        f"Follows 8-part structure: Hook, Channel Intro, 4 Acts (Claim, Evidence, Nuance, Protocol), Wrap-up, One Action. "
         f"{target_instruction}"
     ),
     agent=producer_agent,
@@ -1135,19 +1177,41 @@ polish_task = Task(
         f"- Remove ALL definitions of basic scientific concepts (DNA, peer review, RCT, meta-analysis)\n"
         f"- Ensure the questioner's questions feel natural and audience-aligned\n"
         f"- Keep technical language intact - NO dumbing down\n"
-        f"- Ensure the questioner's questions feel natural and audience-aligned\n"
-        f"- Keep technical language intact - NO dumbing down\n"
         f"- Target exactly {target_script} {target_unit_plural}\n\n"
         f"MAINTAIN ROLES:\n"
         f"  - {SESSION_ROLES['presenter']['character']} (Presenter): explains and teaches the topic\n"
         f"  - {SESSION_ROLES['questioner']['character']} (Questioner): asks bridging questions, occasionally pushes back\n\n"
-        f"OPENING STRUCTURE (verify this is intact):\n"
-        f"  1. Both hosts greet listeners warmly\n"
-        f"  2. Hook question to engage the audience\n"
-        f"  3. Transition into the topic\n\n"
+        f"VERIFY 8-PART STRUCTURE (all must be present):\n"
+        f"  1. Hook (jarring statistic or provocative claim)\n"
+        f"  2. Channel Intro\n"
+        f"  3. Act 1 — The Claim\n"
+        f"  4. Act 2 — The Evidence\n"
+        f"  5. Act 3 — The Nuance\n"
+        f"  6. Act 4 — The Protocol\n"
+        f"  7. Wrap-up\n"
+        f"  8. One Action Ending\n\n"
+        + (f"CHANNEL INTRO VERIFICATION:\n"
+           f"The Channel Intro MUST contain this EXACT text: \"{channel_intro}\"\n"
+           f"Do NOT rephrase, modify, or remove it.\n\n"
+           if channel_intro else '')
+        + f"TRANSITION MARKERS:\n"
+        f"Insert [TRANSITION] on its own line between major sections:\n"
+        f"  - After Channel Intro, before Act 1\n"
+        f"  - Between Act 1 and Act 2\n"
+        f"  - Between Act 2 and Act 3\n"
+        f"  - Between Act 3 and Act 4\n"
+        f"  - After Act 4, before Wrap-up\n"
+        f"These markers create musical transition moments in the final audio. Do NOT speak them.\n"
+        f"Format: place [TRANSITION] on a line by itself between the last line of one act and the first line of the next.\n\n"
+        f"ONE ACTION ENDING CHECK:\n"
+        f"Verify the script ends with a single, specific, actionable recommendation.\n"
+        f"If missing, add one based on the Protocol section (Act 4).\n\n"
+        f"GRADE FRAMING CHECK:\n"
+        f"Verify that claims use appropriate hedging language per confidence level.\n"
+        f"Do NOT present LOW-confidence claims as settled fact.\n\n"
         f"Format:\n{SESSION_ROLES['presenter']['label']}: [dialogue]\n"
         f"{SESSION_ROLES['questioner']['label']}: [dialogue]\n\n"
-        f"Remove meta-tags, markdown, stage directions. Dialogue only.\n"
+        f"Remove meta-tags, markdown, stage directions. Dialogue only (plus [TRANSITION] markers).\n"
         f"- CRITICAL: Do NOT shorten or summarize. Output MUST be at least as long as the input. Add depth where possible.\n"
         + (f"\nCRITICAL: Output MUST be in Japanese (日本語) only. Do NOT switch to Chinese (中文). "
            f"Keep speaker labels exactly as 'Host 1:' and 'Host 2:' — do NOT replace them with Japanese names. "
@@ -1157,7 +1221,7 @@ polish_task = Task(
     ),
     expected_output=(
         f"Final Masters-level dialogue about {topic_name}, exactly {target_script} {target_unit_plural}. "
-        f"No basic definitions. Teaching style with engaging 3-part opening. "
+        f"8-part structure with [TRANSITION] markers between acts. One Action ending present. "
         f"{target_instruction}"
     ),
     agent=editor_agent,
@@ -1187,7 +1251,7 @@ audit_task = Task(
         f"- **Severity**: HIGH / MEDIUM / LOW\n\n"
         f"## Recommendations\n"
         f"[Specific line-level fixes if needed]\n\n"
-        f"NOTE: This check is ADVISORY. It does NOT block audio generation. "
+        f"NOTE: HIGH-severity drift will trigger a script correction pass before audio generation. "
         f"{target_instruction}"
     ),
     expected_output=(
@@ -1199,15 +1263,52 @@ audit_task = Task(
     output_file=str(output_dir / "ACCURACY_AUDIT.md")
 )
 
-outline_task = Task(
+blueprint_task = Task(
     description=(
-        f"Generate comprehensive show outline (SHOW_OUTLINE.md) for the podcast episode on {topic_name}.\n\n"
-        f"Using the Source-of-Truth document and its bibliography, create a bulleted list with:\n"
-        f"1. Episode title and topic\n"
-        f"2. Key takeaways (3-5 bullet points)\n"
-        f"3. Full citation list with validity ratings:\n\n"
-        f"FORMAT:\n"
-        f"## Citations\n\n"
+        f"Create an Episode Blueprint for the podcast episode on \"{topic_name}\".\n\n"
+        f"This is a CONTENT STRATEGY document that guides the script writer. It defines what the episode "
+        f"will say, why listeners should care, and how to structure the narrative.\n\n"
+        f"OUTPUT FORMAT — produce ALL 7 sections:\n\n"
+        f"# Episode Blueprint: {topic_name}\n\n"
+        f"## 1. Episode Thesis\n"
+        f"One sentence: what this episode will prove or explore.\n\n"
+        f"## 2. Listener Value Proposition\n"
+        f"- What will the listener GAIN from this episode?\n"
+        f"- Why should they listen to THIS episode instead of reading an article?\n"
+        f"- What will they be able to DO differently after listening?\n\n"
+        f"## 3. Hook\n"
+        f"The single most surprising or provocative fact from the research.\n"
+        f"Must be a specific statistic, finding, or claim — NOT a generic question.\n"
+        f"BAD: 'Have you ever wondered about coffee?'\n"
+        f"GOOD: 'A 2023 meta-analysis of 40 studies found that 3 cups of coffee daily reduces all-cause mortality by 13%.'\n\n"
+        f"## 4. Content Framework\n"
+        f"Choose ONE:\n"
+        f"- [PPP] Problem-Proof-Protocol — if the topic has a clear actionable outcome\n"
+        f"- [QEI] Question-Evidence-Insight — if the topic is exploratory with no single recommendation\n\n"
+        f"## 5. Narrative Arc (4 Acts)\n"
+        f"### Act 1 — The Claim (~20% of episode)\n"
+        f"What people believe. The folk wisdom or common assumption. Why this matters personally.\n"
+        f"Key points to cover: [3-4 bullets]\n\n"
+        f"### Act 2 — The Evidence (~35% of episode)\n"
+        f"What science actually says. Key studies from BOTH supporting and contradicting evidence.\n"
+        f"Supporting evidence: [2-3 key studies with how to frame them]\n"
+        f"Contradicting evidence: [1-2 key studies]\n"
+        f"Key numbers to cite: [NNT, ARR, sample sizes if available]\n\n"
+        f"### Act 3 — The Nuance (~25% of episode)\n"
+        f"Where it gets complicated. Contested findings, population differences, dose-response, limitations.\n"
+        f"Key nuance points: [2-3 bullets]\n\n"
+        f"### Act 4 — The Protocol (~20% of episode)\n"
+        f"Actionable translation to daily life.\n"
+        f"'One Action' for the ending: [specific, memorable, doable this week]\n\n"
+        f"## 6. GRADE-Informed Framing Guide\n"
+        f"For each major claim in the episode, specify the appropriate framing language.\n"
+        f"Use this mapping based on the evidence confidence:\n"
+        f"- HIGH confidence → 'Research clearly demonstrates...'\n"
+        f"- MODERATE confidence → 'Evidence suggests...'\n"
+        f"- LOW confidence → 'Emerging research indicates...'\n"
+        f"- VERY LOW confidence → 'Preliminary findings hint at...'\n"
+        f"List each major claim with its recommended framing.\n\n"
+        f"## 7. Citations\n"
         f"### Supporting Evidence\n"
         f"- [Study Title] (Journal, Year) - [URL] - **Validity: ✓ High/Medium/Low**\n"
         f"  - Evidence Type: [RCT/Observational/Animal Model]\n"
@@ -1221,24 +1322,24 @@ outline_task = Task(
         f"{target_instruction}"
     ),
     expected_output=(
-        f"Markdown show notes with:\n"
-        f"- Episode title\n"
-        f"- Key takeaways (3-5 bullets)\n"
-        f"- Full citation list with validity ratings (✓ High/Medium/Low)\n"
-        f"- Evidence type labels (RCT/Observational/Animal Model)\n"
+        f"Episode Blueprint with all 7 sections: thesis, listener value proposition, hook, "
+        f"content framework (PPP or QEI), 4-act narrative arc, GRADE framing guide, and citations. "
         f"{target_instruction}"
     ),
     agent=producer_agent,
     context=[],
-    output_file=str(output_dir / "SHOW_OUTLINE.md")
+    output_file=str(output_dir / "EPISODE_BLUEPRINT.md")
 )
+
+# --- CONTEXT CHAIN: script_task always depends on blueprint_task ---
+script_task.context = [blueprint_task]
 
 # --- SOT TRANSLATION PIPELINE: Update contexts when translating ---
 if translation_task is not None:
     # Recording task writes script directly in target language using the translated SOT
-    script_task.context = [translation_task]
-    # Show notes use the translated SOT as their reference
-    outline_task.context = [translation_task]
+    script_task.context = [blueprint_task, translation_task]
+    # Blueprint uses the translated SOT as reference
+    blueprint_task.context = [translation_task]
     # Polish reads from the target-language script with translated SOT as reference
     polish_task.context = [script_task, translation_task]
     # Accuracy check compares polished script against translated SOT
@@ -1295,7 +1396,7 @@ TASK_METADATA = {
         'dependencies': ['source_validation'],
         'crew': 2
     },
-    'outline_task': {
+    'blueprint_task': {
         'name': 'Show Outline',
         'phase': '4',
         'estimated_duration_min': 3,
@@ -1310,7 +1411,7 @@ TASK_METADATA = {
         'estimated_duration_min': 6,
         'description': 'Script writing and conversation generation',
         'agent': 'Podcast Producer',
-        'dependencies': ['outline_task'],
+        'dependencies': ['blueprint_task'],
         'crew': 3
     },
     'polish_task': {
@@ -1510,14 +1611,14 @@ if args.reuse_dir:
             f"--- END PREVIOUS RESEARCH ---\n"
         )
         script_task.description = f"{script_task.description}{sot_injection}"
-        outline_task.description = f"{outline_task.description}{sot_injection}"
+        blueprint_task.description = f"{blueprint_task.description}{sot_injection}"
         audit_task.description = f"{audit_task.description}{sot_injection}"
 
         # Update output_dir for file outputs
         # Reassign global output_dir so output_file paths work
         import builtins
         # Update task output_file paths to new dir
-        for task_obj in [audit_task, outline_task]:
+        for task_obj in [audit_task, blueprint_task]:
             if hasattr(task_obj, '_original_output_file') or hasattr(task_obj, 'output_file'):
                 old_path = getattr(task_obj, 'output_file', '')
                 if old_path:
@@ -1536,7 +1637,7 @@ if args.reuse_dir:
             )
             crew_2.kickoff()
 
-        crew_3_tasks = [outline_task, script_task, polish_task, audit_task]
+        crew_3_tasks = [blueprint_task, script_task, polish_task, audit_task]
 
         crew_3 = Crew(
             agents=[producer_agent, editor_agent, auditor_agent],
@@ -1552,7 +1653,7 @@ if args.reuse_dir:
         script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
         for label, source, filename in [
             ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
-            ("Show Outline", outline_task, "show_outline.md"),
+            ("Episode Blueprint", blueprint_task, "EPISODE_BLUEPRINT.md"),
             ("Script Draft", script_task, "script_draft.md"),
             ("Script Final", polish_task, "script_final.md"),
             ("Accuracy Audit", audit_task, "accuracy_audit.md"),
@@ -1588,13 +1689,18 @@ if args.reuse_dir:
             f.write(script_text)
 
         audio_output_path = new_output_dir / "audio.wav"
-        audio_file = generate_audio_from_script(cleaned_script, str(audio_output_path), lang_code=language_config['tts_code'])
-        if audio_file:
-            audio_file = Path(audio_file)
+        tts_result = generate_audio_from_script(cleaned_script, str(audio_output_path), lang_code=language_config['tts_code'])
+        if isinstance(tts_result, tuple):
+            audio_file_path, transition_positions = tts_result
+        else:
+            audio_file_path, transition_positions = tts_result, []
+        if audio_file_path:
+            audio_file = Path(audio_file_path)
             print(f"Audio generation complete: {audio_file}")
             print(f"Starting BGM Merging Phase...")
             try:
-                mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav")
+                mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav",
+                                              transition_positions_ms=transition_positions)
                 if mastered and os.path.exists(mastered) and mastered != str(audio_file):
                     audio_file = Path(mastered)
                     print(f"✓ BGM Merging Complete: {audio_file}")
@@ -1717,11 +1823,11 @@ if args.reuse_dir:
                 f"--- END SOURCE OF TRUTH ---\n"
             )
             script_task.description = f"{script_task.description}{sot_injection}"
-            outline_task.description = f"{outline_task.description}{sot_injection}"
+            blueprint_task.description = f"{blueprint_task.description}{sot_injection}"
             audit_task.description = f"{audit_task.description}{sot_injection}"
 
             # Update output_file paths
-            for task_obj in [audit_task, outline_task]:
+            for task_obj in [audit_task, blueprint_task]:
                 old_path = getattr(task_obj, 'output_file', '')
                 if old_path:
                     filename = Path(old_path).name
@@ -1739,7 +1845,7 @@ if args.reuse_dir:
                 )
                 crew_2.kickoff()
 
-            crew_3_tasks = [outline_task, script_task, polish_task, audit_task]
+            crew_3_tasks = [blueprint_task, script_task, polish_task, audit_task]
 
             crew_3 = Crew(
                 agents=[producer_agent, editor_agent, auditor_agent],
@@ -1755,7 +1861,7 @@ if args.reuse_dir:
             script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
             for label, source, filename in [
                 ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
-                ("Show Outline", outline_task, "show_outline.md"),
+                ("Episode Blueprint", blueprint_task, "EPISODE_BLUEPRINT.md"),
                 ("Script Draft", script_task, "script_draft.md"),
                 ("Script Final", polish_task, "script_final.md"),
                 ("Accuracy Audit", audit_task, "accuracy_audit.md"),
@@ -1783,13 +1889,18 @@ if args.reuse_dir:
                 f.write(script_text)
 
             audio_output_path = new_output_dir / "audio.wav"
-            audio_file = generate_audio_from_script(cleaned_script, str(audio_output_path), lang_code=language_config['tts_code'])
-            if audio_file:
-                audio_file = Path(audio_file)
+            tts_result = generate_audio_from_script(cleaned_script, str(audio_output_path), lang_code=language_config['tts_code'])
+            if isinstance(tts_result, tuple):
+                audio_file_path, transition_positions = tts_result
+            else:
+                audio_file_path, transition_positions = tts_result, []
+            if audio_file_path:
+                audio_file = Path(audio_file_path)
                 print(f"Audio generation complete: {audio_file}")
                 print(f"Starting BGM Merging Phase...")
                 try:
-                    mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav")
+                    mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav",
+                                                  transition_positions_ms=transition_positions)
                     if mastered and os.path.exists(mastered) and mastered != str(audio_file):
                         audio_file = Path(mastered)
                         print(f"✓ BGM Merging Complete: {audio_file}")
@@ -1838,7 +1949,7 @@ progress_tracker.start_workflow()
 # Combined task list for tracking
 all_task_list = [
     framing_task,
-    outline_task,
+    blueprint_task,
     script_task,
     polish_task,
     audit_task,
@@ -2560,8 +2671,29 @@ if sot_summary:
         f"--- END SOURCE OF TRUTH ---\n"
     )
     script_task.description += sot_injection
-    outline_task.description += sot_injection
+    blueprint_task.description += sot_injection
     audit_task.description += sot_injection
+
+# Inject GRADE level and NNT data into blueprint for informed framing
+if deep_reports and deep_reports.get("audit"):
+    _audit_text = deep_reports["audit"].report if hasattr(deep_reports["audit"], 'report') else str(deep_reports["audit"])
+    _grade_m = re.search(r'Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}', _audit_text, re.IGNORECASE)
+    _grade_level = _grade_m.group(1).strip() if _grade_m else "Not Determined"
+    _grade_injection = f"\n\nGRADE EVIDENCE LEVEL: {_grade_level}\n"
+    _grade_injection += "Use this to calibrate your framing language in Section 6 (GRADE-Informed Framing Guide).\n"
+
+    _pd = deep_reports.get("pipeline_data", {}) if isinstance(deep_reports, dict) else {}
+    _impacts = _pd.get("impacts", [])
+    if _impacts:
+        _grade_injection += "\nKEY CLINICAL IMPACT NUMBERS:\n"
+        for _imp in _impacts[:5]:
+            _label = getattr(_imp, 'study_id', 'Study')
+            _nnt = getattr(_imp, 'nnt', None)
+            _arr = getattr(_imp, 'arr', None)
+            _dir = getattr(_imp, 'direction', 'unknown')
+            if _nnt is not None:
+                _grade_injection += f"- {_label}: NNT={_nnt:.0f} (ARR={_arr:.3f}, direction: {_dir})\n"
+    blueprint_task.description += _grade_injection
 
 # For translation: inject full SOT (not summary) since translation needs complete text
 if translation_task is not None and sot_content:
@@ -2582,13 +2714,13 @@ if evidence_quality == "limited":
         "\n\nEVIDENCE QUALITY NOTE — READ CAREFULLY:\n"
         "The systematic review found limited direct scientific evidence for this question.\n"
         "Your script MUST:\n"
-        "1. Acknowledge this in the OPENING: "
+        "1. Acknowledge this in the HOOK or Act 1: "
         "   'While direct studies on this are limited, related research gives us clues...'\n"
-        "2. In each body segment, distinguish: "
+        "2. In Act 2 (Evidence) and Act 3 (Nuance), distinguish: "
         "(a) what limited direct evidence shows, "
         "(b) what related evidence suggests, "
         "(c) what remains unknown.\n"
-        "3. Frame CLOSING takeaways as 'based on current evidence' — not 'proven'.\n"
+        "3. In Act 4 (Protocol), frame recommendations as 'based on current evidence' — not 'proven'.\n"
         "4. Do NOT invent citations. If few studies exist, say so in the dialogue.\n"
         "Example dialogue:\n"
         "  Presenter: 'Direct studies on this exact pattern are surprisingly rare. "
@@ -2596,10 +2728,12 @@ if evidence_quality == "limited":
         "  Questioner: 'So we're working with partial evidence here. "
         "What do we actually know for certain?'\n"
     )
-    outline_task.description += (
+    blueprint_task.description += (
         "\n\nEVIDENCE NOTE: Research was limited. "
         "Mark citations with [LIMITED EVIDENCE] where the research base is sparse. "
-        "Add a 'Research Limitations' section to the outline."
+        "In the Narrative Arc, ensure Act 3 (Nuance) heavily emphasizes what is NOT known. "
+        "The Hook should acknowledge the evidence gap (e.g., 'Despite X million people doing Y, "
+        "we have surprisingly few studies on...')."
     )
 
 # ================================================================
@@ -2634,7 +2768,7 @@ if translation_task is not None:
         print(f"  Warning: Translation task produced no output — translated SOT not saved")
         translated_sot = None
 
-crew_3_tasks = [outline_task, script_task, polish_task, audit_task]
+crew_3_tasks = [blueprint_task, script_task, polish_task, audit_task]
 
 crew_3 = Crew(
     agents=[producer_agent, editor_agent, auditor_agent],
@@ -2660,6 +2794,55 @@ finally:
     monitor.stop()
     monitor.join(timeout=2)
     progress_tracker.workflow_completed()
+
+# --- CONDITIONAL SCRIPT CORRECTION (Phase 7 blocking on HIGH-severity drift) ---
+audit_output = audit_task.output.raw if hasattr(audit_task, 'output') and audit_task.output else ""
+high_severity_found = bool(re.search(r'\*\*Severity\*\*:\s*HIGH', audit_output, re.IGNORECASE))
+
+if high_severity_found and audit_output:
+    print(f"\n{'='*60}")
+    print("HIGH-SEVERITY DRIFT DETECTED — RUNNING SCRIPT CORRECTION")
+    print(f"{'='*60}")
+    polished_script_raw = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else ""
+    correction_task = Task(
+        description=(
+            f"The accuracy audit found HIGH-severity scientific drift in the podcast script.\n\n"
+            f"AUDIT REPORT:\n{audit_output}\n\n"
+            f"POLISHED SCRIPT:\n{polished_script_raw}\n\n"
+            f"Fix ONLY the specific lines cited in the audit's 'Drift Instances Found' section.\n"
+            f"For each HIGH-severity issue:\n"
+            f"  - Find the exact quote from 'Script says'\n"
+            f"  - Replace it with language consistent with 'Source-of-truth says'\n"
+            f"Do NOT rewrite the entire script. Only fix cited drift instances.\n"
+            f"Preserve all [TRANSITION] markers, speaker labels, and overall structure.\n"
+            f"{target_instruction}"
+        ),
+        expected_output="Corrected podcast script with HIGH-severity drift fixed.",
+        agent=editor_agent,
+    )
+    try:
+        correction_crew = Crew(agents=[editor_agent], tasks=[correction_task], verbose=False)
+        correction_result = correction_crew.kickoff()
+        corrected = correction_result.raw if hasattr(correction_result, 'raw') else str(correction_result)
+        if len(corrected) > len(polished_script_raw) * 0.5:
+            # Save correction log
+            with open(output_dir / "ACCURACY_CORRECTIONS.md", 'w') as f:
+                f.write("# Script Corrections Applied\n\n")
+                f.write("HIGH-severity drift instances were corrected before audio generation.\n\n")
+                f.write(f"## Original Audit\n{audit_output}\n")
+            print("✓ Script correction applied — using corrected script for audio")
+            # Store corrected script for Phase 8
+            _corrected_script_text = corrected
+        else:
+            print("⚠ Correction output too short — using original polished script")
+            _corrected_script_text = None
+    except Exception as e:
+        print(f"⚠ Script correction failed: {e} — using original polished script")
+        _corrected_script_text = None
+else:
+    _corrected_script_text = None
+    if audit_output:
+        print("✓ Accuracy audit: No HIGH-severity drift — proceeding to audio")
 
 # --- PDF GENERATION STEP ---
 print("\n--- Generating Documentation PDFs ---")
@@ -2691,7 +2874,7 @@ markdown_outputs = [
     ("Research Framing", framing_output, "research_framing.md"),
     # source_of_truth.md already saved from deep research outputs
     ("Accuracy Audit", audit_task, "accuracy_audit.md"),
-    ("Show Outline", outline_task, "show_outline.md"),
+    ("Episode Blueprint", blueprint_task, "EPISODE_BLUEPRINT.md"),
     ("Script Draft", script_task, "script_draft.md"),
     ("Script Final", polish_task, "script_final.md"),
 ]
@@ -2767,8 +2950,12 @@ print(f"Session metadata: {metadata_file}")
 print("\n--- Generating Multi-Voice Podcast Audio (Kokoro TTS) ---")
 
 # Check script length before generation
-# Get the polished script from polish_task (not the last crew result, which is audit_task)
-script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
+# Use corrected script if HIGH-severity drift was fixed, otherwise use polished script
+if _corrected_script_text:
+    script_text = _corrected_script_text
+    print("Using drift-corrected script for audio generation")
+else:
+    script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
 
 # Language-aware script length measurement — rates and targets derived from SUPPORTED_LANGUAGES
 speech_rate  = language_config['speech_rate']
@@ -2792,11 +2979,12 @@ if script_length < target_low:
             f"The following podcast script is too short ({script_length} {length_unit}, target: {target_length}).\n"
             f"{target_instruction}\n"
             f"Expand it to reach {target_length} {length_unit} by:\n"
-            f"  1. For each topic segment, add deeper explanation of the scientific mechanism\n"
-            f"  2. Add one more real-world example or analogy per segment\n"
-            f"  3. Add more back-and-forth host dialogue — questioner should ask 'Why?' and 'What does that mean for listeners?'\n"
-            f"  4. Never cut or reorder existing content — only add.\n"
-            f"  5. Respond entirely in the same language as the input script.\n\n"
+            f"  1. For each act, add deeper explanation of the scientific mechanism\n"
+            f"  2. Add one more real-world example or analogy per act\n"
+            f"  3. Add more host dialogue — questioner should ask 'Why?' and 'What does that mean for listeners?'\n"
+            f"  4. Preserve all [TRANSITION] markers between acts.\n"
+            f"  5. Never cut or reorder existing content — only add.\n"
+            f"  6. Respond entirely in the same language as the input script.\n\n"
             f"SCRIPT TO EXPAND:\n{script_text}"
         ),
         expected_output=(
@@ -2851,13 +3039,18 @@ print(f"Podcast script saved: {script_file} ({script_length} {length_unit})")
 output_path = output_dir / "audio.wav"
 
 audio_file = None
+transition_positions = []
 
 audio_file = None
 try:
     print(f"Starting audio generation with script length: {len(cleaned_script)} chars")
-    audio_file = generate_audio_from_script(cleaned_script, str(output_path), lang_code=language_config['tts_code'])
-    if audio_file:
-        audio_file = Path(audio_file)
+    tts_result = generate_audio_from_script(cleaned_script, str(output_path), lang_code=language_config['tts_code'])
+    if isinstance(tts_result, tuple):
+        audio_file_path, transition_positions = tts_result
+    else:
+        audio_file_path, transition_positions = tts_result, []
+    if audio_file_path:
+        audio_file = Path(audio_file_path)
         print(f"Audio generation complete: {audio_file}")
 except Exception as e:
     print(f"✗ ERROR: Kokoro TTS failed with exception: {e}")
@@ -2870,11 +3063,10 @@ except Exception as e:
 if audio_file and audio_file.exists():
     print(f"\n{PHASE_MARKERS[-1][0]} {PHASE_MARKERS[-1][1]} ({PHASE_MARKERS[-1][2]}%)\n")
     print(f"Starting BGM Merging Phase...")
-    
+
     try:
-        # Default to "Interesting BGM.wav" as per user request
-        # This function now checks the 'Podcast BGM' library first
-        mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav")
+        mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav",
+                                      transition_positions_ms=transition_positions)
         if mastered and os.path.exists(mastered) and mastered != str(audio_file):
             audio_file = Path(mastered)
             print(f"✓ BGM Merging Complete: {audio_file}")
