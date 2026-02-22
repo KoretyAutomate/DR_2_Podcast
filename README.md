@@ -14,26 +14,26 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
                   │  Phase 0 — Research Framing (Crew 1) │
                   └──────────────┬───────────────────────┘
                                  ▼
-       ┌──────────────────────────────────────────────────────────────────┐
-       │  Phase 1 — Clinical Research Pipeline                            │
-       │                                                                  │
+       ┌───────────────────────────────────────────────────────────────────┐
+       │  Phase 1 — Clinical Research Pipeline                             │
+       │                                                                   │
        │  Pre-step: Concept Decomposition (Fast Model)                     │
-       │                              ▼                                   │
-       │  ┌─ AFFIRMATIVE (a) ────────────┐ ┌─ FALSIFICATION (b) ────────┐ │
-       │  │ 1a: Tiered keywords (Smart)  │ │ 1b: Tiered keywords        │ │
-       │  │     + Auditor gate → loop    │ │     + Auditor gate → loop  │ │
-       │  │ 2a: Cascade search (PubMed)  │ │ 2b: Cascade search         │ │
-       │  │     T1→T2→T3 + Scholar       │ │     T1→T2→T3 + Scholar     │ │
-       │  │ 3a: Tier-aware screen → 20   │ │ 3b: Tier-aware screen → 20 │ │
-       │  │ 4a: Full-text extraction     │ │ 4b: Full-text extraction   │ │
-       │  │     (PMC/Unpaywall + Fast)   │ │     (PMC/Unpaywall + Fast) │ │
-       │  │ 5a: Affirmative case (Smart) │ │ 5b: Falsification case     │ │
-       │  └──────────────────────────────┘ └────────────────────────────┘ │
-       │          (both tracks run in parallel via asyncio.gather)        │
-       │                              ▼                                   │
-       │  Step 6: Deterministic math — ARR/NNT (Python, no LLM)           │
-       │  Step 7: GRADE synthesis — Auditor (Smart)                       │
-       └──────────────┬───────────────────────────────────────────────────┘
+       │                              ▼                                    │
+       │  ┌─ AFFIRMATIVE (a) ────────────┐ ┌─ FALSIFICATION (b) ─────────┐ │
+       │  │ 1a: Tiered keywords (Smart)  │ │ 1b: Tiered keywords         │ │
+       │  │     + Auditor gate → loop    │ │     + Auditor gate → loop   │ │
+       │  │ 2a: Cascade search (PubMed)  │ │ 2b: Cascade search          │ │
+       │  │     T1→T2→T3 + Scholar       │ │     T1→T2→T3 + Scholar      │ │
+       │  │ 3a: Tier-aware screen → 20   │ │ 3b: Tier-aware screen → 20  │ │
+       │  │ 4a: Full-text extraction     │ │ 4b: Full-text extraction    │ │
+       │  │     (PMC/Unpaywall by Fast)  │ │     (PMC/Unpaywall by Fast) │ │
+       │  │ 5a: Affirmative case (Smart) │ │ 5b: Falsification case      │ │
+       │  └──────────────────────────────┘ └─────────────────────────────┘ │
+       │          (both tracks run in parallel via asyncio.gather)         │
+       │                              ▼                                    │
+       │  Step 6: Deterministic math — ARR/NNT (Python, no LLM)            │
+       │  Step 7: GRADE synthesis — Auditor (Smart)                        │
+       └──────────────┬────────────────────────────────────────────────────┘
                       ▼
      ┌───────────────────────────────────────────────────────────────┐
      │  Phase 2 — Source Validation (batch HEAD requests)            │
