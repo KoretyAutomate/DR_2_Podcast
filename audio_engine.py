@@ -132,13 +132,15 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
     lines = script_text.split('\n')
     audio_segments = []
     sample_rate = None  # determined from first API response
+    transition_positions_ms = []  # Track [TRANSITION] positions for pro mixer
+    cumulative_samples = 0
 
     current_speaker = None
     buffer_text = ""
     segment_count = 0
 
     def _flush_buffer():
-        nonlocal buffer_text, segment_count, sample_rate
+        nonlocal buffer_text, segment_count, sample_rate, cumulative_samples
         if buffer_text and current_speaker:
             logger.info(f"  Segment {segment_count + 1} (Speaker {current_speaker}): {buffer_text[:50]}...")
             chunks = _chunk_japanese_text(buffer_text)
@@ -151,7 +153,9 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
                 if sample_rate is None:
                     sample_rate = sr_chunk
                     logger.info(f"  Sample rate: {sample_rate} Hz")
-                audio_segments.append(np.concatenate(chunk_audios))
+                segment_audio = np.concatenate(chunk_audios)
+                audio_segments.append(segment_audio)
+                cumulative_samples += len(segment_audio)
                 segment_count += 1
             else:
                 logger.warning(f"  ⚠ Segment {segment_count + 1} failed — skipping")
@@ -164,6 +168,21 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
 
         # Skip section separators
         if re.match(r'^-{3,}$', line):
+            continue
+
+        # Check for audio markers ([TRANSITION], [PAUSE], [BEAT])
+        if line in MARKER_SILENCE:
+            _flush_buffer()
+            # Use 24000 as fallback sample rate if not yet determined
+            _sr = sample_rate or 24000
+            silence_sec = MARKER_SILENCE[line]
+            silence_samples = int(silence_sec * _sr)
+            audio_segments.append(np.zeros(silence_samples, dtype=np.float32))
+            if line == '[TRANSITION]':
+                position_ms = int((cumulative_samples / _sr) * 1000)
+                transition_positions_ms.append(position_ms)
+                logger.info(f"  [TRANSITION] marker at {position_ms}ms")
+            cumulative_samples += silence_samples
             continue
 
         # Check for speaker switch
@@ -192,6 +211,7 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
             if current_speaker is not None and current_speaker != new_speaker and sample_rate:
                 silence = np.zeros(int(0.3 * sample_rate), dtype=np.float32)
                 audio_segments.append(silence)
+                cumulative_samples += len(silence)
 
             current_speaker = new_speaker
             buffer_text = text_after
@@ -205,6 +225,8 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
     _flush_buffer()
 
     logger.info(f"Generated {segment_count} audio segments")
+    if transition_positions_ms:
+        logger.info(f"Transition positions: {transition_positions_ms}")
 
     # Stitch and save
     if audio_segments and sample_rate:
@@ -223,7 +245,7 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
             logger.info(f"  Sample rate: {sample_rate} Hz")
             logger.info("=" * 60 + "\n")
 
-            return output_filename
+            return (output_filename, transition_positions_ms)
         except Exception as e:
             logger.error(f"✗ ERROR: Failed to save audio: {e}")
             return None
@@ -232,7 +254,7 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
         return None
 
 
-def generate_audio_from_script(script_text: str, output_filename: str = "final_podcast.wav", lang_code: str = 'a') -> str:
+def generate_audio_from_script(script_text: str, output_filename: str = "final_podcast.wav", lang_code: str = 'a'):
     """
     Parses a script looking for 'Host 1:' and 'Host 2:' lines,
     generates audio segments, and stitches them together.
@@ -247,11 +269,14 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         lang_code: Language code ('a' for English, 'j' for Japanese, etc.)
 
     Returns:
-        Path to generated audio file, or None if generation failed
+        Tuple of (path_to_audio_file, transition_positions_ms) or None if failed.
+        transition_positions_ms is a list of millisecond positions where [TRANSITION]
+        markers were found, used by the pro mixer for BGM volume bumps.
 
     Example Script Format:
         Host 1: Welcome to the show. Today we're discussing coffee.
         Host 2: But is coffee actually good for you? Let's examine the evidence.
+        [TRANSITION]
         Host 1: Studies show that moderate coffee intake...
     """
     # Route to Qwen3-TTS for Japanese (GPU-accelerated, distinct preset voices)
@@ -302,9 +327,12 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
     speaker_pattern = re.compile(r'^(.+?)[:：]\s*(.*)')
     speaker_map = {}  # name → speaker number (1 or 2)
 
+    sample_rate = 24000  # Kokoro standard
     lines = script_text.split('\n')
     audio_segments = []
-    silence_gap = np.zeros(int(0.3 * 24000), dtype=np.float32)  # 300ms silence at 24kHz
+    silence_gap = np.zeros(int(0.3 * sample_rate), dtype=np.float32)  # 300ms silence
+    transition_positions_ms = []  # Track [TRANSITION] positions for pro mixer
+    cumulative_samples = 0  # Running total for position tracking
 
     current_speaker = None
     buffer_text = ""
@@ -312,13 +340,14 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
 
     def _flush_buffer():
         """Flush the current text buffer into audio segments."""
-        nonlocal buffer_text, segment_count
+        nonlocal buffer_text, segment_count, cumulative_samples
         if buffer_text and current_speaker:
             voice = voice_host_1 if current_speaker == 1 else voice_host_2
             try:
                 generator = pipeline(buffer_text, voice=voice, speed=1.0, split_pattern=r'\n+')
                 for _, _, audio in generator:
                     audio_segments.append(audio)
+                    cumulative_samples += len(audio)
                     segment_count += 1
             except Exception as e:
                 logger.warning(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
@@ -331,6 +360,19 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
 
         # Skip section separators (--- between topics) — not end of dialogue
         if re.match(r'^-{3,}$', line):
+            continue
+
+        # Check for audio markers ([TRANSITION], [PAUSE], [BEAT])
+        if line in MARKER_SILENCE:
+            _flush_buffer()
+            silence_sec = MARKER_SILENCE[line]
+            silence_samples = int(silence_sec * sample_rate)
+            audio_segments.append(np.zeros(silence_samples, dtype=np.float32))
+            if line == '[TRANSITION]':
+                position_ms = int((cumulative_samples / sample_rate) * 1000)
+                transition_positions_ms.append(position_ms)
+                logger.info(f"  [TRANSITION] marker at {position_ms}ms")
+            cumulative_samples += silence_samples
             continue
 
         # Check for Speaker Switch: any "Name:" or "Name：" prefix
@@ -361,6 +403,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             # Insert silence gap on speaker change (not before first speaker)
             if current_speaker is not None and current_speaker != new_speaker:
                 audio_segments.append(silence_gap)
+                cumulative_samples += len(silence_gap)
 
             current_speaker = new_speaker
             buffer_text = text_after
@@ -375,15 +418,17 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
     _flush_buffer()
 
     logger.info(f"Generated {segment_count} audio segments")
+    if transition_positions_ms:
+        logger.info(f"Transition positions: {transition_positions_ms}")
 
     # 3. Stitch and Save
     if audio_segments:
         try:
             final_audio = np.concatenate(audio_segments)
-            sf.write(output_filename, final_audio, 24000)  # Kokoro standard: 24kHz
+            sf.write(output_filename, final_audio, sample_rate)
 
             file_size = Path(output_filename).stat().st_size
-            duration_sec = len(final_audio) / 24000
+            duration_sec = len(final_audio) / sample_rate
             duration_min = duration_sec / 60
 
             logger.info(f"\n✓ Audio generated successfully:")
@@ -392,7 +437,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             logger.info(f"  Duration: {duration_min:.2f} minutes ({duration_sec:.1f} seconds)")
             logger.info("=" * 60 + "\n")
 
-            return output_filename
+            return (output_filename, transition_positions_ms)
         except Exception as e:
             logger.error(f"✗ ERROR: Failed to save audio: {e}")
             return None
@@ -401,14 +446,16 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         return None
 
 
-def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav") -> str:
+def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav",
+                       transition_positions_ms: list = None) -> str:
     """
-    Post-process raw Kokoro TTS output: select background music from library or generate it, then mix.
+    Post-process raw TTS output: select background music from library or generate it, then mix.
 
     Args:
         wav_path: Path to the raw WAV file (24kHz, mono)
         bgm_target: Filename in 'Podcast BGM' folder OR 'random' OR music description for generation.
                     Defaults to "Interesting BGM.wav".
+        transition_positions_ms: List of millisecond positions for BGM volume bumps (from TTS markers).
 
     Returns:
         Path to the mastered WAV file, or None if processing failed
@@ -481,7 +528,11 @@ def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav") -
         mixer = AudioMixer()
         mixed_path = wav_path.replace(".wav", "_mixed.wav")
 
-        success = mixer.mix_podcast(wav_path, music_path, mixed_path)
+        # Try pro mixing with pre/post roll and transition bumps
+        success = mixer.mix_podcast_pro(
+            wav_path, music_path, mixed_path,
+            transition_positions_ms=transition_positions_ms or []
+        )
 
         if success:
             logger.info(f"Mastered audio saved: {mixed_path}")
@@ -494,9 +545,21 @@ def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav") -
         return wav_path
 
 
+# Audio markers recognized by TTS engine — inserted by editor in Phase 6
+AUDIO_MARKERS = {'[TRANSITION]': '___TRANSITION___', '[PAUSE]': '___PAUSE___', '[BEAT]': '___BEAT___'}
+
+# Silence duration (seconds) for each marker type
+MARKER_SILENCE = {
+    '[TRANSITION]': 1.5,
+    '[PAUSE]': 0.8,
+    '[BEAT]': 0.3,
+}
+
+
 def clean_script_for_tts(script_text: str) -> str:
     """
     Clean script text for TTS processing by removing markdown and LLM artifacts.
+    Preserves [TRANSITION], [PAUSE], and [BEAT] audio markers.
 
     Args:
         script_text: Raw script text with potential markdown and tags
@@ -504,6 +567,10 @@ def clean_script_for_tts(script_text: str) -> str:
     Returns:
         Cleaned script text ready for TTS
     """
+    # Protect audio markers before cleaning
+    for marker, placeholder in AUDIO_MARKERS.items():
+        script_text = script_text.replace(marker, placeholder)
+
     # Remove thinking tags
     clean = re.sub(r'<think>.*?</think>', '', script_text, flags=re.DOTALL)
 
@@ -525,6 +592,10 @@ def clean_script_for_tts(script_text: str) -> str:
     clean = re.sub(r'[^\S\n]+', ' ', clean)  # collapse spaces/tabs but keep \n
     clean = re.sub(r'\n{3,}', '\n\n', clean)  # collapse excessive blank lines
     clean = clean.strip()
+
+    # Restore audio markers
+    for marker, placeholder in AUDIO_MARKERS.items():
+        clean = clean.replace(placeholder, marker)
 
     return clean
 
