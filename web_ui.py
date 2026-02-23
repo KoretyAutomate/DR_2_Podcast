@@ -975,7 +975,7 @@ def home(username: str = Depends(verify_credentials)):
                             </tbody>
                         </table>
                         <div style="margin-top: 5px; font-size: 0.85rem; color: var(--accent-primary);">
-                            Current Phase: <span id="currentStepTimer">0m 0s</span>
+                            Current Step: <span id="currentStepTimer">0m 0s</span>
                         </div>
                     </div>
 
@@ -1450,21 +1450,63 @@ def home(username: str = Depends(verify_credentials)):
                     const durationList = document.getElementById('stepDurationList');
                     const currentTimer = document.getElementById('currentStepTimer');
                     
-                    if (data.step_durations && data.step_durations.length > 0) {{
+                    const PHASE_GROUPS = {{
+                        'Research Framing': 'Scientific Fact Finding',
+                        'Clinical Research': 'Scientific Fact Finding',
+                        'Clinical Research Complete': 'Scientific Fact Finding',
+                        'Source of Truth': 'Scientific Fact Finding',
+                        'Source Validation': 'Scientific Fact Finding',
+                        'Report Translation': 'Scientific Fact Finding',
+                        'Podcast Production': 'Podcast Planning',
+                        'Show Outline': 'Podcast Planning',
+                        'Script Writing': 'Podcast Planning',
+                        'Script Polish': 'Podcast Planning',
+                        'Accuracy Audit': 'Podcast Planning',
+                        'Audio Production': 'Podcast Recording',
+                        'Reuse Analysis': 'Scientific Fact Finding',
+                        'Supplemental Research': 'Scientific Fact Finding',
+                    }};
+                    const GROUP_ORDER = ['Scientific Fact Finding', 'Podcast Planning', 'Podcast Recording'];
+
+                    if ((data.step_durations && data.step_durations.length > 0) || data.current_step_duration_seconds > 0) {{
                         durationBox.style.display = 'block';
-                        durationList.innerHTML = data.step_durations.map(s => `
-                            <tr style="border-bottom: 1px dashed var(--border-color);">
-                                <td style="padding: 4px 0;">${{s.phase}}</td>
-                                <td style="text-align: right; color: var(--text-secondary);">${{s.duration_formatted}}</td>
-                            </tr>
-                        `).join('');
+
+                        // Sum completed phase durations into groups
+                        const groupTotals = {{}};
+                        GROUP_ORDER.forEach(g => groupTotals[g] = 0);
+                        if (data.step_durations) {{
+                            data.step_durations.forEach(s => {{
+                                const group = PHASE_GROUPS[s.phase];
+                                if (group) groupTotals[group] += s.duration;
+                            }});
+                        }}
+
+                        // Add running current step duration to its group
+                        const currentGroup = PHASE_GROUPS[data.phase] || null;
+                        if (currentGroup && data.current_step_duration_seconds > 0) {{
+                            groupTotals[currentGroup] += data.current_step_duration_seconds;
+                        }}
+
+                        // Render only groups that have time > 0
+                        durationList.innerHTML = GROUP_ORDER
+                            .filter(g => groupTotals[g] > 0)
+                            .map(g => {{
+                                const secs = groupTotals[g];
+                                const fmt = `${{Math.floor(secs / 60)}}m ${{Math.floor(secs % 60)}}s`;
+                                const isCurrent = (g === currentGroup && data.status === 'running');
+                                return `<tr style="border-bottom: 1px dashed var(--border-color);">
+                                    <td style="padding: 4px 0;${{isCurrent ? ' font-weight: bold;' : ''}}">${{g}}${{isCurrent ? ' ⏱' : ''}}</td>
+                                    <td style="text-align: right; color: var(--text-secondary);">${{fmt}}</td>
+                                </tr>`;
+                            }}).join('');
                     }} else {{
                          durationBox.style.display = 'none';
                     }}
-                    
-                    if (data.current_step_duration) {{
+
+                    if (data.current_step_duration && data.phase) {{
                         durationBox.style.display = 'block';
-                        currentTimer.textContent = data.current_step_duration;
+                        const grp = PHASE_GROUPS[data.phase] || data.phase;
+                        currentTimer.textContent = `${{grp}} — ${{data.current_step_duration}}`;
                     }}
 
                     // Update Research Visualizer
@@ -2476,7 +2518,8 @@ async def get_status(task_id: str, username: str = Depends(verify_credentials)):
     
     response = task.copy()
     response["current_step_duration"] = f"{int(current_step_duration // 60)}m {int(current_step_duration % 60)}s"
-    
+    response["current_step_duration_seconds"] = current_step_duration
+
     return response
 
 @app.get("/api/history")
