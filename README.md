@@ -47,10 +47,10 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
      ┌───────────────────────────────────────────────────────────────┐
      │ Crew 3 — Podcast Production                                   │
      │                                                               │
-     │  Phase 4: Show Outline & Citations (Producer)                 │
+     │  Phase 4: Episode Blueprint (Producer)                         │
      │  Phase 5: Script Writing (Producer)                           │
      │  Phase 6: Script Polish (Editor)                              │
-     │  Phase 7: Accuracy Audit (Auditor) [advisory]                 │
+     │  Phase 7: Accuracy Audit (Auditor) [conditionally blocking]   │
      └───────────────────────┬───────────────────────────────────────┘
                              ▼
               ┌─────────────────────────────────────────────┐
@@ -64,7 +64,7 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
 
 A FastAPI-based web interface (`web_ui.py`) for managing podcast production:
 
-- One-click topic submission with language, accessibility level, and host selection
+- One-click topic submission with language, accessibility level, host selection, and channel branding (intro text, target audience, mission)
 - **Live progress tracking**: phase name, progress bar, ETA, artifact count, source favicon grid
 - **Task queue**: submit multiple requests — confirmation dialog shows queue position, running task progress stays visible
 - **Production History**: collapsible list of past runs with download links
@@ -151,7 +151,7 @@ For each of the top 20 studies, the full text is retrieved via a 4-tier fallback
 3. **Unpaywall API** (OA PDF location via DOI)
 4. **Publisher page scrape** (existing `ContentFetcher` logic)
 
-The fast model then extracts 20 clinical variables per article: `control_event_rate` (CER), `experimental_event_rate` (EER), effect size with CI, attrition, blinding, randomization, ITT analysis, funding source, conflicts of interest, risk of bias, demographics, follow-up period, and biological mechanism.
+The fast model then extracts 20 clinical variables per article: `control_event_rate` (CER), `experimental_event_rate` (EER), effect size with CI, attrition, blinding, randomization, ITT analysis, funding source, conflicts of interest, risk of bias, demographics, follow-up period, and biological mechanism. Extractions are **cached by PMID** in `research_outputs/extraction_cache.json` — subsequent runs reuse cached CER/EER values, ensuring identical NNT calculations for the same paper across runs.
 
 **Step 5 — Case Synthesis (Smart Model, ~30s each)**
 Each track writes a structured case report from the extracted data:
@@ -211,17 +211,17 @@ Batch HEAD requests validate all cited URLs. The Source-of-Truth is then assembl
 ### Phase 3 — Report Translation (Crew 2, conditional)
 For non-English output, the Producer translates the Source-of-Truth into the target language. This runs as a separate Crew 2 before Crew 3. Skipped for English.
 
-### Phase 4 — Show Outline (Crew 3)
-The Producer generates a show outline with citations. The Source-of-Truth summary is injected directly into task descriptions.
+### Phase 4 — Episode Blueprint (Crew 3)
+The Producer generates a 7-section Episode Blueprint: episode thesis, listener value proposition, hook question, content framework (PPP or QEI), 4-act narrative arc, GRADE-informed evidence framing, and citation plan. The Source-of-Truth summary is injected directly into task descriptions.
 
 ### Phase 5 — Script Writing (Crew 3)
-The Producer generates the debate script. The script uses `Host 1:` / `Host 2:` dialogue format.
+The Producer generates the debate script following a Channel Intro → Hook Question → 4-Act structure (Claim, Evidence, Nuance, Protocol) → Wrap-up → One Action ending. The script uses `Host 1:` / `Host 2:` dialogue format with `[TRANSITION]` markers between acts.
 
 ### Phase 6 — Script Polish (Crew 3)
 The Editor refines for natural verbal delivery and ensures balanced coverage.
 
-### Phase 7 — Accuracy Audit (Crew 3, advisory)
-The Auditor scans the polished script for drift patterns: correlation-to-causation, hedge removal, confidence inflation, cherry-picking, and contested-as-settled. Non-blocking.
+### Phase 7 — Accuracy Audit (Crew 3, conditionally blocking)
+The Auditor scans the polished script for drift patterns: correlation-to-causation, hedge removal, confidence inflation, cherry-picking, and contested-as-settled. If **HIGH-severity** drift is detected, a correction pass automatically rewrites the affected sections before audio generation. Corrections are logged to `ACCURACY_CORRECTIONS.md`.
 
 ### Phase 8 — Audio Production
 Audio is rendered with two voices at 24kHz WAV, followed by BGM mixing. TTS engine is selected by language:
@@ -235,7 +235,11 @@ Audio is rendered with two voices at 24kHz WAV, followed by BGM mixing. TTS engi
 
 The pipeline supports English and Japanese output:
 - **English**: Default. All research, scripts, and audio in English.
-- **Japanese**: A translation task runs in Crew 2 before Crew 3. Audio is rendered by **Qwen3-TTS** (GPU, FastAPI server at port 8082) — Kokoro is not used for Japanese. Host names use katakana (カズ / エリカ).
+- **Japanese**: A translation task runs in Crew 2 before Crew 3. Audio is rendered by **Qwen3-TTS** (GPU, FastAPI server at port 8082) — Kokoro is not used for Japanese. Host names use katakana (カズ / エリカ). A post-Crew 3 language auditor detects Chinese contamination (CJK text without hiragana/katakana) and automatically runs a correction pass to translate any Chinese passages into natural Japanese.
+
+### Script Length Enforcement
+
+After Crew 3 completes, the pipeline measures script length against the target (language-aware: words for English, characters for Japanese) with a ±10% tolerance. If the script is too short, **up to 3 expansion passes** run automatically — each pass adds deeper scientific explanation, real-world examples, and host dialogue. Expansion stops early if a pass fails to increase the length.
 
 ## Podcast Characters
 
@@ -317,6 +321,11 @@ export ACCESSIBILITY_LEVEL="simple"   # simple | moderate | technical
 export PODCAST_LENGTH="long"          # short | medium | long
 export PODCAST_HOSTS="random"         # random | kaz_erika | erika_kaz
 
+# Optional — channel branding
+export PODCAST_CHANNEL_INTRO="Welcome to Deep Research Podcast. Today we're..."
+export PODCAST_CORE_TARGET="busy professionals aged 30-50"
+export PODCAST_CHANNEL_MISSION="turning complex science into actionable protocols"
+
 # Model config (defaults shown)
 export MODEL_NAME="Qwen/Qwen2.5-32B-Instruct-AWQ"
 export LLM_BASE_URL="http://localhost:8000/v1"
@@ -378,15 +387,19 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 ├── source_of_truth.md                IMRaD scientific paper (Abstract, Intro, Methods, Results, Discussion, References)
 ├── source_of_truth.pdf
 ├── url_validation_results.json       Phase 2 — batch URL validation results
-├── show_outline.md                   Phase 4 — show outline and citations
+├── EPISODE_BLUEPRINT.md              Phase 4 — episode blueprint (thesis, hook, narrative arc, citations)
 ├── script_draft.md                   Phase 5 — draft script
 ├── script_final.md                   Phase 6 — polished script
 ├── script.txt                        Final script for TTS
 ├── accuracy_audit.md                 Phase 7 — drift detection
 ├── accuracy_audit.pdf
+├── ACCURACY_CORRECTIONS.md           Phase 7 — corrections applied (only if HIGH-severity drift)
 ├── audio.wav                         Phase 8 — final podcast audio (24kHz WAV + BGM)
 ├── session_metadata.txt              Topic, language, character assignments
 └── podcast_generation.log            Execution log
+
+research_outputs/
+└── extraction_cache.json             Step 4 — PMID-keyed extraction cache (persistent across all runs)
 ```
 
 ## Source of Truth (IMRaD Format)
@@ -416,6 +429,7 @@ The evidence quality banner (`⚠ Evidence Quality Notice`) is prepended when th
 | `search_service.py` | SearXNG client, page scraping, content extraction |
 | `research_planner.py` | Structured research planning with iterative gap-filling |
 | `audio_engine.py` | Kokoro TTS rendering with dual-voice stitching and BGM post-processing |
+| `audio_mixer.py` | BGM mixing with pre-roll, post-roll, and transition bumps |
 | `link_validator.py` | URL validation via HEAD requests |
 | `upload_utils.py` | Buzzsprout and YouTube upload utilities |
 | `test_clinical_math.py` | Unit tests for clinical_math.py (17 tests) |
