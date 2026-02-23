@@ -159,6 +159,7 @@ class StudyMetadata:
     limitations: Optional[str] = None      # Author-stated limitations
     demographics: Optional[str] = None     # "age 25-45, 60% female, healthy adults"
     funding_source: Optional[str] = None   # "Industry-funded", "NIH grant", "Independent", etc.
+    research_tier: Optional[int] = None    # 1=folk 2=synonym 3=compound
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None}
@@ -278,6 +279,7 @@ class DeepExtraction:
     sample_size_control: Optional[int] = None
     study_design: Optional[str] = None
     risk_of_bias: Optional[str] = None
+    research_tier: Optional[int] = None    # 1=folk 2=synonym 3=compound
     raw_facts: str = ""
 
     def to_dict(self) -> dict:
@@ -1103,12 +1105,44 @@ class ResearchAgent:
     # --- New Clinical Pipeline Methods (Steps 1-6) ---
 
     def _parse_json_response(self, raw: str) -> Any:
-        """Parse JSON from smart model output, handling code blocks."""
+        """Parse JSON from smart model output, handling code blocks and LLM noise."""
+        if not raw or not raw.strip():
+            raise ValueError("Empty response from LLM")
+        # Strip code blocks
         if "```" in raw:
             match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
             if match:
                 raw = match.group(1).strip()
-        return json.loads(raw)
+        # Strip leading non-JSON text (e.g. "Here is the JSON:")
+        first_brace = raw.find("{")
+        first_bracket = raw.find("[")
+        starts = [i for i in (first_brace, first_bracket) if i >= 0]
+        if starts:
+            raw = raw[min(starts):]
+        # Try parsing as-is
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            # Try appending missing closing brace/bracket
+            stripped = raw.rstrip()
+            for suffix in ["}", "}}", "]", "]}"]:
+                try:
+                    data = json.loads(stripped + suffix)
+                    break
+                except json.JSONDecodeError:
+                    continue
+            else:
+                logger.warning("JSON parse failed, raw (first 500 chars): %s", raw[:500])
+                raise
+        # Detect template echo: if a value contains the example template text, null it out
+        template_markers = ["parallel RCT | crossover RCT | meta-analysis"]
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if isinstance(v, str):
+                    for marker in template_markers:
+                        if marker in v:
+                            data[k] = None
+        return data
 
     async def _decompose_topic(self, topic: str, framing_context: str = "") -> dict:
         """Pre-PICO: fast model extracts canonical scientific terms from folk-language topic."""
@@ -1797,6 +1831,7 @@ class ResearchAgent:
             sample_size_control=cached.get("sample_size_control"),
             study_design=cached.get("study_design"),
             risk_of_bias=cached.get("risk_of_bias"),
+            research_tier=record.research_tier,
             raw_facts=cached.get("raw_facts", ""),
         )
 
@@ -1818,8 +1853,8 @@ class ResearchAgent:
     ) -> List[DeepExtraction]:
         """Step 4: Extract clinical variables from full-text articles using fast model.
         Uses PMID-keyed cache to ensure identical NNT across runs for the same paper."""
-        log(f"    [Step 4] Deep extraction from {len(articles)} articles...")
-        semaphore = asyncio.Semaphore(10)
+        log(f"    [Step 4] Deep extraction from {len(articles)} articles (Smart Model)...")
+        semaphore = asyncio.Semaphore(4)  # Lower concurrency for Smart Model (vLLM)
 
         # Load extraction cache
         extraction_cache = self._load_extraction_cache()
@@ -1834,11 +1869,15 @@ class ResearchAgent:
                 cache_hits += 1
                 log(f"    [Cache hit] {record.title[:50]}...")
                 return self._extraction_from_cache(record, extraction_cache[cache_key])
-            text = getattr(article, 'full_text', '') or record.abstract
+            text = getattr(article, 'full_text', '') or ''
+            # Fall back to abstract if full-text is empty or too short
+            if len(text.strip()) < 200 and record.abstract:
+                text = record.abstract
             if not text.strip():
                 return DeepExtraction(
                     pmid=record.pmid, doi=record.doi, title=record.title,
-                    url=record.url, raw_facts="No content available"
+                    url=record.url, research_tier=record.research_tier,
+                    raw_facts="No content available"
                 )
 
             async with semaphore:
@@ -1872,24 +1911,16 @@ class ResearchAgent:
                         "}"
                     )
 
-                    if self.fast_worker:
-                        resp = await self.fast_worker.client.chat.completions.create(
-                            model=self.fast_worker.model,
-                            messages=[
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": f"Title: {record.title}\n\nContent:\n{content}"}
-                            ],
-                            max_tokens=1536, temperature=0.1, timeout=180
-                        )
-                    else:
-                        resp = await self.smart_client.chat.completions.create(
-                            model=self.smart_model,
-                            messages=[
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": f"Title: {record.title}\n\nContent:\n{content}"}
-                            ],
-                            max_tokens=1536, temperature=0.1, timeout=300
-                        )
+                    # Always use Smart Model for extraction — Fast Model (1B params)
+                    # is too small for reliable 19-field JSON extraction from full-text
+                    resp = await self.smart_client.chat.completions.create(
+                        model=self.smart_model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": f"Title: {record.title}\n\nContent:\n{content}"}
+                        ],
+                        max_tokens=1536, temperature=0.1, timeout=300
+                    )
 
                     raw = resp.choices[0].message.content.strip()
                     data = self._parse_json_response(raw)
@@ -1952,13 +1983,15 @@ class ResearchAgent:
                         sample_size_control=safe_int(data.get("sample_size_control")),
                         study_design=safe_str(data.get("study_design")),
                         risk_of_bias=safe_str(data.get("risk_of_bias")),
+                        research_tier=record.research_tier,
                         raw_facts=safe_str(data.get("raw_facts")) or "",
                     )
                 except Exception as e:
                     logger.warning(f"Deep extraction failed for {record.title[:50]}: {e}")
                     return DeepExtraction(
                         pmid=record.pmid, doi=record.doi, title=record.title,
-                        url=record.url, raw_facts=f"Extraction failed: {str(e)[:100]}"
+                        url=record.url, research_tier=record.research_tier,
+                        raw_facts=f"Extraction failed: {str(e)[:100]}"
                     )
 
         # Log sources for UI visualization
@@ -2590,6 +2623,7 @@ class Orchestrator:
                 limitations=ex.attrition_pct,
                 demographics=ex.demographics,
                 funding_source=ex.funding_source,
+                research_tier=ex.research_tier,
             )
             sources.append(SummarizedSource(
                 url=ex.url,
