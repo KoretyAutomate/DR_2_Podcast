@@ -581,7 +581,7 @@ def clean_script_for_tts(script_text: str) -> str:
 
     # Remove markdown formatting
     clean = re.sub(r'\*\*', '', clean)  # Bold
-    clean = re.sub(r'[*#_\[\]]', '', clean)  # Italics, headers, underscores, brackets
+    clean = re.sub(r'[*#\[\]]', '', clean)  # Italics, headers, brackets (NOT underscores — protects ___TRANSITION___ placeholders)
 
     # Normalize unicode punctuation to ASCII
     unicode_map = {
