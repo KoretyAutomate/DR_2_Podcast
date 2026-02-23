@@ -2022,6 +2022,19 @@ def _close_phase(task_id: str):
             "duration_formatted": f"{int(duration // 60)}m {int(duration % 60)}s",
         })
 
+def _preflight_check() -> Optional[str]:
+    """Test vLLM and Ollama reachability. Returns error message or None."""
+    errors = []
+    for name, url in [("vLLM", "http://localhost:8000/v1/models"),
+                      ("Ollama", "http://localhost:11434/api/tags")]:
+        try:
+            resp = httpx.get(url, timeout=3.0)
+            resp.raise_for_status()
+        except Exception as e:
+            errors.append(f"{name} unreachable at {url}: {e}")
+    return "; ".join(errors) if errors else None
+
+
 def run_podcast_generation(task_id: str, topic: str, language: str,
                            accessibility_level: str = "simple",
                            podcast_length: str = "long", podcast_hosts: str = "random",
@@ -2030,6 +2043,13 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
                            core_target: str = "", channel_mission: str = ""):
     """Run pipeline.py in background with real-time phase tracking."""
     try:
+        preflight_err = _preflight_check()
+        if preflight_err:
+            tasks_db[task_id]["status"] = "failed"
+            tasks_db[task_id]["error"] = f"Pre-flight check failed: {preflight_err}"
+            save_tasks()
+            return
+
         tasks_db[task_id]["status"] = "running"
         tasks_db[task_id]["progress"] = 0
         tasks_db[task_id]["phase"] = ""        # set by first is_phase marker
@@ -2211,6 +2231,14 @@ def run_podcast_reuse(task_data: dict):
     upload_youtube = task_data.get("upload_youtube", False)
 
     try:
+        if reuse_mode != "tts_only":
+            preflight_err = _preflight_check()
+            if preflight_err:
+                tasks_db[task_id]["status"] = "failed"
+                tasks_db[task_id]["error"] = f"Pre-flight check failed: {preflight_err}"
+                save_tasks()
+                return
+
         tasks_db[task_id]["status"] = "running"
         tasks_db[task_id]["progress"] = 0
         tasks_db[task_id]["phase"] = ""

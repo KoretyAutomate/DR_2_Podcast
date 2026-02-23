@@ -149,9 +149,14 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
                 a, sr_chunk = _call_qwen3_tts_segment(chunk, current_speaker)
                 if a is not None:
                     chunk_audios.append(a)
+                else:
+                    sr_fallback = sample_rate or 24000
+                    silence_secs = max(0.5, len(chunk) / 8.0)
+                    chunk_audios.append(np.zeros(int(silence_secs * sr_fallback), dtype=np.float32))
+                    logger.warning(f"  Chunk failed — inserted {silence_secs:.1f}s silence")
             if chunk_audios:
                 if sample_rate is None:
-                    sample_rate = sr_chunk
+                    sample_rate = sr_chunk if sr_chunk is not None else 24000
                     logger.info(f"  Sample rate: {sample_rate} Hz")
                 segment_audio = np.concatenate(chunk_audios)
                 audio_segments.append(segment_audio)

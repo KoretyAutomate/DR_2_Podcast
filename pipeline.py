@@ -325,6 +325,19 @@ def assign_roles() -> dict:
 SESSION_ROLES = assign_roles()
 
 
+def _truncate_at_boundary(text: str, max_len: int) -> str:
+    """Truncate text at the last paragraph boundary before max_len."""
+    if len(text) <= max_len:
+        return text
+    cut = text[:max_len].rfind('\n\n')
+    if cut > 0:
+        return text[:cut]
+    cut = text[:max_len].rfind('\n')
+    if cut > 0:
+        return text[:cut]
+    return text[:max_len]
+
+
 # --- REUSE HELPER FUNCTIONS ---
 RESEARCH_ARTIFACTS = [
     "source_of_truth.md", "SOURCE_OF_TRUTH.md",
@@ -401,7 +414,7 @@ def check_supplemental_needed(topic: str, reuse_dir: Path) -> dict:
     if not sot_path.exists():
         return {"needs_supplement": True, "reason": "No source_of_truth.md found", "queries": []}
 
-    sot_content = sot_path.read_text()[:8000]
+    sot_content = _truncate_at_boundary(sot_path.read_text(), 8000)
 
     prompt = (
         f"You are a research completeness evaluator.\n\n"
@@ -1162,7 +1175,9 @@ if language != 'en':
             f"- Preserve scientific accuracy — translate meaning, not word-for-word\n"
             f"- Keep confidence labels (HIGH/MEDIUM/LOW/CONTESTED) intact\n"
             f"- Keep study names, journal names, and URLs in English\n"
+            f"- Keep clinical abbreviations in English: ARR, NNT, GRADE, CER, EER, RCT, RRR, CI, OR, HR\n"
             f"- Maintain all markdown formatting (headers, tables, bullet points)\n"
+            f"- Preserve ALL numerical values exactly (percentages, CI ranges, p-values, sample sizes) — do NOT convert or round\n"
             + (f"- CRITICAL: Output MUST be in Japanese (日本語) only. Do NOT switch to Chinese (中文).\n"
                f"  Use standard Japanese kanji (e.g., 気 not 气, 楽 not 乐).\n"
                if language == 'ja' else '')
@@ -1620,6 +1635,13 @@ if args.reuse_dir:
         # Copy research artifacts
         _copy_research_artifacts(reuse_dir, new_output_dir)
 
+        # Warn about missing critical clinical artifacts
+        _critical_artifacts = ["grade_synthesis.md", "affirmative_case.md",
+                               "falsification_case.md", "research_sources.json"]
+        for _art in _critical_artifacts:
+            if not (new_output_dir / _art).exists():
+                print(f"  ⚠ Missing clinical artifact '{_art}' — pipeline will rely on SOT content only")
+
         # Load source_of_truth.md content for context injection
         sot_path = new_output_dir / "source_of_truth.md"
         if not sot_path.exists():
@@ -1632,7 +1654,7 @@ if args.reuse_dir:
         # Inject source_of_truth content into Crew 3 task descriptions
         sot_injection = (
             f"\n\nPREVIOUS RESEARCH (Source of Truth):\n"
-            f"{sot_content[:8000]}\n"
+            f"{_truncate_at_boundary(sot_content, 8000)}\n"
             f"--- END PREVIOUS RESEARCH ---\n"
         )
         script_task.description = f"{script_task.description}{sot_injection}"
@@ -1844,7 +1866,7 @@ if args.reuse_dir:
             # Now run Crew 3 with updated research
             sot_injection = (
                 f"\n\nSOURCE OF TRUTH (from previous research + supplemental):\n"
-                f"{sot_content[:8000]}\n"
+                f"{_truncate_at_boundary(sot_content, 8000)}\n"
                 f"--- END SOURCE OF TRUTH ---\n"
             )
             script_task.description = f"{script_task.description}{sot_injection}"
@@ -2109,7 +2131,10 @@ try:
     # Save all reports (lead, counter, audit)
     REPORT_FILENAMES = {"lead": "affirmative_case.md", "counter": "falsification_case.md", "audit": "grade_synthesis.md"}
     for role_name, filename in REPORT_FILENAMES.items():
-        report = deep_reports[role_name]
+        report = deep_reports.get(role_name)
+        if not report:
+            print(f"  ⚠ {role_name.capitalize()} report missing — skipping save")
+            continue
         report_file = output_dir / filename
         with open(report_file, 'w') as f:
             f.write(report.report)
@@ -2139,9 +2164,9 @@ try:
     print(f"✓ Research library saved: {sources_file} "
           f"(lead={len(sources_json['lead'])}, counter={len(sources_json['counter'])} sources)")
 
-    deep_audit_report = deep_reports["audit"]
-    lead_report = deep_reports["lead"]
-    counter_report = deep_reports["counter"]
+    deep_audit_report = deep_reports.get("audit")
+    lead_report = deep_reports.get("lead")
+    counter_report = deep_reports.get("counter")
 
     # ================================================================
     # Build Source-of-Truth in IMRaD format from deep research outputs
@@ -2265,9 +2290,10 @@ try:
         all_extractions = aff_extractions + fal_extractions
         all_wide = aff_top + fal_top
 
-        audit_text = reports["audit"].report
-        aff_case_text = reports["lead"].report
-        fal_case_text = reports["counter"].report
+        _empty_rpt = type('_E', (), {'report': '', 'total_summaries': 0, 'total_urls_fetched': 0, 'duration_seconds': 0, 'sources': []})()
+        audit_text = reports.get("audit", _empty_rpt).report
+        aff_case_text = reports.get("lead", _empty_rpt).report
+        fal_case_text = reports.get("counter", _empty_rpt).report
 
         grade_level, conclusion_status, exec_summary = _extract_conclusion_status(audit_text)
         grade_sections = _parse_grade_sections(audit_text)
@@ -2701,7 +2727,8 @@ if sot_summary:
 
 # Inject GRADE level and NNT data into blueprint for informed framing
 if deep_reports and deep_reports.get("audit"):
-    _audit_text = deep_reports["audit"].report if hasattr(deep_reports["audit"], 'report') else str(deep_reports["audit"])
+    _audit_obj = deep_reports.get("audit")
+    _audit_text = _audit_obj.report if hasattr(_audit_obj, 'report') else str(_audit_obj)
     _grade_m = re.search(r'Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}', _audit_text, re.IGNORECASE)
     _grade_level = _grade_m.group(1).strip() if _grade_m else "Not Determined"
     _grade_injection = f"\n\nGRADE EVIDENCE LEVEL: {_grade_level}\n"
@@ -2810,9 +2837,24 @@ try:
     result = crew_3.kickoff()
 except Exception as e:
     print(f"\n{'='*70}")
-    print("CREW 3 FAILED")
+    print("CREW 3 FAILED — saving partial outputs")
     print(f"{'='*70}")
     print(f"Error: {e}")
+    # Save whatever task outputs exist before re-raising
+    _partial_tasks = [
+        ("blueprint_partial.md", blueprint_task),
+        ("script_draft_partial.md", script_task),
+        ("script_polished_partial.md", polish_task),
+        ("audit_partial.md", audit_task),
+    ]
+    for _fname, _task in _partial_tasks:
+        try:
+            if hasattr(_task, 'output') and _task.output and hasattr(_task.output, 'raw') and _task.output.raw:
+                with open(output_dir / _fname, 'w', encoding='utf-8') as _f:
+                    _f.write(_task.output.raw)
+                print(f"  ✓ Partial output saved: {_fname}")
+        except Exception:
+            pass
     monitor.stop()
     raise
 finally:
@@ -2849,18 +2891,22 @@ if high_severity_found and audit_output:
         correction_crew = Crew(agents=[editor_agent], tasks=[correction_task], verbose=False)
         correction_result = correction_crew.kickoff()
         corrected = correction_result.raw if hasattr(correction_result, 'raw') else str(correction_result)
-        if len(corrected) > len(polished_script_raw) * 0.5:
+        orig_transitions = polished_script_raw.count('[TRANSITION]')
+        corrected_transitions = corrected.count('[TRANSITION]')
+        if len(corrected) < len(polished_script_raw) * 0.5:
+            print("⚠ Correction output too short — using original polished script")
+            _corrected_script_text = None
+        elif orig_transitions > 0 and corrected_transitions < orig_transitions:
+            print(f"⚠ Correction lost [TRANSITION] markers ({orig_transitions}→{corrected_transitions}) — using original polished script")
+            _corrected_script_text = None
+        else:
             # Save correction log
             with open(output_dir / "ACCURACY_CORRECTIONS.md", 'w') as f:
                 f.write("# Script Corrections Applied\n\n")
                 f.write("HIGH-severity drift instances were corrected before audio generation.\n\n")
                 f.write(f"## Original Audit\n{audit_output}\n")
             print("✓ Script correction applied — using corrected script for audio")
-            # Store corrected script for Phase 8
             _corrected_script_text = corrected
-        else:
-            print("⚠ Correction output too short — using original polished script")
-            _corrected_script_text = None
     except Exception as e:
         print(f"⚠ Script correction failed: {e} — using original polished script")
         _corrected_script_text = None
@@ -2923,13 +2969,18 @@ for label, source, filename in markdown_outputs:
 
 # --- RESEARCH SUMMARY ---
 if deep_reports is not None:
-    deep_audit = deep_reports["audit"]
-    print(f"\n--- Deep Research Summary ---")
-    print(f"  Lead sources: {deep_reports['lead'].total_summaries}")
-    print(f"  Counter sources: {deep_reports['counter'].total_summaries}")
-    print(f"  Total sources: {deep_audit.total_summaries}")
-    print(f"  Total URLs fetched: {deep_audit.total_urls_fetched}")
-    print(f"  Duration: {deep_audit.duration_seconds:.0f}s")
+    deep_audit = deep_reports.get("audit")
+    if deep_audit:
+        print(f"\n--- Deep Research Summary ---")
+        _lead = deep_reports.get("lead")
+        _counter = deep_reports.get("counter")
+        if _lead:
+            print(f"  Lead sources: {_lead.total_summaries}")
+        if _counter:
+            print(f"  Counter sources: {_counter.total_summaries}")
+        print(f"  Total sources: {deep_audit.total_summaries}")
+        print(f"  Total URLs fetched: {deep_audit.total_urls_fetched}")
+        print(f"  Duration: {deep_audit.duration_seconds:.0f}s")
 
 # --- SESSION METADATA ---
 print("\n--- Documenting Session Metadata ---")

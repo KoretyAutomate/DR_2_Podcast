@@ -364,7 +364,7 @@ class PubMedClient:
                         await asyncio.sleep(0.4)
 
         except Exception as e:
-            logger.warning(f"PubMed search failed: {e}")
+            logger.error(f"PubMed search failed: {e}")
         return results
 
     def _parse_articles_xml(self, xml_text: str) -> List[Dict[str, Any]]:
@@ -373,7 +373,7 @@ class PubMedClient:
         try:
             root = ET.fromstring(xml_text)
         except ET.ParseError as e:
-            logger.warning(f"PubMed XML parse error: {e}")
+            logger.error(f"PubMed XML parse error: {e}")
             return []
 
         for article in root.findall(".//PubmedArticle"):
@@ -558,7 +558,7 @@ class SearchService:
                     raw = await client.search(query, engines=['google scholar'], num_results=max_results)
                     academic_results.extend(await self._extract_searxng_results(raw))
         except Exception as e:
-            logger.warning(f"Google Scholar search failed: {e}")
+            logger.error(f"Google Scholar search failed: {e}")
 
         self.total_identified_raw += len(academic_results)
         academic_results = _dedup_and_filter(academic_results)
@@ -818,13 +818,24 @@ class ResearchAgent:
         self.max_iterations = max_iterations
 
     async def _call_smart(self, system: str, user: str, max_tokens: int = 2048, temperature: float = 0.3) -> str:
-        """Call the smart model."""
-        resp = await self.smart_client.chat.completions.create(
-            model=self.smart_model,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=max_tokens, temperature=temperature, timeout=300
-        )
-        return resp.choices[0].message.content.strip()
+        """Call the smart model with retry on transient failures."""
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                resp = await self.smart_client.chat.completions.create(
+                    model=self.smart_model,
+                    messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                    max_tokens=max_tokens, temperature=temperature, timeout=300
+                )
+                return resp.choices[0].message.content.strip()
+            except (ConnectionError, TimeoutError, OSError) as e:
+                if attempt < max_retries:
+                    wait = 5 * (attempt + 1)
+                    logger.warning(f"_call_smart() attempt {attempt+1} failed ({type(e).__name__}), retrying in {wait}s...")
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error(f"_call_smart() failed after {max_retries+1} attempts: {e}")
+                    raise
 
     def _parse_json_queries(self, raw: str) -> List[ResearchQuery]:
         """Parse JSON query list from smart model output."""
@@ -1498,7 +1509,7 @@ class ResearchAgent:
                     added += 1
                 log(f"    [Tier {tier_num}] +{added} new records (pool: {len(all_records)})")
             except Exception as e:
-                logger.warning(f"Tier {tier_num} PubMed search failed: {e}")
+                logger.error(f"Tier {tier_num} PubMed search failed: {e}")
 
             highest_tier = tier_num
 
@@ -1533,7 +1544,7 @@ class ResearchAgent:
                             scholar_added += 1
                         log(f"    [Scholar] +{scholar_added} records (Tier 1 keywords)")
             except Exception as e:
-                logger.warning(f"Google Scholar search failed: {e}")
+                logger.error(f"Google Scholar search failed: {e}")
 
         log(f"    [Step 2] Total pool: {len(all_records)} records (highest tier: {highest_tier})")
 
