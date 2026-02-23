@@ -973,7 +973,7 @@ editor_agent = Agent(
     role='Podcast Editor',
     goal=(
         f'Polish the "{topic_name}" script for natural verbal delivery at Masters-level. '
-        f'Target: Exactly 4,500 words (30 minutes). '
+        f'Target: Exactly {target_script} {target_unit_plural} ({_target_min} minutes). '
         f'{target_instruction}'
     ),
     backstory=(
@@ -983,7 +983,7 @@ editor_agent = Agent(
         f'  - Remove any definitions of basic scientific concepts\n'
         f'  - Ensure the questioner\'s questions feel natural and audience-aligned\n'
         f'  - Keep technical language intact (no dumbing down)\n'
-        f'  - Target exactly 4,500 words for 30-minute runtime. If the script is too short, YOU MUST ADD DEPTH AND EXAMPLES TO REACH THE TARGET.\n'
+        f'  - Target exactly {target_script} {target_unit_plural} for {_target_min}-minute runtime. If the script is too short, YOU MUST ADD DEPTH AND EXAMPLES TO REACH THE TARGET.\n'
         f'  - Ensure the opening follows the 3-part structure: welcome → hook question → topic shift\n'
         f'  - Teaching flow: presenter explains, questioner bridges gaps for listeners\n'
         f'\n'
@@ -1052,13 +1052,13 @@ print(f"Podcast Length Mode: {duration_label}")
 # Build channel intro directive for script
 if channel_intro:
     _channel_intro_directive = (
-        f"  2. CHANNEL INTRO (~25 {target_unit_plural}, ~10 seconds):\n"
+        f"  1. CHANNEL INTRO (~25 {target_unit_plural}, ~10 seconds):\n"
         f"     {SESSION_ROLES['presenter']['label']}: {channel_intro}\n"
         f"     CRITICAL: Use this text EXACTLY as written above. Do NOT rephrase, summarize, or modify it.\n\n"
     )
 else:
     _channel_intro_directive = (
-        f"  2. CHANNEL INTRO (~25 {target_unit_plural}, ~10 seconds):\n"
+        f"  1. CHANNEL INTRO (~25 {target_unit_plural}, ~10 seconds):\n"
         f"     Both hosts briefly introduce the show and today's topic.\n"
         f"     {SESSION_ROLES['presenter']['label']}: Welcome to Deep Research Podcast. Today we're diving deep into {topic_name}.\n\n"
     )
@@ -1074,11 +1074,11 @@ script_task = Task(
         f"Using the Episode Blueprint, write a comprehensive {target_script}-{target_unit_singular} podcast dialogue about \"{topic_name}\" "
         f"featuring {SESSION_ROLES['presenter']['character']} (presenter) and {SESSION_ROLES['questioner']['character']} (questioner).\n\n"
         f"SCRIPT STRUCTURE (follow this EXACTLY):\n\n"
-        f"  1. THE HOOK (~40 {target_unit_plural}, ~15 seconds):\n"
-        f"     Open with the hook from the Episode Blueprint — a jarring statistic or provocative claim.\n"
-        f"     {SESSION_ROLES['presenter']['label']}: [Jarring statistic or provocative claim from Blueprint]\n"
-        f"     {SESSION_ROLES['questioner']['label']}: [Surprised reaction + 'Tell me more' or 'Wait, really?']\n\n"
         + _channel_intro_directive +
+        f"  2. THE HOOK (~40 {target_unit_plural}, ~15 seconds):\n"
+        f"     Based on the hook question from the Episode Blueprint.\n"
+        f"     {SESSION_ROLES['presenter']['label']}: [Provocative question from Blueprint — must be a question, NOT a statement]\n"
+        f"     {SESSION_ROLES['questioner']['label']}: [Engaged reaction: 'Oh, that's a great question!' or 'Hmm, I actually have no idea...']\n\n"
         f"  3. ACT 1 — THE CLAIM (~{_act1_target:,} {target_unit_plural}):\n"
         f"     What people believe. The folk wisdom. Why this matters personally.\n"
         f"     - Presenter sets up the common belief or question\n"
@@ -1132,7 +1132,11 @@ script_task = Task(
         f"  5. Interactive host dialogue (e.g., 'Wait, let me make sure I've got this right...', 'That's fascinating, tell me more about...')\n"
         f"Expand the conversation. Do not just list facts. Have the hosts explore the 'So what?' and 'What now?' for the audience.\n"
         f"Maintain consistent roles throughout. NO role switching mid-conversation. "
-        f"{target_instruction}"
+        + (f"\nCRITICAL LANGUAGE RULE: You are writing in Japanese (日本語). "
+           f"Do NOT use Chinese (中文) at any point. Every sentence must be in Japanese. "
+           f"Use standard Japanese kanji only (気 not 气, 楽 not 乐).\n"
+           if language == 'ja' else '')
+        + f"{target_instruction}"
     ),
     expected_output=(
         f"A {target_script}-{target_unit_singular} podcast dialogue about {topic_name} between "
@@ -1184,8 +1188,8 @@ polish_task = Task(
         f"  - {SESSION_ROLES['presenter']['character']} (Presenter): explains and teaches the topic\n"
         f"  - {SESSION_ROLES['questioner']['character']} (Questioner): asks bridging questions, occasionally pushes back\n\n"
         f"VERIFY 8-PART STRUCTURE (all must be present):\n"
-        f"  1. Hook (jarring statistic or provocative claim)\n"
-        f"  2. Channel Intro\n"
+        f"  1. Channel Intro\n"
+        f"  2. Hook (provocative question)\n"
         f"  3. Act 1 — The Claim\n"
         f"  4. Act 2 — The Evidence\n"
         f"  5. Act 3 — The Nuance\n"
@@ -1297,10 +1301,10 @@ blueprint_task = Task(
         f"- Why should they listen to THIS episode instead of reading an article?\n"
         f"- What will they be able to DO differently after listening?\n\n"
         f"## 3. Hook\n"
-        f"The single most surprising or provocative fact from the research.\n"
-        f"Must be a specific statistic, finding, or claim — NOT a generic question.\n"
-        f"BAD: 'Have you ever wondered about coffee?'\n"
-        f"GOOD: 'A 2023 meta-analysis of 40 studies found that 3 cups of coffee daily reduces all-cause mortality by 13%.'\n\n"
+        f"A provocative QUESTION for listeners based on the most surprising finding from the research.\n"
+        f"The question should make listeners want to know the answer and feel personally relevant.\n"
+        f"BAD: 'Have you ever wondered about coffee?' (too vague)\n"
+        f"GOOD: 'What if your morning coffee habit was actually adding years to your life — but only if you drink exactly the right amount?'\n\n"
         f"## 4. Content Framework\n"
         f"{_framework_hint}"
         f"Choose ONE:\n"
@@ -2978,6 +2982,48 @@ if _corrected_script_text:
 else:
     script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
 
+# Post-Crew 3 language auditor — detect and fix Chinese contamination in Japanese runs
+if language == 'ja':
+    def _has_chinese_contamination(text):
+        """Detect lines with CJK characters but no hiragana/katakana (likely Chinese)."""
+        for line in text.split('\n'):
+            stripped = re.sub(r'^Host \d+:\s*', '', line).strip()
+            if len(stripped) < 10:
+                continue
+            has_cjk = bool(re.search(r'[\u4e00-\u9fff]', stripped))
+            has_kana = bool(re.search(r'[\u3040-\u309f\u30a0-\u30ff]', stripped))
+            if has_cjk and not has_kana:
+                return True
+        return False
+
+    if _has_chinese_contamination(script_text):
+        print("⚠ Chinese contamination detected — running language correction pass")
+        from crewai import Crew as _LangCrew
+        correction_task = Task(
+            description=(
+                f"The following Japanese podcast script contains Chinese (中文) text mixed in.\n"
+                f"Translate ALL Chinese passages into natural Japanese (日本語).\n"
+                f"Do NOT change passages that are already in Japanese.\n"
+                f"Preserve speaker labels, [TRANSITION] markers, and structure.\n\n"
+                f"SCRIPT:\n{script_text}"
+            ),
+            expected_output="Complete podcast script with all Chinese replaced by Japanese.",
+            agent=editor_agent,
+        )
+        try:
+            correction_result = _LangCrew(agents=[editor_agent], tasks=[correction_task], verbose=False).kickoff()
+            corrected_text = correction_result.raw if hasattr(correction_result, 'raw') else str(correction_result)
+            if len(corrected_text) > len(script_text) * 0.5 and not _has_chinese_contamination(corrected_text):
+                print("✓ Chinese contamination removed successfully")
+                script_text = corrected_text
+            elif not _has_chinese_contamination(corrected_text):
+                print("✓ Chinese contamination removed (output shorter than expected but clean)")
+                script_text = corrected_text
+            else:
+                print("⚠ Language correction pass still contains Chinese — using original")
+        except Exception as e:
+            print(f"⚠ Language correction failed: {e} — using original")
+
 # Language-aware script length measurement — rates and targets derived from SUPPORTED_LANGUAGES
 speech_rate  = language_config['speech_rate']
 length_unit  = language_config['length_unit']
@@ -2992,9 +3038,19 @@ target_length = target_length_int
 target_low    = int(target_length * (1 - SCRIPT_TOLERANCE))
 target_high   = int(target_length * (1 + SCRIPT_TOLERANCE))
 
-# Expansion retry — triggered if script is below target for any language
-if script_length < target_low:
-    print(f"⚠ WARNING: Script too short ({script_length} {length_unit} < {target_low} target) — running expansion pass")
+# Multi-pass expansion — up to 3 attempts if script is below target
+MAX_EXPANSION_PASSES = 3
+from crewai import Crew as _Crew
+for expansion_attempt in range(1, MAX_EXPANSION_PASSES + 1):
+    if script_length >= target_low:
+        break
+    print(f"⚠ Expansion pass {expansion_attempt}/{MAX_EXPANSION_PASSES}: "
+          f"script {script_length} {length_unit} < {target_low} target")
+
+    _lang_guard = (
+        f"CRITICAL: Write ONLY in Japanese (日本語). Do NOT use Chinese (中文). "
+        if language == 'ja' else ''
+    )
     expansion_task = Task(
         description=(
             f"The following podcast script is too short ({script_length} {length_unit}, target: {target_length}).\n"
@@ -3005,7 +3061,8 @@ if script_length < target_low:
             f"  3. Add more host dialogue — questioner should ask 'Why?' and 'What does that mean for listeners?'\n"
             f"  4. Preserve all [TRANSITION] markers between acts.\n"
             f"  5. Never cut or reorder existing content — only add.\n"
-            f"  6. Respond entirely in the same language as the input script.\n\n"
+            f"  6. Respond entirely in the same language as the input script.\n"
+            f"{_lang_guard}\n"
             f"SCRIPT TO EXPAND:\n{script_text}"
         ),
         expected_output=(
@@ -3015,7 +3072,6 @@ if script_length < target_low:
         ),
         agent=producer_agent,
     )
-    from crewai import Crew as _Crew
     expansion_result = _Crew(agents=[producer_agent], tasks=[expansion_task], verbose=False).kickoff()
     expanded = expansion_result.raw if hasattr(expansion_result, 'raw') else str(expansion_result)
     if length_unit == 'chars' or length_unit.startswith('char'):
@@ -3023,12 +3079,13 @@ if script_length < target_low:
     else:
         expanded_length = len(expanded.split())
     if expanded_length > script_length:
-        print(f"Expansion pass: {script_length} → {expanded_length} {length_unit}")
+        print(f"  Expansion pass {expansion_attempt}: {script_length} → {expanded_length} {length_unit}")
         script_text = expanded
         script_length = expanded_length
         estimated_duration_min = script_length / speech_rate
     else:
-        print(f"⚠ WARNING: Expansion pass did not improve length — using original")
+        print(f"⚠ Expansion pass {expansion_attempt} did not improve length — stopping retries")
+        break
 
 print(f"\n{'='*60}")
 print(f"DURATION CHECK")
