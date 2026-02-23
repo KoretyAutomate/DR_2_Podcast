@@ -656,6 +656,215 @@ def summarize_report_with_fast_model(report_text: str, role: str, topic: str) ->
     return report_text[:6000]
 
 
+def _call_smart_model(system: str, user: str, max_tokens: int = 4000, temperature: float = 0.1) -> str:
+    """Call the Smart Model (vLLM) directly via OpenAI API. Returns response text."""
+    from openai import OpenAI
+    client = OpenAI(
+        base_url=os.getenv("LLM_BASE_URL", "http://localhost:8000/v1"),
+        api_key=os.getenv("LLM_API_KEY", "NA"),
+    )
+    resp = client.chat.completions.create(
+        model=os.getenv("MODEL_NAME", "Qwen/Qwen2.5-32B-Instruct-AWQ"),
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        max_tokens=max_tokens,
+        temperature=temperature,
+        timeout=300,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def _translate_sot_chunked(sot_content: str, language: str, language_config: dict) -> str:
+    """Translate SOT section-by-section to avoid truncation. Uses Smart Model API directly."""
+    # Split by ## headers
+    sections = re.split(r'(\n## )', sot_content)
+    # Reassemble: first piece is preamble, then pairs of (separator, section_body)
+    chunks = [sections[0]]
+    for i in range(1, len(sections), 2):
+        if i + 1 < len(sections):
+            chunks.append(sections[i] + sections[i + 1])
+        else:
+            chunks.append(sections[i])
+
+    lang_name = language_config['name']
+    chinese_ban = ""
+    if language == 'ja':
+        chinese_ban = (
+            "ABSOLUTE RULE: Output MUST be in Japanese (日本語) ONLY. NEVER use Chinese (中文).\n"
+            "WRONG: 执行功能 → CORRECT: 実行機能; WRONG: 补充 → CORRECT: 補充\n"
+            "If unsure of the Japanese term, keep the English term — NEVER use Chinese.\n\n"
+        )
+
+    system = (
+        f"{chinese_ban}"
+        f"You are a medical translation specialist. Translate the following section into {lang_name}.\n"
+        f"RULES:\n"
+        f"- Preserve ALL markdown formatting (headers, tables, bullet points, bold, italic)\n"
+        f"- Keep study names, journal names, and URLs in English\n"
+        f"- Keep clinical abbreviations in English: ARR, NNT, GRADE, CER, EER, RCT, RRR, CI, OR, HR\n"
+        f"- Preserve ALL numerical values exactly (percentages, CI ranges, p-values, sample sizes)\n"
+        f"- Keep confidence labels (HIGH/MEDIUM/LOW/CONTESTED) in English\n"
+        f"- Translate meaning, not word-for-word\n"
+        f"- Output ONLY the translated text, no commentary"
+    )
+
+    translated_chunks = []
+    for i, chunk in enumerate(chunks):
+        if not chunk.strip():
+            translated_chunks.append(chunk)
+            continue
+        # Skip translating very short chunks that are just whitespace/separators
+        if len(chunk.strip()) < 10:
+            translated_chunks.append(chunk)
+            continue
+        try:
+            translated = _call_smart_model(
+                system=system,
+                user=f"Translate this section:\n\n{chunk}",
+                max_tokens=6000,
+                temperature=0.1,
+            )
+            translated_chunks.append(translated)
+            print(f"  ✓ Translated section {i+1}/{len(chunks)} ({len(chunk)} → {len(translated)} chars)")
+        except Exception as e:
+            print(f"  ⚠ Translation failed for section {i+1}: {e} — keeping original")
+            translated_chunks.append(chunk)
+
+    result = "\n".join(translated_chunks)
+
+    # Completeness check: compare ## header counts
+    source_headers = sot_content.count("\n## ")
+    result_headers = result.count("\n## ")
+    if result_headers < source_headers:
+        missing = source_headers - result_headers
+        print(f"  ⚠ Translation missing {missing} section(s): source has {source_headers} ## headers, result has {result_headers}")
+    # Length sanity check
+    if len(result) < len(sot_content) * 0.5:
+        print(f"  ⚠ Translated SOT suspiciously short: {len(result)} chars vs {len(sot_content)} chars original")
+
+    return result
+
+
+def _audit_translation(text: str, language: str, language_config: dict) -> str:
+    """Post-translation audit: fix Chinese contamination, garbled text, untranslated English."""
+    lang_name = language_config['name']
+    chinese_rules = ""
+    if language == 'ja':
+        chinese_rules = (
+            "CRITICAL FOCUS — Chinese contamination:\n"
+            "- Replace ANY Simplified Chinese characters with their Japanese equivalents\n"
+            "- Common errors: 执行→実行, 补充→補充, 认知→認知, 研究→研究, 效果→効果, "
+            "营养→栄養, 维生素→ビタミン, 剂量→用量, 证据→エビデンス, 结论→結論\n"
+            "- If you find Chinese sentences, translate them to Japanese\n\n"
+        )
+
+    system = (
+        f"You are a {lang_name} language quality auditor for medical documents.\n\n"
+        f"{chinese_rules}"
+        f"Your task:\n"
+        f"1. Find and fix any non-{lang_name} text (Chinese or untranslated English sentences)\n"
+        f"2. Fix garbled or unnatural transliterations\n"
+        f"3. Ensure medical terminology is correct in {lang_name}\n"
+        f"4. KEEP in English: study names, journal names, URLs, clinical abbreviations "
+        f"(ARR, NNT, GRADE, CER, EER, RCT, RRR, CI, OR, HR), confidence labels\n"
+        f"5. Preserve ALL markdown formatting and numerical values exactly\n\n"
+        f"Return the COMPLETE corrected document. If no issues found, return the document unchanged."
+    )
+
+    try:
+        result = _call_smart_model(
+            system=system,
+            user=f"Audit and correct this {lang_name} medical document:\n\n{text}",
+            max_tokens=8000,
+            temperature=0.1,
+        )
+        if len(result) < len(text) * 0.5:
+            print(f"  ⚠ Audit output too short ({len(result)} vs {len(text)}) — keeping original")
+            return text
+        print(f"  ✓ Translation audit complete ({len(text)} → {len(result)} chars)")
+        return result
+    except Exception as e:
+        print(f"  ⚠ Translation audit failed: {e} — keeping original")
+        return text
+
+
+def _translate_prompt(prompt_text: str, language: str, language_config: dict) -> str:
+    """Translate a task prompt/instruction to the target language. Preserves structure."""
+    lang_name = language_config['name']
+    chinese_ban = ""
+    if language == 'ja':
+        chinese_ban = (
+            "ABSOLUTE RULE: Translate to Japanese (日本語) ONLY. NEVER use Chinese.\n"
+            "WRONG: 执行功能 → CORRECT: 実行機能\n\n"
+        )
+    system = (
+        f"{chinese_ban}"
+        f"Translate these podcast production instructions to {lang_name}.\n"
+        f"KEEP intact: all markdown formatting (##, ###, numbered lists, bold), "
+        f"variable placeholders, technical abbreviations (ARR, NNT, GRADE, RCT, CI, HR, OR), "
+        f"speaker labels (Host 1:, Host 2:), [TRANSITION] markers.\n"
+        f"This is an instruction template, not content — translate the instructional language only."
+    )
+    try:
+        result = _call_smart_model(
+            system=system,
+            user=f"Translate:\n\n{prompt_text}",
+            max_tokens=6000,
+            temperature=0.1,
+        )
+        if len(result) < len(prompt_text) * 0.3:
+            print(f"  ⚠ Prompt translation too short — keeping original")
+            return prompt_text
+        return result
+    except Exception as e:
+        print(f"  ⚠ Prompt translation failed: {e} — keeping original")
+        return prompt_text
+
+
+def _audit_script_language(script_text: str, language: str, language_config: dict) -> str:
+    """Post-Crew 3 audit: ensure script is consistently in the target language."""
+    if language == 'en':
+        return script_text
+    lang_name = language_config['name']
+    chinese_ban = ""
+    if language == 'ja':
+        chinese_ban = (
+            "Also fix any Chinese characters — replace with Japanese equivalents.\n"
+        )
+    system = (
+        f"You are a {lang_name} language consistency auditor for a podcast script.\n"
+        f"Find any non-{lang_name} sentences (English or Chinese) and translate them to natural {lang_name}.\n"
+        f"{chinese_ban}"
+        f"KEEP in English: scientific terms (ARR, NNT, GRADE, RCT, CI, HR, OR), "
+        f"study abbreviations, URLs, speaker labels (Host 1:, Host 2:).\n"
+        f"Return the COMPLETE corrected script preserving ALL [TRANSITION] markers "
+        f"and Host 1/Host 2 labels."
+    )
+    try:
+        result = _call_smart_model(
+            system=system,
+            user=f"Audit this podcast script for language consistency:\n\n{script_text}",
+            max_tokens=12000,
+            temperature=0.1,
+        )
+        # Sanity checks
+        if len(result) < len(script_text) * 0.5:
+            print(f"  ⚠ Script audit output too short — keeping original")
+            return script_text
+        orig_transitions = script_text.count('[TRANSITION]')
+        result_transitions = result.count('[TRANSITION]')
+        if orig_transitions > 0 and result_transitions < orig_transitions:
+            print(f"  ⚠ Script audit lost [TRANSITION] markers ({orig_transitions}→{result_transitions}) — keeping original")
+            return script_text
+        print(f"  ✓ Script language audit complete ({len(script_text)} → {len(result)} chars)")
+        return result
+    except Exception as e:
+        print(f"  ⚠ Script language audit failed: {e} — keeping original")
+        return script_text
+
+
 @tool("BraveSearch")
 def search_tool(search_query: str):
     """
@@ -1169,7 +1378,11 @@ translation_task = None
 if language != 'en':
     translation_task = Task(
         description=(
-            f"Translate the entire Source-of-Truth document about {topic_name} into {language_config['name']}.\n\n"
+            (f"ABSOLUTE RULE: Output MUST be in Japanese (日本語) ONLY. NEVER use Chinese (中文) at any point.\n"
+             f"WRONG: 执行功能 → CORRECT: 実行機能; WRONG: 补充 → CORRECT: 補充; WRONG: 认知 → CORRECT: 認知\n"
+             f"If unsure of the Japanese term, keep the English term — NEVER use Chinese.\n\n"
+             if language == 'ja' else '')
+            + f"Translate the entire Source-of-Truth document about {topic_name} into {language_config['name']}.\n\n"
             f"TRANSLATION RULES:\n"
             f"- Translate ALL sections faithfully: Executive Summary, Key Claims, Evidence, Bibliography\n"
             f"- Preserve scientific accuracy — translate meaning, not word-for-word\n"
@@ -1178,9 +1391,6 @@ if language != 'en':
             f"- Keep clinical abbreviations in English: ARR, NNT, GRADE, CER, EER, RCT, RRR, CI, OR, HR\n"
             f"- Maintain all markdown formatting (headers, tables, bullet points)\n"
             f"- Preserve ALL numerical values exactly (percentages, CI ranges, p-values, sample sizes) — do NOT convert or round\n"
-            + (f"- CRITICAL: Output MUST be in Japanese (日本語) only. Do NOT switch to Chinese (中文).\n"
-               f"  Use standard Japanese kanji (e.g., 気 not 气, 楽 not 乐).\n"
-               if language == 'ja' else '')
             + f"{target_instruction}"
         ),
         expected_output=(
@@ -1259,8 +1469,11 @@ audit_task = Task(
         f"2. **Hedge removal**: Source says 'may' or 'suggests', script says 'does' or 'proves'\n"
         f"3. **Confidence inflation**: LOW confidence claims presented as settled fact\n"
         f"4. **Cherry-picking**: Only one side of CONTESTED claims presented\n"
-        f"5. **Contested-as-settled**: Claims marked CONTESTED in source-of-truth presented as consensus\n\n"
-        f"OUTPUT FORMAT:\n"
+        f"5. **Contested-as-settled**: Claims marked CONTESTED in source-of-truth presented as consensus\n"
+        + (f"6. **Language consistency**: Flag any non-{language_config['name']} sentences that should be in {language_config['name']}. "
+           f"(Exclude scientific abbreviations: ARR, NNT, GRADE, RCT, CI, HR, OR)\n\n"
+           if language != 'en' else '\n')
+        + f"OUTPUT FORMAT:\n"
         f"# Accuracy Check: {topic_name}\n\n"
         f"## Overall Assessment\n"
         f"[PASS / PASS WITH WARNINGS / FAIL]\n\n"
@@ -1674,15 +1887,26 @@ if args.reuse_dir:
 
         print(f"\nCREW 3: PODCAST PRODUCTION")
 
-        if translation_task is not None:
-            print(f"\nPHASE 3: REPORT TRANSLATION")
-            crew_2 = Crew(
-                agents=[producer_agent],
-                tasks=[translation_task],
-                verbose=True,
-                process='sequential'
-            )
-            crew_2.kickoff()
+        if translation_task is not None and sot_content:
+            print(f"\nPHASE 3: REPORT TRANSLATION (chunked)")
+            translated_sot = _translate_sot_chunked(sot_content, language, language_config)
+            if translated_sot:
+                translated_sot = _audit_translation(translated_sot, language, language_config)
+            if translated_sot:
+                sot_translated_file = new_output_dir / f"source_of_truth_{language}.md"
+                with open(sot_translated_file, 'w', encoding='utf-8') as f:
+                    f.write(translated_sot)
+                print(f"✓ Translated SOT saved ({len(translated_sot)} chars)")
+                from types import SimpleNamespace
+                translation_task.output = SimpleNamespace(raw=translated_sot)
+
+        # Translate Crew 3 task prompts for non-English runs
+        if language != 'en':
+            for _task, _name in [
+                (blueprint_task, "blueprint"), (script_task, "script"),
+                (polish_task, "polish"), (audit_task, "audit"),
+            ]:
+                _task.description = _translate_prompt(_task.description, language, language_config)
 
         crew_3_tasks = [blueprint_task, script_task, polish_task, audit_task]
 
@@ -1698,6 +1922,9 @@ if args.reuse_dir:
         # Save markdown outputs
         print("\n--- Saving Outputs ---")
         script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
+        # Post-script language audit for reuse mode
+        if language != 'en':
+            script_text = _audit_script_language(script_text, language, language_config)
         for label, source, filename in [
             ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
             ("Episode Blueprint", blueprint_task, "EPISODE_BLUEPRINT.md"),
@@ -1882,15 +2109,26 @@ if args.reuse_dir:
 
             print(f"\nCREW 3: PODCAST PRODUCTION")
 
-            if translation_task is not None:
-                print(f"\nPHASE 3: REPORT TRANSLATION")
-                crew_2 = Crew(
-                    agents=[producer_agent],
-                    tasks=[translation_task],
-                    verbose=True,
-                    process='sequential'
-                )
-                crew_2.kickoff()
+            if translation_task is not None and sot_content:
+                print(f"\nPHASE 3: REPORT TRANSLATION (chunked)")
+                translated_sot = _translate_sot_chunked(sot_content, language, language_config)
+                if translated_sot:
+                    translated_sot = _audit_translation(translated_sot, language, language_config)
+                if translated_sot:
+                    sot_translated_file = new_output_dir / f"source_of_truth_{language}.md"
+                    with open(sot_translated_file, 'w', encoding='utf-8') as f:
+                        f.write(translated_sot)
+                    print(f"✓ Translated SOT saved ({len(translated_sot)} chars)")
+                    from types import SimpleNamespace
+                    translation_task.output = SimpleNamespace(raw=translated_sot)
+
+            # Translate Crew 3 task prompts for non-English runs
+            if language != 'en':
+                for _task, _name in [
+                    (blueprint_task, "blueprint"), (script_task, "script"),
+                    (polish_task, "polish"), (audit_task, "audit"),
+                ]:
+                    _task.description = _translate_prompt(_task.description, language, language_config)
 
             crew_3_tasks = [blueprint_task, script_task, polish_task, audit_task]
 
@@ -1906,6 +2144,9 @@ if args.reuse_dir:
             # Save outputs
             print("\n--- Saving Outputs ---")
             script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
+            # Post-script language audit for supplemental reuse mode
+            if language != 'en':
+                script_text = _audit_script_language(script_text, language, language_config)
             for label, source, filename in [
                 ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
                 ("Episode Blueprint", blueprint_task, "EPISODE_BLUEPRINT.md"),
@@ -2213,8 +2454,8 @@ try:
         """Build a study characteristics table from DeepExtraction objects."""
         if not extractions:
             return "*No studies with full extraction data available.*\n"
-        rows = ["| # | Study | Design | N | Demographics | Follow-up | Funding | Bias Risk |",
-                "|---|-------|--------|---|--------------|-----------|---------|-----------|"]
+        rows = ["| # | Study | Design | N | Demographics | Follow-up | Funding | Bias Risk | Tier |",
+                "|---|-------|--------|---|--------------|-----------|---------|-----------|------|"]
         seen = set()
         idx = 0
         for ext in extractions:
@@ -2226,6 +2467,7 @@ try:
             label = f"{ext.title[:50]}{'…' if len(ext.title) > 50 else ''}"
             if ext.pmid:
                 label += f" ([PMID:{ext.pmid}](https://pubmed.ncbi.nlm.nih.gov/{ext.pmid}/))"
+            tier_label = f"T{ext.research_tier}" if getattr(ext, 'research_tier', None) else "N/A"
             rows.append(
                 f"| {idx} "
                 f"| {label} "
@@ -2234,7 +2476,8 @@ try:
                 f"| {(ext.demographics or 'N/A')[:40]} "
                 f"| {ext.follow_up_period or 'N/A'} "
                 f"| {(ext.funding_source or 'N/A')[:30]} "
-                f"| {ext.risk_of_bias or 'N/A'} |"
+                f"| {ext.risk_of_bias or 'N/A'} "
+                f"| {tier_label} |"
             )
         return '\n'.join(rows) + '\n'
 
@@ -2796,29 +3039,42 @@ print(f"CREW 3: PODCAST PRODUCTION")
 print(f"{'='*70}")
 
 translated_sot = None  # set below if translation runs
-if translation_task is not None:
-    print(f"\nPHASE 3: REPORT TRANSLATION")
-    print(f"Translating Source-of-Truth to {language_config['name']}")
-    crew_2 = Crew(
-        agents=[producer_agent],
-        tasks=[translation_task],
-        verbose=True,
-        process='sequential'
-    )
-    crew_2.kickoff()
+if translation_task is not None and sot_content:
+    print(f"\nPHASE 3: REPORT TRANSLATION (chunked)")
+    print(f"Translating Source-of-Truth to {language_config['name']} section-by-section")
 
-    # Save translated SOT to disk
-    if hasattr(translation_task, 'output') and translation_task.output and \
-            hasattr(translation_task.output, 'raw') and translation_task.output.raw:
-        translated_sot = translation_task.output.raw
+    # Chunked translation via Smart Model API (not CrewAI — faster, no truncation)
+    translated_sot = _translate_sot_chunked(sot_content, language, language_config)
+
+    # Post-translation audit pass (fix Chinese contamination, garbled text)
+    if translated_sot:
+        print(f"  Running translation audit pass...")
+        translated_sot = _audit_translation(translated_sot, language, language_config)
+
+    if translated_sot:
         lang_suffix = language  # e.g. "ja"
         sot_translated_file = output_dir / f"source_of_truth_{lang_suffix}.md"
         with open(sot_translated_file, 'w', encoding='utf-8') as f:
             f.write(translated_sot)
         print(f"✓ Translated SOT saved ({len(translated_sot)} chars) → {sot_translated_file.name}")
+        # Set the translation_task output manually so Crew 3 context chain references work
+        from types import SimpleNamespace
+        translation_task.output = SimpleNamespace(raw=translated_sot)
     else:
-        print(f"  Warning: Translation task produced no output — translated SOT not saved")
-        translated_sot = None
+        print(f"  Warning: Chunked translation produced no output — translated SOT not saved")
+
+# Bug 5: Translate task descriptions for non-English runs
+if language != 'en':
+    print(f"\nTranslating Crew 3 task prompts to {language_config['name']}...")
+    for _task, _name in [
+        (blueprint_task, "blueprint"),
+        (script_task, "script"),
+        (polish_task, "polish"),
+        (audit_task, "audit"),
+    ]:
+        _task.description = _translate_prompt(_task.description, language, language_config)
+        print(f"  ✓ {_name} task prompt translated")
+    # Keep expected_output in English (CrewAI internals)
 
 crew_3_tasks = [blueprint_task, script_task, polish_task, audit_task]
 
@@ -3033,47 +3289,10 @@ if _corrected_script_text:
 else:
     script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
 
-# Post-Crew 3 language auditor — detect and fix Chinese contamination in Japanese runs
-if language == 'ja':
-    def _has_chinese_contamination(text):
-        """Detect lines with CJK characters but no hiragana/katakana (likely Chinese)."""
-        for line in text.split('\n'):
-            stripped = re.sub(r'^Host \d+:\s*', '', line).strip()
-            if len(stripped) < 10:
-                continue
-            has_cjk = bool(re.search(r'[\u4e00-\u9fff]', stripped))
-            has_kana = bool(re.search(r'[\u3040-\u309f\u30a0-\u30ff]', stripped))
-            if has_cjk and not has_kana:
-                return True
-        return False
-
-    if _has_chinese_contamination(script_text):
-        print("⚠ Chinese contamination detected — running language correction pass")
-        from crewai import Crew as _LangCrew
-        correction_task = Task(
-            description=(
-                f"The following Japanese podcast script contains Chinese (中文) text mixed in.\n"
-                f"Translate ALL Chinese passages into natural Japanese (日本語).\n"
-                f"Do NOT change passages that are already in Japanese.\n"
-                f"Preserve speaker labels, [TRANSITION] markers, and structure.\n\n"
-                f"SCRIPT:\n{script_text}"
-            ),
-            expected_output="Complete podcast script with all Chinese replaced by Japanese.",
-            agent=editor_agent,
-        )
-        try:
-            correction_result = _LangCrew(agents=[editor_agent], tasks=[correction_task], verbose=False).kickoff()
-            corrected_text = correction_result.raw if hasattr(correction_result, 'raw') else str(correction_result)
-            if len(corrected_text) > len(script_text) * 0.5 and not _has_chinese_contamination(corrected_text):
-                print("✓ Chinese contamination removed successfully")
-                script_text = corrected_text
-            elif not _has_chinese_contamination(corrected_text):
-                print("✓ Chinese contamination removed (output shorter than expected but clean)")
-                script_text = corrected_text
-            else:
-                print("⚠ Language correction pass still contains Chinese — using original")
-        except Exception as e:
-            print(f"⚠ Language correction failed: {e} — using original")
+# Post-Crew 3 language audit — fix Chinese contamination + English leakage for non-English runs
+if language != 'en':
+    print(f"\nRunning post-script language audit ({language_config['name']})...")
+    script_text = _audit_script_language(script_text, language, language_config)
 
 # Language-aware script length measurement — rates and targets derived from SUPPORTED_LANGUAGES
 speech_rate  = language_config['speech_rate']
