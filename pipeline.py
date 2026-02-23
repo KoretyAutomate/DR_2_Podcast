@@ -262,15 +262,27 @@ CHARACTERS = {
     "Kaz": {
         "gender": "male",
         "host_label": "Host 1",       # male → Host 1 voice (always)
-        "voice_model": "male_voice",  # TTS-specific, will update in #3
-        "base_personality": "Enthusiastic science communicator, clear explainer, data-driven"
+        "voice_model": "male_voice",
     },
     "Erika": {
         "gender": "female",
         "host_label": "Host 2",       # female → Host 2 voice (always)
-        "voice_model": "female_voice",  # TTS-specific, will update in #3
-        "base_personality": "Curious and sharp interviewer, asks what the audience is thinking"
+        "voice_model": "female_voice",
     }
+}
+
+# Role-based personality (assigned by role, not character)
+ROLE_PERSONALITIES = {
+    "presenter": (
+        "Enthusiastic science communicator who gets genuinely excited about breakthroughs, "
+        "uses vivid metaphors, occasionally laughs at surprising findings, and makes complex "
+        "mechanisms feel like detective stories"
+    ),
+    "questioner": (
+        "Curious and sharp interviewer who reacts with genuine surprise, playful skepticism, "
+        "and humor — calls out when something sounds too good to be true, shares personal "
+        "anecdotes, and advocates for the listener"
+    ),
 }
 
 # --- ROLE ASSIGNMENT (Dynamic per session) ---
@@ -304,13 +316,13 @@ def assign_roles() -> dict:
             "character": presenter_name,
             "label": CHARACTERS[presenter_name]["host_label"],
             "stance": "teaching",
-            "personality": CHARACTERS[presenter_name]["base_personality"]
+            "personality": ROLE_PERSONALITIES["presenter"]
         },
         "questioner": {
             "character": questioner_name,
             "label": CHARACTERS[questioner_name]["host_label"],
             "stance": "curious",
-            "personality": CHARACTERS[questioner_name]["base_personality"]
+            "personality": ROLE_PERSONALITIES["questioner"]
         }
     }
 
@@ -865,6 +877,93 @@ def _audit_script_language(script_text: str, language: str, language_config: dic
         return script_text
 
 
+def _quick_content_audit(script_text: str, sot_content: str) -> str | None:
+    """Check script for top-3 drift patterns against SOT. Returns issue string or None."""
+    sot_excerpt = _truncate_at_boundary(sot_content, 4000)
+    script_excerpt = _truncate_at_boundary(script_text, 4000)
+    system = (
+        "You are a scientific accuracy auditor. Compare the podcast script excerpt against "
+        "the source-of-truth research. Check for these 3 drift patterns ONLY:\n"
+        "1. CAUSATION INFLATION: Script states causation where source only shows correlation\n"
+        "2. HEDGE REMOVAL: Script presents uncertain findings as settled fact\n"
+        "3. CHERRY-PICKING: Script omits contradicting evidence that the source includes\n\n"
+        "If the script is faithful to the source, respond with exactly: CLEAN\n"
+        "If you find drift, respond with a 1-2 sentence description of the issue."
+    )
+    try:
+        result = _call_smart_model(
+            system=system,
+            user=(
+                f"SOURCE OF TRUTH (excerpt):\n{sot_excerpt}\n\n"
+                f"PODCAST SCRIPT (excerpt):\n{script_excerpt}"
+            ),
+            max_tokens=200,
+            temperature=0.1,
+        )
+        if result.strip().upper() == "CLEAN":
+            return None
+        return result.strip()
+    except Exception as e:
+        print(f"  ⚠ Content audit call failed: {e} — skipping")
+        return None
+
+
+def _validate_script(script_text: str, target_length: int, tolerance: float,
+                     language_config: dict, sot_content: str, stage: str) -> dict:
+    """
+    Validate script for length, structure, repetition, and content accuracy.
+    Returns: {'pass': bool, 'feedback': str, 'word_count': int, 'issues': list}
+    """
+    issues = []
+    length_unit = language_config['length_unit']
+
+    # 1. Measure word/char count
+    if length_unit == 'chars':
+        count = len(re.sub(r'[\s\n\r\t\u3000\uff1a:\u300c\u300d\u3001\u3002\u30fb\uff08\uff09\-\u2014*#]', '', script_text))
+    else:
+        content_only = re.sub(r'^[A-Za-z0-9_ ]+:\s*', '', script_text, flags=re.MULTILINE)
+        count = len(content_only.split())
+
+    low = int(target_length * (1 - tolerance))
+    high = int(target_length * (1 + tolerance))
+
+    if count < low:
+        issues.append(f"TOO SHORT: {count} {length_unit} (need \u2265{low})")
+    elif count > high:
+        issues.append(f"TOO LONG: {count} {length_unit} (need \u2264{high})")
+
+    # 2. Degenerate repetition detection
+    words = script_text.lower().split()
+    consecutive = 1
+    for i in range(1, len(words)):
+        if words[i] == words[i-1] and len(words[i]) > 2:
+            consecutive += 1
+            if consecutive >= 4:
+                issues.append(f"DEGENERATE REPETITION: '{words[i]}' repeated {consecutive}+ times consecutively")
+                break
+        else:
+            consecutive = 1
+
+    # 3. Structure check (for polish stage)
+    if stage == 'polish':
+        transition_count = script_text.count('[TRANSITION]')
+        if transition_count < 3:
+            issues.append(f"MISSING TRANSITIONS: only {transition_count} [TRANSITION] markers (need \u22653)")
+
+    # 4. LLM content audit (only if Python checks pass — saves tokens)
+    if not issues and sot_content:
+        content_audit = _quick_content_audit(script_text, sot_content)
+        if content_audit:
+            issues.append(f"CONTENT: {content_audit}")
+
+    return {
+        'pass': len(issues) == 0,
+        'feedback': '\n'.join(f"- {i}" for i in issues) if issues else 'PASS',
+        'word_count': count,
+        'issues': issues
+    }
+
+
 @tool("BraveSearch")
 def search_tool(search_query: str):
     """
@@ -1330,11 +1429,14 @@ script_task = Task(
         f"     {SESSION_ROLES['presenter']['label']}: 'If you take ONE thing from today — [action{' tailored to ' + core_target if core_target else ' to try this week'}].'\n"
         f"     {SESSION_ROLES['questioner']['label']}: [Brief agreement + sign-off]\n\n"
         f"PERSONALITY DIRECTIVES:\n"
-        f"- Use conversational fillers naturally: 'Hm, that's interesting', 'Right, right', 'Wait, really?'\n"
-        f"- Pause for emphasis using ellipses: 'And here's where it gets interesting...'\n"
-        f"- After each key finding, translate to daily life: 'In practical terms, this means...'\n"
-        f"- Questioner should genuinely react, not just ask setup questions\n"
-        f"- Short asides are encouraged: 'I actually looked into this myself and...'\n\n"
+        f"- ENERGY: Vary vocal energy — excited for surprising findings, thoughtful pauses for nuance, urgency for practical advice\n"
+        f"- REACTIONS: Questioner reacts authentically — genuine surprise ('Wait, seriously?!'), skepticism ('Hmm, that sounds too good to be true...'), humor ('Okay, so basically I've been doing this all wrong')\n"
+        f"- BANTER: Include brief moments of friendly banter between hosts — a shared laugh, a playful jab, a relatable personal admission\n"
+        f"- FILLERS: Natural conversational fillers: 'Hm, that's interesting', 'Right, right', 'Oh wow', 'Okay so let me get this straight...'\n"
+        f"- EMPHASIS: Dramatic pauses via ellipses: 'And here's where it gets interesting...'\n"
+        f"- STORYTELLING: After each key finding, paint a picture: 'Imagine you're...' or 'Think about your morning routine...'\n"
+        f"- PERSONAL: Brief personal connections: 'I actually tried this myself and...' or 'My partner always says...'\n"
+        f"- MOMENTUM: Each act builds energy — start curious, peak at the most surprising finding, resolve with practical clarity\n\n"
         f"CHARACTER ROLES:\n"
         f"  - {SESSION_ROLES['presenter']['character']} (Presenter): presents evidence and explains the topic, "
         f"{SESSION_ROLES['presenter']['personality']}\n"
@@ -1900,6 +2002,12 @@ if args.reuse_dir:
                 from types import SimpleNamespace
                 translation_task.output = SimpleNamespace(raw=translated_sot)
 
+        # Extract base descriptions before translation for audit-loop feedback
+        _reuse_script_base_desc = script_task.description
+        _reuse_script_expected = script_task.expected_output
+        _reuse_polish_base_desc = polish_task.description
+        _reuse_polish_expected = polish_task.expected_output
+
         # Translate Crew 3 task prompts for non-English runs
         if language != 'en':
             for _task, _name in [
@@ -1907,29 +2015,99 @@ if args.reuse_dir:
                 (polish_task, "polish"), (audit_task, "audit"),
             ]:
                 _task.description = _translate_prompt(_task.description, language, language_config)
+            _reuse_script_base_desc = script_task.description
+            _reuse_polish_base_desc = polish_task.description
 
-        crew_3_tasks = [blueprint_task, script_task, polish_task, audit_task]
+        _REUSE_MAX_ATTEMPTS = 3
 
-        crew_3 = Crew(
-            agents=[producer_agent, editor_agent, auditor_agent],
-            tasks=crew_3_tasks,
-            verbose=True,
-            process='sequential'
-        )
+        # Phase 4: Blueprint
+        print(f"\n  PHASE 4: EPISODE BLUEPRINT")
+        blueprint_crew = Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True)
+        blueprint_crew.kickoff()
 
-        result = crew_3.kickoff()
+        # Phase 5: Script Draft + Audit Loop
+        print(f"\n  PHASE 5: SCRIPT DRAFT (audit loop)")
+        _r_draft_feedback = ""
+        _r_current_script = script_task
+        for _r_attempt in range(1, _REUSE_MAX_ATTEMPTS + 1):
+            if _r_draft_feedback:
+                _r_fb = (
+                    f"\n\nPREVIOUS ATTEMPT FEEDBACK (attempt {_r_attempt-1}):\n{_r_draft_feedback}\n"
+                    f"Fix ALL issues listed above in this revision.\n"
+                )
+                _r_current_script = Task(
+                    description=_reuse_script_base_desc + _r_fb,
+                    expected_output=_reuse_script_expected,
+                    agent=producer_agent,
+                    context=[blueprint_task],
+                )
+                if translation_task is not None:
+                    _r_current_script.context = [blueprint_task, translation_task]
+            Crew(agents=[producer_agent], tasks=[_r_current_script], verbose=True).kickoff()
+            _r_draft_text = _r_current_script.output.raw
+            _r_val = _validate_script(_r_draft_text, target_length_int, SCRIPT_TOLERANCE,
+                                       language_config, sot_content, stage='draft')
+            print(f"    Draft attempt {_r_attempt}: {_r_val['word_count']} {language_config['length_unit']} — "
+                  f"{'PASS' if _r_val['pass'] else 'FAIL'}")
+            if _r_val['pass']:
+                break
+            _r_draft_feedback = _r_val['feedback']
+        script_task = _r_current_script
+
+        # Phase 6: Polish + Audit Loop
+        print(f"\n  PHASE 6: SCRIPT POLISH (audit loop)")
+        _r_polish_feedback = ""
+        _r_current_polish = polish_task
+        _r_current_polish.context = [_r_current_script]
+        if translation_task is not None:
+            _r_current_polish.context = [_r_current_script, translation_task]
+        for _r_attempt in range(1, _REUSE_MAX_ATTEMPTS + 1):
+            if _r_polish_feedback:
+                _r_fb = (
+                    f"\n\nPREVIOUS ATTEMPT FEEDBACK (attempt {_r_attempt-1}):\n{_r_polish_feedback}\n"
+                    f"Fix ALL issues listed above.\n"
+                )
+                _r_current_polish = Task(
+                    description=_reuse_polish_base_desc + _r_fb,
+                    expected_output=_reuse_polish_expected,
+                    agent=editor_agent,
+                    context=[_r_current_script],
+                )
+                if translation_task is not None:
+                    _r_current_polish.context = [_r_current_script, translation_task]
+            Crew(agents=[editor_agent], tasks=[_r_current_polish], verbose=True).kickoff()
+            _r_polished = _r_current_polish.output.raw
+            _r_val = _validate_script(_r_polished, target_length_int, SCRIPT_TOLERANCE,
+                                       language_config, sot_content, stage='polish')
+            print(f"    Polish attempt {_r_attempt}: {_r_val['word_count']} {language_config['length_unit']} — "
+                  f"{'PASS' if _r_val['pass'] else 'FAIL'}")
+            if _r_val['pass']:
+                break
+            _r_polish_feedback = _r_val['feedback']
+        polish_task = _r_current_polish
+
+        # Phase 7: Accuracy Audit
+        print(f"\n  PHASE 7: ACCURACY AUDIT")
+        audit_task.context = [polish_task]
+        if translation_task is not None:
+            audit_task.context = [polish_task, translation_task]
+        Crew(agents=[auditor_agent], tasks=[audit_task], verbose=True).kickoff()
 
         # Save markdown outputs
         print("\n--- Saving Outputs ---")
-        script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
+        script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else ""
         # Post-script language audit for reuse mode
         if language != 'en':
             script_text = _audit_script_language(script_text, language, language_config)
+
+        # Save script_final.md (authoritative for TTS)
+        with open(new_output_dir / "script_final.md", 'w', encoding='utf-8') as f:
+            f.write(script_text)
+
         for label, source, filename in [
             ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
             ("Episode Blueprint", blueprint_task, "EPISODE_BLUEPRINT.md"),
             ("Script Draft", script_task, "script_draft.md"),
-            ("Script Final", polish_task, "script_final.md"),
             ("Accuracy Audit", audit_task, "accuracy_audit.md"),
         ]:
             try:
@@ -1960,7 +2138,7 @@ if args.reuse_dir:
         cleaned_script = clean_script_for_tts(script_text)
         script_file = new_output_dir / "script.txt"
         with open(script_file, 'w') as f:
-            f.write(script_text)
+            f.write(cleaned_script)
 
         audio_output_path = new_output_dir / "audio.wav"
         tts_result = generate_audio_from_script(cleaned_script, str(audio_output_path), lang_code=language_config['tts_code'])
@@ -2122,6 +2300,12 @@ if args.reuse_dir:
                     from types import SimpleNamespace
                     translation_task.output = SimpleNamespace(raw=translated_sot)
 
+            # Extract base descriptions before translation for audit-loop feedback
+            _supp_script_base_desc = script_task.description
+            _supp_script_expected = script_task.expected_output
+            _supp_polish_base_desc = polish_task.description
+            _supp_polish_expected = polish_task.expected_output
+
             # Translate Crew 3 task prompts for non-English runs
             if language != 'en':
                 for _task, _name in [
@@ -2129,29 +2313,96 @@ if args.reuse_dir:
                     (polish_task, "polish"), (audit_task, "audit"),
                 ]:
                     _task.description = _translate_prompt(_task.description, language, language_config)
+                _supp_script_base_desc = script_task.description
+                _supp_polish_base_desc = polish_task.description
 
-            crew_3_tasks = [blueprint_task, script_task, polish_task, audit_task]
+            _SUPP_MAX_ATTEMPTS = 3
 
-            crew_3 = Crew(
-                agents=[producer_agent, editor_agent, auditor_agent],
-                tasks=crew_3_tasks,
-                verbose=True,
-                process='sequential'
-            )
+            # Phase 4: Blueprint
+            print(f"\n  PHASE 4: EPISODE BLUEPRINT")
+            Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True).kickoff()
 
-            result = crew_3.kickoff()
+            # Phase 5: Script Draft + Audit Loop
+            print(f"\n  PHASE 5: SCRIPT DRAFT (audit loop)")
+            _s_draft_fb = ""
+            _s_cur_script = script_task
+            for _s_att in range(1, _SUPP_MAX_ATTEMPTS + 1):
+                if _s_draft_fb:
+                    _s_fb = (
+                        f"\n\nPREVIOUS ATTEMPT FEEDBACK (attempt {_s_att-1}):\n{_s_draft_fb}\n"
+                        f"Fix ALL issues listed above in this revision.\n"
+                    )
+                    _s_cur_script = Task(
+                        description=_supp_script_base_desc + _s_fb,
+                        expected_output=_supp_script_expected,
+                        agent=producer_agent,
+                        context=[blueprint_task],
+                    )
+                    if translation_task is not None:
+                        _s_cur_script.context = [blueprint_task, translation_task]
+                Crew(agents=[producer_agent], tasks=[_s_cur_script], verbose=True).kickoff()
+                _s_val = _validate_script(_s_cur_script.output.raw, target_length_int, SCRIPT_TOLERANCE,
+                                           language_config, sot_content, stage='draft')
+                print(f"    Draft attempt {_s_att}: {_s_val['word_count']} {language_config['length_unit']} — "
+                      f"{'PASS' if _s_val['pass'] else 'FAIL'}")
+                if _s_val['pass']:
+                    break
+                _s_draft_fb = _s_val['feedback']
+            script_task = _s_cur_script
+
+            # Phase 6: Polish + Audit Loop
+            print(f"\n  PHASE 6: SCRIPT POLISH (audit loop)")
+            _s_polish_fb = ""
+            _s_cur_polish = polish_task
+            _s_cur_polish.context = [_s_cur_script]
+            if translation_task is not None:
+                _s_cur_polish.context = [_s_cur_script, translation_task]
+            for _s_att in range(1, _SUPP_MAX_ATTEMPTS + 1):
+                if _s_polish_fb:
+                    _s_fb = (
+                        f"\n\nPREVIOUS ATTEMPT FEEDBACK (attempt {_s_att-1}):\n{_s_polish_fb}\n"
+                        f"Fix ALL issues listed above.\n"
+                    )
+                    _s_cur_polish = Task(
+                        description=_supp_polish_base_desc + _s_fb,
+                        expected_output=_supp_polish_expected,
+                        agent=editor_agent,
+                        context=[_s_cur_script],
+                    )
+                    if translation_task is not None:
+                        _s_cur_polish.context = [_s_cur_script, translation_task]
+                Crew(agents=[editor_agent], tasks=[_s_cur_polish], verbose=True).kickoff()
+                _s_val = _validate_script(_s_cur_polish.output.raw, target_length_int, SCRIPT_TOLERANCE,
+                                           language_config, sot_content, stage='polish')
+                print(f"    Polish attempt {_s_att}: {_s_val['word_count']} {language_config['length_unit']} — "
+                      f"{'PASS' if _s_val['pass'] else 'FAIL'}")
+                if _s_val['pass']:
+                    break
+                _s_polish_fb = _s_val['feedback']
+            polish_task = _s_cur_polish
+
+            # Phase 7: Accuracy Audit
+            print(f"\n  PHASE 7: ACCURACY AUDIT")
+            audit_task.context = [polish_task]
+            if translation_task is not None:
+                audit_task.context = [polish_task, translation_task]
+            Crew(agents=[auditor_agent], tasks=[audit_task], verbose=True).kickoff()
 
             # Save outputs
             print("\n--- Saving Outputs ---")
-            script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
+            script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else ""
             # Post-script language audit for supplemental reuse mode
             if language != 'en':
                 script_text = _audit_script_language(script_text, language, language_config)
+
+            # Save script_final.md (authoritative for TTS)
+            with open(new_output_dir / "script_final.md", 'w', encoding='utf-8') as f:
+                f.write(script_text)
+
             for label, source, filename in [
                 ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
                 ("Episode Blueprint", blueprint_task, "EPISODE_BLUEPRINT.md"),
                 ("Script Draft", script_task, "script_draft.md"),
-                ("Script Final", polish_task, "script_final.md"),
                 ("Accuracy Audit", audit_task, "accuracy_audit.md"),
             ]:
                 try:
@@ -2174,7 +2425,7 @@ if args.reuse_dir:
             cleaned_script = clean_script_for_tts(script_text)
             script_file = new_output_dir / "script.txt"
             with open(script_file, 'w') as f:
-                f.write(script_text)
+                f.write(cleaned_script)
 
             audio_output_path = new_output_dir / "audio.wav"
             tts_result = generate_audio_from_script(cleaned_script, str(audio_output_path), lang_code=language_config['tts_code'])
@@ -3063,6 +3314,12 @@ if translation_task is not None and sot_content:
     else:
         print(f"  Warning: Chunked translation produced no output — translated SOT not saved")
 
+# --- Extract base task descriptions for audit-loop feedback injection ---
+script_task_base_description = script_task.description
+script_task_expected_output = script_task.expected_output
+polish_task_base_description = polish_task.description
+polish_task_expected_output = polish_task.expected_output
+
 # Bug 5: Translate task descriptions for non-English runs
 if language != 'en':
     print(f"\nTranslating Crew 3 task prompts to {language_config['name']}...")
@@ -3075,28 +3332,129 @@ if language != 'en':
         _task.description = _translate_prompt(_task.description, language, language_config)
         print(f"  ✓ {_name} task prompt translated")
     # Keep expected_output in English (CrewAI internals)
-
-crew_3_tasks = [blueprint_task, script_task, polish_task, audit_task]
-
-crew_3 = Crew(
-    agents=[producer_agent, editor_agent, auditor_agent],
-    tasks=crew_3_tasks,
-    verbose=True,
-    process='sequential'
-)
+    # Update base descriptions with translated versions
+    script_task_base_description = script_task.description
+    polish_task_base_description = polish_task.description
 
 # Start background monitor for crew 3
 monitor = CrewMonitor(all_task_list, progress_tracker)
 monitor.start()
 
+MAX_SCRIPT_ATTEMPTS = 3
+
 try:
-    result = crew_3.kickoff()
+    # === PHASE 4: BLUEPRINT (single task, no loop) ===
+    print(f"\n{'='*60}")
+    print("PHASE 4: EPISODE BLUEPRINT")
+    print(f"{'='*60}")
+    blueprint_crew = Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True)
+    blueprint_crew.kickoff()
+    print("  ✓ Blueprint complete")
+
+    # === PHASE 5: SCRIPT DRAFT + AUDIT LOOP ===
+    print(f"\n{'='*60}")
+    print("PHASE 5: SCRIPT DRAFT (audit loop, max {0} attempts)".format(MAX_SCRIPT_ATTEMPTS))
+    print(f"{'='*60}")
+    draft_feedback = ""
+    current_script_task = script_task  # first iteration uses original task
+
+    for attempt in range(1, MAX_SCRIPT_ATTEMPTS + 1):
+        if draft_feedback:
+            # Build task with feedback from previous attempt
+            _feedback_block = (
+                f"\n\nPREVIOUS ATTEMPT FEEDBACK (attempt {attempt-1}):\n{draft_feedback}\n"
+                f"Fix ALL issues listed above in this revision.\n"
+            )
+            current_script_task = Task(
+                description=script_task_base_description + _feedback_block,
+                expected_output=script_task_expected_output,
+                agent=producer_agent,
+                context=[blueprint_task],
+            )
+            # Preserve context chain for translation runs
+            if translation_task is not None:
+                current_script_task.context = [blueprint_task, translation_task]
+
+        script_crew = Crew(agents=[producer_agent], tasks=[current_script_task], verbose=True)
+        script_crew.kickoff()
+        script_draft_text = current_script_task.output.raw
+
+        # Validate
+        validation = _validate_script(script_draft_text, target_length_int, SCRIPT_TOLERANCE,
+                                       language_config, sot_content, stage='draft')
+
+        print(f"  Draft attempt {attempt}: {validation['word_count']} {language_config['length_unit']} — "
+              f"{'PASS' if validation['pass'] else 'FAIL'}")
+
+        if validation['pass']:
+            break
+
+        draft_feedback = validation['feedback']
+        print(f"  Issues:\n{draft_feedback}")
+
+    # Save draft for reference
+    script_task = current_script_task
+
+    # === PHASE 6: POLISH + AUDIT LOOP ===
+    print(f"\n{'='*60}")
+    print("PHASE 6: SCRIPT POLISH (audit loop, max {0} attempts)".format(MAX_SCRIPT_ATTEMPTS))
+    print(f"{'='*60}")
+    polish_feedback = ""
+    current_polish_task = polish_task  # first iteration uses original task
+    # Update context to point at the latest draft
+    polish_task.context = [current_script_task]
+    if translation_task is not None:
+        polish_task.context = [current_script_task, translation_task]
+
+    for attempt in range(1, MAX_SCRIPT_ATTEMPTS + 1):
+        if polish_feedback:
+            _feedback_block = (
+                f"\n\nPREVIOUS ATTEMPT FEEDBACK (attempt {attempt-1}):\n{polish_feedback}\n"
+                f"Fix ALL issues listed above.\n"
+            )
+            current_polish_task = Task(
+                description=polish_task_base_description + _feedback_block,
+                expected_output=polish_task_expected_output,
+                agent=editor_agent,
+                context=[current_script_task],
+            )
+            if translation_task is not None:
+                current_polish_task.context = [current_script_task, translation_task]
+
+        polish_crew = Crew(agents=[editor_agent], tasks=[current_polish_task], verbose=True)
+        polish_crew.kickoff()
+        polished_text = current_polish_task.output.raw
+
+        validation = _validate_script(polished_text, target_length_int, SCRIPT_TOLERANCE,
+                                       language_config, sot_content, stage='polish')
+
+        print(f"  Polish attempt {attempt}: {validation['word_count']} {language_config['length_unit']} — "
+              f"{'PASS' if validation['pass'] else 'FAIL'}")
+
+        if validation['pass']:
+            break
+
+        polish_feedback = validation['feedback']
+        print(f"  Issues:\n{polish_feedback}")
+
+    polish_task = current_polish_task
+
+    # === PHASE 7: ACCURACY AUDIT (advisory, existing logic) ===
+    print(f"\n{'='*60}")
+    print("PHASE 7: ACCURACY AUDIT")
+    print(f"{'='*60}")
+    # Update audit context to latest polish output
+    audit_task.context = [polish_task]
+    if translation_task is not None:
+        audit_task.context = [polish_task, translation_task]
+    audit_crew = Crew(agents=[auditor_agent], tasks=[audit_task], verbose=True)
+    audit_crew.kickoff()
+
 except Exception as e:
     print(f"\n{'='*70}")
     print("CREW 3 FAILED — saving partial outputs")
     print(f"{'='*70}")
     print(f"Error: {e}")
-    # Save whatever task outputs exist before re-raising
     _partial_tasks = [
         ("blueprint_partial.md", blueprint_task),
         ("script_draft_partial.md", script_task),
@@ -3156,7 +3514,6 @@ if high_severity_found and audit_output:
             print(f"⚠ Correction lost [TRANSITION] markers ({orig_transitions}→{corrected_transitions}) — using original polished script")
             _corrected_script_text = None
         else:
-            # Save correction log
             with open(output_dir / "ACCURACY_CORRECTIONS.md", 'w') as f:
                 f.write("# Script Corrections Applied\n\n")
                 f.write("HIGH-severity drift instances were corrected before audio generation.\n\n")
@@ -3203,7 +3560,7 @@ markdown_outputs = [
     ("Accuracy Audit", audit_task, "accuracy_audit.md"),
     ("Episode Blueprint", blueprint_task, "EPISODE_BLUEPRINT.md"),
     ("Script Draft", script_task, "script_draft.md"),
-    ("Script Final", polish_task, "script_final.md"),
+    # script_final.md saved in Phase 8 (from polished/corrected script before TTS)
 ]
 for label, source, filename in markdown_outputs:
     try:
@@ -3278,27 +3635,30 @@ print(f"Session metadata: {metadata_file}")
 #     """DEPRECATED: No longer needed with Kokoro TTS"""
 #     pass
 
-# Generate audio with Kokoro TTS
+# --- PHASE 8: AUDIO GENERATION ---
 print("\n--- Generating Multi-Voice Podcast Audio (Kokoro TTS) ---")
 
-# Check script length before generation
 # Use corrected script if HIGH-severity drift was fixed, otherwise use polished script
 if _corrected_script_text:
     script_text = _corrected_script_text
     print("Using drift-corrected script for audio generation")
 else:
-    script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else result.raw
+    script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else ""
 
 # Post-Crew 3 language audit — fix Chinese contamination + English leakage for non-English runs
 if language != 'en':
     print(f"\nRunning post-script language audit ({language_config['name']})...")
     script_text = _audit_script_language(script_text, language, language_config)
 
-# Language-aware script length measurement — rates and targets derived from SUPPORTED_LANGUAGES
+# Save script_final.md (the authoritative script for TTS)
+with open(output_dir / "script_final.md", 'w', encoding='utf-8') as f:
+    f.write(script_text)
+
+# Language-aware script length measurement
 speech_rate  = language_config['speech_rate']
 length_unit  = language_config['length_unit']
 if length_unit == 'chars':
-    script_length = len(re.sub(r'[\s\n\r\t　：:「」、。・（）\-\—\*#]', '', script_text))
+    script_length = len(re.sub(r'[\s\n\r\t\u3000\uff1a:\u300c\u300d\u3001\u3002\u30fb\uff08\uff09\-\u2014*#]', '', script_text))
 else:
     content_only = re.sub(r'^[A-Za-z0-9_ ]+:\s*', '', script_text, flags=re.MULTILINE)
     script_length = len(content_only.split())
@@ -3308,61 +3668,12 @@ target_length = target_length_int
 target_low    = int(target_length * (1 - SCRIPT_TOLERANCE))
 target_high   = int(target_length * (1 + SCRIPT_TOLERANCE))
 
-# Multi-pass expansion — up to 3 attempts if script is below target
-MAX_EXPANSION_PASSES = 3
-from crewai import Crew as _Crew
-for expansion_attempt in range(1, MAX_EXPANSION_PASSES + 1):
-    if script_length >= target_low:
-        break
-    print(f"⚠ Expansion pass {expansion_attempt}/{MAX_EXPANSION_PASSES}: "
-          f"script {script_length} {length_unit} < {target_low} target")
-
-    _lang_guard = (
-        f"CRITICAL: Write ONLY in Japanese (日本語). Do NOT use Chinese (中文). "
-        if language == 'ja' else ''
-    )
-    expansion_task = Task(
-        description=(
-            f"The following podcast script is too short ({script_length} {length_unit}, target: {target_length}).\n"
-            f"{target_instruction}\n"
-            f"Expand it to reach {target_length} {length_unit} by:\n"
-            f"  1. For each act, add deeper explanation of the scientific mechanism\n"
-            f"  2. Add one more real-world example or analogy per act\n"
-            f"  3. Add more host dialogue — questioner should ask 'Why?' and 'What does that mean for listeners?'\n"
-            f"  4. Preserve all [TRANSITION] markers between acts.\n"
-            f"  5. Never cut or reorder existing content — only add.\n"
-            f"  6. Respond entirely in the same language as the input script.\n"
-            f"{_lang_guard}\n"
-            f"SCRIPT TO EXPAND:\n{script_text}"
-        ),
-        expected_output=(
-            f"Expanded podcast script of at least {target_length} {length_unit}. "
-            f"Respond entirely in the same language as the input script. "
-            f"Same speaker label: dialogue format as input. No summaries, no truncation."
-        ),
-        agent=producer_agent,
-    )
-    expansion_result = _Crew(agents=[producer_agent], tasks=[expansion_task], verbose=False).kickoff()
-    expanded = expansion_result.raw if hasattr(expansion_result, 'raw') else str(expansion_result)
-    if length_unit == 'chars' or length_unit.startswith('char'):
-        expanded_length = len(re.sub(r'[\s\n\r\t　：:「」、。・（）\-\—\*#]', '', expanded))
-    else:
-        expanded_length = len(expanded.split())
-    if expanded_length > script_length:
-        print(f"  Expansion pass {expansion_attempt}: {script_length} → {expanded_length} {length_unit}")
-        script_text = expanded
-        script_length = expanded_length
-        estimated_duration_min = script_length / speech_rate
-    else:
-        print(f"⚠ Expansion pass {expansion_attempt} did not improve length — stopping retries")
-        break
-
 print(f"\n{'='*60}")
 print(f"DURATION CHECK")
 print(f"{'='*60}")
 print(f"Script length: {script_length} {length_unit}")
 print(f"Estimated duration: {estimated_duration_min:.1f} minutes")
-print(f"Target: 30 minutes ({target_length} {length_unit})")
+print(f"Target: {_target_min} minutes ({target_length} {length_unit})")
 
 if script_length < target_low:
     print(f"⚠ WARNING: Script is SHORT ({script_length} {length_unit} < {target_length} target)")
@@ -3375,14 +3686,13 @@ else:
     print(f"  Estimated {estimated_duration_min:.1f} min")
 print(f"{'='*60}\n")
 
-# Clean script and generate audio with Kokoro
+# Clean script for TTS and save .txt copy for debugging
 cleaned_script = clean_script_for_tts(script_text)
 
-# Save podcast script for review
 script_file = output_dir / "script.txt"
 with open(script_file, 'w') as f:
-    f.write(script_text)
-print(f"Podcast script saved: {script_file} ({script_length} {length_unit})")
+    f.write(cleaned_script)
+print(f"Cleaned script saved: {script_file} ({script_length} {length_unit})")
 
 output_path = output_dir / "audio.wav"
 
