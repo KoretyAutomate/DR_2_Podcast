@@ -31,6 +31,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from dataclasses import dataclass, field, fields
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -1738,14 +1739,90 @@ class ResearchAgent:
             sorted_records = sorted(records, key=lambda r: priority.get(r.study_type, 99))
             return sorted_records[:max_select]
 
+    @staticmethod
+    def _load_extraction_cache() -> dict:
+        """Load PMID extraction cache from research_outputs/extraction_cache.json."""
+        cache_path = Path("research_outputs/extraction_cache.json")
+        if cache_path.exists():
+            try:
+                with open(cache_path, 'r') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                return {}
+        return {}
+
+    @staticmethod
+    def _save_extraction_cache(cache: dict):
+        """Save PMID extraction cache to research_outputs/extraction_cache.json."""
+        cache_path = Path("research_outputs/extraction_cache.json")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, 'w') as f:
+            json.dump(cache, f, indent=2)
+
+    @staticmethod
+    def _extraction_from_cache(record: WideNetRecord, cached: dict) -> DeepExtraction:
+        """Reconstruct a DeepExtraction from cached data."""
+        return DeepExtraction(
+            pmid=record.pmid,
+            doi=record.doi,
+            title=record.title,
+            url=record.url,
+            attrition_pct=cached.get("attrition_pct"),
+            effect_size=cached.get("effect_size"),
+            demographics=cached.get("demographics"),
+            follow_up_period=cached.get("follow_up_period"),
+            funding_source=cached.get("funding_source"),
+            conflicts_of_interest=cached.get("conflicts_of_interest"),
+            biological_mechanism=cached.get("biological_mechanism"),
+            control_event_rate=cached.get("cer"),
+            experimental_event_rate=cached.get("eer"),
+            primary_outcome=cached.get("primary_outcome"),
+            secondary_outcomes=cached.get("secondary_outcomes"),
+            blinding=cached.get("blinding"),
+            randomization_method=cached.get("randomization_method"),
+            intention_to_treat=cached.get("intention_to_treat"),
+            sample_size_total=cached.get("sample_size_total"),
+            sample_size_intervention=cached.get("sample_size_intervention"),
+            sample_size_control=cached.get("sample_size_control"),
+            study_design=cached.get("study_design"),
+            risk_of_bias=cached.get("risk_of_bias"),
+            raw_facts=cached.get("raw_facts", ""),
+        )
+
+    @staticmethod
+    def _cache_extraction(extraction: DeepExtraction) -> dict:
+        """Convert a DeepExtraction to cache-friendly dict."""
+        d = extraction.to_dict()
+        # Rename CER/EER keys for clarity in cache
+        d["cer"] = d.pop("control_event_rate", None)
+        d["eer"] = d.pop("experimental_event_rate", None)
+        d["cached_at"] = datetime.datetime.now().strftime("%Y-%m-%d")
+        # Remove identifiers (stored as cache key or reconstructed from record)
+        for k in ("pmid", "doi", "title", "url"):
+            d.pop(k, None)
+        return d
+
     async def _deep_extract_batch(
         self, articles, records: List[WideNetRecord], pico: Dict[str, str], log=print
     ) -> List[DeepExtraction]:
-        """Step 4: Extract clinical variables from full-text articles using fast model."""
+        """Step 4: Extract clinical variables from full-text articles using fast model.
+        Uses PMID-keyed cache to ensure identical NNT across runs for the same paper."""
         log(f"    [Step 4] Deep extraction from {len(articles)} articles...")
         semaphore = asyncio.Semaphore(10)
 
+        # Load extraction cache
+        extraction_cache = self._load_extraction_cache()
+        cache_hits = 0
+        new_cache_entries = {}
+
         async def extract_one(article, record: WideNetRecord) -> DeepExtraction:
+            nonlocal cache_hits
+            # Check cache first (PMID-keyed)
+            cache_key = record.pmid or record.doi or ""
+            if cache_key and cache_key in extraction_cache:
+                cache_hits += 1
+                log(f"    [Cache hit] {record.title[:50]}...")
+                return self._extraction_from_cache(record, extraction_cache[cache_key])
             text = getattr(article, 'full_text', '') or record.abstract
             if not text.strip():
                 return DeepExtraction(
@@ -1881,7 +1958,18 @@ class ResearchAgent:
             extract_one(art, rec) for art, rec in zip(articles, records)
         ])
         good = sum(1 for r in results if r.raw_facts and "failed" not in r.raw_facts.lower())
-        log(f"    [Step 4] Extracted data from {good}/{len(results)} articles")
+        log(f"    [Step 4] Extracted data from {good}/{len(results)} articles (cache hits: {cache_hits})")
+
+        # Save new extractions to cache
+        for r in results:
+            cache_key = r.pmid or r.doi or ""
+            if cache_key and cache_key not in extraction_cache and "failed" not in (r.raw_facts or "").lower():
+                new_cache_entries[cache_key] = self._cache_extraction(r)
+        if new_cache_entries:
+            extraction_cache.update(new_cache_entries)
+            self._save_extraction_cache(extraction_cache)
+            log(f"    [Step 4] Saved {len(new_cache_entries)} new extractions to cache")
+
         return list(results)
 
     async def _build_case(
