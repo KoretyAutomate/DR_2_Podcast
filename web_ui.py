@@ -1926,7 +1926,7 @@ async def generate_intro(request: GenerateIntroRequest, username: str = Depends(
     }
 
     llm_base       = os.getenv("LLM_BASE_URL",      "http://localhost:11434/v1").rstrip("/")
-    model_name     = os.getenv("MODEL_NAME",         "deepseek-r1:32b")
+    model_name     = os.getenv("MODEL_NAME",         "Qwen/Qwen3-32B-AWQ")
     fast_base      = os.getenv("FAST_LLM_BASE_URL",  "http://localhost:11434/v1").rstrip("/")
     fast_model     = os.getenv("FAST_MODEL_NAME",    "llama3.2:1b")
 

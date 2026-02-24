@@ -446,8 +446,8 @@ def check_supplemental_needed(topic: str, reuse_dir: Path) -> dict:
         resp = httpx.post(
             "http://localhost:8000/v1/chat/completions",
             json={
-                "model": "Qwen/Qwen2.5-32B-Instruct-AWQ",
-                "messages": [{"role": "user", "content": prompt}],
+                "model": os.getenv("MODEL_NAME", "Qwen/Qwen3-32B-AWQ"),
+                "messages": [{"role": "system", "content": "/no_think"}, {"role": "user", "content": prompt}],
                 "temperature": 0.1,
                 "max_tokens": 1024,
             },
@@ -455,6 +455,8 @@ def check_supplemental_needed(topic: str, reuse_dir: Path) -> dict:
         )
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"].strip()
+        # Strip <think> blocks (Qwen3 safety net)
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
         # Extract JSON from response
         import re as _re
@@ -569,8 +571,8 @@ ACCESSIBILITY_INSTRUCTIONS = {
 accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL]
 
 # --- MODEL DETECTION & CONFIG ---
-# Using Ollama with DeepSeek-R1:32b (131k context, excellent research capabilities)
-DEFAULT_MODEL = "deepseek-r1:32b"  # No prefix - CrewAI detects Ollama from base_url
+# Smart model: Qwen3-32B-AWQ on vLLM (32k context, thinking mode disabled)
+DEFAULT_MODEL = "Qwen/Qwen3-32B-AWQ"
 DEFAULT_BASE_URL = "http://localhost:11434/v1"  # Ollama OpenAI-compatible endpoint
 
 def get_final_model_string():
@@ -595,7 +597,7 @@ def get_final_model_string():
 
 final_model_string = get_final_model_string()
 
-# LLM Configuration for Qwen2.5-32B-Instruct (32k context window, function calling support)
+# LLM Configuration for Qwen3-32B-AWQ (32k context window)
 dgx_llm_strict = LLM(
     model=final_model_string,
     base_url=os.getenv("LLM_BASE_URL", DEFAULT_BASE_URL),
@@ -671,12 +673,14 @@ def summarize_report_with_fast_model(report_text: str, role: str, topic: str) ->
 def _call_smart_model(system: str, user: str, max_tokens: int = 4000, temperature: float = 0.1) -> str:
     """Call the Smart Model (vLLM) directly via OpenAI API. Returns response text."""
     from openai import OpenAI
+    # Disable Qwen3 thinking mode to avoid wasting tokens on <think> blocks
+    system = "/no_think\n" + system
     client = OpenAI(
         base_url=os.getenv("LLM_BASE_URL", "http://localhost:8000/v1"),
         api_key=os.getenv("LLM_API_KEY", "NA"),
     )
     resp = client.chat.completions.create(
-        model=os.getenv("MODEL_NAME", "Qwen/Qwen2.5-32B-Instruct-AWQ"),
+        model=os.getenv("MODEL_NAME", "Qwen/Qwen3-32B-AWQ"),
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -685,7 +689,10 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000, temperatur
         temperature=temperature,
         timeout=300,
     )
-    return resp.choices[0].message.content.strip()
+    text = resp.choices[0].message.content.strip()
+    # Strip <think>...</think> blocks (Qwen3 thinking mode safety net)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    return text
 
 
 def _translate_sot_chunked(sot_content: str, language: str, language_config: dict) -> str:
@@ -2967,7 +2974,7 @@ try:
         # 2.3 Screening & Selection
         out.append("\n### 2.3 Screening & Selection\n")
         out.append(
-            "Title and abstract screening was performed by the Smart Model (Qwen2.5-32B-Instruct-AWQ) "
+            "Title and abstract screening was performed by the Smart Model (Qwen3-32B-AWQ) "
             "using structured inclusion/exclusion criteria:\n\n"
             "**Inclusion criteria:** Human clinical studies (RCTs, meta-analyses, systematic reviews, "
             "large cohort studies); sample size ≥ 30 participants; published in peer-reviewed journals; "

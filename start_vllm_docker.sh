@@ -1,12 +1,13 @@
 #!/bin/bash
 # vLLM Docker Server Startup Script for DR_2_Podcast
-# Model: Qwen2.5-32B-Instruct-AWQ
+# Model: Qwen3-32B-AWQ (thinking mode disabled via /no_think in prompts)
 # Port: 8000
+# Context: 64K via YaRN rope scaling (config.json patched)
 
 # Configuration
-MODEL_NAME="Qwen/Qwen2.5-32B-Instruct-AWQ"
+MODEL_NAME="Qwen/Qwen3-32B-AWQ"
 PORT=8000
-MAX_MODEL_LEN=32768  # 32k context window
+MAX_MODEL_LEN=65536  # 64k context window (YaRN-extended from 40k base)
 GPU_MEMORY_UTIL=0.8  # Use 80% of GPU memory (~102GB), leaves ~26GB for system/Ollama
 
 echo "=========================================="
@@ -22,12 +23,15 @@ echo "=========================================="
 docker ps -a --filter "name=vllm-server" -q | xargs docker rm -f 2>/dev/null || true
 
 # Start vLLM server in Docker
+# Note: Uses v0.13.0 image (pinned) due to CUDA driver compat with GB10
+# Note: VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 required for YaRN-extended context
 docker run --runtime nvidia --gpus all \
   --name vllm-server \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -p 8000:8000 \
   --ipc=host \
-  vllm/vllm-openai:latest \
+  -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
+  vllm/vllm-openai:v0.13.0 \
   --model "$MODEL_NAME" \
   --host 0.0.0.0 \
   --port 8000 \

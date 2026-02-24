@@ -2,7 +2,7 @@
 Deep Research Agent - Evidence-Based Clinical Research Pipeline
 
 Optimized for Nvidia DGX Spark (128GB Unified Memory):
-- SMART MODEL (Qwen2.5-32B-Instruct-AWQ) on port 8000: Reasoning, planning, evaluation
+- SMART MODEL (Qwen3-32B-AWQ) on port 8000: Reasoning, planning, evaluation
 - FAST MODEL (Phi-4 Mini via Ollama) on port 11434: Parallel content summarization
 
 Architecture (7-Step Clinical Pipeline — parallel a/b tracks):
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 
-SMART_MODEL = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-32B-Instruct-AWQ")
+SMART_MODEL = os.getenv("MODEL_NAME", "Qwen/Qwen3-32B-AWQ")
 SMART_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:8000/v1")
 
 FAST_MODEL = os.getenv("FAST_MODEL_NAME", "llama3.2:1b")
@@ -821,6 +821,8 @@ class ResearchAgent:
 
     async def _call_smart(self, system: str, user: str, max_tokens: int = 2048, temperature: float = 0.3) -> str:
         """Call the smart model with retry on transient failures."""
+        # Disable Qwen3 thinking mode to avoid wasting tokens on <think> blocks
+        system = "/no_think\n" + system
         max_retries = 2
         for attempt in range(max_retries + 1):
             try:
@@ -829,7 +831,10 @@ class ResearchAgent:
                     messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
                     max_tokens=max_tokens, temperature=temperature, timeout=300
                 )
-                return resp.choices[0].message.content.strip()
+                text = resp.choices[0].message.content.strip()
+                # Strip any residual <think> blocks (safety net)
+                text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+                return text
             except (ConnectionError, TimeoutError, OSError) as e:
                 if attempt < max_retries:
                     wait = 5 * (attempt + 1)
@@ -1108,6 +1113,8 @@ class ResearchAgent:
         """Parse JSON from smart model output, handling code blocks and LLM noise."""
         if not raw or not raw.strip():
             raise ValueError("Empty response from LLM")
+        # Strip <think>...</think> blocks (Qwen3 thinking mode safety net)
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         # Strip code blocks
         if "```" in raw:
             match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
