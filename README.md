@@ -97,7 +97,7 @@ The system uses two local LLMs working in tandem:
 
 | Role | Default Model | Hosted On | Purpose |
 |------|---------------|-----------|---------|
-| **Smart model** | `Qwen/Qwen2.5-32B-Instruct-AWQ` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing |
+| **Smart model** | `Qwen/Qwen3-32B-AWQ` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing |
 | **Fast model** | `llama3.2:1b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
 
 Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
@@ -267,9 +267,10 @@ docker run --runtime nvidia --gpus all -p 8000:8000 \
   --name vllm-server \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   --ipc=host \
-  vllm/vllm-openai:latest \
-  --model Qwen/Qwen2.5-32B-Instruct-AWQ \
-  --max-model-len 32768 \
+  -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
+  vllm/vllm-openai:v0.13.0 \
+  --model Qwen/Qwen3-32B-AWQ \
+  --max-model-len 65536 \
   --gpu-memory-utilization 0.8 \
   --dtype auto --trust-remote-code --enforce-eager
 ```
@@ -327,7 +328,7 @@ export PODCAST_CORE_TARGET="busy professionals aged 30-50"
 export PODCAST_CHANNEL_MISSION="turning complex science into actionable protocols"
 
 # Model config (defaults shown)
-export MODEL_NAME="Qwen/Qwen2.5-32B-Instruct-AWQ"
+export MODEL_NAME="Qwen/Qwen3-32B-AWQ"
 export LLM_BASE_URL="http://localhost:8000/v1"
 export FAST_MODEL_NAME="llama3.2:1b"
 export FAST_LLM_BASE_URL="http://localhost:11434/v1"
