@@ -672,11 +672,16 @@ def summarize_report_with_fast_model(report_text: str, role: str, topic: str) ->
     return report_text[:6000]
 
 
-def _call_smart_model(system: str, user: str, max_tokens: int = 4000, temperature: float = 0.1) -> str:
-    """Call the Smart Model (vLLM) directly via OpenAI API. Returns response text."""
+def _call_smart_model(system: str, user: str, max_tokens: int = 4000, temperature: float = 0.1, timeout: int = 0) -> str:
+    """Call the Smart Model (vLLM) directly via OpenAI API. Returns response text.
+    timeout: seconds to wait. 0 = auto-scale based on max_tokens (~10 tok/s + 60s buffer).
+    """
     from openai import OpenAI
     # Disable Qwen3 thinking mode to avoid wasting tokens on <think> blocks
     system = "/no_think\n" + system
+    if timeout <= 0:
+        # Auto-scale: ~10 tok/s generation speed + 60s buffer for prompt processing
+        timeout = max(300, int(max_tokens / 10) + 60)
     client = OpenAI(
         base_url=SMART_BASE_URL,
         api_key=os.getenv("LLM_API_KEY", "NA"),
@@ -689,7 +694,7 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000, temperatur
         ],
         max_tokens=max_tokens,
         temperature=temperature,
-        timeout=300,
+        timeout=timeout,
     )
     text = resp.choices[0].message.content.strip()
     # Strip <think>...</think> blocks (Qwen3 thinking mode safety net)
@@ -697,17 +702,87 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000, temperatur
     return text
 
 
-def _translate_sot_chunked(sot_content: str, language: str, language_config: dict) -> str:
-    """Translate SOT section-by-section to avoid truncation. Uses Smart Model API directly."""
-    # Split by ## headers
-    sections = re.split(r'(\n## )', sot_content)
-    # Reassemble: first piece is preamble, then pairs of (separator, section_body)
-    chunks = [sections[0]]
-    for i in range(1, len(sections), 2):
-        if i + 1 < len(sections):
-            chunks.append(sections[i] + sections[i + 1])
+# --- IMRaD-aware SOT splitting for translation prefix caching ---
+
+_IMRAD_HEADERS = {
+    "## Abstract",
+    "## 1. Introduction",
+    "## 2. Methods",
+    "## 3. Results",
+    "## 4. Discussion",
+    "## 5. References",
+}
+
+
+def _split_sot_imrad(sot_content: str) -> list:
+    """Split SOT at top-level IMRaD boundaries only.
+    Returns [(header, body), ...]. First entry may have header="" (preamble).
+    Embedded ## headers (case reports, framing doc) stay inside their parent section.
+    """
+    sections = []
+    current_header = ""
+    current_lines = []
+
+    for line in sot_content.splitlines(keepends=True):
+        stripped = line.rstrip()
+        if stripped in _IMRAD_HEADERS:
+            # Flush previous section
+            sections.append((current_header, "".join(current_lines)))
+            current_header = stripped
+            current_lines = []
         else:
-            chunks.append(sections[i])
+            current_lines.append(line)
+
+    # Flush last section
+    sections.append((current_header, "".join(current_lines)))
+    return sections
+
+
+def _estimate_translation_tokens(char_count: int) -> int:
+    """Dynamic max_tokens based on input size. Japanese expands ~1.5x vs English in tokens."""
+    if char_count < 5000:
+        return 4000
+    elif char_count <= 15000:
+        return 6000
+    else:
+        return 10000
+
+
+def _split_at_subheaders(body: str) -> list:
+    """Split Discussion body at numbered ### 4.N boundaries only.
+    Returns [(sub_header, sub_body), ...]. First entry may have sub_header="" (preamble).
+    Embedded ### headers (e.g. ### **Study Designs**) stay inside their parent subsection.
+    """
+    sections = []
+    current_header = ""
+    current_lines = []
+
+    for line in body.splitlines(keepends=True):
+        stripped = line.rstrip()
+        # Only split at numbered Discussion subsections: ### 4.1, ### 4.2, etc.
+        if re.match(r"^### 4\.\d", stripped):
+            sections.append((current_header, "".join(current_lines)))
+            current_header = stripped
+            current_lines = []
+        else:
+            current_lines.append(line)
+
+    sections.append((current_header, "".join(current_lines)))
+    return sections
+
+
+def _translate_sot_chunked(sot_content: str, language: str, language_config: dict) -> str:
+    """Translate SOT section-by-section using IMRaD-aware splitting.
+    - Only splits at 6 whitelisted IMRaD headers (not embedded ## headers)
+    - Sub-chunks Discussion at ### boundaries
+    - Skips References (100% English: URLs, journal names, DOIs)
+    - Keeps section headers in English as anchors
+    - Byte-identical system prompt enables vLLM prefix caching after call 1
+    """
+    # Strip leftover <think> blocks from Qwen3 thinking mode that may be embedded in the SOT
+    sot_content = re.sub(r"<think>.*?</think>", "", sot_content, flags=re.DOTALL).strip()
+
+    imrad_sections = _split_sot_imrad(sot_content)
 
     lang_name = language_config['name']
     chinese_ban = ""
@@ -715,7 +790,12 @@ def _translate_sot_chunked(sot_content: str, language: str, language_config: dic
         chinese_ban = (
             "ABSOLUTE RULE: Output MUST be in Japanese (日本語) ONLY. NEVER use Chinese (中文).\n"
             "WRONG: 执行功能 → CORRECT: 実行機能; WRONG: 补充 → CORRECT: 補充\n"
-            "If unsure of the Japanese term, keep the English term — NEVER use Chinese.\n\n"
+            "If unsure of the Japanese term, keep the English term — NEVER use Chinese.\n"
+            "Common errors to avoid:\n"
+            "执行→実行, 补充→補充, 认知→認知, 效果→効果, 营养→栄養,\n"
+            "维生素→ビタミン, 剂量→用量, 证据→エビデンス, 结论→結論,\n"
+            "显著→顕著, 分析→分析, 临床→臨床, 摄入→摂取, 健康→健康\n"
+            "Double-check: NO Simplified Chinese characters in your output.\n\n"
         )
 
     system = (
@@ -731,29 +811,77 @@ def _translate_sot_chunked(sot_content: str, language: str, language_config: dic
         f"- Output ONLY the translated text, no commentary"
     )
 
-    translated_chunks = []
-    for i, chunk in enumerate(chunks):
-        if not chunk.strip():
-            translated_chunks.append(chunk)
-            continue
-        # Skip translating very short chunks that are just whitespace/separators
-        if len(chunk.strip()) < 10:
-            translated_chunks.append(chunk)
-            continue
-        try:
-            translated = _call_smart_model(
-                system=system,
-                user=f"Translate this section:\n\n{chunk}",
-                max_tokens=6000,
-                temperature=0.1,
-            )
-            translated_chunks.append(translated)
-            print(f"  ✓ Translated section {i+1}/{len(chunks)} ({len(chunk)} → {len(translated)} chars)")
-        except Exception as e:
-            print(f"  ⚠ Translation failed for section {i+1}: {e} — keeping original")
-            translated_chunks.append(chunk)
+    translated_parts = []
+    call_count = 0
+    total_sections = len(imrad_sections)
 
-    result = "\n".join(translated_chunks)
+    for sec_idx, (header, body) in enumerate(imrad_sections):
+        # Skip References — pass through verbatim (100% English)
+        if header == "## 5. References":
+            translated_parts.append(header + "\n" + body if header else body)
+            print(f"  → Skipped References (pass-through, English only)")
+            continue
+
+        # Skip empty/trivial sections
+        if not body.strip() and not header:
+            translated_parts.append(body)
+            continue
+        if len(body.strip()) < 10 and not header:
+            translated_parts.append(body)
+            continue
+
+        # Sub-chunk Discussion at ### boundaries
+        if header == "## 4. Discussion":
+            sub_chunks = _split_at_subheaders(body)
+            sub_translated = []
+            for sub_idx, (sub_hdr, sub_body) in enumerate(sub_chunks):
+                if not sub_body.strip() and not sub_hdr:
+                    sub_translated.append(sub_body)
+                    continue
+                if len(sub_body.strip()) < 10 and not sub_hdr:
+                    sub_translated.append(sub_body)
+                    continue
+                max_tok = _estimate_translation_tokens(len(sub_body))
+                try:
+                    user_text = sub_body
+                    translated = _call_smart_model(
+                        system=system,
+                        user=f"Translate this section:\n\n{user_text}",
+                        max_tokens=max_tok,
+                        temperature=0.1,
+                    )
+                    call_count += 1
+                    piece = (sub_hdr + "\n" + translated) if sub_hdr else translated
+                    sub_translated.append(piece)
+                    print(f"  ✓ Translated Discussion sub-section {sub_idx+1}/{len(sub_chunks)} "
+                          f"({len(sub_body)} → {len(translated)} chars) [call {call_count}]")
+                except Exception as e:
+                    print(f"  ⚠ Translation failed for Discussion sub-section {sub_idx+1}: {e} — keeping original")
+                    piece = (sub_hdr + "\n" + sub_body) if sub_hdr else sub_body
+                    sub_translated.append(piece)
+            # Reassemble Discussion: header + translated sub-chunks
+            discussion_body = "\n".join(sub_translated)
+            translated_parts.append(header + "\n" + discussion_body)
+        else:
+            # Regular section: translate body, keep header as English anchor
+            max_tok = _estimate_translation_tokens(len(body))
+            try:
+                translated = _call_smart_model(
+                    system=system,
+                    user=f"Translate this section:\n\n{body}",
+                    max_tokens=max_tok,
+                    temperature=0.1,
+                )
+                call_count += 1
+                label = header if header else "preamble"
+                translated_parts.append((header + "\n" + translated) if header else translated)
+                print(f"  ✓ Translated {label} ({len(body)} → {len(translated)} chars) [call {call_count}]")
+            except Exception as e:
+                label = header if header else "preamble"
+                print(f"  ⚠ Translation failed for {label}: {e} — keeping original")
+                translated_parts.append((header + "\n" + body) if header else body)
+
+    result = "\n".join(translated_parts)
 
     # Completeness check: compare ## header counts
     source_headers = sot_content.count("\n## ")
@@ -765,11 +893,16 @@ def _translate_sot_chunked(sot_content: str, language: str, language_config: dic
     if len(result) < len(sot_content) * 0.5:
         print(f"  ⚠ Translated SOT suspiciously short: {len(result)} chars vs {len(sot_content)} chars original")
 
+    print(f"  ✓ Translation complete: {call_count} API calls (down from ~{total_sections * 5} with old splitter)")
     return result
 
 
 def _audit_translation(text: str, language: str, language_config: dict) -> str:
-    """Post-translation audit: fix Chinese contamination, garbled text, untranslated English."""
+    """Post-translation audit: fix Chinese contamination, garbled text, untranslated English.
+    Audits per-section (IMRaD split) to avoid the broken whole-doc approach where
+    64K input + 8K max_tokens always failed the 50% sanity check.
+    Byte-identical system prompt enables vLLM prefix caching.
+    """
     lang_name = language_config['name']
     chinese_rules = ""
     if language == 'ja':
@@ -777,7 +910,8 @@ def _audit_translation(text: str, language: str, language_config: dict) -> str:
             "CRITICAL FOCUS — Chinese contamination:\n"
             "- Replace ANY Simplified Chinese characters with their Japanese equivalents\n"
             "- Common errors: 执行→実行, 补充→補充, 认知→認知, 研究→研究, 效果→効果, "
-            "营养→栄養, 维生素→ビタミン, 剂量→用量, 证据→エビデンス, 结论→結論\n"
+            "营养→栄養, 维生素→ビタミン, 剂量→用量, 证据→エビデンス, 结论→結論, "
+            "显著→顕著, 分析→分析, 临床→臨床, 摄入→摂取, 健康→健康\n"
             "- If you find Chinese sentences, translate them to Japanese\n\n"
         )
 
@@ -791,24 +925,49 @@ def _audit_translation(text: str, language: str, language_config: dict) -> str:
         f"4. KEEP in English: study names, journal names, URLs, clinical abbreviations "
         f"(ARR, NNT, GRADE, CER, EER, RCT, RRR, CI, OR, HR), confidence labels\n"
         f"5. Preserve ALL markdown formatting and numerical values exactly\n\n"
-        f"Return the COMPLETE corrected document. If no issues found, return the document unchanged."
+        f"Return the COMPLETE corrected section. If no issues found, return the section unchanged.\n"
+        f"IMPORTANT: Output ONLY the corrected text. Do NOT include any commentary, explanation, or preamble."
     )
 
-    try:
-        result = _call_smart_model(
-            system=system,
-            user=f"Audit and correct this {lang_name} medical document:\n\n{text}",
-            max_tokens=8000,
-            temperature=0.1,
-        )
-        if len(result) < len(text) * 0.5:
-            print(f"  ⚠ Audit output too short ({len(result)} vs {len(text)}) — keeping original")
-            return text
-        print(f"  ✓ Translation audit complete ({len(text)} → {len(result)} chars)")
-        return result
-    except Exception as e:
-        print(f"  ⚠ Translation audit failed: {e} — keeping original")
-        return text
+    imrad_sections = _split_sot_imrad(text)
+    audited_parts = []
+    call_count = 0
+
+    for sec_idx, (header, body) in enumerate(imrad_sections):
+        # Skip References — no audit needed
+        if header == "## 5. References":
+            audited_parts.append(header + "\n" + body if header else body)
+            print(f"  → Skipped References audit (English only)")
+            continue
+
+        # Skip empty/trivial
+        if not body.strip():
+            audited_parts.append((header + "\n" + body) if header else body)
+            continue
+
+        max_tok = _estimate_translation_tokens(len(body))
+        label = header if header else "preamble"
+        try:
+            result = _call_smart_model(
+                system=system,
+                user=f"Audit and correct this {lang_name} medical document section:\n\n{body}",
+                max_tokens=max_tok,
+                temperature=0.1,
+            )
+            call_count += 1
+            if len(result) < len(body) * 0.5:
+                print(f"  ⚠ Audit output too short for {label} ({len(result)} vs {len(body)}) — keeping original")
+                audited_parts.append((header + "\n" + body) if header else body)
+            else:
+                print(f"  ✓ Audited {label} ({len(body)} → {len(result)} chars) [call {call_count}]")
+                audited_parts.append((header + "\n" + result) if header else result)
+        except Exception as e:
+            print(f"  ⚠ Audit failed for {label}: {e} — keeping original")
+            audited_parts.append((header + "\n" + body) if header else body)
+
+    result = "\n".join(audited_parts)
+    print(f"  ✓ Translation audit complete: {call_count} API calls")
+    return result
 
 
 def _translate_prompt(prompt_text: str, language: str, language_config: dict) -> str:
