@@ -41,7 +41,7 @@ VOICE_MAP = {
 }
 
 # Qwen3-TTS Configuration (for Japanese only — English uses Kokoro)
-QWEN3_TTS_API_URL = os.getenv("QWEN3_TTS_API_URL", "http://localhost:8082")
+QWEN3_TTS_API_URL = os.getenv("QWEN3_TTS_API_URL")  # Set in .env; required for Japanese TTS
 
 
 def _chunk_japanese_text(text: str, max_chars: int = 80) -> list:

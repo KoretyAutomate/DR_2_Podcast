@@ -45,7 +45,7 @@ class FullTextFetcher:
 
     def __init__(self, max_concurrent: int = 5, cache=None):
         self.semaphore = asyncio.Semaphore(max_concurrent)
-        self.unpaywall_email = os.getenv("UNPAYWALL_EMAIL", "research@example.com")
+        self.unpaywall_email = os.getenv("UNPAYWALL_EMAIL")  # Set in .env; required for Unpaywall OA lookup
         self.ncbi_api_key = os.getenv("PUBMED_API_KEY", "")
         self.cache = cache  # PageCache instance (optional)
 

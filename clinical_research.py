@@ -47,11 +47,11 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 
-SMART_MODEL = os.getenv("MODEL_NAME", "Qwen/Qwen3-32B-AWQ")
-SMART_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:8000/v1")
+SMART_MODEL = os.environ["MODEL_NAME"]
+SMART_BASE_URL = os.environ["LLM_BASE_URL"]
 
-FAST_MODEL = os.getenv("FAST_MODEL_NAME", "llama3.2:1b")
-FAST_BASE_URL = os.getenv("FAST_LLM_BASE_URL", "http://localhost:11434/v1")
+FAST_MODEL = os.environ["FAST_MODEL_NAME"]
+FAST_BASE_URL = os.environ["FAST_LLM_BASE_URL"]
 
 MAX_INPUT_TOKENS = 32000
 MAX_CONCURRENT_SUMMARIES = 10
