@@ -1499,14 +1499,17 @@ def home(username: str = Depends(verify_credentials)):
                                     <td style="text-align: right; color: var(--text-secondary);">${{fmt}}</td>
                                 </tr>`;
                             }}).join('');
+
+                        // Current Step timer — use the same group total for consistency
+                        if (currentGroup && data.status === 'running') {{
+                            const secs = groupTotals[currentGroup] || 0;
+                            const fmt = `${{Math.floor(secs / 60)}}m ${{Math.floor(secs % 60)}}s`;
+                            currentTimer.textContent = `${{currentGroup}} — ${{fmt}}`;
+                        }} else {{
+                            currentTimer.textContent = '';
+                        }}
                     }} else {{
                          durationBox.style.display = 'none';
-                    }}
-
-                    if (data.current_step_duration && data.phase) {{
-                        durationBox.style.display = 'block';
-                        const grp = PHASE_GROUPS[data.phase] || data.phase;
-                        currentTimer.textContent = `${{grp}} — ${{data.current_step_duration}}`;
                     }}
 
                     // Update Research Visualizer
@@ -1749,7 +1752,7 @@ async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify
         prompt += f"\nReturn ONLY a JSON array of {len(candidate_topics)} integers. Example: [85, 30, 72]"
 
         # Discover the model name from the vLLM server
-        llm_base = os.getenv("LLM_BASE_URL", "http://localhost:8000/v1")
+        llm_base = os.environ["LLM_BASE_URL"]
         models_resp = httpx.get(f"{llm_base}/models", timeout=10.0)
         models_resp.raise_for_status()
         model_name = models_resp.json()["data"][0]["id"]
@@ -1758,7 +1761,7 @@ async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify
             f"{llm_base}/chat/completions",
             json={
                 "model": model_name,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [{"role": "system", "content": "/no_think"}, {"role": "user", "content": prompt}],
                 "temperature": 0.1,
                 "max_tokens": 512,
             },
@@ -1766,6 +1769,7 @@ async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify
         )
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"].strip()
+        content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL).strip()
 
         # Parse scores from LLM response
         array_match = _re.search(r'\[[\d\s,]+\]', content)
@@ -1893,6 +1897,7 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
 @app.post("/api/generate-intro")
 async def generate_intro(request: GenerateIntroRequest, username: str = Depends(verify_credentials)):
     """Generate a channel intro using the LLM (smart model with fast-model fallback)."""
+    import re
     lang_label = "Japanese" if request.language == "ja" else "English"
     name    = request.channel_name    or "our podcast"
     target  = request.core_target     or "curious listeners"
@@ -1920,15 +1925,15 @@ async def generate_intro(request: GenerateIntroRequest, username: str = Depends(
 
     payload = {
         "model": "",  # filled per endpoint below
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "system", "content": "/no_think"}, {"role": "user", "content": prompt}],
         "max_tokens": 120,
         "temperature": 0.8,
     }
 
-    llm_base       = os.getenv("LLM_BASE_URL",      "http://localhost:11434/v1").rstrip("/")
-    model_name     = os.getenv("MODEL_NAME",         "Qwen/Qwen3-32B-AWQ")
-    fast_base      = os.getenv("FAST_LLM_BASE_URL",  "http://localhost:11434/v1").rstrip("/")
-    fast_model     = os.getenv("FAST_MODEL_NAME",    "llama3.2:1b")
+    llm_base       = os.environ["LLM_BASE_URL"].rstrip("/")
+    model_name     = os.environ["MODEL_NAME"]
+    fast_base      = os.environ["FAST_LLM_BASE_URL"].rstrip("/")
+    fast_model     = os.environ["FAST_MODEL_NAME"]
 
     async with httpx.AsyncClient(timeout=30) as client:
         # Primary: MODEL_NAME / LLM_BASE_URL from .env
@@ -1937,6 +1942,7 @@ async def generate_intro(request: GenerateIntroRequest, username: str = Depends(
             r = await client.post(f"{llm_base}/chat/completions", json=payload)
             if r.status_code == 200:
                 intro = r.json()["choices"][0]["message"]["content"].strip()
+                intro = re.sub(r"<think>.*?</think>", "", intro, flags=re.DOTALL).strip()
                 return {"intro": intro}
             print(f"[generate-intro] primary non-200: {r.status_code} {r.text[:200]}")
         except Exception as e:
@@ -1949,6 +1955,7 @@ async def generate_intro(request: GenerateIntroRequest, username: str = Depends(
                 r = await client.post(f"{fast_base}/chat/completions", json=payload)
                 if r.status_code == 200:
                     intro = r.json()["choices"][0]["message"]["content"].strip()
+                    intro = re.sub(r"<think>.*?</think>", "", intro, flags=re.DOTALL).strip()
                     return {"intro": intro}
                 print(f"[generate-intro] fallback non-200: {r.status_code} {r.text[:200]}")
             except Exception as e:
