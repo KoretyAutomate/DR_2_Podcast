@@ -606,7 +606,8 @@ dgx_llm_strict = LLM(
     timeout=600,
     temperature=0.1,  # Strict mode for Researcher/Auditor
     max_tokens=8000,  # Researchers/auditors produce short structured outputs; leaves 24k for input
-    stop=["<|im_end|>", "<|endoftext|>"]
+    stop=["<|im_end|>", "<|endoftext|>"],
+    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
 )
 
 dgx_llm_creative = LLM(
@@ -616,9 +617,10 @@ dgx_llm_creative = LLM(
     provider="openai",
     timeout=600,
     temperature=0.7,  # Creative mode for Producer/Personality
-    max_tokens=12000,  # Scriptwriter needs more output for 4,500-word scripts; leaves 20k for input
+    max_tokens=16000,  # Increased for expansion; scriptwriter needs room for 4,500-word scripts
     frequency_penalty=0.15,  # Prevent repetition loops while allowing long creative output
-    stop=["<|im_end|>", "<|endoftext|>"]
+    stop=["<|im_end|>", "<|endoftext|>"],
+    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
 )
 
 # Legacy alias for backward compatibility
@@ -922,6 +924,10 @@ def _validate_script(script_text: str, target_length: int, tolerance: float,
     Returns: {'pass': bool, 'feedback': str, 'word_count': int, 'issues': list}
     """
     issues = []
+
+    # Strip <think> blocks before measuring (Qwen3 safety net)
+    script_text = re.sub(r'<think>.*?</think>', '', script_text, flags=re.DOTALL).strip()
+
     length_unit = language_config['length_unit']
 
     # 1. Measure word/char count
@@ -969,6 +975,208 @@ def _validate_script(script_text: str, target_length: int, tolerance: float,
         'word_count': count,
         'issues': issues
     }
+
+
+# --- SCRIPT EXPANSION HELPERS ---
+# Default per-act word allocation (fraction of total target)
+ACT_ALLOCATIONS = {1: 0.20, 2: 0.35, 3: 0.25, 4: 0.20}
+
+
+def _count_words(text: str, language_config: dict) -> int:
+    """Count words (English) or content characters (Japanese) in text."""
+    if language_config['length_unit'] == 'chars':
+        return len(re.sub(r'[\s\n\r\t\u3000\uff1a:\u300c\u300d\u3001\u3002\u30fb\uff08\uff09\-\u2014*#]', '', text))
+    else:
+        content_only = re.sub(r'^[A-Za-z0-9_ ]+:\s*', '', text, flags=re.MULTILINE)
+        return len(content_only.split())
+
+
+def _analyze_acts(script_text: str, language_config: dict, target_length: int) -> list:
+    """
+    Parse script into acts and compute per-act word counts, targets, and deficits.
+    Returns list of dicts: [{'num': 1, 'text': '...', 'count': N, 'target': N, 'deficit': N}, ...]
+    Also returns preamble and postamble as special entries with num=0 and num=99.
+    """
+    acts = []
+    length_unit = language_config['length_unit']
+
+    # English: split on "### **ACT N" headers
+    act_pattern = re.compile(r'(###\s*\*?\*?ACT\s+(\d+)[\s\S]*?)(?=###\s*\*?\*?ACT\s+\d+|$)', re.IGNORECASE)
+    matches = list(act_pattern.finditer(script_text))
+
+    if matches:
+        # Preamble: everything before first act
+        preamble_text = script_text[:matches[0].start()].strip()
+        preamble_count = _count_words(preamble_text, language_config)
+        acts.append({'num': 0, 'text': preamble_text, 'count': preamble_count, 'target': 0, 'deficit': 0, 'label': 'preamble'})
+
+        for m in matches:
+            act_num = int(m.group(2))
+            act_text = m.group(1).strip()
+            act_count = _count_words(act_text, language_config)
+            alloc = ACT_ALLOCATIONS.get(act_num, 0.20)
+            act_target = int(target_length * alloc)
+            deficit = act_target - act_count
+            acts.append({
+                'num': act_num,
+                'text': act_text,
+                'count': act_count,
+                'target': act_target,
+                'deficit': deficit,
+                'label': f'ACT {act_num}',
+            })
+
+        # Postamble: everything after last act (wrap-up, one-action)
+        last_end = matches[-1].end()
+        postamble_text = script_text[last_end:].strip()
+        if postamble_text:
+            postamble_count = _count_words(postamble_text, language_config)
+            acts.append({'num': 99, 'text': postamble_text, 'count': postamble_count, 'target': 0, 'deficit': 0, 'label': 'postamble'})
+    else:
+        # Japanese or unstructured: split on [TRANSITION] markers
+        sections = re.split(r'\[TRANSITION\]', script_text)
+        if len(sections) >= 3:
+            # Distribute evenly across sections, treating first as preamble and last as postamble
+            n_acts = max(len(sections) - 2, 1)
+            per_act_target = target_length // n_acts if n_acts > 0 else target_length
+            acts.append({'num': 0, 'text': sections[0].strip(), 'count': _count_words(sections[0], language_config), 'target': 0, 'deficit': 0, 'label': 'preamble'})
+            for i, sec in enumerate(sections[1:-1], start=1):
+                sec_text = sec.strip()
+                sec_count = _count_words(sec_text, language_config)
+                acts.append({
+                    'num': i,
+                    'text': sec_text,
+                    'count': sec_count,
+                    'target': per_act_target,
+                    'deficit': per_act_target - sec_count,
+                    'label': f'Section {i}',
+                })
+            acts.append({'num': 99, 'text': sections[-1].strip(), 'count': _count_words(sections[-1], language_config), 'target': 0, 'deficit': 0, 'label': 'postamble'})
+        else:
+            # Cannot parse — return single block
+            total = _count_words(script_text, language_config)
+            acts.append({'num': 1, 'text': script_text, 'count': total, 'target': target_length, 'deficit': target_length - total, 'label': 'full script'})
+
+    return acts
+
+
+def _expand_act(act_info: dict, sot_content: str, language_config: dict,
+                session_roles: dict, topic_name: str, target_instruction: str) -> str:
+    """
+    Expand a single act that is under its word target using _call_smart_model().
+    Returns the expanded act text.
+    """
+    act_num = act_info['num']
+    act_text = act_info['text']
+    act_target = act_info['target']
+    current_count = act_info['count']
+    length_unit = language_config['length_unit']
+
+    presenter = session_roles['presenter']['character']
+    questioner = session_roles['questioner']['character']
+
+    # Truncate SOT to a manageable excerpt for the expansion prompt
+    sot_excerpt = sot_content[:4000] if len(sot_content) > 4000 else sot_content
+
+    system_prompt = (
+        f"You are expanding ACT {act_num} of a two-host science podcast about \"{topic_name}\".\n"
+        f"Hosts: {presenter} (presenter) and {questioner} (questioner).\n"
+        f"This act currently has {current_count} {length_unit} but needs ~{act_target} {length_unit}.\n"
+        f"RULES:\n"
+        f"- Keep ALL existing dialogue lines intact — do NOT remove or rephrase them.\n"
+        f"- ADD new exchanges between the hosts that deepen the discussion.\n"
+        f"- Add concrete examples, study details, listener-relevant implications.\n"
+        f"- Maintain the natural conversational tone with reactions, follow-up questions, humor.\n"
+        f"- Use speaker labels: **{presenter}:** and **{questioner}:**\n"
+        f"- Do NOT add section headers or act labels — just return the dialogue content.\n"
+        f"- {target_instruction}\n"
+    )
+
+    user_prompt = (
+        f"SOURCE OF TRUTH (key findings):\n{sot_excerpt}\n\n"
+        f"CURRENT ACT TEXT (expand this):\n{act_text}\n\n"
+        f"Return the COMPLETE expanded act with ~{act_target} {length_unit}."
+    )
+
+    try:
+        expanded = _call_smart_model(
+            system=system_prompt,
+            user=user_prompt,
+            max_tokens=6000,
+            temperature=0.7,
+        )
+        expanded_count = _count_words(expanded, language_config)
+        # Only use expansion if it's actually longer
+        if expanded_count > current_count:
+            print(f"    ACT {act_num}: {current_count} → {expanded_count} {length_unit}")
+            return expanded
+        else:
+            print(f"    ACT {act_num}: expansion did not increase length ({expanded_count} vs {current_count}) — keeping original")
+            return act_text
+    except Exception as e:
+        print(f"    ACT {act_num}: expansion failed ({e}) — keeping original")
+        return act_text
+
+
+def _run_script_expansion(draft_text: str, sot_content: str, target_length: int,
+                          language_config: dict, session_roles: dict,
+                          topic_name: str, target_instruction: str) -> tuple:
+    """
+    Orchestrator: analyze acts, expand any under 75% of target, reassemble.
+    Returns (expanded_text, was_expanded).
+    """
+    EXPANSION_THRESHOLD = 0.75  # expand acts under 75% of their target
+
+    acts = _analyze_acts(draft_text, language_config, target_length)
+    length_unit = language_config['length_unit']
+    was_expanded = False
+
+    # Log per-act analysis
+    print("  Per-act analysis:")
+    for a in acts:
+        if a['num'] in (0, 99):
+            print(f"    {a['label']}: {a['count']} {length_unit}")
+        else:
+            pct = (a['count'] / a['target'] * 100) if a['target'] > 0 else 100
+            marker = " ← EXPAND" if pct < EXPANSION_THRESHOLD * 100 else ""
+            print(f"    {a['label']}: {a['count']}/{a['target']} {length_unit} ({pct:.0f}%){marker}")
+
+    # Expand under-target acts
+    for i, a in enumerate(acts):
+        if a['num'] in (0, 99):
+            continue  # skip preamble/postamble
+        if a['target'] <= 0:
+            continue
+        pct = a['count'] / a['target']
+        if pct < EXPANSION_THRESHOLD:
+            expanded_text = _expand_act(a, sot_content, language_config,
+                                        session_roles, topic_name, target_instruction)
+            acts[i]['text'] = expanded_text
+            acts[i]['count'] = _count_words(expanded_text, language_config)
+            was_expanded = True
+
+    if not was_expanded:
+        return draft_text, False
+
+    # Reassemble: detect whether original used [TRANSITION] or ACT headers
+    has_act_headers = bool(re.search(r'###\s*\*?\*?ACT\s+\d+', draft_text, re.IGNORECASE))
+
+    if has_act_headers:
+        # Re-join with the original act header lines preserved in act text
+        parts = []
+        for a in acts:
+            parts.append(a['text'])
+        reassembled = '\n\n'.join(parts)
+    else:
+        # Re-join with [TRANSITION] markers
+        parts = []
+        for a in acts:
+            parts.append(a['text'])
+        reassembled = '\n\n[TRANSITION]\n\n'.join(parts)
+
+    total = _count_words(reassembled, language_config)
+    print(f"  Expansion complete: {total} {length_unit} total")
+    return reassembled, True
 
 
 @tool("BraveSearch")
@@ -2032,36 +2240,52 @@ if args.reuse_dir:
         blueprint_crew = Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True)
         blueprint_crew.kickoff()
 
-        # Phase 5: Script Draft + Audit Loop
-        print(f"\n  PHASE 5: SCRIPT DRAFT (audit loop)")
-        _r_draft_feedback = ""
-        _r_current_script = script_task
-        for _r_attempt in range(1, _REUSE_MAX_ATTEMPTS + 1):
-            if _r_draft_feedback:
+        # Phase 5: Script Draft + Expansion
+        print(f"\n  PHASE 5: SCRIPT DRAFT + EXPANSION")
+        Crew(agents=[producer_agent], tasks=[script_task], verbose=True).kickoff()
+        _r_draft_text = re.sub(r'<think>.*?</think>', '', script_task.output.raw, flags=re.DOTALL).strip()
+        _r_val = _validate_script(_r_draft_text, target_length_int, SCRIPT_TOLERANCE,
+                                   language_config, sot_content, stage='draft')
+        print(f"    Draft: {_r_val['word_count']} {language_config['length_unit']} — "
+              f"{'PASS' if _r_val['pass'] else 'NEEDS EXPANSION'}")
+        if not _r_val['pass'] and any('TOO SHORT' in i for i in _r_val['issues']):
+            print("    Running per-act expansion...")
+            _r_draft_text, _r_expanded = _run_script_expansion(
+                _r_draft_text, sot_content, target_length_int,
+                language_config, SESSION_ROLES, topic_name, target_instruction)
+            _r_val = _validate_script(_r_draft_text, target_length_int, SCRIPT_TOLERANCE,
+                                       language_config, sot_content, stage='draft')
+            print(f"    Post-expansion: {_r_val['word_count']} {language_config['length_unit']} — "
+                  f"{'PASS' if _r_val['pass'] else 'FAIL'}")
+            if not _r_val['pass'] and any('TOO SHORT' in i for i in _r_val['issues']):
+                _r_acts = _analyze_acts(_r_draft_text, language_config, target_length_int)
+                _r_per_act_fb = "Per-act word counts:\n"
+                for _ra in _r_acts:
+                    if _ra['num'] not in (0, 99) and _ra['target'] > 0:
+                        _r_per_act_fb += f"  {_ra['label']}: {_ra['count']}/{_ra['target']} {language_config['length_unit']}\n"
                 _r_fb = (
-                    f"\n\nPREVIOUS ATTEMPT FEEDBACK (attempt {_r_attempt-1}):\n{_r_draft_feedback}\n"
-                    f"Fix ALL issues listed above in this revision.\n"
+                    f"\n\nPREVIOUS ATTEMPT FEEDBACK:\n{_r_val['feedback']}\n"
+                    f"{_r_per_act_fb}\nExpand the shortest acts to hit their targets.\n"
                 )
-                _r_current_script = Task(
+                _r_retry = Task(
                     description=_reuse_script_base_desc + _r_fb,
                     expected_output=_reuse_script_expected,
                     agent=producer_agent,
                     context=[blueprint_task],
                 )
                 if translation_task is not None:
-                    _r_current_script.context = [blueprint_task, translation_task]
-            Crew(agents=[producer_agent], tasks=[_r_current_script], verbose=True).kickoff()
-            _r_draft_text = _r_current_script.output.raw
-            _r_val = _validate_script(_r_draft_text, target_length_int, SCRIPT_TOLERANCE,
-                                       language_config, sot_content, stage='draft')
-            print(f"    Draft attempt {_r_attempt}: {_r_val['word_count']} {language_config['length_unit']} — "
-                  f"{'PASS' if _r_val['pass'] else 'FAIL'}")
-            if _r_val['pass']:
-                break
-            _r_draft_feedback = _r_val['feedback']
-        script_task = _r_current_script
+                    _r_retry.context = [blueprint_task, translation_task]
+                Crew(agents=[producer_agent], tasks=[_r_retry], verbose=True).kickoff()
+                _r_retry_text = re.sub(r'<think>.*?</think>', '', _r_retry.output.raw, flags=re.DOTALL).strip()
+                _r_retry_val = _validate_script(_r_retry_text, target_length_int, SCRIPT_TOLERANCE,
+                                                 language_config, sot_content, stage='draft')
+                if _r_retry_val['word_count'] > _r_val['word_count']:
+                    _r_draft_text = _r_retry_text
+                    script_task = _r_retry
+        _r_expanded_count = _count_words(_r_draft_text, language_config)
+        _r_current_script = script_task
 
-        # Phase 6: Polish + Audit Loop
+        # Phase 6: Polish + Shrinkage Guard
         print(f"\n  PHASE 6: SCRIPT POLISH (audit loop)")
         _r_polish_feedback = ""
         _r_current_polish = polish_task
@@ -2083,7 +2307,7 @@ if args.reuse_dir:
                 if translation_task is not None:
                     _r_current_polish.context = [_r_current_script, translation_task]
             Crew(agents=[editor_agent], tasks=[_r_current_polish], verbose=True).kickoff()
-            _r_polished = _r_current_polish.output.raw
+            _r_polished = re.sub(r'<think>.*?</think>', '', _r_current_polish.output.raw, flags=re.DOTALL).strip()
             _r_val = _validate_script(_r_polished, target_length_int, SCRIPT_TOLERANCE,
                                        language_config, sot_content, stage='polish')
             print(f"    Polish attempt {_r_attempt}: {_r_val['word_count']} {language_config['length_unit']} — "
@@ -2091,6 +2315,13 @@ if args.reuse_dir:
             if _r_val['pass']:
                 break
             _r_polish_feedback = _r_val['feedback']
+        # Shrinkage guard
+        _r_polished_count = _count_words(_r_polished, language_config)
+        if _r_expanded_count > 0 and _r_polished_count < _r_expanded_count * 0.90:
+            print(f"    ⚠ Polish shrunk script ({_r_expanded_count} → {_r_polished_count}) — using expanded draft")
+            if _r_draft_text.count('[TRANSITION]') < 3:
+                _r_draft_text = re.sub(r'(---\s*\n###\s*\*?\*?ACT)', r'[TRANSITION]\n\n\1', _r_draft_text)
+            _r_polished = _r_draft_text
         polish_task = _r_current_polish
 
         # Phase 7: Accuracy Audit
@@ -2102,7 +2333,9 @@ if args.reuse_dir:
 
         # Save markdown outputs
         print("\n--- Saving Outputs ---")
-        script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else ""
+        # Use _r_polished (may be expanded draft if shrinkage guard fired)
+        script_text = _r_polished if _r_polished else (
+            polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else "")
         # Post-script language audit for reuse mode
         if language != 'en':
             script_text = _audit_script_language(script_text, language, language_config)
@@ -2329,35 +2562,52 @@ if args.reuse_dir:
             print(f"\n  PHASE 4: EPISODE BLUEPRINT")
             Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True).kickoff()
 
-            # Phase 5: Script Draft + Audit Loop
-            print(f"\n  PHASE 5: SCRIPT DRAFT (audit loop)")
-            _s_draft_fb = ""
-            _s_cur_script = script_task
-            for _s_att in range(1, _SUPP_MAX_ATTEMPTS + 1):
-                if _s_draft_fb:
+            # Phase 5: Script Draft + Expansion
+            print(f"\n  PHASE 5: SCRIPT DRAFT + EXPANSION")
+            Crew(agents=[producer_agent], tasks=[script_task], verbose=True).kickoff()
+            _s_draft_text = re.sub(r'<think>.*?</think>', '', script_task.output.raw, flags=re.DOTALL).strip()
+            _s_val = _validate_script(_s_draft_text, target_length_int, SCRIPT_TOLERANCE,
+                                       language_config, sot_content, stage='draft')
+            print(f"    Draft: {_s_val['word_count']} {language_config['length_unit']} — "
+                  f"{'PASS' if _s_val['pass'] else 'NEEDS EXPANSION'}")
+            if not _s_val['pass'] and any('TOO SHORT' in i for i in _s_val['issues']):
+                print("    Running per-act expansion...")
+                _s_draft_text, _s_expanded = _run_script_expansion(
+                    _s_draft_text, sot_content, target_length_int,
+                    language_config, SESSION_ROLES, topic_name, target_instruction)
+                _s_val = _validate_script(_s_draft_text, target_length_int, SCRIPT_TOLERANCE,
+                                           language_config, sot_content, stage='draft')
+                print(f"    Post-expansion: {_s_val['word_count']} {language_config['length_unit']} — "
+                      f"{'PASS' if _s_val['pass'] else 'FAIL'}")
+                if not _s_val['pass'] and any('TOO SHORT' in i for i in _s_val['issues']):
+                    _s_acts = _analyze_acts(_s_draft_text, language_config, target_length_int)
+                    _s_per_act_fb = "Per-act word counts:\n"
+                    for _sa in _s_acts:
+                        if _sa['num'] not in (0, 99) and _sa['target'] > 0:
+                            _s_per_act_fb += f"  {_sa['label']}: {_sa['count']}/{_sa['target']} {language_config['length_unit']}\n"
                     _s_fb = (
-                        f"\n\nPREVIOUS ATTEMPT FEEDBACK (attempt {_s_att-1}):\n{_s_draft_fb}\n"
-                        f"Fix ALL issues listed above in this revision.\n"
+                        f"\n\nPREVIOUS ATTEMPT FEEDBACK:\n{_s_val['feedback']}\n"
+                        f"{_s_per_act_fb}\nExpand the shortest acts to hit their targets.\n"
                     )
-                    _s_cur_script = Task(
+                    _s_retry = Task(
                         description=_supp_script_base_desc + _s_fb,
                         expected_output=_supp_script_expected,
                         agent=producer_agent,
                         context=[blueprint_task],
                     )
                     if translation_task is not None:
-                        _s_cur_script.context = [blueprint_task, translation_task]
-                Crew(agents=[producer_agent], tasks=[_s_cur_script], verbose=True).kickoff()
-                _s_val = _validate_script(_s_cur_script.output.raw, target_length_int, SCRIPT_TOLERANCE,
-                                           language_config, sot_content, stage='draft')
-                print(f"    Draft attempt {_s_att}: {_s_val['word_count']} {language_config['length_unit']} — "
-                      f"{'PASS' if _s_val['pass'] else 'FAIL'}")
-                if _s_val['pass']:
-                    break
-                _s_draft_fb = _s_val['feedback']
-            script_task = _s_cur_script
+                        _s_retry.context = [blueprint_task, translation_task]
+                    Crew(agents=[producer_agent], tasks=[_s_retry], verbose=True).kickoff()
+                    _s_retry_text = re.sub(r'<think>.*?</think>', '', _s_retry.output.raw, flags=re.DOTALL).strip()
+                    _s_retry_val = _validate_script(_s_retry_text, target_length_int, SCRIPT_TOLERANCE,
+                                                     language_config, sot_content, stage='draft')
+                    if _s_retry_val['word_count'] > _s_val['word_count']:
+                        _s_draft_text = _s_retry_text
+                        script_task = _s_retry
+            _s_expanded_count = _count_words(_s_draft_text, language_config)
+            _s_cur_script = script_task
 
-            # Phase 6: Polish + Audit Loop
+            # Phase 6: Polish + Shrinkage Guard
             print(f"\n  PHASE 6: SCRIPT POLISH (audit loop)")
             _s_polish_fb = ""
             _s_cur_polish = polish_task
@@ -2379,13 +2629,21 @@ if args.reuse_dir:
                     if translation_task is not None:
                         _s_cur_polish.context = [_s_cur_script, translation_task]
                 Crew(agents=[editor_agent], tasks=[_s_cur_polish], verbose=True).kickoff()
-                _s_val = _validate_script(_s_cur_polish.output.raw, target_length_int, SCRIPT_TOLERANCE,
+                _s_polished = re.sub(r'<think>.*?</think>', '', _s_cur_polish.output.raw, flags=re.DOTALL).strip()
+                _s_val = _validate_script(_s_polished, target_length_int, SCRIPT_TOLERANCE,
                                            language_config, sot_content, stage='polish')
                 print(f"    Polish attempt {_s_att}: {_s_val['word_count']} {language_config['length_unit']} — "
                       f"{'PASS' if _s_val['pass'] else 'FAIL'}")
                 if _s_val['pass']:
                     break
                 _s_polish_fb = _s_val['feedback']
+            # Shrinkage guard
+            _s_polished_count = _count_words(_s_polished, language_config)
+            if _s_expanded_count > 0 and _s_polished_count < _s_expanded_count * 0.90:
+                print(f"    ⚠ Polish shrunk script ({_s_expanded_count} → {_s_polished_count}) — using expanded draft")
+                if _s_draft_text.count('[TRANSITION]') < 3:
+                    _s_draft_text = re.sub(r'(---\s*\n###\s*\*?\*?ACT)', r'[TRANSITION]\n\n\1', _s_draft_text)
+                _s_polished = _s_draft_text
             polish_task = _s_cur_polish
 
             # Phase 7: Accuracy Audit
@@ -2397,7 +2655,9 @@ if args.reuse_dir:
 
             # Save outputs
             print("\n--- Saving Outputs ---")
-            script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else ""
+            # Use _s_polished (may be expanded draft if shrinkage guard fired)
+            script_text = _s_polished if _s_polished else (
+                polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else "")
             # Post-script language audit for supplemental reuse mode
             if language != 'en':
                 script_text = _audit_script_language(script_text, language, language_config)
@@ -3358,51 +3618,75 @@ try:
     blueprint_crew.kickoff()
     print("  ✓ Blueprint complete")
 
-    # === PHASE 5: SCRIPT DRAFT + AUDIT LOOP ===
+    # === PHASE 5: SCRIPT DRAFT + EXPANSION ===
     print(f"\n{'='*60}")
-    print("PHASE 5: SCRIPT DRAFT (audit loop, max {0} attempts)".format(MAX_SCRIPT_ATTEMPTS))
+    print("PHASE 5: SCRIPT DRAFT + EXPANSION")
     print(f"{'='*60}")
-    draft_feedback = ""
-    current_script_task = script_task  # first iteration uses original task
 
-    for attempt in range(1, MAX_SCRIPT_ATTEMPTS + 1):
-        if draft_feedback:
-            # Build task with feedback from previous attempt
+    # 5a. Generate initial draft (single CrewAI call)
+    script_crew = Crew(agents=[producer_agent], tasks=[script_task], verbose=True)
+    script_crew.kickoff()
+    script_draft_text = script_task.output.raw
+
+    # 5b. Strip <think> blocks from draft output
+    script_draft_text = re.sub(r'<think>.*?</think>', '', script_draft_text, flags=re.DOTALL).strip()
+
+    # 5c. Validate raw draft
+    draft_validation = _validate_script(script_draft_text, target_length_int, SCRIPT_TOLERANCE,
+                                         language_config, sot_content, stage='draft')
+    print(f"  Draft: {draft_validation['word_count']} {language_config['length_unit']} — "
+          f"{'PASS' if draft_validation['pass'] else 'NEEDS EXPANSION'}")
+
+    # 5d. Run per-act expansion if draft is short
+    if not draft_validation['pass'] and any('TOO SHORT' in i for i in draft_validation['issues']):
+        print("  Running per-act expansion...")
+        script_draft_text, was_expanded = _run_script_expansion(
+            script_draft_text, sot_content, target_length_int,
+            language_config, SESSION_ROLES, topic_name, target_instruction)
+
+        # Re-validate after expansion
+        exp_validation = _validate_script(script_draft_text, target_length_int, SCRIPT_TOLERANCE,
+                                           language_config, sot_content, stage='draft')
+        print(f"  Post-expansion: {exp_validation['word_count']} {language_config['length_unit']} — "
+              f"{'PASS' if exp_validation['pass'] else 'FAIL'}")
+
+        # 5e. If still short after expansion, ONE retry with per-act feedback
+        if not exp_validation['pass'] and any('TOO SHORT' in i for i in exp_validation['issues']):
+            acts_analysis = _analyze_acts(script_draft_text, language_config, target_length_int)
+            per_act_feedback = "Per-act word counts:\n"
+            for a in acts_analysis:
+                if a['num'] not in (0, 99) and a['target'] > 0:
+                    per_act_feedback += f"  {a['label']}: {a['count']}/{a['target']} {language_config['length_unit']}\n"
             _feedback_block = (
-                f"\n\nPREVIOUS ATTEMPT FEEDBACK (attempt {attempt-1}):\n{draft_feedback}\n"
-                f"Fix ALL issues listed above in this revision.\n"
+                f"\n\nPREVIOUS ATTEMPT FEEDBACK:\n{exp_validation['feedback']}\n"
+                f"{per_act_feedback}\n"
+                f"Expand the shortest acts to hit their targets.\n"
             )
-            current_script_task = Task(
+            retry_script_task = Task(
                 description=script_task_base_description + _feedback_block,
                 expected_output=script_task_expected_output,
                 agent=producer_agent,
                 context=[blueprint_task],
             )
-            # Preserve context chain for translation runs
             if translation_task is not None:
-                current_script_task.context = [blueprint_task, translation_task]
+                retry_script_task.context = [blueprint_task, translation_task]
+            Crew(agents=[producer_agent], tasks=[retry_script_task], verbose=True).kickoff()
+            retry_text = re.sub(r'<think>.*?</think>', '', retry_script_task.output.raw, flags=re.DOTALL).strip()
+            retry_val = _validate_script(retry_text, target_length_int, SCRIPT_TOLERANCE,
+                                          language_config, sot_content, stage='draft')
+            print(f"  Retry: {retry_val['word_count']} {language_config['length_unit']} — "
+                  f"{'PASS' if retry_val['pass'] else 'FAIL'}")
+            # Use whichever is longer
+            if retry_val['word_count'] > exp_validation['word_count']:
+                script_draft_text = retry_text
+                script_task = retry_script_task
 
-        script_crew = Crew(agents=[producer_agent], tasks=[current_script_task], verbose=True)
-        script_crew.kickoff()
-        script_draft_text = current_script_task.output.raw
+    # Store expanded draft word count for shrinkage guard in Phase 6
+    _expanded_draft_count = _count_words(script_draft_text, language_config)
+    # Update script_task output with expanded text if we modified it outside CrewAI
+    current_script_task = script_task
 
-        # Validate
-        validation = _validate_script(script_draft_text, target_length_int, SCRIPT_TOLERANCE,
-                                       language_config, sot_content, stage='draft')
-
-        print(f"  Draft attempt {attempt}: {validation['word_count']} {language_config['length_unit']} — "
-              f"{'PASS' if validation['pass'] else 'FAIL'}")
-
-        if validation['pass']:
-            break
-
-        draft_feedback = validation['feedback']
-        print(f"  Issues:\n{draft_feedback}")
-
-    # Save draft for reference
-    script_task = current_script_task
-
-    # === PHASE 6: POLISH + AUDIT LOOP ===
+    # === PHASE 6: POLISH + SHRINKAGE GUARD ===
     print(f"\n{'='*60}")
     print("PHASE 6: SCRIPT POLISH (audit loop, max {0} attempts)".format(MAX_SCRIPT_ATTEMPTS))
     print(f"{'='*60}")
@@ -3430,7 +3714,7 @@ try:
 
         polish_crew = Crew(agents=[editor_agent], tasks=[current_polish_task], verbose=True)
         polish_crew.kickoff()
-        polished_text = current_polish_task.output.raw
+        polished_text = re.sub(r'<think>.*?</think>', '', current_polish_task.output.raw, flags=re.DOTALL).strip()
 
         validation = _validate_script(polished_text, target_length_int, SCRIPT_TOLERANCE,
                                        language_config, sot_content, stage='polish')
@@ -3444,6 +3728,21 @@ try:
         polish_feedback = validation['feedback']
         print(f"  Issues:\n{polish_feedback}")
 
+    # Shrinkage guard: if polish shrunk by >10% vs expanded draft, discard polish
+    _polished_count = _count_words(polished_text, language_config)
+    if _expanded_draft_count > 0 and _polished_count < _expanded_draft_count * 0.90:
+        print(f"  ⚠ Polish shrunk script by {100 - _polished_count * 100 // _expanded_draft_count}% "
+              f"({_expanded_draft_count} → {_polished_count} {language_config['length_unit']}) — "
+              f"using expanded draft instead")
+        # Use the expanded draft but ensure [TRANSITION] markers are present
+        if script_draft_text.count('[TRANSITION]') < 3:
+            # Inject [TRANSITION] markers at act boundaries
+            script_draft_text = re.sub(
+                r'(---\s*\n###\s*\*?\*?ACT)',
+                r'[TRANSITION]\n\n\1',
+                script_draft_text
+            )
+        polished_text = script_draft_text
     polish_task = current_polish_task
 
     # === PHASE 7: ACCURACY AUDIT (advisory, existing logic) ===
@@ -3491,7 +3790,9 @@ if high_severity_found and audit_output:
     print(f"\n{'='*60}")
     print("HIGH-SEVERITY DRIFT DETECTED — RUNNING SCRIPT CORRECTION")
     print(f"{'='*60}")
-    polished_script_raw = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else ""
+    # Use polished_text which may be expanded draft if shrinkage guard fired
+    polished_script_raw = polished_text if polished_text else (
+        polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else "")
     correction_task = Task(
         description=(
             f"The accuracy audit found HIGH-severity scientific drift in the podcast script.\n\n"
@@ -3650,7 +3951,9 @@ if _corrected_script_text:
     script_text = _corrected_script_text
     print("Using drift-corrected script for audio generation")
 else:
-    script_text = polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else ""
+    # Use polished_text (may be expanded draft if shrinkage guard fired)
+    script_text = polished_text if polished_text else (
+        polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else "")
 
 # Post-Crew 3 language audit — fix Chinese contamination + English leakage for non-English runs
 if language != 'en':
