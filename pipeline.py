@@ -444,9 +444,9 @@ def check_supplemental_needed(topic: str, reuse_dir: Path) -> dict:
 
     try:
         resp = httpx.post(
-            "http://localhost:8000/v1/chat/completions",
+            f"{SMART_BASE_URL}/chat/completions",
             json={
-                "model": os.getenv("MODEL_NAME", "Qwen/Qwen3-32B-AWQ"),
+                "model": SMART_MODEL,
                 "messages": [{"role": "system", "content": "/no_think"}, {"role": "user", "content": prompt}],
                 "temperature": 0.1,
                 "max_tokens": 1024,
@@ -571,13 +571,13 @@ ACCESSIBILITY_INSTRUCTIONS = {
 accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL]
 
 # --- MODEL DETECTION & CONFIG ---
-# Smart model: Qwen3-32B-AWQ on vLLM (32k context, thinking mode disabled)
-DEFAULT_MODEL = "Qwen/Qwen3-32B-AWQ"
-DEFAULT_BASE_URL = "http://localhost:8000/v1"  # vLLM OpenAI-compatible endpoint
+# All model config comes from .env (loaded by dotenv above)
+SMART_MODEL = os.environ["MODEL_NAME"]
+SMART_BASE_URL = os.environ["LLM_BASE_URL"]
 
 def get_final_model_string():
-    model = os.getenv("MODEL_NAME", DEFAULT_MODEL)
-    base_url = os.getenv("LLM_BASE_URL", DEFAULT_BASE_URL)
+    model = SMART_MODEL
+    base_url = SMART_BASE_URL
     print(f"Connecting to Ollama server at {base_url}...")
 
     for i in range(10):
@@ -600,7 +600,7 @@ final_model_string = get_final_model_string()
 # LLM Configuration for Qwen3-32B-AWQ (32k context window)
 dgx_llm_strict = LLM(
     model=final_model_string,
-    base_url=os.getenv("LLM_BASE_URL", DEFAULT_BASE_URL),
+    base_url=SMART_BASE_URL,
     api_key="NA",  # vLLM uses "NA"
     provider="openai",
     timeout=600,
@@ -611,7 +611,7 @@ dgx_llm_strict = LLM(
 
 dgx_llm_creative = LLM(
     model=final_model_string,
-    base_url=os.getenv("LLM_BASE_URL", DEFAULT_BASE_URL),
+    base_url=SMART_BASE_URL,
     api_key="NA",  # vLLM uses "NA"
     provider="openai",
     timeout=600,
@@ -633,9 +633,9 @@ def summarize_report_with_fast_model(report_text: str, role: str, topic: str) ->
     """
     try:
         from openai import OpenAI
-        client = OpenAI(base_url=os.getenv("FAST_LLM_BASE_URL", "http://localhost:11434/v1"), api_key="ollama")
+        client = OpenAI(base_url=os.environ["FAST_LLM_BASE_URL"], api_key="ollama")
         response = client.chat.completions.create(
-            model=os.getenv("FAST_MODEL_NAME", "llama3.2:1b"),
+            model=os.environ["FAST_MODEL_NAME"],
             messages=[
                 {
                     "role": "system",
@@ -676,11 +676,11 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000, temperatur
     # Disable Qwen3 thinking mode to avoid wasting tokens on <think> blocks
     system = "/no_think\n" + system
     client = OpenAI(
-        base_url=os.getenv("LLM_BASE_URL", "http://localhost:8000/v1"),
+        base_url=SMART_BASE_URL,
         api_key=os.getenv("LLM_API_KEY", "NA"),
     )
     resp = client.chat.completions.create(
-        model=os.getenv("MODEL_NAME", "Qwen/Qwen3-32B-AWQ"),
+        model=SMART_MODEL,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
