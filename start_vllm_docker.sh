@@ -39,7 +39,8 @@ docker run --runtime nvidia --gpus all \
   --gpu-memory-utilization $GPU_MEMORY_UTIL \
   --dtype auto \
   --trust-remote-code \
-  --enforce-eager
+  --enforce-eager \
+  --enable-prefix-caching
 
 # If server exits unexpectedly
 echo ""
