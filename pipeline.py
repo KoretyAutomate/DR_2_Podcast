@@ -573,7 +573,7 @@ accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL]
 # --- MODEL DETECTION & CONFIG ---
 # Smart model: Qwen3-32B-AWQ on vLLM (32k context, thinking mode disabled)
 DEFAULT_MODEL = "Qwen/Qwen3-32B-AWQ"
-DEFAULT_BASE_URL = "http://localhost:11434/v1"  # Ollama OpenAI-compatible endpoint
+DEFAULT_BASE_URL = "http://localhost:8000/v1"  # vLLM OpenAI-compatible endpoint
 
 def get_final_model_string():
     model = os.getenv("MODEL_NAME", DEFAULT_MODEL)
