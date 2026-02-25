@@ -674,6 +674,113 @@ def summarize_report_with_fast_model(report_text: str, role: str, topic: str) ->
     return report_text[:6000]
 
 
+def _estimate_task_tokens(task, translation_task_obj=None, language='en'):
+    """Rough estimate of input tokens for a CrewAI task (description + context chain outputs).
+
+    Japanese/Chinese: ~2 chars/token. Other languages: ~4 chars/token.
+    Adds 2000-token buffer for agent system prompt overhead.
+    """
+    chars_per_tok = 2 if language in ('ja', 'zh') else 4
+    total_chars = len(task.description or '')
+    for ctx_task in (task.context or []):
+        raw = getattr(getattr(ctx_task, 'output', None), 'raw', '') or ''
+        total_chars += len(raw)
+    return total_chars // chars_per_tok + 2000
+
+
+def _build_sot_injection_for_stage(stage, sot_file, translated_sot_file,
+                                    sot_summary, translated_sot_summary,
+                                    grade_numbers_text, language_config):
+    """Return SOT injection text for a context-degradation stage.
+
+    Stage 1: Full target-language fast-model summary + file path    (~3K tokens)
+    Stage 2: IMRaD Abstract + GRADE section from file + path         (~1.5K tokens)
+    Stage 3: File path + pre-extracted GRADE/clinical numbers only   (~300 tokens)
+    """
+    target_file = str(translated_sot_file or sot_file or '')
+    lang_name = language_config.get('name', 'target language') if isinstance(language_config, dict) else str(language_config)
+
+    if stage == 1:
+        summary = (translated_sot_summary or sot_summary or '')
+        return (
+            f"\n\nSOURCE OF TRUTH SUMMARY ({lang_name}):\n"
+            f"Use this as your primary research reference.\n\n"
+            f"{summary}\n\n"
+            f"Full research file: {target_file}\n"
+            f"--- END SOT ---\n"
+        )
+    elif stage == 2:
+        abstract_text = ''
+        grade_text = ''
+        if target_file and Path(target_file).exists():
+            try:
+                raw = Path(target_file).read_text(encoding='utf-8')
+                m = re.search(r'(?:## 1\.|##\s*Abstract)(.*?)(?=\n## |\Z)', raw, re.DOTALL | re.IGNORECASE)
+                if m:
+                    abstract_text = m.group(1).strip()[:2000]
+                m = re.search(r'(?:### 4\.3|###\s*GRADE|##\s*GRADE)(.*?)(?=\n### |\n## |\Z)', raw, re.DOTALL | re.IGNORECASE)
+                if m:
+                    grade_text = m.group(1).strip()[:1000]
+            except Exception:
+                pass
+        return (
+            f"\n\n[SOT Stage 2 — reduced for context budget]\n"
+            f"RESEARCH ABSTRACT:\n{abstract_text or '(not available)'}\n\n"
+            f"GRADE EVIDENCE ASSESSMENT:\n{grade_text or '(not available)'}\n\n"
+            f"Full research file: {target_file}\n"
+            f"--- END SOT ---\n"
+        )
+    else:  # stage 3
+        return (
+            f"\n\n[SOT Stage 3 — minimal context; use research file for details]\n"
+            f"Full research file: {target_file}\n"
+            f"{grade_numbers_text or ''}\n"
+            f"--- END SOT ---\n"
+        )
+
+
+_SOT_BLOCK_RE = re.compile(
+    r'\n\nSOURCE OF TRUTH SUMMARY[^\n]*\n.*?--- END SOT ---\n'
+    r'|\n\n\[SOT Stage \d[^\n]*\n.*?--- END SOT ---\n',
+    re.DOTALL
+)
+
+
+def _crew_kickoff_guarded(crew_factory_fn, task, translation_task_obj, language,
+                           sot_file, translated_sot_file, sot_summary, translated_sot_summary,
+                           grade_numbers_text, language_config, crew_name,
+                           ctx_window=32768, max_tokens=16000):
+    """Run a crew kickoff with pre-emptive 3-stage context-budget check.
+
+    Before kickoff, estimates input tokens. If over budget, degrades the SOT
+    injection to the next stage (summary → abstract+GRADE+path → path only).
+    Selects the lowest stage that fits; runs the crew exactly once.
+
+    Stages:
+      1 — Full target-language summary inline        (~3K tokens, default)
+      2 — Abstract + GRADE sections + file path      (~1.5K tokens)
+      3 — File path + clinical numbers only           (~300 tokens)
+    """
+    budget = ctx_window - max_tokens - 2000  # 2000-token system-prompt buffer
+
+    for stage in range(1, 4):
+        est = _estimate_task_tokens(task, translation_task_obj, language)
+        if est <= budget or stage == 3:
+            if stage > 1:
+                print(f"  ⚠ {crew_name}: SOT stage {stage} selected "
+                      f"(est {est:,} tokens, budget {budget:,})")
+            crew_factory_fn().kickoff()
+            return
+        # Over budget — degrade to next stage
+        print(f"  ⚠ {crew_name}: Stage {stage} est {est:,} tokens > budget {budget:,}. "
+              f"Degrading to stage {stage + 1}...")
+        base_desc = _SOT_BLOCK_RE.sub('', task.description)
+        task.description = base_desc + _build_sot_injection_for_stage(
+            stage + 1, sot_file, translated_sot_file,
+            sot_summary, translated_sot_summary, grade_numbers_text, language_config
+        )
+
+
 def _call_smart_model(system: str, user: str, max_tokens: int = 4000, temperature: float = 0.1, timeout: int = 0) -> str:
     """Call the Smart Model (vLLM) directly via OpenAI API. Returns response text.
     timeout: seconds to wait. 0 = auto-scale based on max_tokens (~10 tok/s + 60s buffer).
@@ -2576,16 +2683,37 @@ if args.reuse_dir:
 
         print(f"\nCREW 3: PODCAST PRODUCTION")
 
+        _r_tl_summary = ""
+        _r_sot_translated_file = None
+
         if translation_task is not None and sot_content:
             print(f"\nPHASE 3: REPORT TRANSLATION (pipelined)")
             translated_sot = _translate_sot_pipelined(sot_content, language, language_config)
             if translated_sot:
-                sot_translated_file = new_output_dir / f"source_of_truth_{language}.md"
-                with open(sot_translated_file, 'w', encoding='utf-8') as f:
+                _r_sot_translated_file = new_output_dir / f"source_of_truth_{language}.md"
+                with open(_r_sot_translated_file, 'w', encoding='utf-8') as f:
                     f.write(translated_sot)
                 print(f"✓ Translated SOT saved ({len(translated_sot)} chars)")
+                # Generate compact summary of translated SOT for task description injection
+                print("  Summarizing translated SOT for Crew 3 context injection...")
+                _r_tl_summary = summarize_report_with_fast_model(translated_sot, "sot_translated", topic_name)
+                if _r_tl_summary:
+                    _r_tl_inj = _build_sot_injection_for_stage(
+                        1, sot_path, _r_sot_translated_file,
+                        _truncate_at_boundary(sot_content, 8000), _r_tl_summary, "", language_config
+                    )
+                    blueprint_task.description += _r_tl_inj
+                    script_task.description += _r_tl_inj
+                    audit_task.description += _r_tl_inj
+                # CRITICAL: compact reference only — full 84KB SOT as context causes 27K+ tokens
+                # → CrewAI context overflow → infinite summarizer loop (observed: 36 cycles, 9.6h wasted)
                 from types import SimpleNamespace
-                translation_task.output = SimpleNamespace(raw=translated_sot)
+                translation_task.output = SimpleNamespace(raw=(
+                    f"[Translation complete — {len(translated_sot):,} chars]\n"
+                    f"Translated SOT saved: {_r_sot_translated_file}\n"
+                    f"Key research summary injected into task descriptions."
+                ))
+                sot_translated_file = _r_sot_translated_file  # keep for downstream artifact tracking
 
         # Extract base descriptions before translation for audit-loop feedback
         _reuse_script_base_desc = script_task.description
@@ -2607,8 +2735,13 @@ if args.reuse_dir:
 
         # Phase 4: Blueprint
         print(f"\n  PHASE 4: EPISODE BLUEPRINT")
-        blueprint_crew = Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True)
-        blueprint_crew.kickoff()
+        _crew_kickoff_guarded(
+            lambda: Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True),
+            blueprint_task, translation_task, language,
+            sot_path, _r_sot_translated_file,
+            _truncate_at_boundary(sot_content, 8000), _r_tl_summary,
+            "", language_config, "Phase 4 Blueprint"
+        )
 
         # Phase 5: Script Draft + Expansion
         print(f"\n  PHASE 5: SCRIPT DRAFT + EXPANSION")
@@ -2897,16 +3030,36 @@ if args.reuse_dir:
 
             print(f"\nCREW 3: PODCAST PRODUCTION")
 
+            _s_tl_summary = ""
+            _s_sot_translated_file = None
+
             if translation_task is not None and sot_content:
                 print(f"\nPHASE 3: REPORT TRANSLATION (pipelined)")
                 translated_sot = _translate_sot_pipelined(sot_content, language, language_config)
                 if translated_sot:
-                    sot_translated_file = new_output_dir / f"source_of_truth_{language}.md"
-                    with open(sot_translated_file, 'w', encoding='utf-8') as f:
+                    _s_sot_translated_file = new_output_dir / f"source_of_truth_{language}.md"
+                    with open(_s_sot_translated_file, 'w', encoding='utf-8') as f:
                         f.write(translated_sot)
                     print(f"✓ Translated SOT saved ({len(translated_sot)} chars)")
+                    # Generate compact summary of translated SOT for task description injection
+                    print("  Summarizing translated SOT for Crew 3 context injection...")
+                    _s_tl_summary = summarize_report_with_fast_model(translated_sot, "sot_translated", topic_name)
+                    if _s_tl_summary:
+                        _s_tl_inj = _build_sot_injection_for_stage(
+                            1, sot_path, _s_sot_translated_file,
+                            _truncate_at_boundary(sot_content, 8000), _s_tl_summary, "", language_config
+                        )
+                        blueprint_task.description += _s_tl_inj
+                        script_task.description += _s_tl_inj
+                        audit_task.description += _s_tl_inj
+                    # CRITICAL: compact reference only — full SOT as context causes 27K+ token overflow
                     from types import SimpleNamespace
-                    translation_task.output = SimpleNamespace(raw=translated_sot)
+                    translation_task.output = SimpleNamespace(raw=(
+                        f"[Translation complete — {len(translated_sot):,} chars]\n"
+                        f"Translated SOT saved: {_s_sot_translated_file}\n"
+                        f"Key research summary injected into task descriptions."
+                    ))
+                    sot_translated_file = _s_sot_translated_file  # keep for artifact tracking
 
             # Extract base descriptions before translation for audit-loop feedback
             _supp_script_base_desc = script_task.description
@@ -2928,7 +3081,13 @@ if args.reuse_dir:
 
             # Phase 4: Blueprint
             print(f"\n  PHASE 4: EPISODE BLUEPRINT")
-            Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True).kickoff()
+            _crew_kickoff_guarded(
+                lambda: Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True),
+                blueprint_task, translation_task, language,
+                sot_path, _s_sot_translated_file,
+                _truncate_at_boundary(sot_content, 8000), _s_tl_summary,
+                "", language_config, "Phase 4 Blueprint"
+            )
 
             # Phase 5: Script Draft + Expansion
             print(f"\n  PHASE 5: SCRIPT DRAFT + EXPANSION")
@@ -3220,6 +3379,8 @@ except Exception:
     print(f"⚠ Fast model not available (Ollama unreachable at {_fast_base_url}). Running in smart-only mode.")
 
 sot_content = ""  # Will hold the synthesized Source-of-Truth
+sot_file = None   # Path to source_of_truth.md (set after deep research completes)
+sot_summary = ""  # Fast-model summary of sot_content (set after deep research completes)
 aff_candidates = 0
 neg_candidates = 0
 evidence_quality = "sufficient"
@@ -3858,6 +4019,7 @@ if sot_summary:
     audit_task.description += sot_injection
 
 # Inject GRADE level and NNT data into blueprint for informed framing
+_grade_injection = ""  # may be populated below; referenced by _crew_kickoff_guarded
 if deep_reports and deep_reports.get("audit"):
     _audit_obj = deep_reports.get("audit")
     _audit_text = _audit_obj.report if hasattr(_audit_obj, 'report') else str(_audit_obj)
@@ -3928,6 +4090,8 @@ print(f"CREW 3: PODCAST PRODUCTION")
 print(f"{'='*70}")
 
 translated_sot = None  # set below if translation runs
+translated_sot_summary = ""
+sot_translated_file = None
 if translation_task is not None and sot_content:
     print(f"\nPHASE 3: REPORT TRANSLATION (pipelined)")
     print(f"Translating Source-of-Truth to {language_config['name']} — pipelined mid-tier translate + smart audit")
@@ -3941,9 +4105,25 @@ if translation_task is not None and sot_content:
         with open(sot_translated_file, 'w', encoding='utf-8') as f:
             f.write(translated_sot)
         print(f"✓ Translated SOT saved ({len(translated_sot)} chars) → {sot_translated_file.name}")
-        # Set the translation_task output manually so Crew 3 context chain references work
+        # Generate compact summary of translated SOT for task description injection
+        print("  Summarizing translated SOT for Crew 3 context injection...")
+        translated_sot_summary = summarize_report_with_fast_model(translated_sot, "sot_translated", topic_name)
+        if translated_sot_summary:
+            _tl_injection = _build_sot_injection_for_stage(
+                1, sot_file, sot_translated_file,
+                sot_summary, translated_sot_summary, _grade_injection, language_config
+            )
+            blueprint_task.description += _tl_injection
+            script_task.description += _tl_injection
+            audit_task.description += _tl_injection
+        # CRITICAL: compact reference only — full 84KB SOT as context causes 27K+ input tokens
+        # → CrewAI context overflow → infinite summarizer loop (observed: 36 cycles, 9.6h wasted)
         from types import SimpleNamespace
-        translation_task.output = SimpleNamespace(raw=translated_sot)
+        translation_task.output = SimpleNamespace(raw=(
+            f"[Translation complete — {len(translated_sot):,} chars]\n"
+            f"Translated SOT saved: {sot_translated_file}\n"
+            f"Key research summary injected into task descriptions."
+        ))
     else:
         print(f"  Warning: Chunked translation produced no output — translated SOT not saved")
 
@@ -3980,8 +4160,13 @@ try:
     print(f"\n{'='*60}")
     print("PHASE 4: EPISODE BLUEPRINT")
     print(f"{'='*60}")
-    blueprint_crew = Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True)
-    blueprint_crew.kickoff()
+    _crew_kickoff_guarded(
+        lambda: Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True),
+        blueprint_task, translation_task, language,
+        sot_file, sot_translated_file,
+        sot_summary, translated_sot_summary,
+        _grade_injection, language_config, "Phase 4 Blueprint"
+    )
     print("  ✓ Blueprint complete")
 
     # === PHASE 5: SCRIPT DRAFT + EXPANSION ===
