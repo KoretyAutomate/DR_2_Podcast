@@ -574,6 +574,8 @@ accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL]
 # All model config comes from .env (loaded by dotenv above)
 SMART_MODEL = os.environ["MODEL_NAME"]
 SMART_BASE_URL = os.environ["LLM_BASE_URL"]
+MID_MODEL = os.environ.get("MID_MODEL_NAME", "qwen2.5:7b")
+MID_BASE_URL = os.environ.get("MID_LLM_BASE_URL", os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1"))
 
 def get_final_model_string():
     model = SMART_MODEL
@@ -702,6 +704,37 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000, temperatur
     return text
 
 
+def _call_mid_model(system: str, user: str, max_tokens: int = 4000, temperature: float = 0.1, timeout: int = 0) -> str:
+    """Call the Mid-Tier Model (Ollama qwen2.5:7b) for translation.
+    Falls back to Smart Model if mid-tier is unavailable.
+    timeout: seconds to wait. 0 = auto-scale based on max_tokens (~40 tok/s + 60s buffer).
+    """
+    from openai import OpenAI
+    if timeout <= 0:
+        # Auto-scale: ~40 tok/s generation speed + 60s buffer
+        timeout = max(180, int(max_tokens / 40) + 60)
+    try:
+        client = OpenAI(
+            base_url=MID_BASE_URL,
+            api_key=os.getenv("LLM_API_KEY", "NA"),
+        )
+        resp = client.chat.completions.create(
+            model=MID_MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=timeout,
+        )
+        text = resp.choices[0].message.content.strip()
+        return text
+    except Exception as e:
+        print(f"  ⚠ Mid-tier model ({MID_MODEL}) unavailable: {e} — falling back to Smart Model")
+        return _call_smart_model(system, user, max_tokens=max_tokens, temperature=temperature, timeout=0)
+
+
 # --- IMRaD-aware SOT splitting for translation prefix caching ---
 
 _IMRAD_HEADERS = {
@@ -771,13 +804,10 @@ def _split_at_subheaders(body: str) -> list:
     return sections
 
 
-def _translate_sot_chunked(sot_content: str, language: str, language_config: dict) -> str:
-    """Translate SOT section-by-section using IMRaD-aware splitting.
-    - Only splits at 6 whitelisted IMRaD headers (not embedded ## headers)
-    - Sub-chunks Discussion at ### boundaries
-    - Skips References (100% English: URLs, journal names, DOIs)
-    - Keeps section headers in English as anchors
-    - Byte-identical system prompt enables vLLM prefix caching after call 1
+def _translate_sot_pipelined(sot_content: str, language: str, language_config: dict) -> str:
+    """Pipelined: translate on mid-tier model, audit on smart model.
+    Translation and audit overlap via asyncio producer-consumer pattern.
+    Falls back to sequential smart-model-only if mid-tier is unavailable.
     """
     # Strip leftover <think> blocks from Qwen3 thinking mode that may be embedded in the SOT
     sot_content = re.sub(r"<think>.*?</think>", "", sot_content, flags=re.DOTALL).strip()
@@ -788,186 +818,369 @@ def _translate_sot_chunked(sot_content: str, language: str, language_config: dic
     chinese_ban = ""
     if language == 'ja':
         chinese_ban = (
-            "ABSOLUTE RULE: Output MUST be in Japanese (日本語) ONLY. NEVER use Chinese (中文).\n"
-            "WRONG: 执行功能 → CORRECT: 実行機能; WRONG: 补充 → CORRECT: 補充\n"
-            "If unsure of the Japanese term, keep the English term — NEVER use Chinese.\n"
+            "ABSOLUTE RULE: Output MUST be in Japanese (\u65e5\u672c\u8a9e) ONLY. NEVER use Chinese (\u4e2d\u6587).\n"
+            "WRONG: \u6267\u884c\u529f\u80fd \u2192 CORRECT: \u5b9f\u884c\u6a5f\u80fd; WRONG: \u8865\u5145 \u2192 CORRECT: \u88dc\u5145\n"
+            "If unsure of the Japanese term, keep the English term \u2014 NEVER use Chinese.\n"
             "Common errors to avoid:\n"
-            "执行→実行, 补充→補充, 认知→認知, 效果→効果, 营养→栄養,\n"
-            "维生素→ビタミン, 剂量→用量, 证据→エビデンス, 结论→結論,\n"
-            "显著→顕著, 分析→分析, 临床→臨床, 摄入→摂取, 健康→健康\n"
+            "\u6267\u884c\u2192\u5b9f\u884c, \u8865\u5145\u2192\u88dc\u5145, \u8ba4\u77e5\u2192\u8a8d\u77e5, \u6548\u679c\u2192\u52b9\u679c, \u8425\u517b\u2192\u6804\u990a,\n"
+            "\u7ef4\u751f\u7d20\u2192\u30d3\u30bf\u30df\u30f3, \u5242\u91cf\u2192\u7528\u91cf, \u8bc1\u636e\u2192\u30a8\u30d3\u30c7\u30f3\u30b9, \u7ed3\u8bba\u2192\u7d50\u8ad6,\n"
+            "\u663e\u8457\u2192\u986f\u8457, \u5206\u6790\u2192\u5206\u6790, \u4e34\u5e8a\u2192\u81e8\u5e8a, \u6444\u5165\u2192\u6442\u53d6, \u5065\u5eb7\u2192\u5065\u5eb7\n"
             "Double-check: NO Simplified Chinese characters in your output.\n\n"
         )
 
-    system = (
-        f"{chinese_ban}"
-        f"You are a medical translation specialist. Translate the following section into {lang_name}.\n"
-        f"RULES:\n"
-        f"- Preserve ALL markdown formatting (headers, tables, bullet points, bold, italic)\n"
-        f"- Keep study names, journal names, and URLs in English\n"
-        f"- Keep clinical abbreviations in English: ARR, NNT, GRADE, CER, EER, RCT, RRR, CI, OR, HR\n"
-        f"- Preserve ALL numerical values exactly (percentages, CI ranges, p-values, sample sizes)\n"
-        f"- Keep confidence labels (HIGH/MEDIUM/LOW/CONTESTED) in English\n"
-        f"- Translate meaning, not word-for-word\n"
-        f"- Output ONLY the translated text, no commentary"
-    )
+    translate_system = (
+        "{chinese_ban}"
+        "You are a medical translation specialist. Translate the following section into {lang_name}.\n"
+        "RULES:\n"
+        "- Preserve ALL markdown formatting (headers, tables, bullet points, bold, italic)\n"
+        "- Keep study names, journal names, and URLs in English\n"
+        "- Keep clinical abbreviations in English: ARR, NNT, GRADE, CER, EER, RCT, RRR, CI, OR, HR\n"
+        "- Preserve ALL numerical values exactly (percentages, CI ranges, p-values, sample sizes)\n"
+        "- Keep confidence labels (HIGH/MEDIUM/LOW/CONTESTED) in English\n"
+        "- Translate meaning, not word-for-word\n"
+        "- Output ONLY the translated text, no commentary"
+    ).format(chinese_ban=chinese_ban, lang_name=lang_name)
 
-    translated_parts = []
-    call_count = 0
-    total_sections = len(imrad_sections)
-
-    for sec_idx, (header, body) in enumerate(imrad_sections):
-        # Skip References — pass through verbatim (100% English)
-        if header == "## 5. References":
-            translated_parts.append(header + "\n" + body if header else body)
-            print(f"  → Skipped References (pass-through, English only)")
-            continue
-
-        # Skip empty/trivial sections
-        if not body.strip() and not header:
-            translated_parts.append(body)
-            continue
-        if len(body.strip()) < 10 and not header:
-            translated_parts.append(body)
-            continue
-
-        # Sub-chunk Discussion at ### boundaries
-        if header == "## 4. Discussion":
-            sub_chunks = _split_at_subheaders(body)
-            sub_translated = []
-            for sub_idx, (sub_hdr, sub_body) in enumerate(sub_chunks):
-                if not sub_body.strip() and not sub_hdr:
-                    sub_translated.append(sub_body)
-                    continue
-                if len(sub_body.strip()) < 10 and not sub_hdr:
-                    sub_translated.append(sub_body)
-                    continue
-                max_tok = _estimate_translation_tokens(len(sub_body))
-                try:
-                    user_text = sub_body
-                    translated = _call_smart_model(
-                        system=system,
-                        user=f"Translate this section:\n\n{user_text}",
-                        max_tokens=max_tok,
-                        temperature=0.1,
-                    )
-                    call_count += 1
-                    piece = (sub_hdr + "\n" + translated) if sub_hdr else translated
-                    sub_translated.append(piece)
-                    print(f"  ✓ Translated Discussion sub-section {sub_idx+1}/{len(sub_chunks)} "
-                          f"({len(sub_body)} → {len(translated)} chars) [call {call_count}]")
-                except Exception as e:
-                    print(f"  ⚠ Translation failed for Discussion sub-section {sub_idx+1}: {e} — keeping original")
-                    piece = (sub_hdr + "\n" + sub_body) if sub_hdr else sub_body
-                    sub_translated.append(piece)
-            # Reassemble Discussion: header + translated sub-chunks
-            discussion_body = "\n".join(sub_translated)
-            translated_parts.append(header + "\n" + discussion_body)
-        else:
-            # Regular section: translate body, keep header as English anchor
-            max_tok = _estimate_translation_tokens(len(body))
-            try:
-                translated = _call_smart_model(
-                    system=system,
-                    user=f"Translate this section:\n\n{body}",
-                    max_tokens=max_tok,
-                    temperature=0.1,
-                )
-                call_count += 1
-                label = header if header else "preamble"
-                translated_parts.append((header + "\n" + translated) if header else translated)
-                print(f"  ✓ Translated {label} ({len(body)} → {len(translated)} chars) [call {call_count}]")
-            except Exception as e:
-                label = header if header else "preamble"
-                print(f"  ⚠ Translation failed for {label}: {e} — keeping original")
-                translated_parts.append((header + "\n" + body) if header else body)
-
-    result = "\n".join(translated_parts)
-
-    # Completeness check: compare ## header counts
-    source_headers = sot_content.count("\n## ")
-    result_headers = result.count("\n## ")
-    if result_headers < source_headers:
-        missing = source_headers - result_headers
-        print(f"  ⚠ Translation missing {missing} section(s): source has {source_headers} ## headers, result has {result_headers}")
-    # Length sanity check
-    if len(result) < len(sot_content) * 0.5:
-        print(f"  ⚠ Translated SOT suspiciously short: {len(result)} chars vs {len(sot_content)} chars original")
-
-    print(f"  ✓ Translation complete: {call_count} API calls (down from ~{total_sections * 5} with old splitter)")
-    return result
-
-
-def _audit_translation(text: str, language: str, language_config: dict) -> str:
-    """Post-translation audit: fix Chinese contamination, garbled text, untranslated English.
-    Audits per-section (IMRaD split) to avoid the broken whole-doc approach where
-    64K input + 8K max_tokens always failed the 50% sanity check.
-    Byte-identical system prompt enables vLLM prefix caching.
-    """
-    lang_name = language_config['name']
     chinese_rules = ""
     if language == 'ja':
         chinese_rules = (
-            "CRITICAL FOCUS — Chinese contamination:\n"
+            "CRITICAL FOCUS \u2014 Chinese contamination:\n"
             "- Replace ANY Simplified Chinese characters with their Japanese equivalents\n"
-            "- Common errors: 执行→実行, 补充→補充, 认知→認知, 研究→研究, 效果→効果, "
-            "营养→栄養, 维生素→ビタミン, 剂量→用量, 证据→エビデンス, 结论→結論, "
-            "显著→顕著, 分析→分析, 临床→臨床, 摄入→摂取, 健康→健康\n"
+            "- Common errors: \u6267\u884c\u2192\u5b9f\u884c, \u8865\u5145\u2192\u88dc\u5145, \u8ba4\u77e5\u2192\u8a8d\u77e5, \u7814\u7a76\u2192\u7814\u7a76, \u6548\u679c\u2192\u52b9\u679c, "
+            "\u8425\u517b\u2192\u6804\u990a, \u7ef4\u751f\u7d20\u2192\u30d3\u30bf\u30df\u30f3, \u5242\u91cf\u2192\u7528\u91cf, \u8bc1\u636e\u2192\u30a8\u30d3\u30c7\u30f3\u30b9, \u7ed3\u8bba\u2192\u7d50\u8ad6, "
+            "\u663e\u8457\u2192\u986f\u8457, \u5206\u6790\u2192\u5206\u6790, \u4e34\u5e8a\u2192\u81e8\u5e8a, \u6444\u5165\u2192\u6442\u53d6, \u5065\u5eb7\u2192\u5065\u5eb7\n"
             "- If you find Chinese sentences, translate them to Japanese\n\n"
         )
 
-    system = (
-        f"You are a {lang_name} language quality auditor for medical documents.\n\n"
-        f"{chinese_rules}"
-        f"Your task:\n"
-        f"1. Find and fix any non-{lang_name} text (Chinese or untranslated English sentences)\n"
-        f"2. Fix garbled or unnatural transliterations\n"
-        f"3. Ensure medical terminology is correct in {lang_name}\n"
-        f"4. KEEP in English: study names, journal names, URLs, clinical abbreviations "
-        f"(ARR, NNT, GRADE, CER, EER, RCT, RRR, CI, OR, HR), confidence labels\n"
-        f"5. Preserve ALL markdown formatting and numerical values exactly\n\n"
-        f"Return the COMPLETE corrected section. If no issues found, return the section unchanged.\n"
-        f"IMPORTANT: Output ONLY the corrected text. Do NOT include any commentary, explanation, or preamble."
-    )
+    audit_system = (
+        "You are a {lang_name} language quality auditor for medical documents.\n\n"
+        "{chinese_rules}"
+        "Your task:\n"
+        "1. Find and fix any non-{lang_name} text (Chinese or untranslated English sentences)\n"
+        "2. Fix garbled or unnatural transliterations\n"
+        "3. Ensure medical terminology is correct in {lang_name}\n"
+        "4. KEEP in English: study names, journal names, URLs, clinical abbreviations "
+        "(ARR, NNT, GRADE, CER, EER, RCT, RRR, CI, OR, HR), confidence labels\n"
+        "5. Preserve ALL markdown formatting and numerical values exactly\n\n"
+        "Return the COMPLETE corrected section. If no issues found, return the section unchanged.\n"
+        "IMPORTANT: Output ONLY the corrected text. Do NOT include any commentary, explanation, or preamble."
+    ).format(lang_name=lang_name, chinese_rules=chinese_rules)
 
-    imrad_sections = _split_sot_imrad(text)
-    audited_parts = []
-    call_count = 0
-
+    # --- Flatten sections into ordered chunk list ---
+    # Each chunk: (index, header, body, passthrough_flag)
+    # passthrough_flag: True = skip translate/audit, False = needs translate+audit,
+    #                   "discussion_marker" = reassembly marker for Discussion section
+    chunks = []
     for sec_idx, (header, body) in enumerate(imrad_sections):
-        # Skip References — no audit needed
         if header == "## 5. References":
-            audited_parts.append(header + "\n" + body if header else body)
-            print(f"  → Skipped References audit (English only)")
+            chunks.append((len(chunks), header, body, True))
             continue
-
-        # Skip empty/trivial
-        if not body.strip():
-            audited_parts.append((header + "\n" + body) if header else body)
+        if (not body.strip() and not header) or (len(body.strip()) < 10 and not header):
+            chunks.append((len(chunks), header, body, True))
             continue
+        if header == "## 4. Discussion":
+            sub_chunks = _split_at_subheaders(body)
+            disc_parts = []
+            for sub_idx, (sub_hdr, sub_body) in enumerate(sub_chunks):
+                if (not sub_body.strip() and not sub_hdr) or (len(sub_body.strip()) < 10 and not sub_hdr):
+                    disc_parts.append((len(chunks), sub_hdr, sub_body, True))
+                else:
+                    disc_parts.append((len(chunks), sub_hdr, sub_body, False))
+                chunks.append(disc_parts[-1])
+            # Store Discussion metadata for reassembly
+            chunks.append((len(chunks), header, disc_parts, "discussion_marker"))
+            continue
+        chunks.append((len(chunks), header, body, False))
 
-        max_tok = _estimate_translation_tokens(len(body))
-        label = header if header else "preamble"
-        try:
-            result = _call_smart_model(
-                system=system,
-                user=f"Audit and correct this {lang_name} medical document section:\n\n{body}",
-                max_tokens=max_tok,
-                temperature=0.1,
+    # --- Build reassembly plan ---
+    output_plan = []
+    i = 0
+    while i < len(chunks):
+        idx, header, body_or_parts, flag = chunks[i]
+        if flag == "discussion_marker":
+            disc_indices = [p[0] for p in body_or_parts]
+            output_plan.append((header, "discussion", disc_indices))
+        else:
+            output_plan.append((header, "single", [idx]))
+        i += 1
+
+    # --- Identify translatable chunks ---
+    translatable = [(c[0], c[1], c[2]) for c in chunks if c[3] is False]
+    total_translatable = len(translatable)
+    if total_translatable == 0:
+        print("  No translatable sections found")
+        return sot_content
+
+    # --- Results storage (indexed by chunk index) ---
+    results = {}
+
+    # --- Probe mid-tier model with first chunk ---
+    mid_tier_available = True
+    first_chunk_idx, first_header, first_body = translatable[0]
+    first_label = first_header if first_header else "preamble"
+    max_tok = _estimate_translation_tokens(len(first_body))
+    use_smart_first = len(first_body) > 8000
+    try:
+        if use_smart_first:
+            translated = _call_smart_model(
+                system=translate_system,
+                user="Translate this section:\n\n" + first_body,
+                max_tokens=max_tok, temperature=0.1,
             )
-            call_count += 1
-            if len(result) < len(body) * 0.5:
-                print(f"  ⚠ Audit output too short for {label} ({len(result)} vs {len(body)}) — keeping original")
-                audited_parts.append((header + "\n" + body) if header else body)
-            else:
-                print(f"  ✓ Audited {label} ({len(body)} → {len(result)} chars) [call {call_count}]")
-                audited_parts.append((header + "\n" + result) if header else result)
-        except Exception as e:
-            print(f"  ⚠ Audit failed for {label}: {e} — keeping original")
-            audited_parts.append((header + "\n" + body) if header else body)
+        else:
+            from openai import OpenAI as _MidOpenAI
+            _mid_client = _MidOpenAI(base_url=MID_BASE_URL, api_key=os.getenv("LLM_API_KEY", "NA"))
+            _mid_resp = _mid_client.chat.completions.create(
+                model=MID_MODEL,
+                messages=[
+                    {"role": "system", "content": translate_system},
+                    {"role": "user", "content": "Translate this section:\n\n" + first_body},
+                ],
+                max_tokens=max_tok, temperature=0.1,
+                timeout=max(180, int(max_tok / 40) + 60),
+            )
+            translated = _mid_resp.choices[0].message.content.strip()
+        results[first_chunk_idx] = translated
+        model_tag = "smart" if use_smart_first else "mid"
+        print("  \u2713 Translated {} ({} \u2192 {} chars) [{}, 1/{}]".format(
+            first_label, len(first_body), len(translated), model_tag, total_translatable))
+    except Exception as e:
+        if not use_smart_first:
+            print("  \u26a0 Mid-tier model ({}) unavailable: {} \u2014 falling back to smart-model-only".format(MID_MODEL, e))
+            mid_tier_available = False
+            try:
+                translated = _call_smart_model(
+                    system=translate_system,
+                    user="Translate this section:\n\n" + first_body,
+                    max_tokens=max_tok, temperature=0.1,
+                )
+                results[first_chunk_idx] = translated
+                print("  \u2713 Translated {} ({} \u2192 {} chars) [smart fallback, 1/{}]".format(
+                    first_label, len(first_body), len(translated), total_translatable))
+            except Exception as e2:
+                print("  \u26a0 Translation failed for {}: {} \u2014 keeping original".format(first_label, e2))
+                results[first_chunk_idx] = first_body
+        else:
+            print("  \u26a0 Translation failed for {}: {} \u2014 keeping original".format(first_label, e))
+            results[first_chunk_idx] = first_body
 
-    result = "\n".join(audited_parts)
-    print(f"  ✓ Translation audit complete: {call_count} API calls")
-    return result
+    remaining = translatable[1:]
+
+    if not mid_tier_available:
+        # --- FALLBACK: Sequential smart-model-only (old behavior) ---
+        print("  Running sequential translate+audit on Smart Model (no pipeline)")
+        translate_count = 1
+        for chunk_idx, header, body in remaining:
+            label = header if header else "preamble"
+            max_tok = _estimate_translation_tokens(len(body))
+            try:
+                translated = _call_smart_model(
+                    system=translate_system,
+                    user="Translate this section:\n\n" + body,
+                    max_tokens=max_tok, temperature=0.1,
+                )
+                translate_count += 1
+                results[chunk_idx] = translated
+                print("  \u2713 Translated {} ({} \u2192 {} chars) [smart, {}/{}]".format(
+                    label, len(body), len(translated), translate_count, total_translatable))
+            except Exception as e:
+                print("  \u26a0 Translation failed for {}: {} \u2014 keeping original".format(label, e))
+                results[chunk_idx] = body
+
+        # Sequential audit pass
+        audit_count = 0
+        for chunk_idx, header, body in translatable:
+            label = header if header else "preamble"
+            translated_body = results.get(chunk_idx, body)
+            if not translated_body.strip():
+                continue
+            max_tok = _estimate_translation_tokens(len(translated_body))
+            try:
+                audited = _call_smart_model(
+                    system=audit_system,
+                    user="Audit and correct this {} medical document section:\n\n".format(lang_name) + translated_body,
+                    max_tokens=max_tok, temperature=0.1,
+                )
+                audit_count += 1
+                if len(audited) < len(translated_body) * 0.5:
+                    print("  \u26a0 Audit output too short for {} ({} vs {}) \u2014 keeping translation".format(
+                        label, len(audited), len(translated_body)))
+                else:
+                    results[chunk_idx] = audited
+                    print("  \u2713 Audited {} ({} \u2192 {} chars) [smart, {}/{}]".format(
+                        label, len(translated_body), len(audited), audit_count, total_translatable))
+            except Exception as e:
+                print("  \u26a0 Audit failed for {}: {} \u2014 keeping translation".format(label, e))
+
+        print("  \u2713 Translation+audit complete: {} translate + {} audit calls (sequential fallback)".format(
+            translate_count, audit_count))
+    else:
+        # --- PIPELINED: Mid-tier translates, smart model audits concurrently ---
+        print("  Running pipelined translate (mid-tier) + audit (smart) [{}]".format(MID_MODEL))
+
+        async def _run_pipeline():
+            queue = asyncio.Queue()
+            translate_count = 1  # first chunk already done
+            audit_count = 0
+
+            async def producer():
+                nonlocal translate_count
+                for chunk_idx, header, body in remaining:
+                    label = header if header else "preamble"
+                    max_tok = _estimate_translation_tokens(len(body))
+                    use_smart_for_chunk = len(body) > 8000
+                    try:
+                        if use_smart_for_chunk:
+                            translated = await asyncio.to_thread(
+                                _call_smart_model,
+                                translate_system,
+                                "Translate this section:\n\n" + body,
+                                max_tok, 0.1,
+                            )
+                        else:
+                            translated = await asyncio.to_thread(
+                                _call_mid_model,
+                                translate_system,
+                                "Translate this section:\n\n" + body,
+                                max_tok, 0.1,
+                            )
+                        translate_count += 1
+                        results[chunk_idx] = translated
+                        model_tag = "smart" if use_smart_for_chunk else "mid"
+                        print("  \u2713 Translated {} ({} \u2192 {} chars) [{}, {}/{}]".format(
+                            label, len(body), len(translated), model_tag, translate_count, total_translatable))
+                    except Exception as e:
+                        print("  \u26a0 Translation failed for {}: {} \u2014 keeping original".format(label, e))
+                        results[chunk_idx] = body
+                    await queue.put(chunk_idx)
+                # Signal done
+                await queue.put(None)
+
+            async def consumer():
+                nonlocal audit_count
+                # First: audit the already-translated first chunk
+                first_translated = results.get(first_chunk_idx, first_body)
+                if first_translated.strip():
+                    max_tok = _estimate_translation_tokens(len(first_translated))
+                    try:
+                        audited = await asyncio.to_thread(
+                            _call_smart_model,
+                            audit_system,
+                            "Audit and correct this {} medical document section:\n\n".format(lang_name) + first_translated,
+                            max_tok, 0.1,
+                        )
+                        audit_count += 1
+                        if len(audited) >= len(first_translated) * 0.5:
+                            results[first_chunk_idx] = audited
+                            flabel = first_header if first_header else "preamble"
+                            print("  \u2713 Audited {} ({} \u2192 {} chars) [smart, {}/{}]".format(
+                                flabel, len(first_translated), len(audited), audit_count, total_translatable))
+                        else:
+                            flabel = first_header if first_header else "preamble"
+                            print("  \u26a0 Audit output too short for {} \u2014 keeping translation".format(flabel))
+                    except Exception as e:
+                        flabel = first_header if first_header else "preamble"
+                        print("  \u26a0 Audit failed for {}: {} \u2014 keeping translation".format(flabel, e))
+
+                # Then: audit chunks as they arrive from producer
+                while True:
+                    chunk_idx = await queue.get()
+                    if chunk_idx is None:
+                        break
+                    translated_body = results.get(chunk_idx, "")
+                    if not translated_body.strip():
+                        continue
+                    # Find label for this chunk
+                    label = "section"
+                    for c in translatable:
+                        if c[0] == chunk_idx:
+                            label = c[1] if c[1] else "preamble"
+                            break
+                    max_tok = _estimate_translation_tokens(len(translated_body))
+                    try:
+                        audited = await asyncio.to_thread(
+                            _call_smart_model,
+                            audit_system,
+                            "Audit and correct this {} medical document section:\n\n".format(lang_name) + translated_body,
+                            max_tok, 0.1,
+                        )
+                        audit_count += 1
+                        if len(audited) >= len(translated_body) * 0.5:
+                            results[chunk_idx] = audited
+                            print("  \u2713 Audited {} ({} \u2192 {} chars) [smart, {}/{}]".format(
+                                label, len(translated_body), len(audited), audit_count, total_translatable))
+                        else:
+                            print("  \u26a0 Audit output too short for {} \u2014 keeping translation".format(label))
+                    except Exception as e:
+                        print("  \u26a0 Audit failed for {}: {} \u2014 keeping translation".format(label, e))
+
+            await asyncio.gather(producer(), consumer())
+            return translate_count, audit_count
+
+        # Run the async pipeline
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                t_count, a_count = pool.submit(lambda: asyncio.run(_run_pipeline())).result()
+        else:
+            t_count, a_count = asyncio.run(_run_pipeline())
+        print("  \u2713 Pipelined translation+audit complete: {} translate + {} audit calls".format(t_count, a_count))
+
+    # --- Reassemble output in original section order ---
+    assembled_parts = []
+    for plan_entry in output_plan:
+        header = plan_entry[0]
+        plan_type = plan_entry[1]
+
+        if plan_type == "discussion":
+            disc_indices = plan_entry[2]
+            disc_sub_parts = []
+            for didx in disc_indices:
+                for c in chunks:
+                    if c[0] == didx:
+                        sub_hdr = c[1]
+                        if c[3] is True:
+                            piece = (sub_hdr + "\n" + c[2]) if sub_hdr else c[2]
+                        else:
+                            body = results.get(didx, c[2])
+                            piece = (sub_hdr + "\n" + body) if sub_hdr else body
+                        disc_sub_parts.append(piece)
+                        break
+            discussion_body = "\n".join(disc_sub_parts)
+            assembled_parts.append(header + "\n" + discussion_body)
+        elif plan_type == "single":
+            cidx = plan_entry[2][0]
+            for c in chunks:
+                if c[0] == cidx:
+                    if c[3] is True:
+                        piece = (c[1] + "\n" + c[2]) if c[1] else c[2]
+                    elif c[3] == "discussion_marker":
+                        continue
+                    else:
+                        body = results.get(cidx, c[2])
+                        piece = (c[1] + "\n" + body) if c[1] else body
+                    assembled_parts.append(piece)
+                    break
+
+    result_text = "\n".join(assembled_parts)
+
+    # Completeness check: compare ## header counts
+    source_headers = sot_content.count("\n## ")
+    result_headers = result_text.count("\n## ")
+    if result_headers < source_headers:
+        missing = source_headers - result_headers
+        print("  \u26a0 Translation missing {} section(s): source has {} ## headers, result has {}".format(
+            missing, source_headers, result_headers))
+    # Length sanity check
+    if len(result_text) < len(sot_content) * 0.5:
+        print("  \u26a0 Translated SOT suspiciously short: {} chars vs {} chars original".format(
+            len(result_text), len(sot_content)))
+
+    return result_text
 
 
 def _translate_prompt(prompt_text: str, language: str, language_config: dict) -> str:
@@ -2364,10 +2577,8 @@ if args.reuse_dir:
         print(f"\nCREW 3: PODCAST PRODUCTION")
 
         if translation_task is not None and sot_content:
-            print(f"\nPHASE 3: REPORT TRANSLATION (chunked)")
-            translated_sot = _translate_sot_chunked(sot_content, language, language_config)
-            if translated_sot:
-                translated_sot = _audit_translation(translated_sot, language, language_config)
+            print(f"\nPHASE 3: REPORT TRANSLATION (pipelined)")
+            translated_sot = _translate_sot_pipelined(sot_content, language, language_config)
             if translated_sot:
                 sot_translated_file = new_output_dir / f"source_of_truth_{language}.md"
                 with open(sot_translated_file, 'w', encoding='utf-8') as f:
@@ -2687,10 +2898,8 @@ if args.reuse_dir:
             print(f"\nCREW 3: PODCAST PRODUCTION")
 
             if translation_task is not None and sot_content:
-                print(f"\nPHASE 3: REPORT TRANSLATION (chunked)")
-                translated_sot = _translate_sot_chunked(sot_content, language, language_config)
-                if translated_sot:
-                    translated_sot = _audit_translation(translated_sot, language, language_config)
+                print(f"\nPHASE 3: REPORT TRANSLATION (pipelined)")
+                translated_sot = _translate_sot_pipelined(sot_content, language, language_config)
                 if translated_sot:
                     sot_translated_file = new_output_dir / f"source_of_truth_{language}.md"
                     with open(sot_translated_file, 'w', encoding='utf-8') as f:
@@ -3717,16 +3926,11 @@ print(f"{'='*70}")
 
 translated_sot = None  # set below if translation runs
 if translation_task is not None and sot_content:
-    print(f"\nPHASE 3: REPORT TRANSLATION (chunked)")
-    print(f"Translating Source-of-Truth to {language_config['name']} section-by-section")
+    print(f"\nPHASE 3: REPORT TRANSLATION (pipelined)")
+    print(f"Translating Source-of-Truth to {language_config['name']} — pipelined mid-tier translate + smart audit")
 
-    # Chunked translation via Smart Model API (not CrewAI — faster, no truncation)
-    translated_sot = _translate_sot_chunked(sot_content, language, language_config)
-
-    # Post-translation audit pass (fix Chinese contamination, garbled text)
-    if translated_sot:
-        print(f"  Running translation audit pass...")
-        translated_sot = _audit_translation(translated_sot, language, language_config)
+    # Pipelined translation: mid-tier model translates, smart model audits concurrently
+    translated_sot = _translate_sot_pipelined(sot_content, language, language_config)
 
     if translated_sot:
         lang_suffix = language  # e.g. "ja"
