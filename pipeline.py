@@ -3358,7 +3358,6 @@ except Exception as e:
 # PHASE 0.5: DOMAIN CLASSIFICATION
 # ================================================================
 from domain_classifier import classify_topic, ResearchDomain
-_force_domain = os.getenv("FORCE_DOMAIN", "auto")
 _smart_base = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
 _smart_model = os.environ.get("MODEL_NAME", "")
 try:
@@ -3371,7 +3370,6 @@ domain_classification = asyncio.run(classify_topic(
     framing_context=framing_output,
     smart_client=_classify_client,
     smart_model=_smart_model,
-    force_domain=_force_domain,
 ))
 print(f"✓ Domain classification: {domain_classification.domain.value} "
       f"(confidence={domain_classification.confidence:.2f}, framework={domain_classification.suggested_framework})")

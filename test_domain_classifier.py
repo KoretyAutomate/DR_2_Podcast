@@ -89,27 +89,17 @@ class TestDeterministicClassification:
 
 class TestAsyncClassification:
 
-    def test_force_domain_clinical(self):
+    def test_clinical_topic_classified(self):
         result = asyncio.run(classify_topic(
-            "Any topic", force_domain="clinical"
+            "Metformin treatment for diabetes patients"
         ))
         assert result.domain == ResearchDomain.CLINICAL
-        assert result.confidence == 1.0
 
-    def test_force_domain_social_science(self):
+    def test_social_science_topic_classified(self):
         result = asyncio.run(classify_topic(
-            "Any topic", force_domain="social_science"
+            "Effects of homework on student academic achievement"
         ))
         assert result.domain == ResearchDomain.SOCIAL_SCIENCE
-        assert result.confidence == 1.0
-
-    def test_force_domain_auto_falls_through(self):
-        result = asyncio.run(classify_topic(
-            "Metformin treatment for diabetes patients",
-            force_domain="auto"
-        ))
-        # "auto" means no override, falls through to deterministic
-        assert result.domain == ResearchDomain.CLINICAL
 
     def test_ambiguous_defaults_to_clinical(self):
         """Without LLM client, ambiguous topics default to CLINICAL."""

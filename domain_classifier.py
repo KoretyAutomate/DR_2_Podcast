@@ -145,7 +145,6 @@ async def classify_topic(
     framing_context: str = "",
     smart_client=None,
     smart_model: str = "",
-    force_domain: str = "",
 ) -> DomainClassification:
     """Classify a research topic into a domain.
 
@@ -157,26 +156,7 @@ async def classify_topic(
         framing_context: Optional context from Phase 0 framing
         smart_client: AsyncOpenAI client (optional, for LLM fallback)
         smart_model: Model name for LLM classification
-        force_domain: Override domain ("clinical" | "social_science" | "auto")
     """
-    # Manual override
-    if force_domain and force_domain != "auto":
-        if force_domain == "social_science":
-            return DomainClassification(
-                domain=ResearchDomain.SOCIAL_SCIENCE,
-                confidence=1.0,
-                reasoning="User-specified domain override",
-                suggested_framework="PECO",
-                primary_databases=["OpenAlex", "ERIC", "Google Scholar"],
-            )
-        return DomainClassification(
-            domain=ResearchDomain.CLINICAL,
-            confidence=1.0,
-            reasoning="User-specified domain override",
-            suggested_framework="PICO",
-            primary_databases=["PubMed", "Google Scholar"],
-        )
-
     # Deterministic rules
     det = classify_topic_deterministic(topic)
     if det is not None:
