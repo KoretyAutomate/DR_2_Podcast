@@ -2,13 +2,13 @@
 # vLLM Docker Server Startup Script for DR_2_Podcast
 # Model: Qwen3-32B-AWQ (thinking mode disabled via /no_think in prompts)
 # Port: 8000
-# Context: 64K via YaRN rope scaling (config.json patched)
+# Context: 32K (16k input + 16k output covers all tasks)
 
 # Configuration
 MODEL_NAME="Qwen/Qwen3-32B-AWQ"
 PORT=8000
-MAX_MODEL_LEN=65536  # 64k context window (YaRN-extended from 40k base)
-GPU_MEMORY_UTIL=0.8  # Use 80% of GPU memory (~102GB), leaves ~26GB for system/Ollama
+MAX_MODEL_LEN=32768  # 32k context (16k input + 16k output covers all tasks)
+GPU_MEMORY_UTIL=0.65  # 65% of GPU (~84GB), leaves ~44GB for Ollama mid-tier model
 
 echo "=========================================="
 echo "Starting vLLM Server (Docker) for DR_2_Podcast"
