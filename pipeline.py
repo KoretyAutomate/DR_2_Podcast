@@ -718,15 +718,17 @@ def _build_sot_injection_for_stage(stage, sot_file, translated_sot_file,
                 m = re.search(r'(?:## 1\.|##\s*Abstract)(.*?)(?=\n## |\Z)', raw, re.DOTALL | re.IGNORECASE)
                 if m:
                     abstract_text = m.group(1).strip()[:2000]
-                m = re.search(r'(?:### 4\.3|###\s*GRADE|##\s*GRADE)(.*?)(?=\n### |\n## |\Z)', raw, re.DOTALL | re.IGNORECASE)
+                # Try GRADE (clinical) or Evidence Quality Synthesis (social science)
+                m = re.search(r'(?:### 4\.3|###\s*GRADE|##\s*GRADE|###\s*Evidence\s+Quality\s+Synthesis)(.*?)(?=\n### |\n## |\Z)', raw, re.DOTALL | re.IGNORECASE)
                 if m:
                     grade_text = m.group(1).strip()[:1000]
             except Exception:
                 pass
+        evidence_label = "EVIDENCE ASSESSMENT"
         return (
             f"\n\n[SOT Stage 2 — reduced for context budget]\n"
             f"RESEARCH ABSTRACT:\n{abstract_text or '(not available)'}\n\n"
-            f"GRADE EVIDENCE ASSESSMENT:\n{grade_text or '(not available)'}\n\n"
+            f"{evidence_label}:\n{grade_text or '(not available)'}\n\n"
             f"Full research file: {target_file}\n"
             f"--- END SOT ---\n"
         )
@@ -3353,11 +3355,64 @@ except Exception as e:
     framing_output = ""
 
 # ================================================================
-# PHASE 1: CLINICAL RESEARCH (7-Step Pipeline)
+# PHASE 0.5: DOMAIN CLASSIFICATION
 # ================================================================
-print(f"\n{'='*70}")
-print(f"PHASE 1: CLINICAL RESEARCH")
-print(f"{'='*70}")
+from domain_classifier import classify_topic, ResearchDomain
+_force_domain = os.getenv("FORCE_DOMAIN", "auto")
+_smart_base = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
+_smart_model = os.environ.get("MODEL_NAME", "")
+try:
+    from openai import AsyncOpenAI as _AOAIClassify
+    _classify_client = _AOAIClassify(base_url=_smart_base, api_key="not-needed")
+except Exception:
+    _classify_client = None
+domain_classification = asyncio.run(classify_topic(
+    topic=topic_name,
+    framing_context=framing_output,
+    smart_client=_classify_client,
+    smart_model=_smart_model,
+    force_domain=_force_domain,
+))
+print(f"✓ Domain classification: {domain_classification.domain.value} "
+      f"(confidence={domain_classification.confidence:.2f}, framework={domain_classification.suggested_framework})")
+# Save classification to output dir
+_dc_path = output_dir / "domain_classification.json"
+_dc_path.write_text(json.dumps({
+    "domain": domain_classification.domain.value,
+    "confidence": domain_classification.confidence,
+    "reasoning": domain_classification.reasoning,
+    "framework": domain_classification.suggested_framework,
+    "databases": domain_classification.primary_databases,
+}, indent=2))
+
+# ================================================================
+# PHASE 1: RESEARCH PIPELINE (domain-routed)
+# ================================================================
+_research_domain = domain_classification.domain.value  # "clinical" | "social_science" | "general"
+
+if _research_domain in ("social_science",):
+    # Social science pipeline (Phase E implementation)
+    print(f"\n{'='*70}")
+    print(f"PHASE 1: SOCIAL SCIENCE RESEARCH (PECO Pipeline)")
+    print(f"{'='*70}")
+    try:
+        from social_science_research import run_social_science_research
+        deep_reports = asyncio.run(run_social_science_research(
+            topic=topic_name,
+            framing_context=framing_output,
+            output_dir=str(output_dir),
+        ))
+    except ImportError:
+        print("⚠ social_science_research module not yet available — falling back to clinical pipeline")
+        _research_domain = "clinical"  # fall through to clinical below
+    except Exception as e:
+        print(f"⚠ Social science pipeline failed: {e} — falling back to clinical pipeline")
+        _research_domain = "clinical"
+
+if _research_domain in ("clinical", "general"):
+    print(f"\n{'='*70}")
+    print(f"PHASE 1: CLINICAL RESEARCH")
+    print(f"{'='*70}")
 
 brave_key = os.getenv("BRAVE_API_KEY", "")
 
@@ -3462,19 +3517,37 @@ try:
     # ================================================================
     # Build Source-of-Truth in IMRaD format from deep research outputs
     # ================================================================
-    def _extract_conclusion_status(grade_report: str) -> tuple:
-        """Extract GRADE level, conclusion status, and executive summary."""
-        m = re.search(
-            r'Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}',
-            grade_report, re.IGNORECASE)
-        grade = m.group(1).strip() if m else "Not Determined"
+    def _extract_conclusion_status(grade_report: str, domain: str = "clinical") -> tuple:
+        """Extract evidence level, conclusion status, and executive summary.
 
-        status_map = {
-            "High": "Scientifically Supported",
-            "Moderate": "Partially Supported — Further Research Recommended",
-            "Low": "Insufficient Evidence — More Research Needed",
-            "Very Low": "Not Supported by Current Evidence",
-        }
+        Supports both GRADE (clinical) and Evidence Quality (social science) levels.
+        """
+        if domain == "social_science":
+            # Social science evidence quality levels
+            m = re.search(
+                r'Final\s+Evidence\s+Quality[:\s]*\*{0,2}(STRONG|MODERATE_STRONG|MODERATE_WEAK|MODERATE|WEAK|VERY_WEAK)\*{0,2}',
+                grade_report, re.IGNORECASE)
+            grade = m.group(1).strip().upper() if m else "Not Determined"
+            status_map = {
+                "STRONG": "Scientifically Supported",
+                "MODERATE_STRONG": "Well Supported — Robust Evidence",
+                "MODERATE": "Partially Supported — Further Research Recommended",
+                "MODERATE_WEAK": "Tentatively Supported — More Rigorous Studies Needed",
+                "WEAK": "Insufficient Evidence — More Research Needed",
+                "VERY_WEAK": "Not Supported by Current Evidence",
+            }
+        else:
+            # Clinical GRADE levels
+            m = re.search(
+                r'Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}',
+                grade_report, re.IGNORECASE)
+            grade = m.group(1).strip() if m else "Not Determined"
+            status_map = {
+                "High": "Scientifically Supported",
+                "Moderate": "Partially Supported — Further Research Recommended",
+                "Low": "Insufficient Evidence — More Research Needed",
+                "Very Low": "Not Supported by Current Evidence",
+            }
         status = status_map.get(grade, "Under Evaluation")
 
         m2 = re.search(r'Executive\s+Summary[#\s:]*\n+(.+?)(?:\n\n|\n#)',
@@ -3504,8 +3577,14 @@ try:
         """Build a study characteristics table from DeepExtraction objects."""
         if not extractions:
             return "*No studies with full extraction data available.*\n"
-        rows = ["| # | Study | Design | N | Demographics | Follow-up | Funding | Bias Risk | Tier |",
-                "|---|-------|--------|---|--------------|-----------|---------|-----------|------|"]
+        # Check if any extraction has enrichment metadata
+        has_metadata = any(getattr(ext, 'paper_metadata', None) for ext in extractions)
+        if has_metadata:
+            rows = ["| # | Study | Design | N | Demographics | Follow-up | Funding | Bias Risk | Citations | FWCI | Tier |",
+                    "|---|-------|--------|---|--------------|-----------|---------|-----------|-----------|------|------|"]
+        else:
+            rows = ["| # | Study | Design | N | Demographics | Follow-up | Funding | Bias Risk | Tier |",
+                    "|---|-------|--------|---|--------------|-----------|---------|-----------|------|"]
         seen = set()
         idx = 0
         for ext in extractions:
@@ -3518,7 +3597,7 @@ try:
             if ext.pmid:
                 label += f" ([PMID:{ext.pmid}](https://pubmed.ncbi.nlm.nih.gov/{ext.pmid}/))"
             tier_label = f"T{ext.research_tier}" if getattr(ext, 'research_tier', None) else "N/A"
-            rows.append(
+            base = (
                 f"| {idx} "
                 f"| {label} "
                 f"| {ext.study_design or 'N/A'} "
@@ -3527,8 +3606,14 @@ try:
                 f"| {ext.follow_up_period or 'N/A'} "
                 f"| {(ext.funding_source or 'N/A')[:30]} "
                 f"| {ext.risk_of_bias or 'N/A'} "
-                f"| {tier_label} |"
             )
+            if has_metadata:
+                pm = getattr(ext, 'paper_metadata', None)
+                cite_str = str(pm.citation_count) if pm and pm.citation_count is not None else "N/A"
+                fwci_str = f"{pm.fwci:.1f}" if pm and pm.fwci is not None else "N/A"
+                base += f"| {cite_str} | {fwci_str} "
+            base += f"| {tier_label} |"
+            rows.append(base)
         return '\n'.join(rows) + '\n'
 
     def _format_references(extractions: list, wide_net_records: list) -> str:
@@ -3562,14 +3647,182 @@ try:
             refs.append(" ".join(parts))
         return '\n'.join(refs) + '\n' if refs else "*No references available.*\n"
 
+    def _build_social_science_sot(
+        topic, pd, audit_text, aff_case_text, fal_case_text,
+        ev_quality, aff_cand, all_extractions, all_wide, impacts, metrics,
+        framing, search_date, aff_strategy, fal_strategy,
+    ) -> str:
+        """Build IMRaD SOT for social science topics (PECO, effect sizes, evidence quality)."""
+        from effect_size_math import EffectSizeImpact
+
+        grade_level, conclusion_status, exec_summary = _extract_conclusion_status(
+            audit_text, domain="social_science"
+        )
+
+        # Extract metrics
+        aff_wide = metrics.get("aff_wide_net_total", 0)
+        fal_wide = metrics.get("fal_wide_net_total", 0)
+        total_wide = aff_wide + fal_wide
+        total_screened = metrics.get("aff_screened_in", 0) + metrics.get("fal_screened_in", 0)
+        total_ft_ok = metrics.get("aff_fulltext_ok", 0) + metrics.get("fal_fulltext_ok", 0)
+
+        out = []
+
+        # --- Abstract ---
+        out.append(f"# Source of Truth: {topic}\n")
+        out.append("## 1. Abstract\n")
+
+        # Research question (PECO)
+        peco = {}
+        if aff_strategy and hasattr(aff_strategy, 'peco'):
+            peco = aff_strategy.peco if isinstance(aff_strategy.peco, dict) else getattr(aff_strategy, 'peco', {})
+        elif isinstance(aff_strategy, dict):
+            peco = aff_strategy.get("peco", {})
+        if peco:
+            out.append(f"**Research Question (PECO):** In {peco.get('P', 'the target population')}, "
+                       f"does exposure to {peco.get('E', 'the intervention')} compared to "
+                       f"{peco.get('C', 'no exposure')} affect {peco.get('O', 'outcomes')}?\n")
+
+        out.append(f"**Methods:** Systematic search of OpenAlex, ERIC, and Google Scholar identified "
+                   f"{total_wide} records. After screening, {total_screened} studies were selected and "
+                   f"{total_ft_ok} were fully extracted using the PECO framework.\n")
+
+        # Key finding (effect sizes)
+        if impacts:
+            es_list = [i for i in impacts if isinstance(i, EffectSizeImpact)]
+            if es_list:
+                avg_d = sum(abs(i.cohens_d or 0) for i in es_list) / len(es_list)
+                magnitude = "negligible" if avg_d < 0.2 else "small" if avg_d < 0.5 else "medium" if avg_d < 0.8 else "large"
+                out.append(f"**Key Finding:** Across {len(es_list)} studies with reported effect sizes, "
+                           f"the average magnitude was {magnitude} (mean |d| = {avg_d:.3f}).\n")
+
+        out.append(f"**Evidence Quality:** {grade_level} — {conclusion_status}\n")
+        if exec_summary:
+            out.append(f"**Executive Summary:** {exec_summary}\n")
+
+        # --- Introduction ---
+        out.append("\n## 2. Introduction\n")
+        if framing:
+            out.append(f"{framing}\n")
+        else:
+            out.append(f"This review examines the evidence for: *{topic}*.\n")
+        out.append("This review employs a dual-hypothesis design with parallel affirmative and "
+                   "falsification research tracks, using the PECO (Population, Exposure, Comparison, Outcome) framework.\n")
+
+        # --- Methods ---
+        out.append("\n## 3. Methods\n")
+        out.append("### 3.1 Search Strategy\n")
+        out.append(f"**Framework:** PECO (Population, Exposure, Comparison, Outcome)\n")
+        if peco:
+            out.append(f"- **P (Population):** {peco.get('P', 'Not specified')}\n")
+            out.append(f"- **E (Exposure):** {peco.get('E', 'Not specified')}\n")
+            out.append(f"- **C (Comparison):** {peco.get('C', 'Not specified')}\n")
+            out.append(f"- **O (Outcome):** {peco.get('O', 'Not specified')}\n")
+
+        out.append(f"\n### 3.2 Data Collection\n")
+        out.append(f"**Databases:** OpenAlex, ERIC (IES), Google Scholar\n")
+        out.append(f"**Search date:** {search_date}\n")
+        out.append(f"**Records identified:** {total_wide}\n")
+        out.append(f"**Screened:** {total_screened}\n")
+        out.append(f"**Extracted:** {total_ft_ok}\n")
+
+        out.append(f"\n### 3.3 Statistical Analysis\n")
+        out.append("Effect sizes were standardized to Cohen's d using deterministic Python calculations. "
+                   "Hedges' g correction was applied where sample sizes were available. "
+                   "Odds ratios and correlation coefficients were converted to d for comparability.\n")
+
+        # --- Results ---
+        out.append("\n## 4. Results\n")
+        out.append("### 4.1 Study Characteristics\n")
+        if all_extractions:
+            has_metadata = any(getattr(ext, 'paper_metadata', None) for ext in all_extractions)
+            rows = ["| # | Study | Design | N | Setting | Demographics | Effect Size | Follow-up | Tier |",
+                    "|---|-------|--------|---|---------|--------------|-------------|-----------|------|"]
+            seen = set()
+            idx = 0
+            for ext in all_extractions:
+                key = getattr(ext, 'doi', None) or getattr(ext, 'title', '')
+                if key in seen:
+                    continue
+                seen.add(key)
+                idx += 1
+                title_str = (getattr(ext, 'title', '') or '')[:50]
+                es_val = getattr(ext, 'effect_size_value', None)
+                es_type = getattr(ext, 'effect_size_type', None)
+                es_str = f"{es_type}={es_val}" if es_val is not None else "N/A"
+                setting = (getattr(ext, 'setting', None) or "N/A")[:30]
+                demo = (getattr(ext, 'demographics', None) or "N/A")[:30]
+                design = getattr(ext, 'study_design', None) or "N/A"
+                n = getattr(ext, 'sample_size_total', None) or "N/A"
+                fu = getattr(ext, 'follow_up_period', None) or "N/A"
+                tier = f"T{getattr(ext, 'research_tier', 'N/A')}" if getattr(ext, 'research_tier', None) else "N/A"
+                rows.append(f"| {idx} | {title_str} | {design} | {n} | {setting} | {demo} | {es_str} | {fu} | {tier} |")
+            out.append('\n'.join(rows) + '\n')
+        else:
+            out.append("*No studies with full extraction data available.*\n")
+
+        out.append("\n### 4.2 Effect Size Analysis\n")
+        math_report = pd.get("math_report", "")
+        if math_report:
+            out.append(f"{math_report}\n")
+        else:
+            out.append("*No effect sizes calculated.*\n")
+
+        # --- Discussion ---
+        out.append("\n## 5. Discussion\n")
+        out.append("### 5.1 Affirmative Case\n")
+        if aff_case_text:
+            out.append(f"{aff_case_text}\n")
+        out.append("\n### 5.2 Falsification Case\n")
+        if fal_case_text:
+            out.append(f"{fal_case_text}\n")
+
+        out.append("\n### 5.3 Evidence Quality Synthesis\n")
+        if audit_text:
+            out.append(f"{audit_text}\n")
+
+        # --- References ---
+        out.append("\n## 6. References\n")
+        if all_extractions:
+            seen = set()
+            idx = 0
+            for ext in all_extractions:
+                key = getattr(ext, 'doi', None) or getattr(ext, 'title', '')
+                if key in seen:
+                    continue
+                seen.add(key)
+                idx += 1
+                title = getattr(ext, 'title', 'Untitled') or 'Untitled'
+                doi = getattr(ext, 'doi', None)
+                parts = [f"{idx}. *{title}*."]
+                if doi:
+                    parts.append(f"DOI: {doi}.")
+                url = getattr(ext, 'url', None)
+                if url:
+                    parts.append(f"URL: {url}")
+                out.append(" ".join(parts))
+            out.append("")
+        else:
+            out.append("*No references available.*\n")
+
+        return '\n'.join(out)
+
     def build_imrad_sot(
         topic: str,
         reports: dict,
         ev_quality: str,
         aff_cand: int,
+        domain: str = "clinical",
     ) -> str:
-        """Assemble the Source of Truth document in IMRaD scientific paper format."""
+        """Assemble the Source of Truth document in IMRaD scientific paper format.
+
+        Args:
+            domain: "clinical" or "social_science" — controls framework terminology
+        """
         pd = reports.get("pipeline_data", {})
+        # Auto-detect domain from pipeline_data if not explicitly set
+        if pd.get("domain") == "social_science":
+            domain = "social_science"
         aff_strategy = pd.get("aff_strategy")
         fal_strategy = pd.get("fal_strategy")
         aff_extractions = pd.get("aff_extractions", [])
@@ -3587,6 +3840,14 @@ try:
         audit_text = reports.get("audit", _empty_rpt).report
         aff_case_text = reports.get("lead", _empty_rpt).report
         fal_case_text = reports.get("counter", _empty_rpt).report
+
+        # Dispatch to domain-specific SOT builder
+        if domain == "social_science":
+            return _build_social_science_sot(
+                topic, pd, audit_text, aff_case_text, fal_case_text,
+                ev_quality, aff_cand, all_extractions, all_wide, impacts, metrics,
+                framing, search_date, aff_strategy, fal_strategy,
+            )
 
         grade_level, conclusion_status, exec_summary = _extract_conclusion_status(audit_text)
         grade_sections = _parse_grade_sections(audit_text)
@@ -3932,6 +4193,7 @@ try:
         reports=deep_reports,
         ev_quality=evidence_quality,
         aff_cand=aff_candidates,
+        domain=_research_domain,
     )
 
     # C6: Prepend evidence quality banner if limited
@@ -4018,27 +4280,49 @@ if sot_summary:
     blueprint_task.description += sot_injection
     audit_task.description += sot_injection
 
-# Inject GRADE level and NNT data into blueprint for informed framing
+# Inject evidence level and key numbers into blueprint for informed framing
 _grade_injection = ""  # may be populated below; referenced by _crew_kickoff_guarded
 if deep_reports and deep_reports.get("audit"):
     _audit_obj = deep_reports.get("audit")
     _audit_text = _audit_obj.report if hasattr(_audit_obj, 'report') else str(_audit_obj)
-    _grade_m = re.search(r'Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}', _audit_text, re.IGNORECASE)
-    _grade_level = _grade_m.group(1).strip() if _grade_m else "Not Determined"
-    _grade_injection = f"\n\nGRADE EVIDENCE LEVEL: {_grade_level}\n"
-    _grade_injection += "Use this to calibrate your framing language in Section 6 (GRADE-Informed Framing Guide).\n"
-
     _pd = deep_reports.get("pipeline_data", {}) if isinstance(deep_reports, dict) else {}
     _impacts = _pd.get("impacts", [])
-    if _impacts:
-        _grade_injection += "\nKEY CLINICAL IMPACT NUMBERS:\n"
-        for _imp in _impacts[:5]:
-            _label = getattr(_imp, 'study_id', 'Study')
-            _nnt = getattr(_imp, 'nnt', None)
-            _arr = getattr(_imp, 'arr', None)
-            _dir = getattr(_imp, 'direction', 'unknown')
-            if _nnt is not None:
-                _grade_injection += f"- {_label}: NNT={_nnt:.0f} (ARR={_arr:.3f}, direction: {_dir})\n"
+
+    if _research_domain == "social_science":
+        # Social science: Evidence Quality levels + effect sizes
+        _eq_m = re.search(r'Final\s+Evidence\s+Quality[:\s]*\*{0,2}(STRONG|MODERATE_STRONG|MODERATE_WEAK|MODERATE|WEAK|VERY_WEAK)\*{0,2}', _audit_text, re.IGNORECASE)
+        _eq_level = _eq_m.group(1).strip().upper() if _eq_m else "Not Determined"
+        _grade_injection = f"\n\nEVIDENCE QUALITY LEVEL: {_eq_level}\n"
+        _grade_injection += "Use this to calibrate your framing language:\n"
+        _grade_injection += "- STRONG → 'Rigorous research clearly demonstrates...'\n"
+        _grade_injection += "- MODERATE → 'Evidence suggests...'\n"
+        _grade_injection += "- WEAK → 'Preliminary findings indicate...'\n"
+        _grade_injection += "- VERY_WEAK → 'Limited evidence hints at...'\n"
+        if _impacts:
+            _grade_injection += "\nKEY EFFECT SIZE NUMBERS:\n"
+            for _imp in _impacts[:5]:
+                _label = getattr(_imp, 'study_id', 'Study')
+                _d = getattr(_imp, 'cohens_d', None)
+                _g = getattr(_imp, 'hedges_g', None)
+                _mag = getattr(_imp, 'magnitude', 'unknown')
+                if _d is not None:
+                    _g_str = f", g={_g:.3f}" if _g is not None else ""
+                    _grade_injection += f"- {_label}: d={_d:.3f}{_g_str} ({_mag})\n"
+    else:
+        # Clinical: GRADE levels + NNT/ARR
+        _grade_m = re.search(r'Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}', _audit_text, re.IGNORECASE)
+        _grade_level = _grade_m.group(1).strip() if _grade_m else "Not Determined"
+        _grade_injection = f"\n\nGRADE EVIDENCE LEVEL: {_grade_level}\n"
+        _grade_injection += "Use this to calibrate your framing language in Section 6 (GRADE-Informed Framing Guide).\n"
+        if _impacts:
+            _grade_injection += "\nKEY CLINICAL IMPACT NUMBERS:\n"
+            for _imp in _impacts[:5]:
+                _label = getattr(_imp, 'study_id', 'Study')
+                _nnt = getattr(_imp, 'nnt', None)
+                _arr = getattr(_imp, 'arr', None)
+                _dir = getattr(_imp, 'direction', 'unknown')
+                if _nnt is not None:
+                    _grade_injection += f"- {_label}: NNT={_nnt:.0f} (ARR={_arr:.3f}, direction: {_dir})\n"
     blueprint_task.description += _grade_injection
 
 # For translation: inject full SOT (not summary) since translation needs complete text
@@ -4081,6 +4365,19 @@ if evidence_quality == "limited":
         "The Hook should acknowledge the evidence gap (e.g., 'Despite X million people doing Y, "
         "we have surprisingly few studies on...')."
     )
+
+# Domain-aware terminology injection for Crew 3 tasks
+if _research_domain == "social_science":
+    _domain_note = (
+        "\n\nDOMAIN NOTE: This is a SOCIAL SCIENCE topic (not clinical/health).\n"
+        "Use effect sizes (Cohen's d, Hedges' g) instead of NNT/ARR.\n"
+        "Use Evidence Quality levels (STRONG/MODERATE/WEAK/VERY_WEAK) instead of GRADE.\n"
+        "Cite study designs as: systematic review, quasi-experimental, cohort, cross-sectional.\n"
+        "Do NOT use clinical terminology (NNT, ARR, CER, EER, RCT) unless the study is actually clinical.\n"
+    )
+    script_task.description += _domain_note
+    blueprint_task.description += _domain_note
+    audit_task.description += _domain_note
 
 # ================================================================
 # CREW 3: Podcast Production

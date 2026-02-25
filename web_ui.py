@@ -330,6 +330,7 @@ class PodcastRequest(BaseModel):
     channel_intro: str = ""
     core_target: str = ""
     channel_mission: str = ""
+    domain: str = "auto"  # "auto" | "clinical" | "social_science"
     upload_to_buzzsprout: bool = False
     upload_to_youtube: bool = False
     buzzsprout_api_key: str = ""
@@ -1980,6 +1981,7 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
         "channel_intro": request.channel_intro,
         "core_target": request.core_target,
         "channel_mission": request.channel_mission,
+        "domain": request.domain,
         "status": "queued", # Start as queued
         "progress": 0,
         "phase": "Queued",
@@ -2117,6 +2119,9 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
             env["PODCAST_CORE_TARGET"] = core_target
         if channel_mission:
             env["PODCAST_CHANNEL_MISSION"] = channel_mission
+        domain = tasks_db[task_id].get("domain", "auto")
+        if domain and domain != "auto":
+            env["FORCE_DOMAIN"] = domain
 
         proc = subprocess.Popen(
             [str(PODCAST_ENV_PYTHON), "pipeline.py", "--topic", topic, "--language", language],

@@ -252,6 +252,7 @@ class WideNetRecord:
     source_db: str                          # "pubmed", "cochrane_central", "scholar"
     research_tier: Optional[int] = None    # 1=exact folk  2=scientific synonyms  3=compound class
     relevance_score: Optional[float] = None
+    paper_metadata: Optional["PaperMetadata"] = None
 
 @dataclass
 class DeepExtraction:
@@ -281,6 +282,35 @@ class DeepExtraction:
     risk_of_bias: Optional[str] = None
     research_tier: Optional[int] = None    # 1=folk 2=synonym 3=compound
     raw_facts: str = ""
+    paper_metadata: Optional["PaperMetadata"] = None
+
+    def to_dict(self) -> dict:
+        d = {}
+        for f in fields(self):
+            v = getattr(self, f.name)
+            if v is not None and v != "" and v != []:
+                if f.name == "paper_metadata" and v is not None:
+                    d[f.name] = v.to_dict()
+                else:
+                    d[f.name] = v
+        return d
+
+
+@dataclass
+class PaperMetadata:
+    """External API metadata for a paper (OpenAlex, Semantic Scholar, Crossref).
+
+    All fields optional — pipeline degrades gracefully if APIs are unreachable.
+    """
+    citation_count: Optional[int] = None
+    influential_citation_count: Optional[int] = None
+    fwci: Optional[float] = None
+    funding_sources: Optional[List[str]] = None
+    is_retracted: Optional[bool] = None
+    is_corrected: Optional[bool] = None
+    has_clinical_trial_number: Optional[bool] = None
+    clinical_trial_numbers: Optional[List[str]] = None
+    enrichment_sources: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {}
@@ -289,6 +319,11 @@ class DeepExtraction:
             if v is not None and v != "" and v != []:
                 d[f.name] = v
         return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PaperMetadata":
+        valid_fields = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in valid_fields})
 
 
 # --- Worker Services (IO + Fast Model) ---
@@ -1966,6 +2001,11 @@ class ResearchAgent:
                             return v
                         return None
 
+                    # Supplement funding_source with API data if LLM returned None
+                    llm_funding = safe_str(data.get("funding_source"))
+                    if not llm_funding and record.paper_metadata and record.paper_metadata.funding_sources:
+                        llm_funding = ", ".join(record.paper_metadata.funding_sources[:3])
+
                     return DeepExtraction(
                         pmid=record.pmid,
                         doi=record.doi,
@@ -1975,7 +2015,7 @@ class ResearchAgent:
                         effect_size=safe_str(data.get("effect_size")),
                         demographics=safe_str(data.get("demographics")),
                         follow_up_period=safe_str(data.get("follow_up_period")),
-                        funding_source=safe_str(data.get("funding_source")),
+                        funding_source=llm_funding,
                         conflicts_of_interest=safe_str(data.get("conflicts_of_interest")),
                         biological_mechanism=safe_str(data.get("biological_mechanism")),
                         control_event_rate=safe_float(data.get("control_event_rate")),
@@ -1992,13 +2032,15 @@ class ResearchAgent:
                         risk_of_bias=safe_str(data.get("risk_of_bias")),
                         research_tier=record.research_tier,
                         raw_facts=safe_str(data.get("raw_facts")) or "",
+                        paper_metadata=record.paper_metadata,
                     )
                 except Exception as e:
                     logger.warning(f"Deep extraction failed for {record.title[:50]}: {e}")
                     return DeepExtraction(
                         pmid=record.pmid, doi=record.doi, title=record.title,
                         url=record.url, research_tier=record.research_tier,
-                        raw_facts=f"Extraction failed: {str(e)[:100]}"
+                        raw_facts=f"Extraction failed: {str(e)[:100]}",
+                        paper_metadata=record.paper_metadata,
                     )
 
         # Log sources for UI visualization
@@ -2274,6 +2316,14 @@ class Orchestrator:
             )
             aff_screened_in = len(top_records)
 
+            # Metadata enrichment (optional — degrades gracefully)
+            top_records = await self._enrich_with_metadata(top_records, log)
+            # Filter out retracted papers
+            retracted = [r for r in top_records if r.paper_metadata and r.paper_metadata.is_retracted]
+            if retracted:
+                log(f"    ⚠ Filtering out {len(retracted)} retracted paper(s) from affirmative track")
+                top_records = [r for r in top_records if not (r.paper_metadata and r.paper_metadata.is_retracted)]
+
             log(f"\n{'='*70}")
             log(f"STEP 4a: DEEP EXTRACTION ({len(top_records)} articles) (Affirmative)")
             log(f"{'='*70}")
@@ -2319,6 +2369,14 @@ class Orchestrator:
                 records, plan, topic=topic, log=log
             )
             fal_screened_in = len(top_records)
+
+            # Metadata enrichment (optional — degrades gracefully)
+            top_records = await self._enrich_with_metadata(top_records, log)
+            # Filter out retracted papers
+            retracted = [r for r in top_records if r.paper_metadata and r.paper_metadata.is_retracted]
+            if retracted:
+                log(f"    ⚠ Filtering out {len(retracted)} retracted paper(s) from falsification track")
+                top_records = [r for r in top_records if not (r.paper_metadata and r.paper_metadata.is_retracted)]
 
             log(f"\n{'='*70}")
             log(f"STEP 4b: DEEP EXTRACTION ({len(top_records)} articles) (Falsification)")
@@ -2378,7 +2436,9 @@ class Orchestrator:
             topic, aff_case, fal_case, math_report,
             aff_strategy, fal_strategy,
             total_wide, total_screened, total_ft_ok, total_ft_err,
-            search_date, log
+            search_date, log,
+            aff_extractions=aff_extractions,
+            fal_extractions=fal_extractions,
         )
 
         # --- Save intermediate artifacts ---
@@ -2524,7 +2584,9 @@ class Orchestrator:
         self, topic: str, aff_case: str, fal_case: str, math_report: str,
         aff_strategy: TieredSearchPlan, fal_strategy: TieredSearchPlan,
         total_wide: int, total_screened: int, total_ft_ok: int, total_ft_err: int,
-        search_date: str, log=print
+        search_date: str, log=print,
+        aff_extractions: Optional[List[DeepExtraction]] = None,
+        fal_extractions: Optional[List[DeepExtraction]] = None,
     ) -> str:
         """Step 8: GRADE framework synthesis by the Auditor."""
         log(f"    [Step 7] GRADE synthesis...")
@@ -2592,6 +2654,16 @@ class Orchestrator:
             f"=== DETERMINISTIC MATH (Python-calculated, NOT LLM) ===\n{math_report}\n"
         )
 
+        # Append external metadata signals if available
+        metadata_summary = self._summarize_metadata_for_grade(
+            aff_extractions or [], fal_extractions or []
+        )
+        if metadata_summary:
+            combined_input += (
+                f"\n=== EXTERNAL METADATA (API-Sourced) ===\n"
+                f"{metadata_summary}\n"
+            )
+
         if len(combined_input) > 80000:
             combined_input = combined_input[:80000] + "\n\n[...truncated...]"
 
@@ -2641,6 +2713,112 @@ class Orchestrator:
                 metadata=metadata,
             ))
         return sources
+
+    @staticmethod
+    async def _enrich_with_metadata(
+        records: List[WideNetRecord], log=print
+    ) -> List[WideNetRecord]:
+        """Enrich WideNetRecords with metadata from OpenAlex, Semantic Scholar, Crossref.
+
+        Optional — returns records unchanged on failure. All API errors are caught.
+        """
+        try:
+            from metadata_clients import (
+                MetadataCache, OpenAlexClient, SemanticScholarClient,
+                CrossrefClient, enrich_papers_metadata,
+            )
+        except ImportError:
+            log("    [Metadata] metadata_clients not available — skipping enrichment")
+            return records
+
+        if not records:
+            return records
+
+        try:
+            cache = MetadataCache()
+            oa_client = OpenAlexClient(cache=cache)
+            s2_client = SemanticScholarClient(cache=cache)
+            cr_client = CrossrefClient(cache=cache)
+
+            papers = [{"doi": r.doi or "", "pmid": r.pmid or ""} for r in records]
+            enriched = await enrich_papers_metadata(
+                papers, openalex_client=oa_client, s2_client=s2_client,
+                crossref_client=cr_client,
+            )
+
+            retracted_titles = []
+            enriched_count = 0
+            for rec, ep in zip(records, enriched):
+                if not ep.enrichment_sources:
+                    continue
+                enriched_count += 1
+                pm = PaperMetadata(
+                    citation_count=ep.best_citation_count,
+                    influential_citation_count=ep.influential_citation_count,
+                    fwci=ep.fwci,
+                    funding_sources=ep.all_funding_sources or None,
+                    is_retracted=ep.is_retracted,
+                    is_corrected=ep.is_corrected,
+                    has_clinical_trial_number=bool(ep.clinical_trial_numbers),
+                    clinical_trial_numbers=ep.clinical_trial_numbers or None,
+                    enrichment_sources=ep.enrichment_sources,
+                )
+                rec.paper_metadata = pm
+                if ep.is_retracted:
+                    retracted_titles.append(rec.title)
+
+            log(f"    [Metadata] Enriched {enriched_count}/{len(records)} records")
+            for title in retracted_titles:
+                logger.warning(f"RETRACTED paper detected: {title}")
+                log(f"    ⚠ RETRACTED: {title[:80]}")
+
+            cache.close()
+        except Exception as e:
+            logger.warning(f"Metadata enrichment failed (non-fatal): {e}")
+            log(f"    [Metadata] Enrichment failed (non-fatal): {e}")
+
+        return records
+
+    @staticmethod
+    def _summarize_metadata_for_grade(
+        aff_extractions: List[DeepExtraction],
+        fal_extractions: List[DeepExtraction],
+    ) -> str:
+        """Produce a text block summarizing metadata signals for GRADE synthesis."""
+        lines = []
+        industry_funded = []
+        trial_registered = []
+        corrected = []
+
+        for ext in aff_extractions + fal_extractions:
+            pm = ext.paper_metadata
+            if pm is None:
+                continue
+            label = ext.pmid or ext.title[:50]
+            if pm.funding_sources:
+                industry_keywords = {"pharma", "industry", "inc.", "corp.", "ltd.", "gmbh"}
+                for src in pm.funding_sources:
+                    if any(kw in src.lower() for kw in industry_keywords):
+                        industry_funded.append(f"  - {label}: funded by {src}")
+                        break
+            if pm.has_clinical_trial_number and pm.clinical_trial_numbers:
+                trial_registered.append(
+                    f"  - {label}: {', '.join(pm.clinical_trial_numbers)}"
+                )
+            if pm.is_corrected:
+                corrected.append(f"  - {label}")
+
+        if industry_funded:
+            lines.append("Industry-funded studies (consider risk of bias):")
+            lines.extend(industry_funded)
+        if trial_registered:
+            lines.append("Studies with clinical trial registration (quality signal):")
+            lines.extend(trial_registered)
+        if corrected:
+            lines.append("Corrected/erratum studies:")
+            lines.extend(corrected)
+
+        return "\n".join(lines) if lines else ""
 
     @staticmethod
     def _save_artifacts(
