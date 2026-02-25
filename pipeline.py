@@ -3202,19 +3202,22 @@ print(f"{'='*70}")
 
 brave_key = os.getenv("BRAVE_API_KEY", "")
 
-# Check if fast model (Phi-4 Mini via Ollama) is available
+# Check if the configured fast model (FAST_MODEL_NAME from .env) is available
+_fast_model_name = os.environ.get("FAST_MODEL_NAME", "")
+_fast_base_url = os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1")
 fast_model_available = False
 try:
-    _resp = httpx.get("http://localhost:11434/v1/models", timeout=3)
+    _resp = httpx.get(f"{_fast_base_url}/models", timeout=3)
     if _resp.status_code == 200:
         _models = [m.get("id", "") for m in _resp.json().get("data", [])]
-        fast_model_available = any(any(k in m.lower() for k in ["phi", "llama", "qwen", "mistral"]) for m in _models)
+        fast_model_available = _fast_model_name in _models
         if fast_model_available:
-            print(f"✓ Fast model detected on Ollama (available: {_models})")
+            print(f"✓ Fast model ready: {_fast_model_name}")
         else:
-            print(f"⚠ Ollama running but no suitable fast model found (phi/llama/qwen). Available: {_models}")
+            print(f"⚠ Fast model '{_fast_model_name}' not found in Ollama. Available: {_models}")
+            print(f"  Falling back to smart-only mode. Run: ollama pull {_fast_model_name}")
 except Exception:
-    print("⚠ Fast model not available, using smart-only mode")
+    print(f"⚠ Fast model not available (Ollama unreachable at {_fast_base_url}). Running in smart-only mode.")
 
 sot_content = ""  # Will hold the synthesized Source-of-Truth
 aff_candidates = 0
