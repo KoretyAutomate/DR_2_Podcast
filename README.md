@@ -33,10 +33,12 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
        │  └──────────────────────────────┘ └─────────────────────────────┘ │
        │          (both tracks run in parallel via asyncio.gather)         │
        │                              ▼                                    │
-       │  Step 6: Clinical  — Deterministic ARR/NNT math (Python, no LLM) │
-       │          Social Sc — Deterministic Cohen's d / Hedges' g          │
-       │  Step 7: Clinical  — GRADE synthesis — Auditor (Smart)            │
-       │          Social Sc — Evidence quality synthesis — Auditor (Smart) │
+       │  ┌─ CLINICAL ───────────────────┐ ┌─ SOCIAL SCIENCE ────────────┐ │
+       │  │ Step 6: ARR/NNT math         │ │ Step 6: Cohen's d /         │ │
+       │  │         (Python, no LLM)     │ │         Hedges' g (no LLM)  │ │
+       │  │ Step 7: GRADE synthesis      │ │ Step 7: Evidence quality    │ │
+       │  │         Auditor (Smart)      │ │         synthesis (Smart)   │ │
+       │  └──────────────────────────────┘ └─────────────────────────────┘ │
        └──────────────┬────────────────────────────────────────────────────┘
                       ▼
      ┌───────────────────────────────────────────────────────────────┐
