@@ -3332,30 +3332,7 @@ class CrewMonitor(threading.Thread):
         self.running = False
 
 # ================================================================
-# PHASE 0: Research Framing
-# ================================================================
-print(f"\n{'='*70}")
-print(f"PHASE 0: RESEARCH FRAMING")
-print(f"{'='*70}")
-
-crew_1 = Crew(
-    agents=[framing_agent],
-    tasks=[framing_task],
-    verbose=True,
-    process='sequential'
-)
-
-try:
-    crew_1_result = crew_1.kickoff()
-    framing_output = framing_task.output.raw if hasattr(framing_task, 'output') and framing_task.output else ""
-    print(f"✓ Phase 0 complete: Research framing generated ({len(framing_output)} chars)")
-except Exception as e:
-    print(f"⚠ Phase 0 (Research Framing) failed: {e}")
-    print("Continuing without framing context...")
-    framing_output = ""
-
-# ================================================================
-# PHASE 0.5: DOMAIN CLASSIFICATION
+# PHASE 0: DOMAIN CLASSIFICATION
 # ================================================================
 from domain_classifier import classify_topic, ResearchDomain
 _smart_base = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
@@ -3367,7 +3344,6 @@ except Exception:
     _classify_client = None
 domain_classification = asyncio.run(classify_topic(
     topic=topic_name,
-    framing_context=framing_output,
     smart_client=_classify_client,
     smart_model=_smart_model,
 ))
@@ -3382,6 +3358,48 @@ _dc_path.write_text(json.dumps({
     "framework": domain_classification.suggested_framework,
     "databases": domain_classification.primary_databases,
 }, indent=2))
+
+# ================================================================
+# PHASE 0.5: Research Framing (domain-aware)
+# ================================================================
+print(f"\n{'='*70}")
+print(f"PHASE 0.5: RESEARCH FRAMING")
+print(f"{'='*70}")
+
+# Inject domain context into framing task description so it tailors output
+_domain_framing_note = ""
+if domain_classification.domain == ResearchDomain.SOCIAL_SCIENCE:
+    _domain_framing_note = (
+        f"\n\nDOMAIN CONTEXT: This is a SOCIAL SCIENCE topic. "
+        f"Use PECO framework (Population, Exposure, Comparison, Outcome). "
+        f"Prioritise effect sizes (Cohen's d, Hedges' g), quasi-experimental designs, "
+        f"and databases such as {', '.join(domain_classification.primary_databases)}. "
+        f"Do NOT use clinical terminology (NNT, ARR, GRADE, MeSH terms)."
+    )
+else:
+    _domain_framing_note = (
+        f"\n\nDOMAIN CONTEXT: This is a CLINICAL/HEALTH topic. "
+        f"Use PICO framework (Population, Intervention, Comparison, Outcome). "
+        f"Prioritise RCTs, systematic reviews, GRADE evidence levels, NNT/ARR statistics, "
+        f"and databases such as {', '.join(domain_classification.primary_databases)}."
+    )
+framing_task.description += _domain_framing_note
+
+crew_1 = Crew(
+    agents=[framing_agent],
+    tasks=[framing_task],
+    verbose=True,
+    process='sequential'
+)
+
+try:
+    crew_1_result = crew_1.kickoff()
+    framing_output = framing_task.output.raw if hasattr(framing_task, 'output') and framing_task.output else ""
+    print(f"✓ Phase 0.5 complete: Research framing generated ({len(framing_output)} chars)")
+except Exception as e:
+    print(f"⚠ Phase 0.5 (Research Framing) failed: {e}")
+    print("Continuing without framing context...")
+    framing_output = ""
 
 # ================================================================
 # PHASE 1: RESEARCH PIPELINE (domain-routed)

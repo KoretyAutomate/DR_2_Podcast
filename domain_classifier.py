@@ -142,7 +142,6 @@ def classify_topic_deterministic(topic: str) -> Optional[DomainClassification]:
 
 async def classify_topic(
     topic: str,
-    framing_context: str = "",
     smart_client=None,
     smart_model: str = "",
 ) -> DomainClassification:
@@ -153,7 +152,6 @@ async def classify_topic(
 
     Args:
         topic: The research topic string
-        framing_context: Optional context from Phase 0 framing
         smart_client: AsyncOpenAI client (optional, for LLM fallback)
         smart_model: Model name for LLM classification
     """
@@ -165,7 +163,7 @@ async def classify_topic(
     # LLM classification for ambiguous topics
     if smart_client and smart_model:
         try:
-            return await _classify_with_llm(topic, framing_context, smart_client, smart_model)
+            return await _classify_with_llm(topic, smart_client, smart_model)
         except Exception as e:
             logger.warning(f"LLM domain classification failed: {e}")
 
@@ -180,16 +178,13 @@ async def classify_topic(
 
 
 async def _classify_with_llm(
-    topic: str, framing_context: str, smart_client, smart_model: str
+    topic: str, smart_client, smart_model: str
 ) -> DomainClassification:
     """Use LLM to classify ambiguous topics."""
     prompt = (
         "Classify the following research topic into exactly one domain.\n\n"
         f"TOPIC: {topic}\n"
     )
-    if framing_context:
-        prompt += f"\nFRAMING CONTEXT:\n{framing_context[:2000]}\n"
-
     prompt += (
         "\nDOMAINS:\n"
         "1. CLINICAL — Health, medicine, nutrition, pharmacology, disease, fitness.\n"
