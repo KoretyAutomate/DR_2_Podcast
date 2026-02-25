@@ -91,16 +91,17 @@ The pipeline uses **4 CrewAI agents** (down from 7 — the clinical pipeline rep
 | **Podcast Producer** | `producer_agent` | Transforms research into a debate script targeting Masters/PhD-level depth | — |
 | **Podcast Editor** | `editor_agent` | Polishes script for natural verbal delivery, enforces word count and depth | — |
 
-## Dual-Model Architecture
+## Tri-Model Architecture
 
-The system uses two local LLMs working in tandem:
+The system uses three local LLMs working in tandem:
 
 | Role | Default Model | Hosted On | Purpose |
 |------|---------------|-----------|---------|
 | **Smart model** | `Qwen/Qwen3-32B-AWQ` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing |
+| **Mid-tier model** | `qwen2.5:7b` | Ollama (port 11434) | Pipelined report translation (Phase 3) |
 | **Fast model** | `llama3.2:1b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
 
-Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
+Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `MID_MODEL_NAME`, `MID_LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
 
 If the fast model is unavailable, the smart model handles all summarization (slower but functional).
 
@@ -270,16 +271,17 @@ docker run --runtime nvidia --gpus all -p 8000:8000 \
   -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
   vllm/vllm-openai:v0.13.0 \
   --model Qwen/Qwen3-32B-AWQ \
-  --max-model-len 65536 \
-  --gpu-memory-utilization 0.8 \
-  --dtype auto --trust-remote-code --enforce-eager
+  --max-model-len 32768 \
+  --gpu-memory-utilization 0.65 \
+  --dtype auto --trust-remote-code --enforce-eager --enable-prefix-caching
 ```
 
-**Ollama** — Required for the fast model:
+**Ollama** — Required for the fast model and mid-tier model:
 ```bash
 ollama serve
 ollama pull llama3.2:1b             # Fast model (default)
-# Optional upgrade:
+ollama pull qwen2.5:7b              # Mid-tier model (pipelined translation)
+# Optional fast model upgrade:
 ollama pull phi4-mini
 # Then set: export FAST_MODEL_NAME="phi4-mini"
 ```
@@ -301,7 +303,6 @@ bash docker/qwen3-tts/init_and_start.sh
 ```bash
 conda activate podcast_flow
 pip install -r requirements.txt
-pip install -r web_ui_requirements.txt  # For the web UI
 python -m unidic download               # Required for Kokoro TTS
 ```
 
@@ -332,6 +333,8 @@ export MODEL_NAME="Qwen/Qwen3-32B-AWQ"
 export LLM_BASE_URL="http://localhost:8000/v1"
 export FAST_MODEL_NAME="llama3.2:1b"
 export FAST_LLM_BASE_URL="http://localhost:11434/v1"
+export MID_MODEL_NAME="qwen2.5:7b"
+export MID_LLM_BASE_URL="http://localhost:11434/v1"
 
 # Web UI authentication (auto-generated if not set)
 export PODCAST_WEB_USER="admin"
@@ -339,7 +342,7 @@ export PODCAST_WEB_PASSWORD="your_password"
 
 # Upload integration (optional)
 export BUZZSPROUT_API_KEY="your_buzzsprout_api_key"
-export BUZZSPROUT_PODCAST_ID="your_podcast_id"
+export BUZZSPROUT_ACCOUNT_ID="your_account_id"
 export YOUTUBE_CLIENT_SECRET_PATH="/path/to/client_secret.json"
 ```
 
@@ -384,9 +387,12 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 ├── clinical_math.md                  Step 6 — deterministic ARR/NNT table
 ├── search_strategy_aff.json          Step 1a — affirmative PICO/MeSH/Boolean
 ├── search_strategy_neg.json          Step 1b — falsification PICO/MeSH/Boolean
-├── screening_results.json            Step 3a/3b — screening decisions (500 → 20)
+├── screening_results_aff.json        Step 3a — affirmative screening decisions
+├── screening_results_neg.json        Step 3b — falsification screening decisions
 ├── source_of_truth.md                IMRaD scientific paper (Abstract, Intro, Methods, Results, Discussion, References)
 ├── source_of_truth.pdf
+├── source_of_truth_ja.md             Phase 3 — translated SOT (Japanese only)
+├── source_of_truth_ja.pdf            Phase 3 — translated SOT PDF (Japanese only)
 ├── url_validation_results.json       Phase 2 — batch URL validation results
 ├── EPISODE_BLUEPRINT.md              Phase 4 — episode blueprint (thesis, hook, narrative arc, citations)
 ├── script_draft.md                   Phase 5 — draft script
@@ -395,7 +401,8 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 ├── accuracy_audit.md                 Phase 7 — drift detection
 ├── accuracy_audit.pdf
 ├── ACCURACY_CORRECTIONS.md           Phase 7 — corrections applied (only if HIGH-severity drift)
-├── audio.wav                         Phase 8 — final podcast audio (24kHz WAV + BGM)
+├── audio.wav                         Phase 8 — raw TTS podcast audio (24kHz WAV)
+├── audio_mixed.wav                   Phase 8 — final podcast with BGM mixing
 ├── session_metadata.txt              Topic, language, character assignments
 └── podcast_generation.log            Execution log
 
@@ -428,7 +435,6 @@ The evidence quality banner (`⚠ Evidence Quality Notice`) is prepended when th
 | `clinical_math.py` | Deterministic ARR/NNT calculator — pure Python, zero LLM involvement |
 | `fulltext_fetcher.py` | 4-tier full-text fetcher: PMC OA → Europe PMC → Unpaywall → publisher scrape |
 | `search_service.py` | SearXNG client, page scraping, content extraction |
-| `research_planner.py` | Structured research planning with iterative gap-filling |
 | `audio_engine.py` | Kokoro TTS rendering with dual-voice stitching and BGM post-processing |
 | `audio_mixer.py` | BGM mixing with pre-roll, post-roll, and transition bumps |
 | `link_validator.py` | URL validation via HEAD requests |
@@ -438,12 +444,9 @@ The evidence quality banner (`⚠ Evidence Quality Notice`) is prepended when th
 | `start_vllm_docker.sh` | vLLM Docker container launcher |
 | `docker/qwen3-tts/` | Qwen3-TTS FastAPI server for high-quality Japanese TTS (conda env: `qwen3_tts`) |
 | `requirements.txt` | Core Python dependencies |
-| `web_ui_requirements.txt` | Additional dependencies for the web UI (FastAPI, uvicorn, Google API) |
-| `environment.yml` | Conda environment specification (Python 3.11, `podcast_flow`) |
 | `podcast_tasks.json` | Persistent task queue for the web UI |
 | `Podcast BGM/` | Pre-built WAV background music library for BGM mixing |
 | `asset/` | Kokoro TTS model weights (safetensors, voice files, tokenizer) |
-| `archived_scripts/` | Deprecated utilities |
 
 ## License
 
