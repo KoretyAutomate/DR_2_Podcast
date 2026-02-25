@@ -3332,8 +3332,13 @@ class CrewMonitor(threading.Thread):
         self.running = False
 
 # ================================================================
-# PHASE 0: DOMAIN CLASSIFICATION
+# PHASE 0: RESEARCH FRAMING (includes domain classification)
 # ================================================================
+print(f"\n{'='*70}")
+print(f"PHASE 0: RESEARCH FRAMING")
+print(f"{'='*70}")
+
+# Step 0a: classify domain first (fast, mostly deterministic) so framing is domain-aware
 from domain_classifier import classify_topic, ResearchDomain
 _smart_base = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
 _smart_model = os.environ.get("MODEL_NAME", "")
@@ -3347,9 +3352,8 @@ domain_classification = asyncio.run(classify_topic(
     smart_client=_classify_client,
     smart_model=_smart_model,
 ))
-print(f"✓ Domain classification: {domain_classification.domain.value} "
+print(f"  Domain: {domain_classification.domain.value} "
       f"(confidence={domain_classification.confidence:.2f}, framework={domain_classification.suggested_framework})")
-# Save classification to output dir
 _dc_path = output_dir / "domain_classification.json"
 _dc_path.write_text(json.dumps({
     "domain": domain_classification.domain.value,
@@ -3359,15 +3363,7 @@ _dc_path.write_text(json.dumps({
     "databases": domain_classification.primary_databases,
 }, indent=2))
 
-# ================================================================
-# PHASE 0.5: Research Framing (domain-aware)
-# ================================================================
-print(f"\n{'='*70}")
-print(f"PHASE 0.5: RESEARCH FRAMING")
-print(f"{'='*70}")
-
-# Inject domain context into framing task description so it tailors output
-_domain_framing_note = ""
+# Step 0b: run framing agent with domain context injected
 if domain_classification.domain == ResearchDomain.SOCIAL_SCIENCE:
     _domain_framing_note = (
         f"\n\nDOMAIN CONTEXT: This is a SOCIAL SCIENCE topic. "
@@ -3395,9 +3391,9 @@ crew_1 = Crew(
 try:
     crew_1_result = crew_1.kickoff()
     framing_output = framing_task.output.raw if hasattr(framing_task, 'output') and framing_task.output else ""
-    print(f"✓ Phase 0.5 complete: Research framing generated ({len(framing_output)} chars)")
+    print(f"✓ Phase 0 complete: Research framing generated ({len(framing_output)} chars)")
 except Exception as e:
-    print(f"⚠ Phase 0.5 (Research Framing) failed: {e}")
+    print(f"⚠ Phase 0 (Research Framing) failed: {e}")
     print("Continuing without framing context...")
     framing_output = ""
 

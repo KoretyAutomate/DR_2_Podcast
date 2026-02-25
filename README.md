@@ -10,30 +10,33 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
                        │   (Web UI or CLI)           │
                        └──────────────┬──────────────┘
                                       ▼
-                  ┌──────────────────────────────────────┐
-                  │  Phase 0 — Research Framing (Crew 1) │
-                  └──────────────┬───────────────────────┘
+                  ┌──────────────────────────────────────────┐
+                  │  Phase 0 — Research Framing (Crew 1)     │
+                  │  · Domain classification (deterministic) │
+                  │  · Domain-aware framing document         │
+                  └──────────────┬───────────────────────────┘
                                  ▼
-       ┌───────────────────────────────────────────────────────────────────┐
-       │  Phase 1 — Clinical Research Pipeline                             │
-       │                                                                   │
-       │  Pre-step: Concept Decomposition (Fast Model)                     │
-       │                              ▼                                    │
-       │  ┌─ AFFIRMATIVE (a) ────────────┐ ┌─ FALSIFICATION (b) ─────────┐ │
-       │  │ 1a: Tiered keywords (Smart)  │ │ 1b: Tiered keywords         │ │
-       │  │     + Auditor gate → loop    │ │     + Auditor gate → loop   │ │
-       │  │ 2a: Cascade search (PubMed)  │ │ 2b: Cascade search          │ │
-       │  │     T1→T2→T3 + Scholar       │ │     T1→T2→T3 + Scholar      │ │
-       │  │ 3a: Tier-aware screen → 20   │ │ 3b: Tier-aware screen → 20  │ │
-       │  │ 4a: Full-text extraction     │ │ 4b: Full-text extraction    │ │
-       │  │     (PMC/Unpaywall by Fast)  │ │     (PMC/Unpaywall by Fast) │ │
-       │  │ 5a: Affirmative case (Smart) │ │ 5b: Falsification case      │ │
-       │  └──────────────────────────────┘ └─────────────────────────────┘ │
-       │          (both tracks run in parallel via asyncio.gather)         │
-       │                              ▼                                    │
-       │  Step 6: Deterministic math — ARR/NNT (Python, no LLM)            │
-       │  Step 7: GRADE synthesis — Auditor (Smart)                        │
-       └──────────────┬────────────────────────────────────────────────────┘
+             ┌───────────────────┴────────────────────┐
+             │                                        │
+             ▼                                        ▼
+  ┌──────────────────────────┐           ┌────────────────────────────────┐
+  │  Phase 1 — Clinical      │           │  Phase 1 — Social Science      │
+  │  Research Pipeline       │           │  Research Pipeline             │
+  │                          │           │                                │
+  │  Pre-step: Concept       │           │  Pre-step: Concept             │
+  │  Decomposition (Fast)    │           │  Decomposition (Fast)          │
+  │           ▼              │           │           ▼                    │
+  │  ┌─ AFF ──┐ ┌─ FAL ──┐  │           │  ┌─ AFF ──┐ ┌─ FAL ──┐       │
+  │  │ 1–5a  │ │ 1–5b  │  │           │  │ 1–5a  │ │ 1–5b  │       │
+  │  └───────┘ └───────┘  │           │  └───────┘ └───────┘       │
+  │  (asyncio.gather)      │           │  (asyncio.gather)          │
+  │           ▼              │           │           ▼                    │
+  │  Step 6: ARR/NNT math   │           │  Step 6: Cohen's d / Hedges' g │
+  │  Step 7: GRADE synthesis│           │  Step 7: Evidence quality      │
+  └──────────┬───────────────┘           └──────────────┬─────────────────┘
+             └───────────────────┬────────────────────────┘
+                                 ▼
+       ┌────────────────────────────────────────────────────────────────────┘
                       ▼
      ┌───────────────────────────────────────────────────────────────┐
      │  Phase 2 — Source Validation (batch HEAD requests)            │
@@ -203,10 +206,14 @@ The Step 7 GRADE synthesis follows this structure:
 ## Pipeline Phases
 
 ### Phase 0 — Research Framing (Crew 1)
-The Research Framing Specialist defines scope boundaries, core research questions, evidence criteria, suggested search directions, and hypotheses to test.
+Phase 0 has two internal steps that run back-to-back:
+1. **Domain classification** — the topic is classified as `clinical` or `social_science` using deterministic keyword rules (fast, no LLM for most topics). The result is saved to `domain_classification.json`.
+2. **Framing** — the Research Framing Specialist defines scope boundaries, core research questions, evidence criteria, suggested search directions, and hypotheses. The framing prompt is tailored to the domain (PICO/GRADE for clinical; PECO/effect sizes for social science).
 
-### Phase 1 — Clinical Research (7-Step Pipeline)
-See [Evidence-Based Research Pipeline](#evidence-based-research-pipeline) above. Produces affirmative case (`affirmative_case.md`), falsification case (`falsification_case.md`), GRADE synthesis (`grade_synthesis.md`), deterministic math (`clinical_math.md`), and the research library (`research_sources.json`).
+### Phase 1 — Research Pipeline (domain-routed)
+Dispatches to the appropriate 7-step pipeline based on the Phase 0 domain result:
+- **Clinical topics** → PubMed cascade search, PICO framework, GRADE synthesis, ARR/NNT math. Produces `affirmative_case.md`, `falsification_case.md`, `grade_synthesis.md`, `clinical_math.md`, `research_sources.json`.
+- **Social science topics** → OpenAlex + ERIC search, PECO framework, evidence quality hierarchy, Cohen's d / Hedges' g effect sizes. Produces equivalent artifacts with social science terminology.
 
 ### Phase 2 — Source Validation
 Batch HEAD requests validate all cited URLs. The Source-of-Truth is then assembled in **IMRaD format** (Introduction, Methods, Results, and Discussion) — a structured scientific paper format derived deterministically from the pipeline's raw outputs. See [Source of Truth (IMRaD Format)](#source-of-truth-imrad-format) below.
@@ -380,8 +387,9 @@ All outputs are saved to a timestamped directory under `research_outputs/`:
 
 ```
 research_outputs/YYYY-MM-DD_HH-MM-SS/
-├── research_framing.md               Phase 0 — scope and hypotheses
+├── research_framing.md               Phase 0 — domain-aware scope and hypotheses
 ├── research_framing.pdf
+├── domain_classification.json        Phase 0 — domain routing decision (clinical vs. social science)
 ├── affirmative_case.md               Step 5a — affirmative case
 ├── falsification_case.md             Step 5b — falsification case
 ├── grade_synthesis.md                Step 7 — GRADE synthesis
@@ -435,13 +443,18 @@ The evidence quality banner (`⚠ Evidence Quality Notice`) is prepended when th
 | `web_ui.py` | FastAPI web UI with live progress tracking, task queue, and upload integration |
 | `clinical_research.py` | 7-step clinical research pipeline (concept decomposition → tiered keywords + auditor gate → cascade search → tier-aware screen → extract → cases → math → GRADE) |
 | `clinical_math.py` | Deterministic ARR/NNT calculator — pure Python, zero LLM involvement |
+| `effect_size_math.py` | Deterministic effect size calculator — Cohen's d, Hedges' g, OR-to-d, r-to-d (no LLM) |
+| `domain_classifier.py` | Topic domain classifier (clinical vs. social science) — deterministic keyword rules + LLM fallback |
+| `social_science_research.py` | 7-step social science research pipeline (PECO framework, OpenAlex + ERIC, effect sizes, evidence quality levels) |
+| `metadata_clients.py` | Async API clients for OpenAlex, Semantic Scholar, Crossref, ERIC with SQLite rate-limit caching |
+| `wwc_database.py` | Local SQLite database for What Works Clearinghouse education intervention quality ratings |
 | `fulltext_fetcher.py` | 4-tier full-text fetcher: PMC OA → Europe PMC → Unpaywall → publisher scrape |
 | `search_service.py` | SearXNG client, page scraping, content extraction |
 | `audio_engine.py` | Kokoro TTS rendering with dual-voice stitching and BGM post-processing |
 | `audio_mixer.py` | BGM mixing with pre-roll, post-roll, and transition bumps |
 | `link_validator.py` | URL validation via HEAD requests |
 | `upload_utils.py` | Buzzsprout and YouTube upload utilities |
-| `test_clinical_math.py` | Unit tests for clinical_math.py (17 tests) |
+| `test_clinical_math.py` | Unit tests — clinical_math (17), effect_size_math (34), domain_classifier (16), metadata_clients (31), wwc_database (19) — 117 tests total |
 | `start_podcast_web_ui.sh` | Web UI launcher script |
 | `start_vllm_docker.sh` | vLLM Docker container launcher |
 | `docker/qwen3-tts/` | Qwen3-TTS FastAPI server for high-quality Japanese TTS (conda env: `qwen3_tts`) |
