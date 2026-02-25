@@ -103,6 +103,8 @@ The system uses three local LLMs working in tandem:
 
 Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `MID_MODEL_NAME`, `MID_LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
 
+The mid-tier model handles Phase 3 translation via a **pipelined architecture**: the 7B model translates each SOT section (~4x faster than the 32B smart model), while the smart model audits completed translations concurrently — so translation and auditing overlap instead of running sequentially. If the mid-tier model is unavailable, the pipeline falls back to smart-model-only mode (sequential translate then audit).
+
 If the fast model is unavailable, the smart model handles all summarization (slower but functional).
 
 ## Evidence-Based Research Pipeline
@@ -209,8 +211,8 @@ See [Evidence-Based Research Pipeline](#evidence-based-research-pipeline) above.
 ### Phase 2 — Source Validation
 Batch HEAD requests validate all cited URLs. The Source-of-Truth is then assembled in **IMRaD format** (Introduction, Methods, Results, and Discussion) — a structured scientific paper format derived deterministically from the pipeline's raw outputs. See [Source of Truth (IMRaD Format)](#source-of-truth-imrad-format) below.
 
-### Phase 3 — Report Translation (Crew 2, conditional)
-For non-English output, the Producer translates the Source-of-Truth into the target language. This runs as a separate Crew 2 before Crew 3. Skipped for English.
+### Phase 3 — Report Translation (conditional)
+For non-English output, the Source-of-Truth is translated using a **pipelined architecture**: the mid-tier model (`qwen2.5:7b`) translates each IMRaD section while the smart model (`Qwen3-32B`) audits completed translations concurrently — fixing Chinese contamination, garbled text, and terminology errors. Sections larger than 8K characters are translated directly by the smart model to avoid truncation. Skipped entirely for English runs.
 
 ### Phase 4 — Episode Blueprint (Crew 3)
 The Producer generates a 7-section Episode Blueprint: episode thesis, listener value proposition, hook question, content framework (PPP or QEI), 4-act narrative arc, GRADE-informed evidence framing, and citation plan. The Source-of-Truth summary is injected directly into task descriptions.
