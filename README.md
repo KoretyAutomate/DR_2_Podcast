@@ -16,27 +16,28 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
                   │  · Domain-aware framing document         │
                   └──────────────┬───────────────────────────┘
                                  ▼
-             ┌───────────────────┴────────────────────┐
-             │                                        │
-             ▼                                        ▼
-  ┌──────────────────────────┐           ┌────────────────────────────────┐
-  │  Phase 1 — Clinical      │           │  Phase 1 — Social Science      │
-  │  Research Pipeline       │           │  Research Pipeline             │
-  │                          │           │                                │
-  │  Pre-step: Concept       │           │  Pre-step: Concept             │
-  │  Decomposition (Fast)    │           │  Decomposition (Fast)          │
-  │           ▼              │           │           ▼                    │
-  │  ┌─ AFF ──┐ ┌─ FAL ──┐  │           │  ┌─ AFF ──┐ ┌─ FAL ──┐       │
-  │  │ 1–5a  │ │ 1–5b  │  │           │  │ 1–5a  │ │ 1–5b  │       │
-  │  └───────┘ └───────┘  │           │  └───────┘ └───────┘       │
-  │  (asyncio.gather)      │           │  (asyncio.gather)          │
-  │           ▼              │           │           ▼                    │
-  │  Step 6: ARR/NNT math   │           │  Step 6: Cohen's d / Hedges' g │
-  │  Step 7: GRADE synthesis│           │  Step 7: Evidence quality      │
-  └──────────┬───────────────┘           └──────────────┬─────────────────┘
-             └───────────────────┬────────────────────────┘
-                                 ▼
-       ┌────────────────────────────────────────────────────────────────────┘
+       ┌───────────────────────────────────────────────────────────────────┐
+       │  Phase 1 — Research Pipeline (clinical or social science)         │
+       │                                                                   │
+       │  Pre-step: Concept Decomposition (Fast Model)                     │
+       │                              ▼                                    │
+       │  ┌─ AFFIRMATIVE (a) ────────────┐ ┌─ FALSIFICATION (b) ─────────┐ │
+       │  │ 1a: Tiered keywords (Smart)  │ │ 1b: Tiered keywords         │ │
+       │  │     + Auditor gate → loop    │ │     + Auditor gate → loop   │ │
+       │  │ 2a: Cascade search           │ │ 2b: Cascade search          │ │
+       │  │     PubMed or OpenAlex+ERIC  │ │     PubMed or OpenAlex+ERIC │ │
+       │  │ 3a: Tier-aware screen → 20   │ │ 3b: Tier-aware screen → 20  │ │
+       │  │ 4a: Full-text extraction     │ │ 4b: Full-text extraction    │ │
+       │  │     (PMC/Unpaywall by Fast)  │ │     (PMC/Unpaywall by Fast) │ │
+       │  │ 5a: Affirmative case (Smart) │ │ 5b: Falsification case      │ │
+       │  └──────────────────────────────┘ └─────────────────────────────┘ │
+       │          (both tracks run in parallel via asyncio.gather)         │
+       │                              ▼                                    │
+       │  Step 6: Clinical  — Deterministic ARR/NNT math (Python, no LLM) │
+       │          Social Sc — Deterministic Cohen's d / Hedges' g          │
+       │  Step 7: Clinical  — GRADE synthesis — Auditor (Smart)            │
+       │          Social Sc — Evidence quality synthesis — Auditor (Smart) │
+       └──────────────┬────────────────────────────────────────────────────┘
                       ▼
      ┌───────────────────────────────────────────────────────────────┐
      │  Phase 2 — Source Validation (batch HEAD requests)            │
