@@ -14,8 +14,8 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
                   │  Phase 0 — Research Framing (Crew 1)     │
                   │  · Domain classification (deterministic) │
                   │  · Domain-aware framing document         │
-                  └──────────────┬───────────────────────────┘
-                                 ▼
+                  └───────────────────┬──────────────────────┘
+                                      ▼
        ┌───────────────────────────────────────────────────────────────────┐
        │  Phase 1 — Research Pipeline (clinical or social science)         │
        │                                                                   │
@@ -39,31 +39,31 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
        │  │ Step 7: GRADE synthesis      │ │ Step 7: Evidence quality    │ │
        │  │         Auditor (Smart)      │ │         synthesis (Smart)   │ │
        │  └──────────────────────────────┘ └─────────────────────────────┘ │
-       └──────────────┬────────────────────────────────────────────────────┘
-                      ▼
-     ┌───────────────────────────────────────────────────────────────┐
-     │  Phase 2 — Source Validation (batch HEAD requests)            │
-     │  Source-of-Truth synthesis — IMRaD format                     │
-     └───────────────────────┬───────────────────────────────────────┘
-                             ▼
-     ┌───────────────────────────────────────────────────────────────┐
-     │  Phase 3 — Report Translation (Crew 2, conditional)           │
-     └───────────────────────┬───────────────────────────────────────┘
-                             ▼
-     ┌───────────────────────────────────────────────────────────────┐
-     │ Crew 3 — Podcast Production                                   │
-     │                                                               │
-     │  Phase 4: Episode Blueprint (Producer)                         │
-     │  Phase 5: Script Writing (Producer)                           │
-     │  Phase 6: Script Polish (Editor)                              │
-     │  Phase 7: Accuracy Audit (Auditor) [conditionally blocking]   │
-     └───────────────────────┬───────────────────────────────────────┘
-                             ▼
-              ┌─────────────────────────────────────────────┐
-              │  Phase 8 — Audio Production                 │
-              │  Kokoro TTS (EN), Qwen3-TTS (JA),           │
-              │  two voices, 24kHz WAV + BGM                │
-              └─────────────────────────────────────────────┘
+       └───────────────────────────────┬───────────────────────────────────┘
+                                       ▼
+       ┌───────────────────────────────────────────────────────────────┐
+       │  Phase 2 — Source Validation (batch HEAD requests)            │
+       │  Source-of-Truth synthesis — IMRaD format                     │
+       └───────────────────────────────┬───────────────────────────────┘
+                                       ▼
+       ┌───────────────────────────────────────────────────────────────┐
+       │  Phase 3 — Report Translation (Crew 2, conditional)           │
+       └───────────────────────────────┬───────────────────────────────┘
+                                       ▼
+       ┌───────────────────────────────────────────────────────────────┐
+       │ Crew 3 — Podcast Production                                   │
+       │                                                               │
+       │  Phase 4: Episode Blueprint (Producer)                        │
+       │  Phase 5: Script Writing (Producer)                           │
+       │  Phase 6: Script Polish (Editor)                              │
+       │  Phase 7: Accuracy Audit (Auditor) [conditionally blocking]   │
+       └───────────────────────────────┬───────────────────────────────┘
+                                       ▼
+                ┌─────────────────────────────────────────────┐
+                │  Phase 8 — Audio Production                 │
+                │  Kokoro TTS (EN), Qwen3-TTS (JA),           │
+                │  two voices, 24kHz WAV + BGM                │
+                └─────────────────────────────────────────────┘
 ```
 
 ## Web UI
