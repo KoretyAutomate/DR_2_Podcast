@@ -13,6 +13,7 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
+load_dotenv()  # Load .env BEFORE any module-level imports that read env vars (e.g. audio_engine)
 from crewai import Agent, Task, Crew, LLM
 from crewai.tools import tool
 from markdown_it import MarkdownIt
@@ -1583,7 +1584,7 @@ def _expand_act(act_info: dict, sot_content: str, language_config: dict,
         expanded = _call_smart_model(
             system=system_prompt,
             user=user_prompt,
-            max_tokens=6000,
+            max_tokens=12000,  # Increased from 6000: Japanese ~1.5 chars/token → need 10K tokens for 15K chars
             temperature=0.7,
         )
         expanded_count = _count_words(expanded, language_config)
@@ -1656,6 +1657,24 @@ def _run_script_expansion(draft_text: str, sot_content: str, target_length: int,
         reassembled = '\n\n[TRANSITION]\n\n'.join(parts)
 
     total = _count_words(reassembled, language_config)
+    print(f"  Pass 1 complete: {total} {length_unit} total")
+
+    # Second pass: if still below 85% of target, expand again on the combined result
+    if total < target_length * 0.85:
+        print(f"  Still short ({total}/{target_length} {length_unit}) — running pass 2...")
+        pass2_act = {
+            'num': 1, 'text': reassembled, 'count': total,
+            'target': target_length, 'deficit': target_length - total,
+            'label': 'full script (pass 2)',
+        }
+        pass2_result = _expand_act(pass2_act, sot_content, language_config,
+                                   session_roles, topic_name, target_instruction)
+        pass2_count = _count_words(pass2_result, language_config)
+        if pass2_count > total:
+            reassembled = pass2_result
+            total = pass2_count
+        print(f"  Pass 2 complete: {total} {length_unit} total")
+
     print(f"  Expansion complete: {total} {length_unit} total")
     return reassembled, True
 

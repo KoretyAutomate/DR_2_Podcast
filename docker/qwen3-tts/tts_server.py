@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 import soundfile as sf
 import numpy as np
+import torch
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -27,9 +28,14 @@ _model = None
 def _load_model():
     global _model
     from qwen_tts import Qwen3TTSModel
-    logger.info(f"Loading Qwen3-TTS from {CHECKPOINTS_PATH}...")
-    _model = Qwen3TTSModel.from_pretrained(CHECKPOINTS_PATH)
-    logger.info("✓ Model loaded")
+    device_map = "cuda:0" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Loading Qwen3-TTS from {CHECKPOINTS_PATH} (device_map={device_map})...")
+    _model = Qwen3TTSModel.from_pretrained(
+        CHECKPOINTS_PATH,
+        device_map=device_map,
+        dtype=torch.bfloat16,
+    )
+    logger.info(f"✓ Model loaded on {device_map}")
 
 
 @app.on_event("startup")
