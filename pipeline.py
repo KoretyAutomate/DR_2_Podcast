@@ -1343,7 +1343,10 @@ def _audit_script_language(script_text: str, language: str, language_config: dic
         f"KEEP in English: scientific terms (ARR, NNT, GRADE, RCT, CI, HR, OR), "
         f"study abbreviations, URLs, speaker labels (Host 1:, Host 2:).\n"
         f"Return the COMPLETE corrected script preserving ALL [TRANSITION] markers "
-        f"and Host 1/Host 2 labels."
+        f"and Host 1/Host 2 labels.\n"
+        f"CRITICAL: Do NOT add any preamble, notes, or commentary before or after the script. "
+        f"Output ONLY the corrected script lines. "
+        f"If you must include any notes, prefix each note line with '## '."
     )
     try:
         result = _call_smart_model(
@@ -1554,8 +1557,8 @@ def _expand_act(act_info: dict, sot_content: str, language_config: dict,
     current_count = act_info['count']
     length_unit = language_config['length_unit']
 
-    presenter = session_roles['presenter']['character']
-    questioner = session_roles['questioner']['character']
+    presenter = session_roles['presenter']['label']
+    questioner = session_roles['questioner']['label']
 
     # Truncate SOT to a manageable excerpt for the expansion prompt
     sot_excerpt = sot_content[:4000] if len(sot_content) > 4000 else sot_content
@@ -2108,7 +2111,7 @@ _act4_target = int(target_length_int * 0.20)
 script_task = Task(
     description=(
         f"Using the Episode Blueprint, write a comprehensive {target_script}-{target_unit_singular} podcast dialogue about \"{topic_name}\" "
-        f"featuring {SESSION_ROLES['presenter']['character']} (presenter) and {SESSION_ROLES['questioner']['character']} (questioner).\n\n"
+        f"featuring {SESSION_ROLES['presenter']['label']} (presenter) and {SESSION_ROLES['questioner']['label']} (questioner).\n\n"
         f"SCRIPT STRUCTURE (follow this EXACTLY):\n\n"
         + _channel_intro_directive +
         f"  2. THE HOOK (~40 {target_unit_plural}, ~15 seconds):\n"
@@ -2153,9 +2156,9 @@ script_task = Task(
         f"- PERSONAL: Brief personal connections: 'I actually tried this myself and...' or 'My partner always says...'\n"
         f"- MOMENTUM: Each act builds energy — start curious, peak at the most surprising finding, resolve with practical clarity\n\n"
         f"CHARACTER ROLES:\n"
-        f"  - {SESSION_ROLES['presenter']['character']} (Presenter): presents evidence and explains the topic, "
+        f"  - {SESSION_ROLES['presenter']['label']} (Presenter): presents evidence and explains the topic, "
         f"{SESSION_ROLES['presenter']['personality']}\n"
-        f"  - {SESSION_ROLES['questioner']['character']} (Questioner): asks questions the audience would ask, bridges gaps, "
+        f"  - {SESSION_ROLES['questioner']['label']} (Questioner): asks questions the audience would ask, bridges gaps, "
         f"{SESSION_ROLES['questioner']['personality']}\n\n"
         f"Format STRICTLY as:\n"
         f"{SESSION_ROLES['presenter']['label']}: [dialogue]\n"
@@ -2179,8 +2182,8 @@ script_task = Task(
     ),
     expected_output=(
         f"A {target_script}-{target_unit_singular} podcast dialogue about {topic_name} between "
-        f"{SESSION_ROLES['presenter']['character']} (presents and explains) "
-        f"and {SESSION_ROLES['questioner']['character']} (asks bridging questions). "
+        f"{SESSION_ROLES['presenter']['label']} (presents and explains) "
+        f"and {SESSION_ROLES['questioner']['label']} (asks bridging questions). "
         f"Follows 8-part structure: Hook, Channel Intro, 4 Acts (Claim, Evidence, Nuance, Protocol), Wrap-up, One Action. "
         f"{target_instruction}"
     ),
@@ -2227,8 +2230,8 @@ polish_task = Task(
         f"- Keep technical language intact - NO dumbing down\n"
         f"- Target exactly {target_script} {target_unit_plural}\n\n"
         f"MAINTAIN ROLES:\n"
-        f"  - {SESSION_ROLES['presenter']['character']} (Presenter): explains and teaches the topic\n"
-        f"  - {SESSION_ROLES['questioner']['character']} (Questioner): asks bridging questions, occasionally pushes back\n\n"
+        f"  - {SESSION_ROLES['presenter']['label']} (Presenter): explains and teaches the topic\n"
+        f"  - {SESSION_ROLES['questioner']['label']} (Questioner): asks bridging questions, occasionally pushes back\n\n"
         f"VERIFY 8-PART STRUCTURE (all must be present):\n"
         f"  1. Channel Intro\n"
         f"  2. Hook (provocative question)\n"

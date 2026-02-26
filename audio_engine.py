@@ -125,9 +125,9 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
         )
         return None
 
-    # Parse script (same logic as Kokoro path)
-    speaker_pattern = re.compile(r'^(.+?)[:：]\s*(.*)')
-    speaker_map = {}
+    # Parse script — strict Host N: pattern only (no greedy name matching)
+    speaker_pattern = re.compile(r'^(Host\s*(\d+))\s*[:：]\s*(.*)', re.IGNORECASE)
+    speaker_map = {}  # "Host 1" → 1, "Host 2" → 2
 
     lines = script_text.split('\n')
     audio_segments = []
@@ -171,6 +171,10 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
         if not line:
             continue
 
+        # Skip ## comment lines (guidance, metadata)
+        if line.startswith('##'):
+            continue
+
         # Skip section separators
         if re.match(r'^-{3,}$', line):
             continue
@@ -190,24 +194,16 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
             cumulative_samples += silence_samples
             continue
 
-        # Check for speaker switch
+        # Check for speaker switch — strict "Host N:" pattern only
         match = speaker_pattern.match(line)
         if match:
-            name = match.group(1).strip()
-            text_after = match.group(2).strip()
+            name = match.group(1).strip()    # "Host 1" or "Host 2"
+            slot = int(match.group(2))        # 1 or 2
+            text_after = match.group(3).strip()
 
             if name not in speaker_map:
-                if len(speaker_map) < 2:
-                    host_match = re.match(r'^Host\s*(\d+)$', name, re.IGNORECASE)
-                    slot = int(host_match.group(1)) if host_match else len(speaker_map) + 1
-                    speaker_map[name] = slot
-                    logger.info(f"  Speaker detected: '{name}' → Host {speaker_map[name]}")
-                else:
-                    # More than 2 speakers — treat as continuation
-                    if current_speaker is None:
-                        current_speaker = 1
-                    buffer_text = f"{buffer_text} {line}".strip()
-                    continue
+                speaker_map[name] = slot
+                logger.info(f"  Speaker detected: '{name}' → Host {slot}")
 
             new_speaker = speaker_map[name]
             _flush_buffer()
@@ -221,9 +217,11 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
             current_speaker = new_speaker
             buffer_text = text_after
         else:
-            # Continuation or unlabeled opening
+            # Continuation of current speaker's dialogue
             if current_speaker is None:
-                current_speaker = 1
+                # Skip lines before the first Host label (preamble, metadata)
+                logger.debug(f"  Skipping unlabeled line before first speaker: {line[:60]}...")
+                continue
             buffer_text = f"{buffer_text} {line}".strip()
 
     # Process final buffer
@@ -326,11 +324,9 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         logger.error(f"✗ ERROR: Failed to initialize Kokoro: {e}")
         return None
 
-    # 2. Parse Script
-    # Generic speaker detection: any line starting with "Name:" or "Name："
-    # First unique name → Host 1 voice, second unique name → Host 2 voice
-    speaker_pattern = re.compile(r'^(.+?)[:：]\s*(.*)')
-    speaker_map = {}  # name → speaker number (1 or 2)
+    # 2. Parse Script — strict Host N: pattern only (no greedy name matching)
+    speaker_pattern = re.compile(r'^(Host\s*(\d+))\s*[:：]\s*(.*)', re.IGNORECASE)
+    speaker_map = {}  # "Host 1" → 1, "Host 2" → 2
 
     sample_rate = 24000  # Kokoro standard
     lines = script_text.split('\n')
@@ -363,6 +359,10 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         if not line:
             continue
 
+        # Skip ## comment lines (guidance, metadata)
+        if line.startswith('##'):
+            continue
+
         # Skip section separators (--- between topics) — not end of dialogue
         if re.match(r'^-{3,}$', line):
             continue
@@ -380,25 +380,16 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             cumulative_samples += silence_samples
             continue
 
-        # Check for Speaker Switch: any "Name:" or "Name：" prefix
+        # Check for Speaker Switch — strict "Host N:" pattern only
         match = speaker_pattern.match(line)
         if match:
-            name = match.group(1).strip()
-            text_after = match.group(2).strip()
+            name = match.group(1).strip()    # "Host 1" or "Host 2"
+            slot = int(match.group(2))        # 1 or 2
+            text_after = match.group(3).strip()
 
-            # Assign speaker number on first occurrence (max 2 speakers)
             if name not in speaker_map:
-                if len(speaker_map) < 2:
-                    host_match = re.match(r'^Host\s*(\d+)$', name, re.IGNORECASE)
-                    slot = int(host_match.group(1)) if host_match else len(speaker_map) + 1
-                    speaker_map[name] = slot
-                    logger.info(f"  Speaker detected: '{name}' → Host {speaker_map[name]}")
-                else:
-                    # More than 2 unique names — treat as continuation text
-                    if current_speaker is None:
-                        current_speaker = 1
-                    buffer_text = f"{buffer_text} {line}".strip()
-                    continue
+                speaker_map[name] = slot
+                logger.info(f"  Speaker detected: '{name}' → Host {slot}")
 
             new_speaker = speaker_map[name]
 
@@ -414,9 +405,11 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             buffer_text = text_after
 
         else:
-            # Continuation of current speaker (or unlabeled opening — default to Host 1)
+            # Continuation of current speaker's dialogue
             if current_speaker is None:
-                current_speaker = 1
+                # Skip lines before the first Host label (preamble, metadata)
+                logger.debug(f"  Skipping unlabeled line before first speaker: {line[:60]}...")
+                continue
             buffer_text = f"{buffer_text} {line}".strip()
 
     # Process final buffer
@@ -578,6 +571,10 @@ def clean_script_for_tts(script_text: str) -> str:
 
     # Remove thinking tags
     clean = re.sub(r'<think>.*?</think>', '', script_text, flags=re.DOTALL)
+
+    # Strip ## comment lines (guidance, metadata, LLM preamble) — must happen
+    # BEFORE markdown # removal below, which would strip the ## prefix leaving bare text
+    clean = re.sub(r'^##.*$', '', clean, flags=re.MULTILINE)
 
     # Remove markdown formatting
     clean = re.sub(r'\*\*', '', clean)  # Bold
