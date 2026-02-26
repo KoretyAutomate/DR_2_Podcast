@@ -1456,7 +1456,7 @@ def home(username: str = Depends(verify_credentials)):
                         'Clinical Research Complete': 'Scientific Fact Finding',
                         'Source of Truth': 'Scientific Fact Finding',
                         'Source Validation': 'Scientific Fact Finding',
-                        'Report Translation': 'Scientific Fact Finding',
+                        'Report Translation': 'Translation',
                         'Podcast Production': 'Podcast Planning',
                         'Show Outline': 'Podcast Planning',
                         'Script Writing': 'Podcast Planning',
@@ -1466,7 +1466,7 @@ def home(username: str = Depends(verify_credentials)):
                         'Reuse Analysis': 'Scientific Fact Finding',
                         'Supplemental Research': 'Scientific Fact Finding',
                     }};
-                    const GROUP_ORDER = ['Scientific Fact Finding', 'Podcast Planning', 'Podcast Recording'];
+                    const GROUP_ORDER = ['Scientific Fact Finding', 'Translation', 'Podcast Planning', 'Podcast Recording'];
 
                     if ((data.step_durations && data.step_durations.length > 0) || data.current_step_duration_seconds > 0) {{
                         durationBox.style.display = 'block';
