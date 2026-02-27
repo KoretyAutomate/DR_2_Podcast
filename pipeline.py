@@ -765,9 +765,12 @@ def _crew_kickoff_guarded(crew_factory_fn, task, translation_task_obj, language,
         )
 
 
-def _call_smart_model(system: str, user: str, max_tokens: int = 4000, temperature: float = 0.1, timeout: int = 0) -> str:
+def _call_smart_model(system: str, user: str, max_tokens: int = 4000,
+                      temperature: float = 0.1, timeout: int = 0,
+                      frequency_penalty: float = 0.0) -> str:
     """Call the Smart Model (vLLM) directly via OpenAI API. Returns response text.
     timeout: seconds to wait. 0 = auto-scale based on max_tokens (~10 tok/s + 60s buffer).
+    frequency_penalty: penalize repeated tokens (0.0 = off, 0.3 = moderate anti-repetition).
     """
     from openai import OpenAI
     # Disable Qwen3 thinking mode to avoid wasting tokens on <think> blocks
@@ -779,7 +782,7 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000, temperatur
         base_url=SMART_BASE_URL,
         api_key=os.getenv("LLM_API_KEY", "NA"),
     )
-    resp = client.chat.completions.create(
+    create_kwargs = dict(
         model=SMART_MODEL,
         messages=[
             {"role": "system", "content": system},
@@ -789,6 +792,9 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000, temperatur
         temperature=temperature,
         timeout=timeout,
     )
+    if frequency_penalty > 0:
+        create_kwargs["frequency_penalty"] = frequency_penalty
+    resp = client.chat.completions.create(**create_kwargs)
     text = resp.choices[0].message.content.strip()
     # Strip <think>...</think> blocks (Qwen3 thinking mode safety net)
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
@@ -1352,6 +1358,114 @@ def _audit_script_language(script_text: str, language: str, language_config: dic
         return script_text
 
 
+def _add_reaction_guidance(script_text: str, language_config: dict) -> str:
+    """Insert ## [emotion, delivery cue] lines before key Host dialogue lines.
+
+    Uses a two-phase approach:
+    1. Send numbered Host lines to the LLM and ask it to output ONLY annotations
+       as "LINE_NUM: [cue]" pairs (no script reproduction required).
+    2. Programmatically insert ## [cue] lines before the matched Host lines.
+
+    This avoids the model's tendency to reproduce the script verbatim without
+    inserting annotations when asked to return the modified script.
+
+    Annotations are always in English (metadata, not dialogue).
+    ~40-60% of Host lines are annotated — routine connectors are skipped.
+    Lines starting with ## are stripped by clean_script_for_tts() before TTS.
+    """
+    system = (
+        "You are a podcast delivery coach. Analyze the numbered Host dialogue "
+        "lines below and generate emotion/delivery cues for vocal performance.\n\n"
+        "OUTPUT FORMAT — one annotation per line, exactly:\n"
+        "LINE_NUMBER: [cue1, cue2]\n\n"
+        "Example output:\n"
+        "2: [intrigued, building suspense]\n"
+        "3: [genuinely curious, leaning in]\n"
+        "5: [authoritative, measured pace]\n"
+        "8: [surprised, delighted]\n\n"
+        "RULES:\n"
+        "1. Annotate 40-60% of the Host lines — those with distinct emotional "
+        "tone, delivery shifts, or notable reactions.\n"
+        "2. SKIP routine/neutral connective lines (e.g. 'Right.', 'Exactly.', "
+        "'Go on.', short acknowledgements).\n"
+        "3. Cues are ALWAYS in English regardless of the script language.\n"
+        "4. Keep cues concise — 2-4 words per cue, 1-2 cues per line.\n"
+        "5. Output ONLY the numbered annotations, nothing else — no preamble, "
+        "no commentary, no script text."
+    )
+
+    try:
+        # Extract Host lines with their original line indices
+        all_lines = script_text.split('\n')
+        host_entries = []  # (original_line_index, line_text)
+        for i, line in enumerate(all_lines):
+            if re.match(r'^Host\s+\d\s*[:：]', line):
+                host_entries.append((i, line))
+
+        if not host_entries:
+            print("  ⚠ No Host lines found — skipping reaction guidance")
+            return script_text
+
+        total_host_lines = len(host_entries)
+
+        # Build numbered list for the LLM
+        numbered_lines = []
+        for idx, (_, line_text) in enumerate(host_entries, 1):
+            # Truncate very long lines to keep prompt manageable
+            display = line_text[:200] + "..." if len(line_text) > 200 else line_text
+            numbered_lines.append(f"{idx}: {display}")
+
+        user_prompt = (
+            f"Generate emotion/delivery annotations for these {total_host_lines} "
+            f"Host dialogue lines. Annotate approximately {total_host_lines * 2 // 5}-"
+            f"{total_host_lines * 3 // 5} of them (40-60%).\n\n"
+            + "\n".join(numbered_lines)
+        )
+
+        result = _call_smart_model(
+            system=system,
+            user=user_prompt,
+            max_tokens=2000,
+            temperature=0.4,
+        )
+
+        # Parse LLM output: extract "NUMBER: [cue]" lines
+        annotations = {}  # host_entry_index (1-based) -> cue text
+        for match in re.finditer(r'^(\d+)\s*:\s*(\[.+?\])\s*$', result, re.MULTILINE):
+            line_num = int(match.group(1))
+            cue = match.group(2)
+            if 1 <= line_num <= total_host_lines:
+                annotations[line_num] = cue
+
+        if not annotations:
+            print(f"  ⚠ LLM returned no parseable annotations — keeping original")
+            return script_text
+
+        # Build the annotated script by inserting ## [cue] before target Host lines
+        # Map host_entry_index (1-based) -> original line index
+        insert_before = {}  # original_line_index -> cue
+        for entry_idx, cue in annotations.items():
+            orig_line_idx = host_entries[entry_idx - 1][0]
+            insert_before[orig_line_idx] = cue
+
+        result_lines = []
+        for i, line in enumerate(all_lines):
+            if i in insert_before:
+                result_lines.append(f"## {insert_before[i]}")
+            result_lines.append(line)
+
+        result = '\n'.join(result_lines)
+        annotation_rate = len(annotations) / total_host_lines
+
+        print(f"  ✓ Reaction guidance complete — {len(annotations)} annotations added "
+              f"({annotation_rate:.0%} of {total_host_lines} Host lines)")
+        return result
+
+    except Exception as e:
+        print(f"  ⚠ Reaction guidance failed: {e} — keeping original")
+        return script_text
+
+
 def _quick_content_audit(script_text: str, sot_content: str) -> str | None:
     """Check script for top-3 drift patterns against SOT. Returns issue string or None."""
     sot_excerpt = _truncate_at_boundary(sot_content, 4000)
@@ -1526,6 +1640,76 @@ def _analyze_acts(script_text: str, language_config: dict, target_length: int) -
     return acts
 
 
+def _deduplicate_script(script_text: str, language_config: dict) -> str:
+    """Remove repeated dialogue blocks from a script.
+
+    Uses a sliding window to detect blocks of 3+ consecutive non-empty lines
+    that appear verbatim more than once. Keeps the first occurrence, removes
+    duplicates. Preserves [TRANSITION] markers and ## annotations.
+    """
+    lines = script_text.split('\n')
+    WINDOW_SIZE = 3  # minimum consecutive lines to detect as a block
+
+    # Build set of line-block fingerprints (tuples of WINDOW_SIZE consecutive non-empty lines)
+    # Track which lines are part of duplicate blocks
+    duplicate_line_indices = set()
+
+    # Collect all non-empty line indices
+    non_empty = [(i, lines[i]) for i in range(len(lines)) if lines[i].strip()]
+
+    # Sliding window over non-empty lines to find repeated blocks
+    seen_blocks = {}  # fingerprint -> first occurrence index in non_empty
+    for start in range(len(non_empty) - WINDOW_SIZE + 1):
+        block = tuple(non_empty[start + j][1] for j in range(WINDOW_SIZE))
+        # Skip blocks that are only markers/annotations
+        if all(l.startswith('[TRANSITION]') or l.startswith('## [') for l in block):
+            continue
+        if block in seen_blocks:
+            first_pos = seen_blocks[block]
+            # This is a duplicate — mark for removal
+            # But extend: keep scanning forward to find the full repeated span
+            span = WINDOW_SIZE
+            while (start + span < len(non_empty)
+                   and first_pos + span < len(non_empty)
+                   and non_empty[start + span][1] == non_empty[first_pos + span][1]):
+                span += 1
+            for j in range(span):
+                duplicate_line_indices.add(non_empty[start + j][0])
+        else:
+            seen_blocks[block] = start
+
+    if not duplicate_line_indices:
+        return script_text
+
+    # Remove duplicate lines, but keep empty lines that are not adjacent to removed lines
+    cleaned = []
+    for i, line in enumerate(lines):
+        if i not in duplicate_line_indices:
+            cleaned.append(line)
+
+    # Clean up excessive blank lines left by removal
+    result_lines = []
+    blank_count = 0
+    for line in cleaned:
+        if not line.strip():
+            blank_count += 1
+            if blank_count <= 2:
+                result_lines.append(line)
+        else:
+            blank_count = 0
+            result_lines.append(line)
+
+    result = '\n'.join(result_lines)
+    removed_count = len(duplicate_line_indices)
+    removed_pct = removed_count / len(lines) * 100 if lines else 0
+    length_unit = language_config.get('length_unit', 'chars')
+    print(f"  Deduplication: removed {removed_count} duplicate lines ({removed_pct:.0f}% of script)")
+    if removed_pct > 15:
+        print(f"  ⚠ Expansion produced {removed_pct:.0f}% duplicate content — removed")
+
+    return result
+
+
 def _expand_act(act_info: dict, sot_content: str, language_config: dict,
                 session_roles: dict, topic_name: str, target_instruction: str) -> str:
     """
@@ -1555,6 +1739,7 @@ def _expand_act(act_info: dict, sot_content: str, language_config: dict,
         f"- Maintain the natural conversational tone with reactions, follow-up questions, humor.\n"
         f"- Use speaker labels: **{presenter}:** and **{questioner}:**\n"
         f"- Do NOT add section headers or act labels — just return the dialogue content.\n"
+        f"- Do NOT repeat or loop back to earlier dialogue — every exchange must be NEW content.\n"
         f"- {target_instruction}\n"
     )
 
@@ -1568,8 +1753,9 @@ def _expand_act(act_info: dict, sot_content: str, language_config: dict,
         expanded = _call_smart_model(
             system=system_prompt,
             user=user_prompt,
-            max_tokens=12000,  # Increased from 6000: Japanese ~1.5 chars/token → need 10K tokens for 15K chars
+            max_tokens=12000,
             temperature=0.7,
+            frequency_penalty=0.3,
         )
         expanded_count = _count_words(expanded, language_config)
         # Only use expansion if it's actually longer
@@ -1640,6 +1826,8 @@ def _run_script_expansion(draft_text: str, sot_content: str, target_length: int,
             parts.append(a['text'])
         reassembled = '\n\n[TRANSITION]\n\n'.join(parts)
 
+    # Deduplicate after pass 1
+    reassembled = _deduplicate_script(reassembled, language_config)
     total = _count_words(reassembled, language_config)
     print(f"  Pass 1 complete: {total} {length_unit} total")
 
@@ -1657,6 +1845,9 @@ def _run_script_expansion(draft_text: str, sot_content: str, target_length: int,
         if pass2_count > total:
             reassembled = pass2_result
             total = pass2_count
+        # Deduplicate after pass 2
+        reassembled = _deduplicate_script(reassembled, language_config)
+        total = _count_words(reassembled, language_config)
         print(f"  Pass 2 complete: {total} {length_unit} total")
 
     print(f"  Expansion complete: {total} {length_unit} total")
@@ -2851,6 +3042,10 @@ if args.reuse_dir:
         if language != 'en':
             script_text = _audit_script_language(script_text, language, language_config)
 
+        # Add emotion/reaction delivery guidance (## annotations, stripped before TTS)
+        print("\nAdding reaction/emotion guidance to script...")
+        script_text = _add_reaction_guidance(script_text, language_config)
+
         # Save script_final.md (authoritative for TTS)
         with open(new_output_dir / "script_final.md", 'w', encoding='utf-8') as f:
             f.write(script_text)
@@ -3196,6 +3391,10 @@ if args.reuse_dir:
             # Post-script language audit for supplemental reuse mode
             if language != 'en':
                 script_text = _audit_script_language(script_text, language, language_config)
+
+            # Add emotion/reaction delivery guidance (## annotations, stripped before TTS)
+            print("\nAdding reaction/emotion guidance to script...")
+            script_text = _add_reaction_guidance(script_text, language_config)
 
             # Save script_final.md (authoritative for TTS)
             with open(new_output_dir / "script_final.md", 'w', encoding='utf-8') as f:
@@ -4825,6 +5024,10 @@ else:
 if language != 'en':
     print(f"\nRunning post-script language audit ({language_config['name']})...")
     script_text = _audit_script_language(script_text, language, language_config)
+
+# Add emotion/reaction delivery guidance (## annotations, stripped before TTS)
+print("\nAdding reaction/emotion guidance to script...")
+script_text = _add_reaction_guidance(script_text, language_config)
 
 # Save script_final.md (the authoritative script for TTS)
 with open(output_dir / "script_final.md", 'w', encoding='utf-8') as f:
