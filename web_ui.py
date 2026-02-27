@@ -72,7 +72,7 @@ EXPECTED_ARTIFACTS = [
     "source_of_truth.md", "source_of_truth.pdf",
     "url_validation_results.json",
     "script_draft.md", "script_final.md", "script.txt",
-    "show_outline.md", "accuracy_audit.md", "accuracy_audit.pdf",
+    "EPISODE_BLUEPRINT.md", "accuracy_audit.md", "accuracy_audit.pdf",
     "podcast_generation.log", "session_metadata.txt",
     "audio.wav"
 ]
