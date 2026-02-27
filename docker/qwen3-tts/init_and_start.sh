@@ -80,8 +80,8 @@ API = "http://localhost:8082"
 OUT = pathlib.Path("outputs")
 OUT.mkdir(exist_ok=True)
 tests = [
-    ("Erika", "こんにちは、エリカです。今日もよろしくお願いします。", "test_erika.wav"),
-    ("Kaz",   "こんにちは、カズです。今日は最新のAIニュースをお届けします。", "test_kaz.wav"),
+    ("Host1", "こんにちは。今日は最新の研究についてお話しします。", "test_host1.wav"),
+    ("Host2", "こんにちは。今日もよろしくお願いします。", "test_host2.wav"),
 ]
 for speaker, text, fname in tests:
     print(f"  Testing {speaker}...")
@@ -91,7 +91,7 @@ for speaker, text, fname in tests:
         print(f"  ✓ {fname} saved ({len(r.content):,} bytes)")
     else:
         print(f"  ✗ Failed: {r.status_code} {r.text}"); sys.exit(1)
-print("\nSmoke test PASSED — listen to outputs/test_kaz.wav and outputs/test_erika.wav")
+print("\nSmoke test PASSED — listen to outputs/test_host1.wav and outputs/test_host2.wav")
 PYEOF
 
 echo "=== Done! API at http://localhost:$API_PORT ==="

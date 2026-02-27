@@ -6,7 +6,7 @@ Generates high-quality, multi-speaker podcast audio with automatic TTS engine se
 
   - English:  Kokoro TTS (local, CPU, proven quality)
   - Japanese: Qwen3-TTS CustomVoice (GPU via Docker, built-in preset voices)
-              Voices: Kaz → Aiden (male), Erika → Ono_Anna (native Japanese female)
+              Voices: Host1 → Aiden (male), Host2 → Ono_Anna (native Japanese female)
 
 Features:
 - Dual-voice system with speaker detection
@@ -60,7 +60,7 @@ def _chunk_japanese_text(text: str, max_chars: int = 80) -> list:
 
 
 def _call_qwen3_tts_segment(text: str, speaker: int) -> tuple:
-    """Call Qwen3-TTS API. speaker: 1=Kaz(Aiden), 2=Erika(Ono_Anna). Returns (audio, sr) or (None, None)."""
+    """Call Qwen3-TTS API. speaker: 1=Host1(Aiden), 2=Host2(Ono_Anna). Returns (audio, sr) or (None, None)."""
     try:
         import requests
         import io as _io
@@ -68,7 +68,7 @@ def _call_qwen3_tts_segment(text: str, speaker: int) -> tuple:
         logger.error(f"Missing dependency for Qwen3-TTS: {e}")
         return None, None
 
-    speaker_name = "Kaz" if speaker == 1 else "Erika"
+    speaker_name = "Host1" if speaker == 1 else "Host2"
     try:
         resp = requests.post(
             f"{QWEN3_TTS_API_URL}/tts",
@@ -108,7 +108,7 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
     logger.info("QWEN3-TTS — JAPANESE AUDIO GENERATION")
     logger.info("=" * 60)
     logger.info(f"API endpoint: {QWEN3_TTS_API_URL}")
-    logger.info("Voices: Kaz → Aiden (male), Erika → Ono_Anna (Japanese female)")
+    logger.info("Voices: Host1 → Aiden (male), Host2 → Ono_Anna (Japanese female)")
 
     # Health check
     try:
@@ -125,9 +125,9 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
         )
         return None
 
-    # Parse script — strict Host N: pattern only (no greedy name matching)
-    speaker_pattern = re.compile(r'^(Host\s*(\d+))\s*[:：]\s*(.*)', re.IGNORECASE)
-    speaker_map = {}  # "Host 1" → 1, "Host 2" → 2
+    # Parse script — strict Speaker N: pattern only (no greedy name matching)
+    speaker_pattern = re.compile(r'^(Speaker\s*(\d+))\s*[:：]\s*(.*)', re.IGNORECASE)
+    speaker_map = {}  # "Speaker 1" → 1, "Speaker 2" → 2
 
     lines = script_text.split('\n')
     audio_segments = []
@@ -197,7 +197,7 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
         # Check for speaker switch — strict "Host N:" pattern only
         match = speaker_pattern.match(line)
         if match:
-            name = match.group(1).strip()    # "Host 1" or "Host 2"
+            name = match.group(1).strip()    # "Speaker 1" or "Speaker 2"
             slot = int(match.group(2))        # 1 or 2
             text_after = match.group(3).strip()
 
@@ -259,7 +259,7 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
 
 def generate_audio_from_script(script_text: str, output_filename: str = "final_podcast.wav", lang_code: str = 'a'):
     """
-    Parses a script looking for 'Host 1:' and 'Host 2:' lines,
+    Parses a script looking for 'Speaker 1:' and 'Speaker 2:' lines,
     generates audio segments, and stitches them together.
 
     TTS Engine selection:
@@ -267,7 +267,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
       - Japanese (lang_code='j'): Qwen3-TTS API (GPU via Docker, distinct preset voices)
 
     Args:
-        script_text: Full podcast script with "Host 1:" and "Host 2:" labels
+        script_text: Full podcast script with "Host 1:" / "Host 2:" labels (renamed to "Speaker N:" before parsing)
         output_filename: Output WAV file name (default: "final_podcast.wav")
         lang_code: Language code ('a' for English, 'j' for Japanese, etc.)
 
@@ -276,7 +276,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         transition_positions_ms is a list of millisecond positions where [TRANSITION]
         markers were found, used by the pro mixer for BGM volume bumps.
 
-    Example Script Format:
+    Example Script Format (input uses Host N:, cleaned to Speaker N: internally):
         Host 1: Welcome to the show. Today we're discussing coffee.
         Host 2: But is coffee actually good for you? Let's examine the evidence.
         [TRANSITION]
@@ -324,9 +324,9 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         logger.error(f"✗ ERROR: Failed to initialize Kokoro: {e}")
         return None
 
-    # 2. Parse Script — strict Host N: pattern only (no greedy name matching)
-    speaker_pattern = re.compile(r'^(Host\s*(\d+))\s*[:：]\s*(.*)', re.IGNORECASE)
-    speaker_map = {}  # "Host 1" → 1, "Host 2" → 2
+    # 2. Parse Script — strict Speaker N: pattern only (no greedy name matching)
+    speaker_pattern = re.compile(r'^(Speaker\s*(\d+))\s*[:：]\s*(.*)', re.IGNORECASE)
+    speaker_map = {}  # "Speaker 1" → 1, "Speaker 2" → 2
 
     sample_rate = 24000  # Kokoro standard
     lines = script_text.split('\n')
@@ -380,10 +380,10 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             cumulative_samples += silence_samples
             continue
 
-        # Check for Speaker Switch — strict "Host N:" pattern only
+        # Check for Speaker Switch — strict "Speaker N:" pattern only
         match = speaker_pattern.match(line)
         if match:
-            name = match.group(1).strip()    # "Host 1" or "Host 2"
+            name = match.group(1).strip()    # "Speaker 1" or "Speaker 2"
             slot = int(match.group(2))        # 1 or 2
             text_after = match.group(3).strip()
 
@@ -579,6 +579,11 @@ def clean_script_for_tts(script_text: str) -> str:
     # Remove markdown formatting
     clean = re.sub(r'\*\*', '', clean)  # Bold
     clean = re.sub(r'[*#\[\]]', '', clean)  # Italics, headers, brackets (NOT underscores — protects ___TRANSITION___ placeholders)
+
+    # Rename speaker labels "Host N:" → "Speaker N:" so that any remaining
+    # "Host 1" / "Host 2" in dialogue text can be safely stripped.
+    clean = re.sub(r'^Host\s+(\d)\s*[:：]', r'Speaker \1:', clean, flags=re.MULTILINE)
+    clean = re.sub(r'Host [12]', '', clean)
 
     # Normalize unicode punctuation to ASCII
     unicode_map = {

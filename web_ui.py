@@ -857,8 +857,8 @@ def home(username: str = Depends(verify_credentials)):
                             <label for="hosts">Host Dynamic</label>
                             <select id="hosts" name="podcast_hosts">
                                 <option value="random" selected>AI Choice (Random)</option>
-                                <option value="kaz_erika">Kaz Leads (Teaching)</option>
-                                <option value="erika_kaz">Erika Leads (Teaching)</option>
+                                <option value="host1_leads">Host 1 Leads (Male)</option>
+                                <option value="host2_leads">Host 2 Leads (Female)</option>
                             </select>
                         </div>
                     </div>

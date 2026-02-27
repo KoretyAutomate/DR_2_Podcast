@@ -1,8 +1,8 @@
 """
 Qwen3-TTS FastAPI Server
-POST /tts  {"text": "...", "speaker": "Kaz"}  -> WAV bytes
+POST /tts  {"text": "...", "speaker": "Host1"}  -> WAV bytes
 GET  /health -> {"status": "ok"}
-Speaker map: Kaz -> Aiden (male), Erika -> Ono_Anna (Japanese female)
+Speaker map: Host1 -> Aiden (male), Host2 -> Ono_Anna (Japanese female)
 """
 import io, os, logging
 from fastapi import FastAPI, HTTPException
@@ -17,10 +17,9 @@ logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="Qwen3-TTS Server")
 
 SPEAKER_VOICE_MAP = {
-    "Kaz": "Aiden", "kaz": "Aiden",
-    "Erika": "Ono_Anna", "erika": "Ono_Anna",
+    "Host1": "Aiden", "host1": "Aiden",
+    "Host2": "Ono_Anna", "host2": "Ono_Anna",
 }
-DEFAULT_VOICE = "Ono_Anna"
 CHECKPOINTS_PATH = os.getenv("CHECKPOINTS_PATH", os.path.join(os.path.dirname(__file__), "checkpoints"))
 _model = None
 
@@ -45,7 +44,7 @@ def startup_event():
 
 class TTSRequest(BaseModel):
     text: str
-    speaker: str = "Erika"
+    speaker: str
     language: str = "Japanese"
 
 
@@ -58,7 +57,9 @@ def health():
 def synthesize(req: TTSRequest) -> Response:
     if _model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    voice = SPEAKER_VOICE_MAP.get(req.speaker, DEFAULT_VOICE)
+    voice = SPEAKER_VOICE_MAP.get(req.speaker)
+    if voice is None:
+        raise HTTPException(status_code=400, detail=f"Unknown speaker: {req.speaker!r}. Valid: {list(SPEAKER_VOICE_MAP.keys())}")
     logger.info(f"TTS: speaker={req.speaker} -> voice={voice}, text={req.text[:60]!r}")
     try:
         # generate_custom_voice returns (List[np.ndarray], sample_rate)

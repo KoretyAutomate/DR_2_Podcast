@@ -239,8 +239,8 @@ The Auditor scans the polished script for drift patterns: correlation-to-causati
 ### Phase 8 — Audio Production
 Audio is rendered with two voices at 24kHz WAV, followed by BGM mixing. TTS engine is selected by language:
 
-| Language | TTS Engine | Host 1 (Kaz) | Host 2 (Erika) |
-|----------|------------|--------------|----------------|
+| Language | TTS Engine | Host 1 (Male) | Host 2 (Female) |
+|----------|------------|---------------|-----------------|
 | English  | Kokoro TTS (local, CPU) | `am_fenrir` (American male) | `af_heart` (American female) |
 | Japanese | Qwen3-TTS (GPU via FastAPI server) | Aiden (male) | Ono_Anna (native Japanese female) |
 
@@ -248,18 +248,20 @@ Audio is rendered with two voices at 24kHz WAV, followed by BGM mixing. TTS engi
 
 The pipeline supports English and Japanese output:
 - **English**: Default. All research, scripts, and audio in English.
-- **Japanese**: A translation task runs in Crew 2 before Crew 3. Audio is rendered by **Qwen3-TTS** (GPU, FastAPI server at port 8082) — Kokoro is not used for Japanese. Host names use katakana (カズ / エリカ). A post-Crew 3 language auditor detects Chinese contamination (CJK text without hiragana/katakana) and automatically runs a correction pass to translate any Chinese passages into natural Japanese.
+- **Japanese**: A translation task runs in Crew 2 before Crew 3. Audio is rendered by **Qwen3-TTS** (GPU, FastAPI server at port 8082) — Kokoro is not used for Japanese. A post-Crew 3 language auditor detects Chinese contamination (CJK text without hiragana/katakana) and automatically runs a correction pass to translate any Chinese passages into natural Japanese.
 
 ### Script Length Enforcement
 
 After Crew 3 completes, the pipeline measures script length against the target (language-aware: words for English, characters for Japanese) with a ±10% tolerance. If the script is too short, **up to 3 expansion passes** run automatically — each pass adds deeper scientific explanation, real-world examples, and host dialogue. Expansion stops early if a pass fails to increase the length.
 
-## Podcast Characters
+## Podcast Hosts
 
-| Character | Personality | When Supporting | When Critical |
-|-----------|-------------|-----------------|---------------|
-| **Kaz** | Enthusiastic science advocate, optimistic, data-driven | Champions the evidence | Plays devil's advocate with energy |
-| **Erika** | Skeptical analyst, cautious, evidence-focused | Presents findings carefully | Challenges methodology rigorously |
+| Host | Voice | Role |
+|------|-------|------|
+| **Host 1** | Male (Kokoro: `am_fenrir` / Qwen3: Aiden) | Randomly assigned as presenter or questioner each session |
+| **Host 2** | Female (Kokoro: `af_heart` / Qwen3: Ono_Anna) | Randomly assigned as presenter or questioner each session |
+
+Personality is determined by role, not host: the **presenter** is an enthusiastic science communicator; the **questioner** is a curious, skeptical interviewer. Override with `PODCAST_HOSTS` env var (`host1_leads`, `host2_leads`, or `random`).
 
 ## Prerequisites
 

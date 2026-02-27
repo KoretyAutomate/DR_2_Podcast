@@ -258,18 +258,10 @@ def get_language(args):
 args = parse_arguments()
 topic_name = get_topic(args)
 
-# --- CHARACTER CONFIGURATION ---
-CHARACTERS = {
-    "Kaz": {
-        "gender": "male",
-        "host_label": "Host 1",       # male → Host 1 voice (always)
-        "voice_model": "male_voice",
-    },
-    "Erika": {
-        "gender": "female",
-        "host_label": "Host 2",       # female → Host 2 voice (always)
-        "voice_model": "female_voice",
-    }
+# --- HOST CONFIGURATION ---
+HOSTS = {
+    "Host 1": {"gender": "male"},
+    "Host 2": {"gender": "female"},
 }
 
 # Role-based personality (assigned by role, not character)
@@ -289,48 +281,37 @@ ROLE_PERSONALITIES = {
 # --- ROLE ASSIGNMENT (Dynamic per session) ---
 def assign_roles() -> dict:
     """
-    Assign Kaz and Erika to presenter/questioner roles.
-    Respects PODCAST_HOSTS env var if set (kaz_erika, erika_kaz).
-    Otherwise defaults to random assignment.
+    Assign Host 1 / Host 2 to presenter/questioner roles.
+    Respects PODCAST_HOSTS env var: host1_leads, host2_leads, or random.
     """
-    characters = list(CHARACTERS.keys())
-    
-    # Check for manual override
+    host_labels = list(HOSTS.keys())
     host_config = os.getenv("PODCAST_HOSTS", "random").lower()
-    
-    if host_config == "kaz_erika":
-        # Kaz is Presenter, Erika is Questioner
-        presenter_name = "Kaz"
-        questioner_name = "Erika"
-    elif host_config == "erika_kaz":
-        # Erika is Presenter, Kaz is Questioner
-        presenter_name = "Erika"
-        questioner_name = "Kaz"
+
+    if host_config == "host1_leads":
+        presenter_label, questioner_label = "Host 1", "Host 2"
+    elif host_config == "host2_leads":
+        presenter_label, questioner_label = "Host 2", "Host 1"
     else:
-        # Random assignment
-        random.shuffle(characters)
-        presenter_name = characters[0]
-        questioner_name = characters[1]
+        random.shuffle(host_labels)
+        presenter_label, questioner_label = host_labels[0], host_labels[1]
 
     role_assignment = {
         "presenter": {
-            "character": presenter_name,
-            "label": CHARACTERS[presenter_name]["host_label"],
+            "label": presenter_label,
             "stance": "teaching",
-            "personality": ROLE_PERSONALITIES["presenter"]
+            "personality": ROLE_PERSONALITIES["presenter"],
         },
         "questioner": {
-            "character": questioner_name,
-            "label": CHARACTERS[questioner_name]["host_label"],
+            "label": questioner_label,
             "stance": "curious",
-            "personality": ROLE_PERSONALITIES["questioner"]
-        }
+            "personality": ROLE_PERSONALITIES["questioner"],
+        },
     }
 
     print(f"\n{'='*60}")
     print(f"SESSION ROLE ASSIGNMENT ({host_config}):")
-    print(f"  Presenter: {role_assignment['presenter']['character']} ({CHARACTERS[presenter_name]['gender']})")
-    print(f"  Questioner: {role_assignment['questioner']['character']} ({CHARACTERS[questioner_name]['gender']})")
+    print(f"  Presenter: {presenter_label} ({HOSTS[presenter_label]['gender']})")
+    print(f"  Questioner: {questioner_label} ({HOSTS[questioner_label]['gender']})")
     print(f"{'='*60}\n")
 
     return role_assignment
@@ -1998,9 +1979,12 @@ producer_agent = Agent(
         f'\n'
         f'Your dialogue should dive into nuance, trade-offs, and practical implications. '
         f'The questioner keeps it accessible without dumbing it down. '
-        f'{english_instruction}'
+        f'{english_instruction}\n\n'
+        f'DIALOGUE RULE: Hosts must NEVER address each other by name inside dialogue — '
+        f'no personal names, no "Host 1", no "Host 2" spoken aloud. '
+        f'Names are only used as speaker LABELS before the colon, never within the dialogue itself.'
         + (f'\n\nLANGUAGE WARNING: When generating Japanese (日本語) output, you MUST stay in Japanese throughout. '
-           f'Do NOT switch to Chinese (中文). Use katakana for host names: カズ and エリカ (NOT 卡兹/埃里卡). '
+           f'Do NOT switch to Chinese (中文). '
            f'Avoid Kanji that is only used in Chinese (e.g., use 気 instead of 气, 楽 instead of 乐).'
            if language == 'ja' else '')
     ),
@@ -4791,9 +4775,9 @@ session_metadata = (
     f"PODCAST SESSION METADATA\n{'='*60}\n\n"
     f"Topic: {topic_name}\n\n"
     f"Language: {language_config['name']} ({language})\n\n"
-    f"Character Assignments:\n"
-    f"  {SESSION_ROLES['presenter']['character']}: Presenter ({SESSION_ROLES['presenter']['personality']})\n"
-    f"  {SESSION_ROLES['questioner']['character']}: Questioner ({SESSION_ROLES['questioner']['personality']})\n"
+    f"Role Assignments:\n"
+    f"  {SESSION_ROLES['presenter']['label']}: Presenter ({SESSION_ROLES['presenter']['personality']})\n"
+    f"  {SESSION_ROLES['questioner']['label']}: Questioner ({SESSION_ROLES['questioner']['personality']})\n"
 )
 metadata_file = output_dir / "session_metadata.txt"
 with open(metadata_file, 'w') as f:
