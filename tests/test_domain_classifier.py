@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from domain_classifier import (
+from dr2_podcast.research.domain_classifier import (
     ResearchDomain,
     DomainClassification,
     classify_topic_deterministic,
@@ -18,9 +18,9 @@ class TestDeterministicClassification:
 
     def test_clinical_coffee(self):
         result = classify_topic_deterministic("Does coffee improve cognitive function?")
-        # "cognitive" not in keywords but "caffeine" is not in this topic
-        # This might be ambiguous — depends on exact keyword match
-        # Actually "function" is not a keyword either. Let's test clearer cases.
+        # "cognitive" is not in the clinical keywords and "caffeine" is not in
+        # the topic text, so deterministic classification should return None.
+        assert result is None
 
     def test_clinical_statin(self):
         result = classify_topic_deterministic("Effects of statin medication on cholesterol levels")

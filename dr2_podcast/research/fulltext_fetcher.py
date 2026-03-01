@@ -21,10 +21,10 @@ from typing import List, Optional
 import httpx
 from bs4 import BeautifulSoup
 
-logger = logging.getLogger(__name__)
+from dr2_podcast.config import SCRAPING_TIMEOUT, USER_AGENT
+from dr2_podcast.utils import extract_content_from_html
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-SCRAPING_TIMEOUT = 20.0
+logger = logging.getLogger(__name__)
 MAX_TEXT_CHARS = 128_000  # ~32K tokens
 
 
@@ -236,15 +236,8 @@ class FullTextFetcher:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 soup = BeautifulSoup(resp.text, "lxml")
-                for tag in soup.find_all(["script", "style", "nav", "footer", "header", "aside", "iframe"]):
-                    tag.decompose()
-                content_el = (
-                    soup.find("main") or soup.find("article") or
-                    soup.find("div", class_=re.compile(r"content|main-content|post-content|article")) or
-                    soup.find("body")
-                )
-                text = content_el.get_text(separator=" ", strip=True) if content_el else ""
-                return text[:MAX_TEXT_CHARS] if text else None
+                text = extract_content_from_html(soup, max_chars=MAX_TEXT_CHARS)
+                return text if text else None
         except Exception as e:
             logger.warning(f"Scrape failed for {url}: {e}")
             return None

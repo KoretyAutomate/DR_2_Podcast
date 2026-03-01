@@ -8,7 +8,7 @@ import tempfile
 
 import pytest
 
-from wwc_database import WWCDatabase, WWCRating
+from dr2_podcast.research.wwc_database import WWCDatabase, WWCRating
 
 
 @pytest.fixture

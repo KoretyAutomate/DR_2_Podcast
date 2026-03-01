@@ -33,9 +33,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from openai import AsyncOpenAI
 
-from metadata_clients import OpenAlexClient, ERICClient, MetadataCache
-from search_service import SearxngClient
-from effect_size_math import (
+from dr2_podcast.research.metadata_clients import OpenAlexClient, ERICClient, MetadataCache
+from dr2_podcast.research.search_service import SearxngClient
+from dr2_podcast.research.effect_size_math import (
     EffectSizeImpact, batch_calculate, format_effect_size_report,
 )
 
@@ -384,7 +384,7 @@ class SocialScienceOrchestrator:
         log(f"\n✓ Social science pipeline complete in {duration:.0f}s")
 
         # Build report objects compatible with pipeline.py expectations
-        from clinical_research import ResearchReport, SummarizedSource, StudyMetadata
+        from dr2_podcast.research.clinical import ResearchReport, SummarizedSource, StudyMetadata
 
         def _to_report(case_text, extractions, role):
             sources = []
@@ -411,11 +411,11 @@ class SocialScienceOrchestrator:
         return {
             "lead": _to_report(aff_case, aff_extractions, "lead"),
             "counter": _to_report(fal_case, fal_extractions, "counter"),
-            "audit": type('AuditReport', (), {
-                'report': synthesis_text, 'topic': topic, 'role': 'audit',
-                'sources': [], 'iterations_used': 1, 'total_urls_fetched': 0,
-                'total_summaries': 0, 'total_errors': 0, 'duration_seconds': 0,
-            })(),
+            "audit": ResearchReport(
+                report=synthesis_text, topic=topic, role='audit',
+                sources=[], iterations_used=1, total_urls_fetched=0,
+                total_summaries=0, total_errors=0, duration_seconds=0,
+            ),
             "pipeline_data": {
                 "domain": "social_science",
                 "aff_strategy": aff_plan,
@@ -861,15 +861,26 @@ class SocialScienceOrchestrator:
         aff_records, fal_records, aff_top, fal_top,
         math_report: str,
     ):
-        """Save intermediate pipeline artifacts."""
+        """Save intermediate pipeline artifacts.
+
+        Writes into research/ subdirectory if it exists (M9 layout).
+        Falls back to flat layout for backward compatibility.
+        """
         import dataclasses
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
 
+        # Use research/ subdirectory if it exists (M9 layout)
+        research_dir = out / "research"
+        if research_dir.is_dir():
+            _out = research_dir
+        else:
+            _out = out
+
         # Strategy files
-        with open(out / "search_strategy_aff.json", 'w') as f:
+        with open(_out / "search_strategy_aff.json", 'w') as f:
             json.dump(dataclasses.asdict(aff_plan), f, indent=2)
-        with open(out / "search_strategy_neg.json", 'w') as f:
+        with open(_out / "search_strategy_neg.json", 'w') as f:
             json.dump(dataclasses.asdict(fal_plan), f, indent=2)
 
         # Screening results
@@ -893,13 +904,13 @@ class SocialScienceOrchestrator:
                 ],
             }
 
-        with open(out / "screening_results_aff.json", 'w') as f:
+        with open(_out / "screening_results_aff.json", 'w') as f:
             json.dump(_screening_payload(aff_records, aff_top), f, indent=2, ensure_ascii=False)
-        with open(out / "screening_results_neg.json", 'w') as f:
+        with open(_out / "screening_results_neg.json", 'w') as f:
             json.dump(_screening_payload(fal_records, fal_top), f, indent=2, ensure_ascii=False)
 
         # Math report
-        with open(out / "clinical_math.md", 'w') as f:
+        with open(_out / "clinical_math.md", 'w') as f:
             f.write(math_report)
 
 

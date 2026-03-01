@@ -8,7 +8,7 @@ Used by the Scientific Auditor agent to verify research citations.
 
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
-import requests
+import httpx
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -44,7 +44,7 @@ class LinkValidatorTool(BaseTool):
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
-            response = requests.head(url, headers=headers, timeout=5, allow_redirects=True)
+            response = httpx.head(url, headers=headers, timeout=5, follow_redirects=True)
 
             if response.status_code == 200:
                 return f"✓ Valid Link (Status: 200 OK)"
@@ -58,11 +58,11 @@ class LinkValidatorTool(BaseTool):
             else:
                 return f"⚠ Unexpected status (Status: {response.status_code})"
 
-        except requests.exceptions.Timeout:
+        except httpx.TimeoutException:
             return "⚠ Timeout: Server did not respond within 5 seconds. Link may be valid but slow."
-        except requests.exceptions.TooManyRedirects:
+        except httpx.TooManyRedirects:
             return "✗ Invalid URL: Too many redirects. Possible broken link."
-        except requests.exceptions.RequestException as e:
+        except httpx.HTTPError as e:
             return f"✗ Invalid URL or Server Down: {str(e)[:100]}"
         except Exception as e:
             return f"✗ ERROR: {str(e)[:100]}"

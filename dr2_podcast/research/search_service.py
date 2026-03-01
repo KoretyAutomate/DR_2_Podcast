@@ -21,14 +21,13 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup, Tag
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+from dr2_podcast.config import SCRAPING_TIMEOUT, USER_AGENT, SEARXNG_URL
+from dr2_podcast.utils import extract_content_from_html
+
 logger = logging.getLogger(__name__)
 
 # Constants
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 DEFAULT_TIMEOUT = 10.0
-SCRAPING_TIMEOUT = 30.0
 MAX_CONTENT_LENGTH = 8000  # ~2000 tokens (4 chars per token estimate)
 
 
@@ -80,7 +79,7 @@ class SearxngClient:
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8080",
+        base_url: str = SEARXNG_URL,
         timeout: float = DEFAULT_TIMEOUT
     ):
         """
@@ -241,77 +240,17 @@ class DeepResearch:
         if self.scraping_client:
             await self.scraping_client.aclose()
 
-    def _clean_text(self, text: str) -> str:
-        """
-        Clean and normalize text content.
-
-        Args:
-            text: Raw text to clean
-
-        Returns:
-            Cleaned text with normalized whitespace
-        """
-        # Remove excessive whitespace
-        text = re.sub(r'\s+', ' ', text)
-        # Remove leading/trailing whitespace
-        text = text.strip()
-        return text
-
     def _extract_content(self, soup: BeautifulSoup) -> str:
         """
-        Extract meaningful content from HTML.
-
-        Uses a priority-based extraction strategy:
-        1. main tag
-        2. article tag
-        3. div with content-related classes
-        4. body tag (fallback)
+        Extract meaningful content from HTML using the shared utility.
 
         Args:
             soup: BeautifulSoup parsed HTML
 
         Returns:
-            Extracted and cleaned text content
+            Extracted and cleaned text content, truncated to MAX_CONTENT_LENGTH
         """
-        # Remove unwanted elements
-        for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe']):
-            tag.decompose()
-
-        # Priority extraction
-        content_element = None
-
-        # Try main tag first
-        content_element = soup.find('main')
-
-        # Try article tag
-        if not content_element:
-            content_element = soup.find('article')
-
-        # Try content divs
-        if not content_element:
-            for class_name in ['content', 'main-content', 'post-content', 'article-content']:
-                content_element = soup.find('div', class_=re.compile(class_name, re.I))
-                if content_element:
-                    break
-
-        # Fallback to body
-        if not content_element:
-            content_element = soup.find('body')
-
-        # Extract text
-        if content_element:
-            text = content_element.get_text(separator=' ', strip=True)
-        else:
-            text = soup.get_text(separator=' ', strip=True)
-
-        # Clean and limit length
-        text = self._clean_text(text)
-
-        # Limit to MAX_CONTENT_LENGTH characters (~2000 tokens)
-        if len(text) > MAX_CONTENT_LENGTH:
-            text = text[:MAX_CONTENT_LENGTH] + "..."
-
-        return text
+        return extract_content_from_html(soup, max_chars=MAX_CONTENT_LENGTH)
 
     async def fetch_page_content(self, url: str) -> ScrapedContent:
         """
@@ -457,69 +396,70 @@ async def main():
     2. Simple search
     3. Deep research with scraping
     """
-    print("=" * 80)
-    print("Deep Research Tool - Example Usage")
-    print("=" * 80)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    logger.info("=" * 80)
+    logger.info("Deep Research Tool - Example Usage")
+    logger.info("=" * 80)
 
     # Initialize SearXNG client
     async with SearxngClient() as searxng_client:
         # Validate connection
-        print("\n1. Validating connection to SearXNG...")
+        logger.info("\n1. Validating connection to SearXNG...")
         is_connected = await searxng_client.validate_connection()
 
         if not is_connected:
-            print("❌ Error: Cannot connect to SearXNG at http://localhost:8080")
-            print("\nMake sure SearXNG is running. Start it with:")
-            print("docker run -d --name searxng -p 8080:8080 searxng/searxng:latest")
+            logger.error("Cannot connect to SearXNG at http://localhost:8080")
+            logger.error("Make sure SearXNG is running. Start it with:")
+            logger.error("docker run -d --name searxng -p 8080:8080 searxng/searxng:latest")
             return
 
-        print("✅ Connected to SearXNG successfully!")
+        logger.info("Connected to SearXNG successfully!")
 
         # Perform a simple search
-        print("\n2. Performing search for 'Python asyncio tutorial'...")
+        logger.info("\n2. Performing search for 'Python asyncio tutorial'...")
         search_results = await searxng_client.search(
             query="Python asyncio tutorial",
             num_results=5
         )
 
-        print(f"\n✅ Found {len(search_results)} results:")
+        logger.info("\nFound %d results:", len(search_results))
         for i, result in enumerate(search_results, 1):
-            print(f"\n{i}. {result.title}")
-            print(f"   URL: {result.url}")
-            print(f"   Snippet: {result.snippet[:100]}...")
+            logger.info("\n%d. %s", i, result.title)
+            logger.info("   URL: %s", result.url)
+            logger.info("   Snippet: %s...", result.snippet[:100])
 
         # Perform deep research
-        print("\n3. Performing deep research (scraping top 3 URLs)...")
+        logger.info("\n3. Performing deep research (scraping top 3 URLs)...")
         async with DeepResearch(searxng_client) as research:
             deep_results = await research.deep_dive(
                 query="Python asyncio tutorial",
                 top_n=3
             )
 
-            print(f"\n✅ Deep Research Complete!")
-            print(f"   Query: {deep_results.query}")
-            print(f"   Total search results: {deep_results.total_results}")
-            print(f"   Successfully scraped: {deep_results.total_scraped}/{len(deep_results.scraped_pages)}")
+            logger.info("\nDeep Research Complete!")
+            logger.info("   Query: %s", deep_results.query)
+            logger.info("   Total search results: %d", deep_results.total_results)
+            logger.info("   Successfully scraped: %d/%d", deep_results.total_scraped, len(deep_results.scraped_pages))
 
             if deep_results.errors:
-                print(f"\n⚠️  Errors encountered: {len(deep_results.errors)}")
+                logger.warning("\nErrors encountered: %d", len(deep_results.errors))
                 for error in deep_results.errors:
-                    print(f"   - {error}")
+                    logger.warning("   - %s", error)
 
-            print("\n📄 Scraped Content:")
+            logger.info("\nScraped Content:")
             for i, content in enumerate(deep_results.scraped_pages, 1):
                 if not content.error:
-                    print(f"\n{i}. {content.title}")
-                    print(f"   URL: {content.url}")
-                    print(f"   Word count: {content.word_count}")
-                    print(f"   Preview: {content.content[:200]}...")
+                    logger.info("\n%d. %s", i, content.title)
+                    logger.info("   URL: %s", content.url)
+                    logger.info("   Word count: %d", content.word_count)
+                    logger.info("   Preview: %s...", content.content[:200])
                 else:
-                    print(f"\n{i}. ❌ {content.url}")
-                    print(f"   Error: {content.error}")
+                    logger.error("\n%d. %s", i, content.url)
+                    logger.error("   Error: %s", content.error)
 
-    print("\n" + "=" * 80)
-    print("Example complete!")
-    print("=" * 80)
+    logger.info("\n" + "=" * 80)
+    logger.info("Example complete!")
+    logger.info("=" * 80)
 
 
 if __name__ == "__main__":

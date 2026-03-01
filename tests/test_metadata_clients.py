@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from metadata_clients import (
+from dr2_podcast.research.metadata_clients import (
     RateLimiter,
     MetadataCache,
     OpenAlexClient,

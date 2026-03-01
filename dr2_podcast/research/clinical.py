@@ -20,16 +20,19 @@ Author: DR_2_Podcast Team
 """
 
 import asyncio
+import atexit
 import json
 import logging
 import os
+import random
 import re
 import sqlite3
 import time
 import datetime
-from dotenv import load_dotenv
-
-load_dotenv()
+from dr2_podcast.utils import strip_think_blocks
+from dr2_podcast.config import (SMART_MODEL, SMART_BASE_URL, FAST_MODEL, FAST_BASE_URL,
+                    SCRAPING_TIMEOUT, USER_AGENT, TIER_CASCADE_THRESHOLD,
+                    MIN_TIER3_STUDIES, MAX_TIER3_RATIO)
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -41,26 +44,15 @@ import httpx
 from bs4 import BeautifulSoup
 from openai import AsyncOpenAI
 
-from search_service import SearxngClient, SearchResult
+from dr2_podcast.research.search_service import SearxngClient, SearchResult
 
 logger = logging.getLogger(__name__)
 
-# --- Configuration ---
-
-SMART_MODEL = os.environ["MODEL_NAME"]
-SMART_BASE_URL = os.environ["LLM_BASE_URL"]
-
-FAST_MODEL = os.environ["FAST_MODEL_NAME"]
-FAST_BASE_URL = os.environ["FAST_LLM_BASE_URL"]
+# --- Configuration (local constants — shared ones imported from config.py) ---
 
 MAX_INPUT_TOKENS = 32000
 MAX_CONCURRENT_SUMMARIES = 10
 MAX_RESEARCH_ITERATIONS = 3
-SCRAPING_TIMEOUT = 20.0
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-TIER_CASCADE_THRESHOLD = 50   # Tier 3 ultrawide fires if T1+T2 candidates < this
-MIN_TIER3_STUDIES = 3          # Minimum Tier 3 (compound-class) studies if available
-MAX_TIER3_RATIO = 0.5          # Tier 3 never exceeds 50% of max_select unless Tier 1+2 insufficient
 
 JUNK_DOMAINS = {
     "dictionary.com", "merriam-webster.com", "thefreedictionary.com",
@@ -91,6 +83,7 @@ class PageCache:
             db_path = os.path.expanduser("~/.cache/dr2podcast/url_cache.db")
         self.db_path = db_path
         self.ttl_seconds = ttl_days * 86400
+        self._closed = False
 
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.conn = sqlite3.connect(db_path)
@@ -104,6 +97,16 @@ class PageCache:
         self.conn.commit()
         if deleted:
             logger.info(f"PageCache: cleaned {deleted} expired entries")
+
+        # Ensure connection is closed on interpreter shutdown
+        atexit.register(self.close)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
 
     def get(self, url: str):
         """Return a FetchedPage if cached and not expired, else None."""
@@ -128,7 +131,9 @@ class PageCache:
         self.conn.commit()
 
     def close(self):
-        self.conn.close()
+        if not self._closed:
+            self._closed = True
+            self.conn.close()
 
 
 # --- Data Models ---
@@ -855,10 +860,15 @@ class ResearchAgent:
         self.max_iterations = max_iterations
 
     async def _call_smart(self, system: str, user: str, max_tokens: int = 2048, temperature: float = 0.3) -> str:
-        """Call the smart model with retry on transient failures."""
+        """Call the smart model with retry on transient failures.
+
+        Retries up to 3 times (4 total attempts) with exponential backoff + jitter.
+        Fast-fails on non-transient errors (BadRequestError, AuthenticationError).
+        """
+        import openai
         # Disable Qwen3 thinking mode to avoid wasting tokens on <think> blocks
         system = "/no_think\n" + system
-        max_retries = 2
+        max_retries = 3
         for attempt in range(max_retries + 1):
             try:
                 resp = await self.smart_client.chat.completions.create(
@@ -868,12 +878,22 @@ class ResearchAgent:
                 )
                 text = resp.choices[0].message.content.strip()
                 # Strip any residual <think> blocks (safety net)
-                text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+                text = strip_think_blocks(text)
                 return text
-            except (ConnectionError, TimeoutError, OSError) as e:
+            except (openai.BadRequestError, openai.AuthenticationError):
+                # Non-transient errors — fast-fail, no retry
+                raise
+            except (ConnectionError, TimeoutError, OSError,
+                    openai.APIConnectionError, openai.APITimeoutError,
+                    openai.InternalServerError) as e:
                 if attempt < max_retries:
-                    wait = 5 * (attempt + 1)
-                    logger.warning(f"_call_smart() attempt {attempt+1} failed ({type(e).__name__}), retrying in {wait}s...")
+                    base_wait = 5 * (2 ** attempt)  # 5, 10, 20
+                    jitter = random.uniform(-base_wait * 0.3, base_wait * 0.3)
+                    wait = base_wait + jitter
+                    logger.warning(
+                        f"_call_smart() attempt {attempt+1}/{max_retries+1} failed "
+                        f"({type(e).__name__}), retrying in {wait:.1f}s..."
+                    )
                     await asyncio.sleep(wait)
                 else:
                     logger.error(f"_call_smart() failed after {max_retries+1} attempts: {e}")
@@ -963,7 +983,7 @@ class ResearchAgent:
 
         return all_summaries, total_fetched, total_errors
 
-    async def research(self, topic: str, role: str, role_instructions: str, log=print) -> ResearchReport:
+    async def research(self, topic: str, role: str, role_instructions: str, log=logger.info) -> ResearchReport:
         """
         Run iterative research as the given role.
 
@@ -1149,7 +1169,7 @@ class ResearchAgent:
         if not raw or not raw.strip():
             raise ValueError("Empty response from LLM")
         # Strip <think>...</think> blocks (Qwen3 thinking mode safety net)
-        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        raw = strip_think_blocks(raw)
         # Strip code blocks
         if "```" in raw:
             match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
@@ -1232,7 +1252,7 @@ class ResearchAgent:
     async def _generate_tiered_keywords(
         self, topic: str, role: str, framing_context: str,
         decomposition: Optional[Dict], auditor_feedback: str = "",
-        log=print
+        log=logger.info
     ) -> TieredSearchPlan:
         """Generate three-tier keyword plan as plain lists — NO Boolean/MeSH syntax."""
         log(f"    [Step 1] Generating tiered keywords ({role})...")
@@ -1391,7 +1411,7 @@ class ResearchAgent:
             )
 
     async def _audit_tier_plan(
-        self, plan: TieredSearchPlan, topic: str, log=print
+        self, plan: TieredSearchPlan, topic: str, log=logger.info
     ) -> tuple:
         """Auditor reviews all three tiers in one call. Returns (approved: bool, notes: str)."""
         log(f"    [Auditor] Reviewing tier keyword plan ({plan.role})...")
@@ -1464,12 +1484,12 @@ class ResearchAgent:
                 log(f"    [Auditor] REJECTED — {notes[:200]}")
             return approved, notes
         except (json.JSONDecodeError, KeyError, TypeError) as e:
-            logger.warning(f"Audit response parse failed: {e} — auto-approving to unblock pipeline")
-            return True, "Auto-approved (parse error)"
+            logger.warning(f"Audit response parse failed: {e} — rejecting (fail-closed)")
+            return False, f"Rejected: auditor response could not be parsed ({type(e).__name__})"
 
     async def _formulate_tiered_strategy(
         self, topic: str, role: str, framing_context: str,
-        decomposition: Optional[Dict], log=print
+        decomposition: Optional[Dict], log=logger.info
     ) -> TieredSearchPlan:
         """Step 1: Scientist generates tier keywords, Auditor reviews; loop until approved."""
         MAX_REVISIONS = 2
@@ -1521,7 +1541,7 @@ class ResearchAgent:
     # ------------------------------------------------------------------ #
 
     async def _tiered_search(
-        self, plan: TieredSearchPlan, log=print
+        self, plan: TieredSearchPlan, log=logger.info
     ) -> tuple:
         """Step 2: Run tiered PubMed cascade. Stop when pool >= TIER_THRESHOLD.
 
@@ -1681,7 +1701,7 @@ class ResearchAgent:
 
     async def _screen_and_prioritize(
         self, records: List[WideNetRecord], strategy: TieredSearchPlan,
-        max_select: int = 20, topic: str = "", log=print
+        max_select: int = 20, topic: str = "", log=logger.info
     ) -> List[WideNetRecord]:
         """Step 3: Smart model screens wide net records → top 20 with tier-aware priority."""
         if not records:
@@ -1891,7 +1911,7 @@ class ResearchAgent:
         return d
 
     async def _deep_extract_batch(
-        self, articles, records: List[WideNetRecord], pico: Dict[str, str], log=print
+        self, articles, records: List[WideNetRecord], pico: Dict[str, str], log=logger.info
     ) -> List[DeepExtraction]:
         """Step 4: Extract clinical variables from full-text articles using fast model.
         Uses PMID-keyed cache to ensure identical NNT across runs for the same paper."""
@@ -2067,7 +2087,7 @@ class ResearchAgent:
 
     async def _build_case(
         self, topic: str, strategy: TieredSearchPlan,
-        extractions: List[DeepExtraction], case_type: str, log=print
+        extractions: List[DeepExtraction], case_type: str, log=logger.info
     ) -> str:
         """Step 5/6: Smart model builds affirmative or falsification case from extraction data."""
         log(f"    [Step {'5' if case_type == 'affirmative' else '6'}] Building {case_type} case...")
@@ -2236,7 +2256,7 @@ class Orchestrator:
         self.fast_model_available = fast_model_available
 
         # Full-text fetcher for Step 4
-        from fulltext_fetcher import FullTextFetcher
+        from dr2_podcast.research.fulltext_fetcher import FullTextFetcher
         self.fulltext_fetcher = FullTextFetcher(max_concurrent=5, cache=self._page_cache)
 
     async def run(self, topic: str, framing_context: str = "", progress_callback=None,
@@ -2254,11 +2274,15 @@ class Orchestrator:
         """
         import clinical_math
 
+        if not SMART_MODEL or not SMART_BASE_URL:
+            raise RuntimeError("MODEL_NAME and LLM_BASE_URL environment variables must be set before running the pipeline")
+        if not FAST_MODEL or not FAST_BASE_URL:
+            raise RuntimeError("FAST_MODEL_NAME and FAST_LLM_BASE_URL environment variables must be set before running the pipeline")
+
         start_time = time.time()
 
         def log(msg: str):
             logger.info(msg)
-            print(msg)
             if progress_callback:
                 progress_callback(msg)
 
@@ -2584,7 +2608,7 @@ class Orchestrator:
         self, topic: str, aff_case: str, fal_case: str, math_report: str,
         aff_strategy: TieredSearchPlan, fal_strategy: TieredSearchPlan,
         total_wide: int, total_screened: int, total_ft_ok: int, total_ft_err: int,
-        search_date: str, log=print,
+        search_date: str, log=logger.info,
         aff_extractions: Optional[List[DeepExtraction]] = None,
         fal_extractions: Optional[List[DeepExtraction]] = None,
     ) -> str:
@@ -2716,14 +2740,14 @@ class Orchestrator:
 
     @staticmethod
     async def _enrich_with_metadata(
-        records: List[WideNetRecord], log=print
+        records: List[WideNetRecord], log=logger.info
     ) -> List[WideNetRecord]:
         """Enrich WideNetRecords with metadata from OpenAlex, Semantic Scholar, Crossref.
 
         Optional — returns records unchanged on failure. All API errors are caught.
         """
         try:
-            from metadata_clients import (
+            from dr2_podcast.research.metadata_clients import (
                 MetadataCache, OpenAlexClient, SemanticScholarClient,
                 CrossrefClient, enrich_papers_metadata,
             )
@@ -2735,44 +2759,42 @@ class Orchestrator:
             return records
 
         try:
-            cache = MetadataCache()
-            oa_client = OpenAlexClient(cache=cache)
-            s2_client = SemanticScholarClient(cache=cache)
-            cr_client = CrossrefClient(cache=cache)
+            with MetadataCache() as cache:
+                oa_client = OpenAlexClient(cache=cache)
+                s2_client = SemanticScholarClient(cache=cache)
+                cr_client = CrossrefClient(cache=cache)
 
-            papers = [{"doi": r.doi or "", "pmid": r.pmid or ""} for r in records]
-            enriched = await enrich_papers_metadata(
-                papers, openalex_client=oa_client, s2_client=s2_client,
-                crossref_client=cr_client,
-            )
-
-            retracted_titles = []
-            enriched_count = 0
-            for rec, ep in zip(records, enriched):
-                if not ep.enrichment_sources:
-                    continue
-                enriched_count += 1
-                pm = PaperMetadata(
-                    citation_count=ep.best_citation_count,
-                    influential_citation_count=ep.influential_citation_count,
-                    fwci=ep.fwci,
-                    funding_sources=ep.all_funding_sources or None,
-                    is_retracted=ep.is_retracted,
-                    is_corrected=ep.is_corrected,
-                    has_clinical_trial_number=bool(ep.clinical_trial_numbers),
-                    clinical_trial_numbers=ep.clinical_trial_numbers or None,
-                    enrichment_sources=ep.enrichment_sources,
+                papers = [{"doi": r.doi or "", "pmid": r.pmid or ""} for r in records]
+                enriched = await enrich_papers_metadata(
+                    papers, openalex_client=oa_client, s2_client=s2_client,
+                    crossref_client=cr_client,
                 )
-                rec.paper_metadata = pm
-                if ep.is_retracted:
-                    retracted_titles.append(rec.title)
 
-            log(f"    [Metadata] Enriched {enriched_count}/{len(records)} records")
-            for title in retracted_titles:
-                logger.warning(f"RETRACTED paper detected: {title}")
-                log(f"    ⚠ RETRACTED: {title[:80]}")
+                retracted_titles = []
+                enriched_count = 0
+                for rec, ep in zip(records, enriched):
+                    if not ep.enrichment_sources:
+                        continue
+                    enriched_count += 1
+                    pm = PaperMetadata(
+                        citation_count=ep.best_citation_count,
+                        influential_citation_count=ep.influential_citation_count,
+                        fwci=ep.fwci,
+                        funding_sources=ep.all_funding_sources or None,
+                        is_retracted=ep.is_retracted,
+                        is_corrected=ep.is_corrected,
+                        has_clinical_trial_number=bool(ep.clinical_trial_numbers),
+                        clinical_trial_numbers=ep.clinical_trial_numbers or None,
+                        enrichment_sources=ep.enrichment_sources,
+                    )
+                    rec.paper_metadata = pm
+                    if ep.is_retracted:
+                        retracted_titles.append(rec.title)
 
-            cache.close()
+                log(f"    [Metadata] Enriched {enriched_count}/{len(records)} records")
+                for title in retracted_titles:
+                    logger.warning(f"RETRACTED paper detected: {title}")
+                    log(f"    ⚠ RETRACTED: {title[:80]}")
         except Exception as e:
             logger.warning(f"Metadata enrichment failed (non-fatal): {e}")
             log(f"    [Metadata] Enrichment failed (non-fatal): {e}")
@@ -2830,16 +2852,27 @@ class Orchestrator:
         aff_highest_tier: int = 1,
         fal_highest_tier: int = 1,
     ):
-        """Save intermediate pipeline artifacts to output directory."""
+        """Save intermediate pipeline artifacts to output directory.
+
+        Writes into research/ subdirectory if it exists (M9 layout).
+        Falls back to flat layout for backward compatibility.
+        """
         import dataclasses
         from pathlib import Path
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
 
+        # Use research/ subdirectory if it exists (M9 layout)
+        research_dir = out / "research"
+        if research_dir.is_dir():
+            _out = research_dir
+        else:
+            _out = out
+
         # Strategy files — TieredSearchPlan serialized via dataclasses.asdict
-        with open(out / "search_strategy_aff.json", 'w') as f:
+        with open(_out / "search_strategy_aff.json", 'w') as f:
             json.dump(dataclasses.asdict(aff_strategy), f, indent=2)
-        with open(out / "search_strategy_neg.json", 'w') as f:
+        with open(_out / "search_strategy_neg.json", 'w') as f:
             json.dump(dataclasses.asdict(fal_strategy), f, indent=2)
 
         # Screening decisions (one file per track) — full candidate list for debugging
@@ -2881,15 +2914,15 @@ class Orchestrator:
                 ],
             }
 
-        with open(out / "screening_results_aff.json", 'w') as f:
+        with open(_out / "screening_results_aff.json", 'w') as f:
             json.dump(_screening_payload(aff_records, aff_top, aff_highest_tier),
                       f, indent=2, ensure_ascii=False)
-        with open(out / "screening_results_neg.json", 'w') as f:
+        with open(_out / "screening_results_neg.json", 'w') as f:
             json.dump(_screening_payload(fal_records, fal_top, fal_highest_tier),
                       f, indent=2, ensure_ascii=False)
 
         # Math report
-        with open(out / "clinical_math.md", 'w') as f:
+        with open(_out / "clinical_math.md", 'w') as f:
             f.write(math_report)
 
 
@@ -2903,7 +2936,8 @@ async def run_deep_research(
     fast_model_available: bool = True,
     framing_context: str = "",
     output_dir: str = None
-) -> Dict[str, ResearchReport]:
+) -> "DeepResearchResult":
+    from dr2_podcast.pipeline_types import DeepResearchResult  # noqa: F811 — local import to avoid circular
     orchestrator = Orchestrator(
         brave_api_key=brave_api_key,
         results_per_query=results_per_query,
@@ -2929,7 +2963,7 @@ async def main():
         fast_available = False
 
     if not fast_available:
-        print("NOTE: Fast model not available. Using smart-only mode.")
+        logger.warning("Fast model not available. Using smart-only mode.")
 
     from pathlib import Path
     output_dir = Path("research_outputs/test_deep_agent")
@@ -2949,10 +2983,10 @@ async def main():
         filename = output_dir / report_filenames.get(role, f"{role}.md")
         with open(filename, "w") as f:
             f.write(report.report)
-        print(f"Saved {role} report: {filename} ({len(report.report)} chars)")
+        logger.info(f"Saved {role} report: {filename} ({len(report.report)} chars)")
 
-    print(f"\nTotal sources: {reports['audit'].total_summaries}")
-    print(f"Total time: {reports['audit'].duration_seconds:.0f}s")
+    logger.info(f"Total sources: {reports['audit'].total_summaries}")
+    logger.info(f"Total time: {reports['audit'].duration_seconds:.0f}s")
 
 
 if __name__ == "__main__":

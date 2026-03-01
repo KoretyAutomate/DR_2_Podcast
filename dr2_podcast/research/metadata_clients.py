@@ -15,6 +15,7 @@ Zero cost — all APIs are free tier.
 """
 
 import asyncio
+import atexit
 import json
 import logging
 import os
@@ -74,6 +75,7 @@ class MetadataCache:
             db_path = os.path.expanduser("~/.cache/dr2podcast/metadata_cache.db")
         self.db_path = db_path
         self.ttl_seconds = ttl_days * 86400
+        self._closed = False
 
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.conn = sqlite3.connect(db_path)
@@ -90,6 +92,16 @@ class MetadataCache:
         self.conn.commit()
         if deleted:
             logger.info(f"MetadataCache: cleaned {deleted} expired entries")
+
+        # Ensure connection is closed on interpreter shutdown
+        atexit.register(self.close)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
 
     def get(self, api_name: str, identifier: str) -> Optional[dict]:
         cutoff = time.time() - self.ttl_seconds
@@ -114,7 +126,9 @@ class MetadataCache:
         self.conn.commit()
 
     def close(self):
-        self.conn.close()
+        if not self._closed:
+            self._closed = True
+            self.conn.close()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -134,6 +148,11 @@ class OpenAlexClient:
         self.email = email or os.getenv("OPENALEX_EMAIL", "")
         self.cache = cache
         self.limiter = RateLimiter(rate=10.0)
+        self._http = httpx.AsyncClient(timeout=30)
+
+    async def close(self):
+        """Close the underlying HTTP client."""
+        await self._http.aclose()
 
     def _headers(self) -> dict:
         h = {"Accept": "application/json"}
@@ -214,16 +233,15 @@ class OpenAlexClient:
                 return cached
         try:
             async with self.limiter:
-                async with httpx.AsyncClient(timeout=15) as http:
-                    url = f"{self.BASE_URL}/works/https://doi.org/{doi}"
-                    resp = await http.get(url, headers=self._headers(), params=self._params())
-                    if resp.status_code == 404:
-                        return None
-                    resp.raise_for_status()
-                    result = self._normalize_work(resp.json())
-                    if self.cache:
-                        self.cache.put("openalex", f"doi:{doi}", result)
-                    return result
+                url = f"{self.BASE_URL}/works/https://doi.org/{doi}"
+                resp = await self._http.get(url, headers=self._headers(), params=self._params())
+                if resp.status_code == 404:
+                    return None
+                resp.raise_for_status()
+                result = self._normalize_work(resp.json())
+                if self.cache:
+                    self.cache.put("openalex", f"doi:{doi}", result)
+                return result
         except Exception as e:
             logger.warning(f"OpenAlex DOI lookup failed for {doi}: {e}")
             return None
@@ -236,16 +254,15 @@ class OpenAlexClient:
                 return cached
         try:
             async with self.limiter:
-                async with httpx.AsyncClient(timeout=15) as http:
-                    url = f"{self.BASE_URL}/works/pmid:{pmid}"
-                    resp = await http.get(url, headers=self._headers(), params=self._params())
-                    if resp.status_code == 404:
-                        return None
-                    resp.raise_for_status()
-                    result = self._normalize_work(resp.json())
-                    if self.cache:
-                        self.cache.put("openalex", f"pmid:{pmid}", result)
-                    return result
+                url = f"{self.BASE_URL}/works/pmid:{pmid}"
+                resp = await self._http.get(url, headers=self._headers(), params=self._params())
+                if resp.status_code == 404:
+                    return None
+                resp.raise_for_status()
+                result = self._normalize_work(resp.json())
+                if self.cache:
+                    self.cache.put("openalex", f"pmid:{pmid}", result)
+                return result
         except Exception as e:
             logger.warning(f"OpenAlex PMID lookup failed for {pmid}: {e}")
             return None
@@ -264,17 +281,16 @@ class OpenAlexClient:
             filter_str = "|".join(f"https://doi.org/{d}" for d in batch)
             try:
                 async with self.limiter:
-                    async with httpx.AsyncClient(timeout=30) as http:
-                        params = {**self._params(), "filter": f"doi:{filter_str}", "per_page": 50}
-                        resp = await http.get(
-                            f"{self.BASE_URL}/works",
-                            headers=self._headers(),
-                            params=params,
-                        )
-                        resp.raise_for_status()
-                        data = resp.json()
-                        for work in data.get("results", []):
-                            results.append(self._normalize_work(work))
+                    params = {**self._params(), "filter": f"doi:{filter_str}", "per_page": 50}
+                    resp = await self._http.get(
+                        f"{self.BASE_URL}/works",
+                        headers=self._headers(),
+                        params=params,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    for work in data.get("results", []):
+                        results.append(self._normalize_work(work))
             except Exception as e:
                 logger.warning(f"OpenAlex batch lookup failed: {e}")
         return results
@@ -297,15 +313,14 @@ class OpenAlexClient:
                 params["filter"] = ",".join(filter_parts)
 
             async with self.limiter:
-                async with httpx.AsyncClient(timeout=20) as http:
-                    resp = await http.get(
-                        f"{self.BASE_URL}/works",
-                        headers=self._headers(),
-                        params=params,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    return [self._normalize_work(w) for w in data.get("results", [])]
+                resp = await self._http.get(
+                    f"{self.BASE_URL}/works",
+                    headers=self._headers(),
+                    params=params,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return [self._normalize_work(w) for w in data.get("results", [])]
         except Exception as e:
             logger.warning(f"OpenAlex search failed: {e}")
             return []
@@ -331,6 +346,11 @@ class SemanticScholarClient:
         self.cache = cache
         rate = 1.0 if self.api_key else 0.3  # conservative without key
         self.limiter = RateLimiter(rate=rate)
+        self._http = httpx.AsyncClient(timeout=30)
+
+    async def close(self):
+        """Close the underlying HTTP client."""
+        await self._http.aclose()
 
     def _headers(self) -> dict:
         h = {"Accept": "application/json"}
@@ -363,20 +383,19 @@ class SemanticScholarClient:
                 return cached
         try:
             async with self.limiter:
-                async with httpx.AsyncClient(timeout=15) as http:
-                    params = {"fields": fields or self.DEFAULT_FIELDS}
-                    resp = await http.get(
-                        f"{self.BASE_URL}/paper/{paper_id}",
-                        headers=self._headers(),
-                        params=params,
-                    )
-                    if resp.status_code == 404:
-                        return None
-                    resp.raise_for_status()
-                    result = self._normalize_paper(resp.json())
-                    if self.cache:
-                        self.cache.put("semantic_scholar", cache_key, result)
-                    return result
+                params = {"fields": fields or self.DEFAULT_FIELDS}
+                resp = await self._http.get(
+                    f"{self.BASE_URL}/paper/{paper_id}",
+                    headers=self._headers(),
+                    params=params,
+                )
+                if resp.status_code == 404:
+                    return None
+                resp.raise_for_status()
+                result = self._normalize_paper(resp.json())
+                if self.cache:
+                    self.cache.put("semantic_scholar", cache_key, result)
+                return result
         except Exception as e:
             logger.warning(f"Semantic Scholar lookup failed for {paper_id}: {e}")
             return None
@@ -394,17 +413,16 @@ class SemanticScholarClient:
             batch = paper_ids[i:i + 500]
             try:
                 async with self.limiter:
-                    async with httpx.AsyncClient(timeout=30) as http:
-                        resp = await http.post(
-                            f"{self.BASE_URL}/paper/batch",
-                            headers=self._headers(),
-                            params={"fields": batch_fields},
-                            json={"ids": batch},
-                        )
-                        resp.raise_for_status()
-                        for paper in resp.json():
-                            if paper:
-                                results.append(self._normalize_paper(paper))
+                    resp = await self._http.post(
+                        f"{self.BASE_URL}/paper/batch",
+                        headers=self._headers(),
+                        params={"fields": batch_fields},
+                        json={"ids": batch},
+                    )
+                    resp.raise_for_status()
+                    for paper in resp.json():
+                        if paper:
+                            results.append(self._normalize_paper(paper))
             except Exception as e:
                 logger.warning(f"Semantic Scholar batch lookup failed: {e}")
         return results
@@ -426,15 +444,14 @@ class SemanticScholarClient:
                 params["year"] = year
 
             async with self.limiter:
-                async with httpx.AsyncClient(timeout=20) as http:
-                    resp = await http.get(
-                        f"{self.BASE_URL}/paper/search",
-                        headers=self._headers(),
-                        params=params,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    return [self._normalize_paper(p) for p in data.get("data", [])]
+                resp = await self._http.get(
+                    f"{self.BASE_URL}/paper/search",
+                    headers=self._headers(),
+                    params=params,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return [self._normalize_paper(p) for p in data.get("data", [])]
         except Exception as e:
             logger.warning(f"Semantic Scholar search failed: {e}")
             return []
@@ -457,6 +474,11 @@ class CrossrefClient:
         self.mailto = mailto or os.getenv("CROSSREF_MAILTO", "")
         self.cache = cache
         self.limiter = RateLimiter(rate=10.0)
+        self._http = httpx.AsyncClient(timeout=15)
+
+    async def close(self):
+        """Close the underlying HTTP client."""
+        await self._http.aclose()
 
     def _headers(self) -> dict:
         h = {"Accept": "application/json"}
@@ -522,19 +544,18 @@ class CrossrefClient:
                 return cached
         try:
             async with self.limiter:
-                async with httpx.AsyncClient(timeout=15) as http:
-                    resp = await http.get(
-                        f"{self.BASE_URL}/works/{doi}",
-                        headers=self._headers(),
-                    )
-                    if resp.status_code == 404:
-                        return None
-                    resp.raise_for_status()
-                    msg = resp.json().get("message", {})
-                    result = self._normalize_work(msg)
-                    if self.cache:
-                        self.cache.put("crossref", f"doi:{doi}", result)
-                    return result
+                resp = await self._http.get(
+                    f"{self.BASE_URL}/works/{doi}",
+                    headers=self._headers(),
+                )
+                if resp.status_code == 404:
+                    return None
+                resp.raise_for_status()
+                msg = resp.json().get("message", {})
+                result = self._normalize_work(msg)
+                if self.cache:
+                    self.cache.put("crossref", f"doi:{doi}", result)
+                return result
         except Exception as e:
             logger.warning(f"Crossref lookup failed for {doi}: {e}")
             return None
@@ -566,6 +587,11 @@ class ERICClient:
     def __init__(self, cache: MetadataCache = None):
         self.cache = cache
         self.limiter = RateLimiter(rate=5.0)
+        self._http = httpx.AsyncClient(timeout=20)
+
+    async def close(self):
+        """Close the underlying HTTP client."""
+        await self._http.aclose()
 
     def _normalize_result(self, raw: dict) -> dict:
         return {
@@ -609,17 +635,16 @@ class ERICClient:
 
         try:
             async with self.limiter:
-                async with httpx.AsyncClient(timeout=20) as http:
-                    params = {
-                        "search": search_str,
-                        "rows": min(max_results, 200),
-                        "format": "json",
-                    }
-                    resp = await http.get(self.BASE_URL, params=params)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    docs = data.get("response", {}).get("docs", [])
-                    return [self._normalize_result(d) for d in docs]
+                params = {
+                    "search": search_str,
+                    "rows": min(max_results, 200),
+                    "format": "json",
+                }
+                resp = await self._http.get(self.BASE_URL, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+                docs = data.get("response", {}).get("docs", [])
+                return [self._normalize_result(d) for d in docs]
         except Exception as e:
             logger.warning(f"ERIC search failed: {e}")
             return []

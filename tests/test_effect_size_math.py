@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from effect_size_math import (
+from dr2_podcast.research.effect_size_math import (
     classify_magnitude_d,
     hedges_g_correction,
     odds_ratio_to_d,

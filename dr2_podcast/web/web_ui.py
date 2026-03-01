@@ -25,12 +25,12 @@ import uvicorn
 import httpx
 from dotenv import load_dotenv
 
-from upload_utils import validate_upload_config, upload_to_buzzsprout, upload_to_youtube
+from dr2_podcast.tools.upload_utils import validate_upload_config, upload_to_buzzsprout, upload_to_youtube
 
 load_dotenv()
 
-# Configuration
-SCRIPT_DIR = Path(__file__).parent.absolute()
+# Configuration — project root is two levels up from dr2_podcast/web/
+SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent
 OUTPUT_DIR = SCRIPT_DIR / "research_outputs"
 TASKS_FILE = SCRIPT_DIR / "podcast_tasks.json"
 TOPIC_INDEX_FILE = OUTPUT_DIR / "topic_index.json"
@@ -44,15 +44,15 @@ if not PODCAST_ENV_PYTHON.exists():
 USERNAME = os.getenv("PODCAST_WEB_USER", "admin")
 PASSWORD = os.getenv("PODCAST_WEB_PASSWORD", secrets.token_urlsafe(16))
 
-print("="*60)
-print("PODCAST WEB UI CREDENTIALS")
-print("="*60)
-print(f"Username: {USERNAME}")
-print(f"Password: {PASSWORD}")
-print("\nSet custom credentials with:")
-print("export PODCAST_WEB_USER=your_username")
-print("export PODCAST_WEB_PASSWORD=your_password")
-print("="*60)
+print("="*60, file=sys.stderr)
+print("PODCAST WEB UI CREDENTIALS", file=sys.stderr)
+print("="*60, file=sys.stderr)
+print(f"Username: {USERNAME}", file=sys.stderr)
+print(f"Password: {PASSWORD}", file=sys.stderr)
+print("\nSet custom credentials with:", file=sys.stderr)
+print("export PODCAST_WEB_USER=your_username", file=sys.stderr)
+print("export PODCAST_WEB_PASSWORD=your_password", file=sys.stderr)
+print("="*60, file=sys.stderr)
 
 app = FastAPI(title="DR_2_Podcast Generator")
 security = HTTPBasic()
@@ -82,13 +82,27 @@ EXPECTED_ARTIFACTS_EXTRA = {
     "ja": ["source_of_truth_ja.md", "source_of_truth_ja.pdf"],
 }
 
+_ARTIFACT_SUBDIRS = ("research", "scripts", "audio", "meta")
+
 def count_artifacts(directory: Optional[str], language: str = "en") -> tuple[int, int]:
-    """Count generated artifacts vs expected total."""
+    """Count generated artifacts vs expected total.
+
+    Checks both flat (legacy) and subdirectory layouts.
+    """
     all_artifacts = EXPECTED_ARTIFACTS + EXPECTED_ARTIFACTS_EXTRA.get(language, [])
     if not directory or not os.path.exists(directory):
         return 0, len(all_artifacts)
 
-    found = sum(1 for f in all_artifacts if (Path(directory) / f).exists())
+    d = Path(directory)
+    found = 0
+    for f in all_artifacts:
+        if (d / f).exists():
+            found += 1
+        else:
+            for subdir in _ARTIFACT_SUBDIRS:
+                if (d / subdir / f).exists():
+                    found += 1
+                    break
     return found, len(all_artifacts)
 
 current_task_id = None
@@ -299,6 +313,9 @@ def worker_thread():
                     task_data["upload_youtube"],
                     task_data.get("core_target", ""),
                     task_data.get("channel_mission", ""),
+                    buzzsprout_api_key=task_data.get("buzzsprout_api_key"),
+                    buzzsprout_account_id=task_data.get("buzzsprout_account_id"),
+                    youtube_secret_path=task_data.get("youtube_secret_path"),
                 )
             
         except Exception as e:
@@ -1882,13 +1899,10 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
     tasks_db[task_id] = task
     save_tasks()
 
-    # Set upload credentials
-    if request.buzzsprout_api_key:
-        os.environ["BUZZSPROUT_API_KEY"] = request.buzzsprout_api_key
-    if request.buzzsprout_account_id:
-        os.environ["BUZZSPROUT_ACCOUNT_ID"] = request.buzzsprout_account_id
-    if request.youtube_secret_path:
-        os.environ["YOUTUBE_CLIENT_SECRET_PATH"] = request.youtube_secret_path
+    # Store upload credentials in task data for explicit passing (not os.environ)
+    task["buzzsprout_api_key"] = request.buzzsprout_api_key or None
+    task["buzzsprout_account_id"] = request.buzzsprout_account_id or None
+    task["youtube_secret_path"] = request.youtube_secret_path or None
 
     task_queue.put(task)
     return {"task_id": task_id, "status": "queued", "reuse_mode": reuse_mode}
@@ -1998,13 +2012,10 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
     tasks_db[task_id] = task
     save_tasks()
 
-    # Set upload credentials as env vars if provided by the form
-    if request.buzzsprout_api_key:
-        os.environ["BUZZSPROUT_API_KEY"] = request.buzzsprout_api_key
-    if request.buzzsprout_account_id:
-        os.environ["BUZZSPROUT_ACCOUNT_ID"] = request.buzzsprout_account_id
-    if request.youtube_secret_path:
-        os.environ["YOUTUBE_CLIENT_SECRET_PATH"] = request.youtube_secret_path
+    # Store upload credentials in task data for explicit passing (not os.environ)
+    task["buzzsprout_api_key"] = request.buzzsprout_api_key or None
+    task["buzzsprout_account_id"] = request.buzzsprout_account_id or None
+    task["youtube_secret_path"] = request.youtube_secret_path or None
 
     # Add to queue instead of starting thread immediately
     task_queue.put(task)
@@ -2090,7 +2101,10 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
                            podcast_length: str = "long", podcast_hosts: str = "random",
                            channel_intro: str = "",
                            upload_buzzsprout: bool = False, upload_youtube: bool = False,
-                           core_target: str = "", channel_mission: str = ""):
+                           core_target: str = "", channel_mission: str = "",
+                           buzzsprout_api_key: str = None,
+                           buzzsprout_account_id: str = None,
+                           youtube_secret_path: str = None):
     """Run pipeline.py in background with real-time phase tracking."""
     try:
         preflight_err = _preflight_check()
@@ -2120,7 +2134,7 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
             env["PODCAST_CHANNEL_MISSION"] = channel_mission
 
         proc = subprocess.Popen(
-            [str(PODCAST_ENV_PYTHON), "pipeline.py", "--topic", topic, "--language", language],
+            [str(PODCAST_ENV_PYTHON), "-m", "dr2_podcast.pipeline", "--topic", topic, "--language", language],
             cwd=SCRIPT_DIR,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -2218,11 +2232,14 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
             save_tasks()
 
             if upload_buzzsprout:
-                tasks_db[task_id]["upload_results"]["buzzsprout"] = upload_to_buzzsprout(audio_path, title)
+                tasks_db[task_id]["upload_results"]["buzzsprout"] = upload_to_buzzsprout(
+                    audio_path, title,
+                    api_key=buzzsprout_api_key, account_id=buzzsprout_account_id)
                 save_tasks()
 
             if upload_youtube:
-                tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(audio_path, title)
+                tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(
+                    audio_path, title, youtube_secret_path=youtube_secret_path)
                 save_tasks()
 
         # Record the final phase's duration before marking complete
@@ -2279,6 +2296,9 @@ def run_podcast_reuse(task_data: dict):
     podcast_hosts = task_data.get("podcast_hosts", "random")
     upload_buzzsprout = task_data.get("upload_buzzsprout", False)
     upload_youtube = task_data.get("upload_youtube", False)
+    buzzsprout_api_key = task_data.get("buzzsprout_api_key")
+    buzzsprout_account_id = task_data.get("buzzsprout_account_id")
+    youtube_secret_path = task_data.get("youtube_secret_path")
 
     try:
         if reuse_mode != "tts_only":
@@ -2315,10 +2335,13 @@ def run_podcast_reuse(task_data: dict):
             save_tasks()
 
             if upload_buzzsprout:
-                tasks_db[task_id]["upload_results"]["buzzsprout"] = upload_to_buzzsprout(audio_path, topic)
+                tasks_db[task_id]["upload_results"]["buzzsprout"] = upload_to_buzzsprout(
+                    audio_path, topic,
+                    api_key=buzzsprout_api_key, account_id=buzzsprout_account_id)
                 save_tasks()
             if upload_youtube:
-                tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(audio_path, topic)
+                tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(
+                    audio_path, topic, youtube_secret_path=youtube_secret_path)
                 save_tasks()
 
         _close_phase(task_id)
@@ -2347,7 +2370,7 @@ def run_podcast_reuse(task_data: dict):
 
 def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     """TTS-only reuse: copy research + script, regenerate audio with new hosts."""
-    from audio_engine import generate_audio_from_script, clean_script_for_tts, post_process_audio
+    from dr2_podcast.audio.engine import generate_audio_from_script, clean_script_for_tts, post_process_audio
 
     # Create new timestamped output dir
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -2423,7 +2446,7 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     env["PODCAST_HOSTS"] = task_data.get("podcast_hosts", "random")
 
     cmd = [
-        str(PODCAST_ENV_PYTHON), "pipeline.py",
+        str(PODCAST_ENV_PYTHON), "-m", "dr2_podcast.pipeline",
         "--topic", topic,
         "--language", language,
         "--reuse-dir", str(reuse_dir),
@@ -2561,7 +2584,9 @@ def download_file(task_id: str, filename: str, username: str = Depends(verify_cr
 
     task = tasks_db[task_id]
     output_dir = Path(task["output_dir"]) if task.get("output_dir") else OUTPUT_DIR
-    file_path = output_dir / filename
+    file_path = (output_dir / filename).resolve()
+    if not file_path.is_relative_to(output_dir.resolve()):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
@@ -2578,7 +2603,7 @@ class YoutubePreflightRequest(BaseModel):
 @app.post("/api/youtube/preflight")
 async def youtube_preflight(request: YoutubePreflightRequest = YoutubePreflightRequest(), username: str = Depends(verify_credentials)):
     """Run YouTube OAuth consent flow (may open browser). Must be called before generation."""
-    from upload_utils import get_youtube_credentials
+    from dr2_podcast.tools.upload_utils import get_youtube_credentials
     try:
         if request.secret_path:
             os.environ["YOUTUBE_CLIENT_SECRET_PATH"] = request.secret_path

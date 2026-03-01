@@ -2,7 +2,7 @@
 
 import math
 import pytest
-from clinical_math import ClinicalImpact, calculate_impact, batch_calculate, format_math_report
+from dr2_podcast.research.clinical_math import ClinicalImpact, calculate_impact, batch_calculate, format_math_report
 
 
 class TestCalculateImpact:
