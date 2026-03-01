@@ -7,6 +7,7 @@ client_secret.json
 # Claude-generated planning & project docs (local only)
 PLAN.md
 CLAUDE.md
+AUDIT_FINDINGS.md
 
 # Python & Environment
 __pycache__/
