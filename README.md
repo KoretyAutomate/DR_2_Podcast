@@ -459,7 +459,12 @@ The evidence quality banner (`⚠ Evidence Quality Notice`) is prepended when th
 | `audio_mixer.py` | BGM mixing with pre-roll, post-roll, and transition bumps |
 | `link_validator.py` | URL validation via HEAD requests |
 | `upload_utils.py` | Buzzsprout and YouTube upload utilities |
-| `test_clinical_math.py` | Unit tests — clinical_math (17), effect_size_math (34), domain_classifier (16), metadata_clients (31), wwc_database (19) — 117 tests total |
+| `test_clinical_math.py` | Unit tests for clinical_math.py (17 tests) |
+| `test_effect_size_math.py` | Unit tests for effect_size_math.py (34 tests) |
+| `test_metadata_clients.py` | Unit tests for metadata_clients.py (31 tests) |
+| `test_wwc_database.py` | Unit tests for wwc_database.py (19 tests) |
+| `test_domain_classifier.py` | Unit tests for domain_classifier.py (16 tests) |
+| `test_blueprint_inventory.py` | Feature tests — blueprint discussion inventory and script expansion removal |
 | `start_podcast_web_ui.sh` | Web UI launcher script |
 | `start_vllm_docker.sh` | vLLM Docker container launcher |
 | `docker/qwen3-tts/` | Qwen3-TTS FastAPI server for high-quality Japanese TTS (conda env: `qwen3_tts`) |
