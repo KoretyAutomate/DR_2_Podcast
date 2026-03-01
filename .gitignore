@@ -29,6 +29,9 @@ Podcast BGM/
 # Archived/orphaned scripts
 archived_scripts/
 
+# Test results
+test_results/
+
 # Misc debris
 home/
 Intro Script ja.txt
