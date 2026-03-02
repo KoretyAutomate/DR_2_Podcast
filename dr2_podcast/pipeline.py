@@ -2398,11 +2398,18 @@ if __name__ == "__main__":
             logger.info(f"{'='*70}")
             try:
                 from dr2_podcast.research.social_science import run_social_science_research
-                deep_reports = asyncio.run(run_social_science_research(
-                    topic=topic_name,
-                    framing_context=framing_output,
-                    output_dir=str(output_dir),
-                ))
+
+                async def _run_ss_with_timeout():
+                    return await asyncio.wait_for(
+                        run_social_science_research(
+                            topic=topic_name,
+                            framing_context=framing_output,
+                            output_dir=str(output_dir),
+                        ),
+                        timeout=600,  # 10 min cap for entire pipeline
+                    )
+
+                deep_reports = asyncio.run(_run_ss_with_timeout())
             except ImportError:
                 logger.warning("⚠ social_science_research module not yet available — falling back to clinical pipeline")
                 _research_domain = "clinical"  # fall through to clinical below

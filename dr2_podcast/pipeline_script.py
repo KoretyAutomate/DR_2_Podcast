@@ -59,7 +59,7 @@ def _add_reaction_guidance(script_text: str, language_config: dict,
         all_lines = script_text.split('\n')
         host_entries = []  # (original_line_index, line_text)
         for i, line in enumerate(all_lines):
-            if re.match(r'^Host\s+\d\s*[:\uff1a]', line):
+            if re.match(r'^\*{0,2}Host\s+\d\s*\*{0,2}\s*[:\uff1a]', line):
                 host_entries.append((i, line))
 
         if not host_entries:

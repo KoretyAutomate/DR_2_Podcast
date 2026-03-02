@@ -29,7 +29,7 @@ import re
 import sqlite3
 import time
 import datetime
-from dr2_podcast.utils import strip_think_blocks, is_safe_url, safe_float, safe_int, safe_str
+from dr2_podcast.utils import strip_think_blocks, is_safe_url, safe_float, safe_int, safe_str, async_call_smart
 from dr2_podcast.config import (SMART_MODEL, SMART_BASE_URL, FAST_MODEL, FAST_BASE_URL,
                     SCRAPING_TIMEOUT, USER_AGENT, TIER_CASCADE_THRESHOLD,
                     MIN_TIER3_STUDIES, MAX_TIER3_RATIO)
@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 # --- Configuration (local constants — shared ones imported from config.py) ---
 
 MAX_INPUT_TOKENS = 32000
+# Safe char budget for Smart Model content (32K-token context).
+# Reserve ~3,200 tokens for system prompt + completion → ~29K tokens available.
+# At ~2.5 chars/token (conservative for medical/CJK text) → 70K chars.
+_SMART_CONTENT_CHARS = 70_000
 MAX_CONCURRENT_SUMMARIES = 10
 MAX_RESEARCH_ITERATIONS = 3
 
@@ -151,71 +155,7 @@ class FetchedPage:
     word_count: int
     error: Optional[str] = None
 
-@dataclass
-class StudyMetadata:
-    """Structured metadata extracted from a scientific source."""
-    study_type: Optional[str] = None       # RCT, meta-analysis, cohort, observational, etc.
-    sample_size: Optional[str] = None      # "n=1234" or None
-    key_result: Optional[str] = None       # Main quantitative finding
-    publication_year: Optional[int] = None
-    journal_name: Optional[str] = None
-    authors: Optional[str] = None          # "First Author et al."
-    effect_size: Optional[str] = None      # "HR 0.82", "OR 1.5", "d=0.3"
-    limitations: Optional[str] = None      # Author-stated limitations
-    demographics: Optional[str] = None     # "age 25-45, 60% female, healthy adults"
-    funding_source: Optional[str] = None   # "Industry-funded", "NIH grant", "Independent", etc.
-    research_tier: Optional[int] = None    # 1=folk 2=synonym 3=compound
-
-    def to_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items() if v is not None}
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "StudyMetadata":
-        valid_fields = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in d.items() if k in valid_fields})
-
-@dataclass
-class SummarizedSource:
-    url: str
-    title: str
-    summary: str
-    query: str
-    goal: str
-    error: Optional[str] = None
-    metadata: Optional[StudyMetadata] = None
-
-@dataclass
-class SearchMetrics:
-    """PRISMA-style search flow metrics for auto-generated methodology sections."""
-    search_date: str                    # ISO date
-    databases_searched: List[str]       # ["PubMed", "Google Scholar", "Google", "Bing", "Brave"]
-    total_identified: int               # raw results before dedup
-    total_after_dedup: int              # after dedup
-    total_fetched: int                  # pages fetched
-    total_fetch_errors: int             # fetch failures
-    total_with_content: int             # pages with extractable content
-    total_summarized: int               # successfully summarized
-    academic_sources: int               # pubmed + scholar count
-    general_web_sources: int            # general web count
-    tier1_sufficient_count: int = 0     # queries where Tier 1 was sufficient
-    tier3_expanded_count: int = 0       # queries that needed Tier 3
-    wide_net_total: int = 0             # total records from wide net search (Step 2)
-    screened_in: int = 0                # records selected after screening (Step 3)
-    fulltext_retrieved: int = 0         # full-text articles successfully retrieved (Step 4)
-    fulltext_errors: int = 0            # full-text retrieval failures
-
-@dataclass
-class ResearchReport:
-    topic: str
-    role: str
-    sources: List[SummarizedSource]
-    report: str
-    iterations_used: int
-    total_urls_fetched: int
-    total_summaries: int
-    total_errors: int
-    duration_seconds: float
-    search_metrics: Optional[SearchMetrics] = None
+from dr2_podcast.pipeline_types import StudyMetadata, SummarizedSource, SearchMetrics, ResearchReport
 
 
 # --- New Pipeline Data Models ---
@@ -494,8 +434,7 @@ class PubMedClient:
         if not year:
             medline_year = article.find(".//MedlineDate")
             if medline_year is not None and medline_year.text:
-                import re as _re
-                m = _re.search(r"(\d{4})", medline_year.text)
+                m = re.search(r"(\d{4})", medline_year.text)
                 if m:
                     year = int(m.group(1))
 
@@ -782,7 +721,7 @@ class FastWorker:
                 url=page.url, title=page.title, summary="",
                 query=query, goal=goal, error=page.error or "Empty content"
             )
-        content = page.content[:MAX_INPUT_TOKENS * 4]
+        content = page.content[:_SMART_CONTENT_CHARS]
         system_prompt = (
             f"You are a precise scientific data extractor. Extract facts relevant to: '{goal}'.\n\n"
             f"OUTPUT FORMAT (follow exactly):\n"
@@ -866,42 +805,12 @@ class ResearchAgent:
     async def _call_smart(self, system: str, user: str, max_tokens: int = 2048, temperature: float = 0.3) -> str:
         """Call the smart model with retry on transient failures.
 
-        Retries up to 3 times (4 total attempts) with exponential backoff + jitter.
-        Fast-fails on non-transient errors (BadRequestError, AuthenticationError).
+        Delegates to the shared async_call_smart() helper in utils.py.
         """
-        import openai
-        # Disable Qwen3 thinking mode to avoid wasting tokens on <think> blocks
-        system = "/no_think\n" + system
-        max_retries = 3
-        for attempt in range(max_retries + 1):
-            try:
-                resp = await self.smart_client.chat.completions.create(
-                    model=self.smart_model,
-                    messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-                    max_tokens=max_tokens, temperature=temperature, timeout=300
-                )
-                text = resp.choices[0].message.content.strip()
-                # Strip any residual <think> blocks (safety net)
-                text = strip_think_blocks(text)
-                return text
-            except (openai.BadRequestError, openai.AuthenticationError):
-                # Non-transient errors — fast-fail, no retry
-                raise
-            except (ConnectionError, TimeoutError, OSError,
-                    openai.APIConnectionError, openai.APITimeoutError,
-                    openai.InternalServerError) as e:
-                if attempt < max_retries:
-                    base_wait = 5 * (2 ** attempt)  # 5, 10, 20
-                    jitter = random.uniform(-base_wait * 0.3, base_wait * 0.3)
-                    wait = base_wait + jitter
-                    logger.warning(
-                        f"_call_smart() attempt {attempt+1}/{max_retries+1} failed "
-                        f"({type(e).__name__}), retrying in {wait:.1f}s..."
-                    )
-                    await asyncio.sleep(wait)
-                else:
-                    logger.error(f"_call_smart() failed after {max_retries+1} attempts: {e}")
-                    raise
+        return await async_call_smart(
+            self.smart_client, self.smart_model, system, user,
+            max_tokens=max_tokens, temperature=temperature
+        )
 
     def _parse_json_queries(self, raw: str) -> List[ResearchQuery]:
         """Parse JSON query list from smart model output."""
@@ -970,7 +879,7 @@ class ResearchAgent:
                 # Fallback to smart model
                 batch = []
                 for p in good_pages:
-                    content = p.content[:MAX_INPUT_TOKENS * 4]
+                    content = p.content[:_SMART_CONTENT_CHARS]
                     try:
                         summary = await self._call_smart(
                             f"Extract facts relevant to: '{rq.goal}'. Bulleted list only. Be concise.",
@@ -1949,7 +1858,7 @@ class ResearchAgent:
 
             async with semaphore:
                 try:
-                    content = text[:MAX_INPUT_TOKENS * 4]
+                    content = text[:_SMART_CONTENT_CHARS]
                     system_prompt = (
                         "You are a clinical data extraction specialist. Read this study and extract "
                         "ALL of the following variables. Use null for any field not found.\n\n"
