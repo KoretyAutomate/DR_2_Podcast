@@ -1,5 +1,8 @@
 """Shared utility functions for DR_2_Podcast pipeline."""
+import ipaddress
 import re
+import socket
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
@@ -48,3 +51,29 @@ def extract_content_from_html(soup: BeautifulSoup, max_chars: int = 8000) -> str
     text = re.sub(r"\s+", " ", text).strip()
 
     return text[:max_chars] if text else ""
+
+
+def is_safe_url(url: str) -> bool:
+    """Check that a URL does not target private/link-local IP ranges (SSRF guard).
+
+    Returns True if the URL resolves to a public IP or cannot be resolved.
+    Returns False for RFC-1918, link-local (169.254.x.x), loopback, and IPv6 private addresses.
+    Only blocks HTTP/HTTPS schemes.
+    """
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+        # Resolve hostname to IP(s) and check each
+        for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
+            addr = info[4][0]
+            ip = ipaddress.ip_address(addr)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                return False
+    except (socket.gaierror, ValueError, OSError):
+        # DNS resolution failure — allow (will fail at fetch time anyway)
+        return True
+    return True

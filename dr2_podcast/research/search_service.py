@@ -22,7 +22,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from dr2_podcast.config import SCRAPING_TIMEOUT, USER_AGENT, SEARXNG_URL
-from dr2_podcast.utils import extract_content_from_html
+from dr2_podcast.utils import extract_content_from_html, is_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +265,9 @@ class DeepResearch:
         try:
             if not self.scraping_client:
                 raise RuntimeError("Scraping client not initialized. Use 'async with' context manager.")
+            if not is_safe_url(url):
+                logger.warning(f"Blocked SSRF-unsafe URL: {url}")
+                return ScrapedContent(url=url, content="", title="", error="SSRF-unsafe URL blocked")
 
             logger.info(f"Scraping: {url}")
 

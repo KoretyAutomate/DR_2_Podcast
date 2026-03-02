@@ -13,8 +13,9 @@ articles for the top-20 screened studies.
 import asyncio
 import logging
 import os
+from urllib.parse import quote as _url_quote
 import re
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -22,7 +23,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from dr2_podcast.config import SCRAPING_TIMEOUT, USER_AGENT
-from dr2_podcast.utils import extract_content_from_html
+from dr2_podcast.utils import extract_content_from_html, is_safe_url
 
 logger = logging.getLogger(__name__)
 MAX_TEXT_CHARS = 128_000  # ~32K tokens
@@ -174,10 +175,12 @@ class FullTextFetcher:
 
     async def _try_unpaywall(self, doi: str) -> Optional[str]:
         """Tier 3: Unpaywall API — find OA PDF URL, then scrape it."""
+        if not self.unpaywall_email:
+            return None
         try:
             async with httpx.AsyncClient(timeout=15, follow_redirects=True) as http:
                 resp = await http.get(
-                    f"https://api.unpaywall.org/v2/{doi}",
+                    f"https://api.unpaywall.org/v2/{_url_quote(doi, safe='')}",
                     params={"email": self.unpaywall_email}
                 )
                 if resp.status_code != 200:
@@ -221,6 +224,9 @@ class FullTextFetcher:
     async def _try_scrape(self, url: str) -> Optional[str]:
         """Tier 5: Publisher page scrape (last resort)."""
         if not url:
+            return None
+        if not is_safe_url(url):
+            logger.warning(f"Blocked SSRF-unsafe URL: {url}")
             return None
         try:
             # Check cache first

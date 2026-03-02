@@ -44,11 +44,15 @@ if not PODCAST_ENV_PYTHON.exists():
 USERNAME = os.getenv("PODCAST_WEB_USER", "admin")
 PASSWORD = os.getenv("PODCAST_WEB_PASSWORD", secrets.token_urlsafe(16))
 
+_password_is_custom = bool(os.getenv("PODCAST_WEB_PASSWORD"))
 print("="*60, file=sys.stderr)
 print("PODCAST WEB UI CREDENTIALS", file=sys.stderr)
 print("="*60, file=sys.stderr)
 print(f"Username: {USERNAME}", file=sys.stderr)
-print(f"Password: {PASSWORD}", file=sys.stderr)
+if _password_is_custom:
+    print("Password: (set via PODCAST_WEB_PASSWORD)", file=sys.stderr)
+else:
+    print(f"Password: {PASSWORD}", file=sys.stderr)
 print("\nSet custom credentials with:", file=sys.stderr)
 print("export PODCAST_WEB_USER=your_username", file=sys.stderr)
 print("export PODCAST_WEB_PASSWORD=your_password", file=sys.stderr)
@@ -56,6 +60,8 @@ print("="*60, file=sys.stderr)
 
 app = FastAPI(title="DR_2_Podcast Generator")
 security = HTTPBasic()
+# Credential fields stripped from API responses (SEC-04)
+_CREDENTIAL_FIELDS = {"buzzsprout_api_key", "buzzsprout_account_id", "youtube_secret_path"}
 
 # Task storage
 tasks_db: Dict[str, Dict] = {}
@@ -2547,7 +2553,7 @@ async def get_status(task_id: str, username: str = Depends(verify_credentials)):
     if task["status"] == "running" and task.get("phase_start_time"):
         current_step_duration = time.time() - task["phase_start_time"]
     
-    response = task.copy()
+    response = {k: v for k, v in task.items() if k not in _CREDENTIAL_FIELDS}
     response["current_step_duration"] = f"{int(current_step_duration // 60)}m {int(current_step_duration % 60)}s"
     response["current_step_duration_seconds"] = current_step_duration
 
@@ -2573,8 +2579,8 @@ async def get_history(username: str = Depends(verify_credentials)):
             task["artifacts_created"] = 0
             task["artifacts_total"] = len(EXPECTED_ARTIFACTS + EXPECTED_ARTIFACTS_EXTRA.get(task.get("language", "en"), []))
             
-    # Return last 20 tasks, newest first
-    return sorted_tasks[:20]
+    # Return last 20 tasks, newest first — strip credential fields
+    return [{k: v for k, v in t.items() if k not in _CREDENTIAL_FIELDS} for t in sorted_tasks[:20]]
 
 @app.get("/api/download/{task_id}/{filename}")
 def download_file(task_id: str, filename: str, username: str = Depends(verify_credentials)):

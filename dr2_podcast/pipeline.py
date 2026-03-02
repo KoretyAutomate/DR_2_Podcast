@@ -1,6 +1,7 @@
 import os
 import platform
 import re
+import html as html_module
 import httpx
 import time
 import random
@@ -178,8 +179,9 @@ def setup_logging(output_dir: Path):
         def flush(self):
             pass
 
-    sys.stdout = StreamToLogger(logging.getLogger('STDOUT'), logging.INFO)
-    sys.stderr = StreamToLogger(logging.getLogger('STDERR'), logging.ERROR)
+    # NOTE: sys.stdout/sys.stderr replacement removed (SEC-03).
+    # The StreamHandler(sys.stdout) above already routes logger output to stdout.
+    # Replacing sys.stdout breaks weasyprint, asyncio internals, and subprocess I/O.
 
 # --- INITIALIZATION ---
 # load_dotenv() — called in __main__ block
@@ -835,11 +837,13 @@ def check_supplemental_needed(topic: str, reuse_dir: Path) -> dict:
         # Strip <think> blocks (Qwen3 safety net)
         content = strip_think_blocks(content)
 
-        # Extract JSON from response
-        import re as _re
-        json_match = _re.search(r'\{.*\}', content, _re.DOTALL)
-        if json_match:
-            result = json.loads(json_match.group())
+        # Extract JSON from response — try full parse first, then narrow regex fallback
+        try:
+            result = json.loads(content)
+        except json.JSONDecodeError:
+            json_match = re.search(r'\{[^{}]*\}', content)
+            result = json.loads(json_match.group()) if json_match else None
+        if result:
             return {
                 "needs_supplement": result.get("needs_supplement", True),
                 "reason": result.get("reason", ""),
@@ -1025,6 +1029,8 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000,
     timeout: seconds to wait. 0 = auto-scale based on max_tokens (~10 tok/s + 60s buffer).
     frequency_penalty: penalize repeated tokens (0.0 = off, 0.3 = moderate anti-repetition).
     """
+    if not SMART_MODEL or not SMART_BASE_URL:
+        raise RuntimeError("Pipeline not configured — SMART_MODEL/SMART_BASE_URL not set. Run via __main__ or set env vars.")
     import openai
     from openai import OpenAI
     # Disable Qwen3 thinking mode to avoid wasting tokens on <think> blocks
@@ -1081,6 +1087,8 @@ def _call_mid_model(system: str, user: str, max_tokens: int = 4000, temperature:
     Falls back to Smart Model if mid-tier is unavailable.
     timeout: seconds to wait. 0 = auto-scale based on max_tokens (~40 tok/s + 60s buffer).
     """
+    if not SMART_MODEL or not SMART_BASE_URL:
+        raise RuntimeError("Pipeline not configured — SMART_MODEL/SMART_BASE_URL not set. Run via __main__ or set env vars.")
     from openai import OpenAI
     if timeout <= 0:
         # Auto-scale: ~40 tok/s generation speed + 60s buffer
@@ -1418,7 +1426,7 @@ def create_pdf(title, content, filename):
 <html><head><meta charset="utf-8"><style>{_PDF_CSS}</style></head>
 <body>
 <div class="header">DGX Spark Research Intelligence Report</div>
-<h1>{title}</h1>
+<h1>{html_module.escape(title)}</h1>
 {body_html}
 </body></html>"""
     file_path = output_path(output_dir, filename)

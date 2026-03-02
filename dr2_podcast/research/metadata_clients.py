@@ -22,6 +22,7 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass, field
+from urllib.parse import quote as _url_quote
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -233,7 +234,7 @@ class OpenAlexClient:
                 return cached
         try:
             async with self.limiter:
-                url = f"{self.BASE_URL}/works/https://doi.org/{doi}"
+                url = f"{self.BASE_URL}/works/https://doi.org/{_url_quote(doi, safe='')}"
                 resp = await self._http.get(url, headers=self._headers(), params=self._params())
                 if resp.status_code == 404:
                     return None

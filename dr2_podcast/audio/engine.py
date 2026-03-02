@@ -607,12 +607,6 @@ def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav",
         Path to the mastered WAV file, or None if processing failed
     """
     try:
-        # Ensure archived_scripts is importable (music_engine, audio_mixer live there)
-        import sys
-        archived = str(Path(__file__).parent / "archived_scripts")
-        if archived not in sys.path:
-            sys.path.insert(0, archived)
-
         logger.info(f"Post-processing audio: {wav_path}")
 
         BGM_LIBRARY_DIR = Path(__file__).parent / "Podcast BGM"
@@ -628,7 +622,7 @@ def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav",
                     music_path = str(selected)
                     logger.info(f"Selected random BGM from library: {selected.name}")
                 else:
-                    logger.warning("BGM Library is empty. Falling back to generation.")
+                    logger.warning("BGM Library is empty.")
 
             elif (BGM_LIBRARY_DIR / bgm_target).exists():
                 # Specific file found
@@ -643,26 +637,10 @@ def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav",
                      music_path = str(default_bgm)
                      logger.warning(f"Falling back to default: Interesting BGM.wav")
 
-        # 2. Fallback to MusicGen if no music selected yet
+        # 2. No BGM available — return voice-only
         if not music_path:
-            logger.info("Generating new BGM (Library file not found or empty)...")
-            try:
-                from music_engine import MusicGenerator
-            except ImportError as e:
-                logger.warning(f"MusicGenerator unavailable ({e}), skipping BGM generation.")
-                return wav_path
-            music_gen = MusicGenerator()
-
-            # Use bgm_target as prompt if it doesn't look like a filename, otherwise default prompt
-            prompt = bgm_target if " " in bgm_target and not bgm_target.endswith(".wav") else "lofi hip hop beat, chill, study"
-
-            music_path = str(Path(wav_path).parent / "bgm_generated.wav")
-            if not os.path.exists(music_path):
-                generated_music = music_gen.generate_music(prompt, duration=30, output_filename=music_path)
-                if not generated_music:
-                    logger.warning("Music generation failed. Skipping BGM.")
-                    return wav_path
-                music_path = generated_music
+            logger.warning("No BGM available (library empty or file not found), returning voice-only audio.")
+            return wav_path
 
         # 3. Mix
         # AudioMixer is defined above (merged from audio_mixer.py in T4.1)

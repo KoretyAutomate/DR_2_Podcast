@@ -29,7 +29,7 @@ import re
 import sqlite3
 import time
 import datetime
-from dr2_podcast.utils import strip_think_blocks
+from dr2_podcast.utils import strip_think_blocks, is_safe_url
 from dr2_podcast.config import (SMART_MODEL, SMART_BASE_URL, FAST_MODEL, FAST_BASE_URL,
                     SCRAPING_TIMEOUT, USER_AGENT, TIER_CASCADE_THRESHOLD,
                     MIN_TIER3_STUDIES, MAX_TIER3_RATIO)
@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 
 import httpx
 from bs4 import BeautifulSoup
@@ -663,6 +663,10 @@ class ContentFetcher:
 
     async def fetch_page(self, url: str) -> FetchedPage:
         async with self.semaphore:
+            # SSRF guard — block private/link-local IPs
+            if not is_safe_url(url):
+                logger.warning(f"Blocked SSRF-unsafe URL: {url}")
+                return FetchedPage(url=url, content="", title="", status_code=0)
             # Check cache first
             if self.cache:
                 cached = self.cache.get(url)
@@ -2272,7 +2276,7 @@ class Orchestrator:
         Returns:
             Dict[str, ResearchReport] with keys: "lead", "counter", "audit"
         """
-        import clinical_math
+        from dr2_podcast.research import clinical_math
 
         if not SMART_MODEL or not SMART_BASE_URL:
             raise RuntimeError("MODEL_NAME and LLM_BASE_URL environment variables must be set before running the pipeline")
