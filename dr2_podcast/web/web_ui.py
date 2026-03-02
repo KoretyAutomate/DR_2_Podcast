@@ -65,6 +65,7 @@ _CREDENTIAL_FIELDS = {"buzzsprout_api_key", "buzzsprout_account_id", "youtube_se
 
 # Task storage
 tasks_db: Dict[str, Dict] = {}
+tasks_lock = threading.RLock()
 
 # Task Queue
 task_queue = queue.Queue()
@@ -116,28 +117,30 @@ current_task_id = None
 def load_tasks():
     """Load tasks from file and clean up interrupted runs."""
     global tasks_db
-    if TASKS_FILE.exists():
-        try:
-            with open(TASKS_FILE, 'r') as f:
-                tasks_db = json.load(f)
-            
-            # CLEANUP: Mark any interrupted "running" tasks as "cancelled" on startup
-            dirty = False
-            for tid, task in tasks_db.items():
-                if task["status"] in ["running", "uploading", "queued"]:
-                    task["status"] = "cancelled"
-                    task["error"] = "Server restarted during execution"
-                    dirty = True
-            if dirty:
-                save_tasks()
-                print("Cleaned up interrupted tasks from previous run.")
-        except Exception as e:
-            print(f"Error loading tasks: {e}")
-            tasks_db = {}
+    with tasks_lock:
+        if TASKS_FILE.exists():
+            try:
+                with open(TASKS_FILE, 'r') as f:
+                    tasks_db = json.load(f)
+
+                # CLEANUP: Mark any interrupted "running" tasks as "cancelled" on startup
+                dirty = False
+                for tid, task in tasks_db.items():
+                    if task["status"] in ["running", "uploading", "queued"]:
+                        task["status"] = "cancelled"
+                        task["error"] = "Server restarted during execution"
+                        dirty = True
+                if dirty:
+                    save_tasks()
+                    print("Cleaned up interrupted tasks from previous run.")
+            except Exception as e:
+                print(f"Error loading tasks: {e}")
+                tasks_db = {}
 
 def save_tasks():
-    with open(TASKS_FILE, 'w') as f:
-        json.dump(tasks_db, f, indent=2)
+    with tasks_lock:
+        with open(TASKS_FILE, 'w') as f:
+            json.dump(tasks_db, f, indent=2)
 
 
 # --- Topic Index: central registry of completed research runs ---
@@ -1723,8 +1726,9 @@ def get_system_status(username: str = Depends(verify_credentials)):
 @app.get("/api/queue-info")
 async def get_queue_info(username: str = Depends(verify_credentials)):
     """Return count of running and queued tasks."""
-    running = sum(1 for t in tasks_db.values() if t["status"] == "running")
-    queued = sum(1 for t in tasks_db.values() if t["status"] == "queued")
+    with tasks_lock:
+        running = sum(1 for t in tasks_db.values() if t["status"] == "running")
+        queued = sum(1 for t in tasks_db.values() if t["status"] == "queued")
     return {"running": running, "queued": queued}
 
 @app.post("/api/check-reuse")
@@ -1902,8 +1906,9 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
         "reuse_mode": reuse_mode,
     }
 
-    tasks_db[task_id] = task
-    save_tasks()
+    with tasks_lock:
+        tasks_db[task_id] = task
+        save_tasks()
 
     # Store upload credentials in task data for explicit passing (not os.environ)
     task["buzzsprout_api_key"] = request.buzzsprout_api_key or None
@@ -2015,8 +2020,9 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
         "estimated_remaining": None
     }
 
-    tasks_db[task_id] = task
-    save_tasks()
+    with tasks_lock:
+        tasks_db[task_id] = task
+        save_tasks()
 
     # Store upload credentials in task data for explicit passing (not os.environ)
     task["buzzsprout_api_key"] = request.buzzsprout_api_key or None
@@ -2102,6 +2108,65 @@ def _preflight_check() -> Optional[str]:
     return "; ".join(errors) if errors else None
 
 
+def _stream_process_output(proc, task_id: str) -> list:
+    """Stream subprocess stdout, parse phase markers and sources, discover output_dir."""
+    output_lines = []
+    start_time = tasks_db[task_id]["start_time"]
+    output_dir_discovered = False
+
+    for line in proc.stdout:
+        output_lines.append(line)
+
+        # 0. Discover output_dir from [OUTPUT_DIR] marker or fallback
+        if not output_dir_discovered:
+            if "[OUTPUT_DIR]" in line:
+                try:
+                    discovered = line.split("[OUTPUT_DIR]")[1].strip()
+                    if discovered:
+                        tasks_db[task_id]["output_dir"] = discovered
+                        output_dir_discovered = True
+                except Exception:
+                    pass
+            if not output_dir_discovered:
+                found_dir = _find_latest_output_dir()
+                if found_dir:
+                    tasks_db[task_id]["output_dir"] = str(found_dir)
+                    output_dir_discovered = True
+
+        # 1. Parse Phase Markers
+        for marker, phase_name, progress_pct, is_phase in PHASE_MARKERS:
+            if marker in line:
+                current_time = time.time()
+                tasks_db[task_id]["progress"] = progress_pct
+                tasks_db[task_id]["current_step"] = phase_name
+
+                if is_phase:
+                    _close_phase(task_id)
+                    tasks_db[task_id]["phase"] = phase_name
+                    tasks_db[task_id]["phase_start_time"] = current_time
+
+                elapsed = current_time - start_time
+                if progress_pct > 5:
+                    total_est = (elapsed / progress_pct) * 100
+                    remaining = total_est - elapsed
+                    tasks_db[task_id]["estimated_remaining"] = max(0, remaining)
+
+                save_tasks()
+                break
+
+        # 2. Parse Sources
+        if "[SOURCE]" in line:
+            try:
+                url = line.split("[SOURCE]")[1].strip()
+                if url not in tasks_db[task_id]["sources"]:
+                    tasks_db[task_id]["sources"].append(url)
+                    save_tasks()
+            except Exception:
+                pass
+
+    return output_lines
+
+
 def run_podcast_generation(task_id: str, topic: str, language: str,
                            accessibility_level: str = "simple",
                            podcast_length: str = "long", podcast_hosts: str = "random",
@@ -2148,58 +2213,7 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
             env=env,
         )
 
-        # Stream stdout and parse phase markers
-        output_lines = []
-        # No timeout limit
-        start_time = tasks_db[task_id]["start_time"]
-        output_dir_discovered = False
-
-        for line in proc.stdout:
-            output_lines.append(line)
-
-            # 0. Discover output_dir early so artifact counting works during execution
-            if not output_dir_discovered:
-                found_dir = _find_latest_output_dir()
-                if found_dir:
-                    tasks_db[task_id]["output_dir"] = str(found_dir)
-                    output_dir_discovered = True
-
-            # 1. Parse Phase Markers
-            for marker, phase_name, progress_pct, is_phase in PHASE_MARKERS:
-                if marker in line:
-                    current_time = time.time()
-                    # Always update progress bar and current-step label
-                    tasks_db[task_id]["progress"] = progress_pct
-                    tasks_db[task_id]["current_step"] = phase_name
-
-                    if is_phase:
-                        # Close the previous phase's timer and accumulate its duration
-                        _close_phase(task_id)
-                        # Open the new phase's timer
-                        tasks_db[task_id]["phase"] = phase_name
-                        tasks_db[task_id]["phase_start_time"] = current_time
-
-                    # Calculate ETA
-                    elapsed = current_time - start_time
-                    if progress_pct > 5:
-                        total_est = (elapsed / progress_pct) * 100
-                        remaining = total_est - elapsed
-                        tasks_db[task_id]["estimated_remaining"] = max(0, remaining)
-
-                    save_tasks()
-                    break
-            
-            # 2. Parse Sources
-            if "[SOURCE]" in line:
-                try:
-                    url = line.split("[SOURCE]")[1].strip()
-                    if url not in tasks_db[task_id]["sources"]:
-                        tasks_db[task_id]["sources"].append(url)
-                        save_tasks()
-                except Exception:
-                     pass
-
-
+        output_lines = _stream_process_output(proc, task_id)
 
         proc.wait()
 
@@ -2418,10 +2432,11 @@ def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     cleaned_script = clean_script_for_tts(script_text)
     output_path = new_output_dir / "audio.wav"
 
-    audio_file = generate_audio_from_script(cleaned_script, str(output_path), lang_code=lang_code)
-    if not audio_file:
+    tts_result = generate_audio_from_script(cleaned_script, str(output_path), lang_code=lang_code)
+    if not tts_result:
         raise RuntimeError("TTS generation failed")
-    audio_file = Path(audio_file)
+    audio_file_path, positions = tts_result if isinstance(tts_result, tuple) else (tts_result, [])
+    audio_file = Path(audio_file_path)
 
     # Phase: BGM Merging
     tasks_db[task_id]["phase"] = "BGM Merging"
@@ -2467,49 +2482,7 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
     )
 
-    output_lines = []
-    start_time = tasks_db[task_id]["start_time"]
-    output_dir_discovered = False
-
-    for line in proc.stdout:
-        output_lines.append(line)
-
-        # Discover output_dir
-        if not output_dir_discovered:
-            found_dir = _find_latest_output_dir()
-            if found_dir:
-                tasks_db[task_id]["output_dir"] = str(found_dir)
-                output_dir_discovered = True
-
-        # Parse phase markers (same logic as run_podcast_generation)
-        for marker, phase_name, progress_pct, is_phase in PHASE_MARKERS:
-            if marker in line:
-                current_time = time.time()
-                tasks_db[task_id]["progress"] = progress_pct
-                tasks_db[task_id]["current_step"] = phase_name
-
-                if is_phase:
-                    _close_phase(task_id)
-                    tasks_db[task_id]["phase"] = phase_name
-                    tasks_db[task_id]["phase_start_time"] = current_time
-
-                elapsed = current_time - start_time
-                if progress_pct > 5:
-                    total_est = (elapsed / progress_pct) * 100
-                    remaining = total_est - elapsed
-                    tasks_db[task_id]["estimated_remaining"] = max(0, remaining)
-                save_tasks()
-                break
-
-        # Parse sources
-        if "[SOURCE]" in line:
-            try:
-                url = line.split("[SOURCE]")[1].strip()
-                if url not in tasks_db[task_id]["sources"]:
-                    tasks_db[task_id]["sources"].append(url)
-                    save_tasks()
-            except Exception:
-                pass
+    output_lines = _stream_process_output(proc, task_id)
 
     proc.wait()
 
@@ -2534,43 +2507,13 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
 @app.get("/api/status/{task_id}")
 async def get_status(task_id: str, username: str = Depends(verify_credentials)):
     """Get status of a specific task"""
-    if task_id not in tasks_db:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    task = tasks_db[task_id]
-    
-    # Calculate artifact counts on-the-fly
-    if task.get("output_dir"):
-        created, total = count_artifacts(task["output_dir"], task.get("language", "en"))
-        task["artifacts_created"] = created
-        task["artifacts_total"] = total
-    else:
-        task["artifacts_created"] = 0
-        task["artifacts_total"] = len(EXPECTED_ARTIFACTS + EXPECTED_ARTIFACTS_EXTRA.get(task.get("language", "en"), []))
+    with tasks_lock:
+        if task_id not in tasks_db:
+            raise HTTPException(status_code=404, detail="Task not found")
 
-    # Calculate current step duration
-    current_step_duration = 0
-    if task["status"] == "running" and task.get("phase_start_time"):
-        current_step_duration = time.time() - task["phase_start_time"]
-    
-    response = {k: v for k, v in task.items() if k not in _CREDENTIAL_FIELDS}
-    response["current_step_duration"] = f"{int(current_step_duration // 60)}m {int(current_step_duration % 60)}s"
-    response["current_step_duration_seconds"] = current_step_duration
+        task = tasks_db[task_id]
 
-    return response
-
-@app.get("/api/history")
-async def get_history(username: str = Depends(verify_credentials)):
-    """Get list of past production runs"""
-    # Sort by created_at desc
-    sorted_tasks = sorted(
-        tasks_db.values(),
-        key=lambda x: x["created_at"],
-        reverse=True
-    )
-    
-    # Calculate artifact counts for history items
-    for task in sorted_tasks:
+        # Calculate artifact counts on-the-fly
         if task.get("output_dir"):
             created, total = count_artifacts(task["output_dir"], task.get("language", "en"))
             task["artifacts_created"] = created
@@ -2578,18 +2521,50 @@ async def get_history(username: str = Depends(verify_credentials)):
         else:
             task["artifacts_created"] = 0
             task["artifacts_total"] = len(EXPECTED_ARTIFACTS + EXPECTED_ARTIFACTS_EXTRA.get(task.get("language", "en"), []))
-            
+
+        # Calculate current step duration
+        current_step_duration = 0
+        if task["status"] == "running" and task.get("phase_start_time"):
+            current_step_duration = time.time() - task["phase_start_time"]
+
+        response = {k: v for k, v in task.items() if k not in _CREDENTIAL_FIELDS}
+        response["current_step_duration"] = f"{int(current_step_duration // 60)}m {int(current_step_duration % 60)}s"
+        response["current_step_duration_seconds"] = current_step_duration
+
+    return response
+
+@app.get("/api/history")
+async def get_history(username: str = Depends(verify_credentials)):
+    """Get list of past production runs"""
+    with tasks_lock:
+        # Sort by created_at desc
+        sorted_tasks = sorted(
+            tasks_db.values(),
+            key=lambda x: x["created_at"],
+            reverse=True
+        )
+
+        # Calculate artifact counts for history items
+        for task in sorted_tasks:
+            if task.get("output_dir"):
+                created, total = count_artifacts(task["output_dir"], task.get("language", "en"))
+                task["artifacts_created"] = created
+                task["artifacts_total"] = total
+            else:
+                task["artifacts_created"] = 0
+                task["artifacts_total"] = len(EXPECTED_ARTIFACTS + EXPECTED_ARTIFACTS_EXTRA.get(task.get("language", "en"), []))
+
     # Return last 20 tasks, newest first — strip credential fields
     return [{k: v for k, v in t.items() if k not in _CREDENTIAL_FIELDS} for t in sorted_tasks[:20]]
 
 @app.get("/api/download/{task_id}/{filename}")
 def download_file(task_id: str, filename: str, username: str = Depends(verify_credentials)):
     """Download generated file"""
-    if task_id not in tasks_db:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    task = tasks_db[task_id]
-    output_dir = Path(task["output_dir"]) if task.get("output_dir") else OUTPUT_DIR
+    with tasks_lock:
+        if task_id not in tasks_db:
+            raise HTTPException(status_code=404, detail="Task not found")
+        task = tasks_db[task_id]
+        output_dir = Path(task["output_dir"]) if task.get("output_dir") else OUTPUT_DIR
     file_path = (output_dir / filename).resolve()
     if not file_path.is_relative_to(output_dir.resolve()):
         raise HTTPException(status_code=403, detail="Access denied")

@@ -856,6 +856,8 @@ class ProgressTracker:
 
     def task_completed(self, task_index: int):
         """Called when a task completes"""
+        if self.start_time is None or self.task_start_time is None:
+            return
         if task_index >= len(self.task_names):
             return
 

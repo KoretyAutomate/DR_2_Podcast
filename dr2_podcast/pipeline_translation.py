@@ -24,6 +24,13 @@ _IMRAD_HEADERS = {
     "## 3. Results",
     "## 4. Discussion",
     "## 5. References",
+    # Social science numbered variants
+    "## 1. Abstract",
+    "## 2. Introduction",
+    "## 3. Methods",
+    "## 4. Results",
+    "## 5. Discussion",
+    "## 6. References",
 }
 
 
@@ -315,17 +322,19 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
                     try:
                         if use_smart_for_chunk:
                             translated = await asyncio.to_thread(
-                                _call_smart_model,
-                                translate_system,
-                                "Translate this section:\n\n" + body,
-                                max_tok, 0.1,
+                                lambda: _call_smart_model(
+                                    system=translate_system,
+                                    user="Translate this section:\n\n" + body,
+                                    max_tokens=max_tok, temperature=0.1,
+                                )
                             )
                         else:
                             translated = await asyncio.to_thread(
-                                _call_mid_model,
-                                translate_system,
-                                "Translate this section:\n\n" + body,
-                                max_tok, 0.1,
+                                lambda: _call_mid_model(
+                                    system=translate_system,
+                                    user="Translate this section:\n\n" + body,
+                                    max_tokens=max_tok, temperature=0.1,
+                                )
                             )
                         translate_count += 1
                         results[chunk_idx] = translated
@@ -347,10 +356,11 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
                     max_tok = _estimate_translation_tokens(len(first_translated))
                     try:
                         audited = await asyncio.to_thread(
-                            _call_smart_model,
-                            audit_system,
-                            "Audit and correct this {} medical document section:\n\n".format(lang_name) + first_translated,
-                            max_tok, 0.1,
+                            lambda: _call_smart_model(
+                                system=audit_system,
+                                user="Audit and correct this {} medical document section:\n\n".format(lang_name) + first_translated,
+                                max_tokens=max_tok, temperature=0.1,
+                            )
                         )
                         audit_count += 1
                         if len(audited) >= len(first_translated) * 0.5:
@@ -382,10 +392,11 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
                     max_tok = _estimate_translation_tokens(len(translated_body))
                     try:
                         audited = await asyncio.to_thread(
-                            _call_smart_model,
-                            audit_system,
-                            "Audit and correct this {} medical document section:\n\n".format(lang_name) + translated_body,
-                            max_tok, 0.1,
+                            lambda: _call_smart_model(
+                                system=audit_system,
+                                user="Audit and correct this {} medical document section:\n\n".format(lang_name) + translated_body,
+                                max_tokens=max_tok, temperature=0.1,
+                            )
                         )
                         audit_count += 1
                         if len(audited) >= len(translated_body) * 0.5:

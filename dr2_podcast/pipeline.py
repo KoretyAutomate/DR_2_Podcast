@@ -20,8 +20,6 @@ from crewai.tools import tool
 from markdown_it import MarkdownIt
 import weasyprint
 from dr2_podcast.tools.link_validator import LinkValidatorTool
-from pydantic import BaseModel, HttpUrl, Field
-from typing import List, Optional, Literal
 import soundfile as sf
 import numpy as np
 import wave
@@ -123,28 +121,6 @@ Try rephrasing the topic using canonical scientific terms such as:
     report_path.write_text(content)
     logger.warning(f"✗ Insufficient evidence report written → {report_path.name}")
 
-
-# --- SOURCE TRACKING MODELS ---
-class ScientificSource(BaseModel):
-    """Structured scientific source."""
-    title: str
-    url: HttpUrl
-    journal: Optional[str] = None
-    publication_year: Optional[int] = None
-    source_type: Literal["peer_reviewed", "preprint", "review", "meta_analysis", "web_article"]
-    trust_level: Literal["high", "medium", "low"] = "medium"
-    cited_by: str  # Which agent cited this
-    key_finding: Optional[str] = None
-
-class SourceBibliography(BaseModel):
-    """Complete bibliography with categorization."""
-    supporting_sources: List[ScientificSource] = []
-    contradicting_sources: List[ScientificSource] = []
-
-    def get_high_trust_sources(self) -> List[ScientificSource]:
-        """Filter for high-trust peer-reviewed sources."""
-        all_sources = self.supporting_sources + self.contradicting_sources
-        return [s for s in all_sources if s.trust_level == "high" and s.source_type == "peer_reviewed"]
 
 # Audio generation now uses Kokoro TTS (local, high-quality)
 # MetaVoice-1B has been deprecated in favor of Kokoro-82M
@@ -967,7 +943,6 @@ final_model_string = None  # initialized in __main__
 # LLM objects initialized in __main__ block (require network connection)
 dgx_llm_strict = None  # initialized in __main__
 dgx_llm_creative = None  # initialized in __main__
-dgx_llm = None  # initialized in __main__
 
 
 def summarize_report_with_fast_model(report_text: str, role: str, topic: str) -> str:
@@ -1188,72 +1163,6 @@ def _run_trim_pass(script_text, inventory, target_length, language_config,
         _call_smart_model=_call_smart_model,
     )
 
-
-
-@tool("BraveSearch")
-def search_tool(search_query: str):
-    """
-    Search for scientific evidence with hierarchical strategy:
-
-    PRIMARY SOURCES (Search First):
-    1. Peer-reviewed journals: Nature, Science, Lancet, Cell, PNAS
-    2. Recent data published after 2024
-    3. RCTs and meta-analyses
-
-    SECONDARY SOURCES (If primary insufficient):
-    4. Observatory studies and cohort studies
-    5. Cross-sectional population studies
-    6. Epidemiological data
-
-    SUPPLEMENTARY EVIDENCE (To verify logic):
-    7. Non-human RCTs (animal studies, in vitro)
-    8. Mechanistic studies
-    9. Preclinical research
-
-    SEARCH STRATEGY:
-    - Start with "[topic] RCT" or "[topic] meta-analysis"
-    - If no strong evidence, expand to "[topic] observatory study"
-    - Supplement with "[topic] animal study" or "[topic] mechanism"
-    - Always prioritize peer-reviewed > preprint > news
-
-    CRITICAL: Always search to obtain verifiable URLs for all citations.
-    This enables source validation and provides readers with direct access to evidence.
-    """
-    api_key = os.getenv("BRAVE_API_KEY")
-    if not api_key:
-        return "Brave API Key missing. Use internal knowledge."
-
-    url = "https://api.search.brave.com/res/v1/web/search"
-    headers = {"Accept": "application/json", "X-Subscription-Token": api_key}
-    params = {"q": search_query, "count": 5}
-
-    try:
-        response = httpx.get(url, headers=headers, params=params, timeout=15.0)
-        if response.status_code == 200:
-            results = response.json().get("web", {}).get("results", [])
-            return "\n\n".join([f"Title: {r['title']}\nURL: {r['url']}\nDesc: {r['description']}" for r in results]) or "No results found."
-        return "Search API error. Use internal knowledge."
-    except Exception as e:
-        return f"Search failed: {e}"
-
-def append_sources_to_library(new_sources: list[dict], role: str, output_dir_path=None):
-    """Append new sources to research_sources.json."""
-    src_dir = Path(output_dir_path) if output_dir_path else output_dir
-    sources_file = output_path(src_dir, "research_sources.json")
-    if sources_file.exists():
-        data = json.loads(sources_file.read_text())
-    else:
-        data = {"lead": [], "counter": []}
-    role_key = role.strip().lower()
-    if role_key not in data:
-        data[role_key] = []
-    start_idx = len(data[role_key])
-    for i, src in enumerate(new_sources):
-        src["index"] = start_idx + i
-        data[role_key].append(src)
-    with open(sources_file, 'w') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    logger.info(f"  Appended {len(new_sources)} sources to {role_key} library (total: {len(data[role_key])})")
 
 
 # --- RESEARCH LIBRARY TOOLS ---
@@ -1831,6 +1740,7 @@ if __name__ == "__main__":
         print(f"{'='*70}\n")
     else:
         output_dir = create_timestamped_output_dir(base_output_dir)
+        logger.info(f"[OUTPUT_DIR] {output_dir}")
     setup_logging(output_dir)
 
     # Override topic/language from checkpoint if resuming
@@ -1887,7 +1797,6 @@ if __name__ == "__main__":
         frequency_penalty=0.15, stop=["<|im_end|>", "<|endoftext|>"],
         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
-    dgx_llm = dgx_llm_strict
 
     # Construct all Agent/Task objects with correct runtime values
     logger.info(f"Podcast Length Mode: {duration_label}")
@@ -1912,6 +1821,7 @@ if __name__ == "__main__":
 
             # Create new output dir
             new_output_dir = create_timestamped_output_dir(base_output_dir)
+            logger.info(f"[OUTPUT_DIR] {new_output_dir}")
 
             # Copy research artifacts
             _copy_research_artifacts(reuse_dir, new_output_dir)
@@ -2067,6 +1977,7 @@ if __name__ == "__main__":
             if not result['needs_supplement']:
                 # Full reuse — copy everything
                 new_output_dir = create_timestamped_output_dir(base_output_dir)
+                logger.info(f"[OUTPUT_DIR] {new_output_dir}")
                 _copy_all_artifacts(reuse_dir, new_output_dir)
 
                 # Session metadata
@@ -2091,6 +2002,7 @@ if __name__ == "__main__":
                 logger.info(f"  Running {len(result['queries'])} supplemental searches...")
 
                 new_output_dir = create_timestamped_output_dir(base_output_dir)
+                logger.info(f"[OUTPUT_DIR] {new_output_dir}")
                 _copy_research_artifacts(reuse_dir, new_output_dir)
 
                 # Run supplemental research with BraveSearch

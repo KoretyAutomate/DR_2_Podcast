@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from openai import AsyncOpenAI
 
+from dr2_podcast.utils import safe_float, safe_int, safe_str
 from dr2_podcast.research.metadata_clients import OpenAlexClient, ERICClient, MetadataCache
 from dr2_podcast.research.search_service import SearxngClient
 from dr2_podcast.research.effect_size_math import (
@@ -43,13 +44,9 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 
-SMART_MODEL = os.environ.get("MODEL_NAME", "")
-SMART_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
-FAST_MODEL = os.environ.get("FAST_MODEL_NAME", "")
-FAST_BASE_URL = os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1")
+from dr2_podcast.config import SMART_MODEL, SMART_BASE_URL, FAST_MODEL, FAST_BASE_URL, SCRAPING_TIMEOUT
 
 MAX_SELECT = 20  # Maximum studies to select per track
-SCRAPING_TIMEOUT = 20.0
 
 # --- Evidence quality hierarchy ---
 
@@ -380,6 +377,11 @@ class SocialScienceOrchestrator:
                 math_report,
             )
 
+        # Cleanup metadata clients
+        await self.openalex.close()
+        await self.eric.close()
+        self.cache.close()
+
         duration = time.time() - start_time
         log(f"\n✓ Social science pipeline complete in {duration:.0f}s")
 
@@ -694,27 +696,6 @@ class SocialScienceOrchestrator:
                 )
                 data = _parse_json_response(result)
 
-                def safe_float(v):
-                    if v is None:
-                        return None
-                    try:
-                        return float(v)
-                    except (ValueError, TypeError):
-                        return None
-
-                def safe_int(v):
-                    if v is None:
-                        return None
-                    try:
-                        return int(float(v))
-                    except (ValueError, TypeError):
-                        return None
-
-                def safe_str(v):
-                    if v is None or v == "null" or v == "":
-                        return None
-                    return str(v)
-
                 return SocialScienceExtraction(
                     doi=record.doi,
                     title=record.title,
@@ -910,7 +891,7 @@ class SocialScienceOrchestrator:
             json.dump(_screening_payload(fal_records, fal_top), f, indent=2, ensure_ascii=False)
 
         # Math report
-        with open(_out / "clinical_math.md", 'w') as f:
+        with open(_out / "effect_size_math.md", 'w') as f:
             f.write(math_report)
 
 

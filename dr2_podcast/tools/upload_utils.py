@@ -26,6 +26,7 @@ from pathlib import Path
 import httpx
 
 SCRIPT_DIR = Path(__file__).parent.absolute()
+PROJECT_ROOT = Path(__file__).parent.parent.parent.absolute()
 
 # ---------------------------------------------------------------------------
 # Config validation
@@ -49,9 +50,9 @@ def validate_upload_config(buzzsprout: bool, youtube: bool,
 
     if youtube:
         secret_path = youtube_secret_path or os.getenv("YOUTUBE_CLIENT_SECRET_PATH", "./client_secret.json")
-        if not (SCRIPT_DIR / secret_path).exists():
+        if not (PROJECT_ROOT / secret_path).exists():
             errors.append(
-                f"YouTube client_secret.json not found at {SCRIPT_DIR / secret_path}. "
+                f"YouTube client_secret.json not found at {PROJECT_ROOT / secret_path}. "
                 "See YOUTUBE SETUP instructions in upload_utils.py"
             )
 
@@ -125,7 +126,7 @@ def get_youtube_credentials(youtube_secret_path: str = None):
     from google.oauth2.credentials import Credentials
 
     secret_path = youtube_secret_path or os.getenv("YOUTUBE_CLIENT_SECRET_PATH", "./client_secret.json")
-    secret_full = SCRIPT_DIR / secret_path
+    secret_full = PROJECT_ROOT / secret_path
 
     # One-time migration: convert legacy pickle token to JSON
     if _LEGACY_TOKEN_PATH.exists() and not _TOKEN_PATH.exists():

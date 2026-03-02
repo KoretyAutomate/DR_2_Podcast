@@ -77,3 +77,30 @@ def is_safe_url(url: str) -> bool:
         # DNS resolution failure — allow (will fail at fetch time anyway)
         return True
     return True
+
+
+def safe_float(v):
+    """Safely convert value to float, returning None on failure."""
+    if v is None or v == "null":
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
+def safe_int(v):
+    """Safely convert value to int, returning None on failure."""
+    if v is None or v == "null":
+        return None
+    try:
+        return int(float(v))
+    except (ValueError, TypeError):
+        return None
+
+
+def safe_str(v):
+    """Safely convert value to string, returning None for empty/null."""
+    if v is None or v == "null" or v == "":
+        return None
+    return str(v)

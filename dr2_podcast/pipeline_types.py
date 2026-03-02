@@ -33,7 +33,7 @@ class PipelineData(TypedDict, total=False):
     aff_top: list                        # List[WideNetRecord] — top screened papers
     fal_top: list                        # List[WideNetRecord]
     math_report: str                     # Deterministic ARR/NNT report
-    impacts: dict                        # {study_id: ClinicalImpact}
+    impacts: list                        # List[ClinicalImpact] or List[EffectSizeImpact]
     framing_context: str                 # Research framing from Phase 0
     search_date: str                     # ISO date of search
     aff_highest_tier: int                # 1-3: highest tier reached

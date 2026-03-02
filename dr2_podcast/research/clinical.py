@@ -29,7 +29,7 @@ import re
 import sqlite3
 import time
 import datetime
-from dr2_podcast.utils import strip_think_blocks, is_safe_url
+from dr2_podcast.utils import strip_think_blocks, is_safe_url, safe_float, safe_int, safe_str
 from dr2_podcast.config import (SMART_MODEL, SMART_BASE_URL, FAST_MODEL, FAST_BASE_URL,
                     SCRAPING_TIMEOUT, USER_AGENT, TIER_CASCADE_THRESHOLD,
                     MIN_TIER3_STUDIES, MAX_TIER3_RATIO)
@@ -1851,9 +1851,9 @@ class ResearchAgent:
             return sorted_records[:max_select]
 
     @staticmethod
-    def _load_extraction_cache() -> dict:
-        """Load PMID extraction cache from research_outputs/extraction_cache.json."""
-        cache_path = Path("research_outputs/extraction_cache.json")
+    def _load_extraction_cache(output_dir: str = None) -> dict:
+        """Load PMID extraction cache from output_dir or research_outputs/extraction_cache.json."""
+        cache_path = Path(output_dir) / "extraction_cache.json" if output_dir else Path("research_outputs/extraction_cache.json")
         if cache_path.exists():
             try:
                 with open(cache_path, 'r') as f:
@@ -1863,9 +1863,9 @@ class ResearchAgent:
         return {}
 
     @staticmethod
-    def _save_extraction_cache(cache: dict):
-        """Save PMID extraction cache to research_outputs/extraction_cache.json."""
-        cache_path = Path("research_outputs/extraction_cache.json")
+    def _save_extraction_cache(cache: dict, output_dir: str = None):
+        """Save PMID extraction cache to output_dir or research_outputs/extraction_cache.json."""
+        cache_path = Path(output_dir) / "extraction_cache.json" if output_dir else Path("research_outputs/extraction_cache.json")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_path, 'w') as f:
             json.dump(cache, f, indent=2)
@@ -1915,7 +1915,8 @@ class ResearchAgent:
         return d
 
     async def _deep_extract_batch(
-        self, articles, records: List[WideNetRecord], pico: Dict[str, str], log=logger.info
+        self, articles, records: List[WideNetRecord], pico: Dict[str, str],
+        log=logger.info, output_dir: str = None
     ) -> List[DeepExtraction]:
         """Step 4: Extract clinical variables from full-text articles using fast model.
         Uses PMID-keyed cache to ensure identical NNT across runs for the same paper."""
@@ -1923,7 +1924,7 @@ class ResearchAgent:
         semaphore = asyncio.Semaphore(4)  # Lower concurrency for Smart Model (vLLM)
 
         # Load extraction cache
-        extraction_cache = self._load_extraction_cache()
+        extraction_cache = self._load_extraction_cache(output_dir)
         cache_hits = 0
         new_cache_entries = {}
 
@@ -1991,34 +1992,12 @@ class ResearchAgent:
                     raw = resp.choices[0].message.content.strip()
                     data = self._parse_json_response(raw)
 
-                    # Safely parse numeric fields
-                    def safe_float(v):
-                        if v is None or v == "null":
-                            return None
-                        try:
-                            return float(v)
-                        except (ValueError, TypeError):
-                            return None
-
-                    def safe_int(v):
-                        if v is None or v == "null":
-                            return None
-                        try:
-                            return int(v)
-                        except (ValueError, TypeError):
-                            return None
-
                     def safe_bool(v):
                         if v is None or v == "null":
                             return None
                         if isinstance(v, bool):
                             return v
                         return None
-
-                    def safe_str(v):
-                        if v is None or v == "null" or v == "":
-                            return None
-                        return str(v)
 
                     def safe_list(v):
                         if isinstance(v, list):
@@ -2084,7 +2063,7 @@ class ResearchAgent:
                 new_cache_entries[cache_key] = self._cache_extraction(r)
         if new_cache_entries:
             extraction_cache.update(new_cache_entries)
-            self._save_extraction_cache(extraction_cache)
+            self._save_extraction_cache(extraction_cache, output_dir)
             log(f"    [Step 4] Saved {len(new_cache_entries)} new extractions to cache")
 
         return list(results)
@@ -2280,7 +2259,7 @@ class Orchestrator:
 
         if not SMART_MODEL or not SMART_BASE_URL:
             raise RuntimeError("MODEL_NAME and LLM_BASE_URL environment variables must be set before running the pipeline")
-        if not FAST_MODEL or not FAST_BASE_URL:
+        if self.fast_model_available and (not FAST_MODEL or not FAST_BASE_URL):
             raise RuntimeError("FAST_MODEL_NAME and FAST_LLM_BASE_URL environment variables must be set before running the pipeline")
 
         start_time = time.time()
@@ -2361,7 +2340,7 @@ class Orchestrator:
             log(f"    Full-text retrieved: {aff_fulltext_ok}/{len(fulltexts)}")
 
             extractions = await self.lead_researcher._deep_extract_batch(
-                fulltexts, top_records, plan.pico, log
+                fulltexts, top_records, plan.pico, log, output_dir=output_dir
             )
 
             log(f"\n{'='*70}")
@@ -2415,7 +2394,7 @@ class Orchestrator:
             log(f"    Full-text retrieved: {fal_fulltext_ok}/{len(fulltexts)}")
 
             extractions = await self.counter_researcher._deep_extract_batch(
-                fulltexts, top_records, plan.pico, log
+                fulltexts, top_records, plan.pico, log, output_dir=output_dir
             )
 
             log(f"\n{'='*70}")
@@ -2767,38 +2746,42 @@ class Orchestrator:
                 oa_client = OpenAlexClient(cache=cache)
                 s2_client = SemanticScholarClient(cache=cache)
                 cr_client = CrossrefClient(cache=cache)
-
-                papers = [{"doi": r.doi or "", "pmid": r.pmid or ""} for r in records]
-                enriched = await enrich_papers_metadata(
-                    papers, openalex_client=oa_client, s2_client=s2_client,
-                    crossref_client=cr_client,
-                )
-
-                retracted_titles = []
-                enriched_count = 0
-                for rec, ep in zip(records, enriched):
-                    if not ep.enrichment_sources:
-                        continue
-                    enriched_count += 1
-                    pm = PaperMetadata(
-                        citation_count=ep.best_citation_count,
-                        influential_citation_count=ep.influential_citation_count,
-                        fwci=ep.fwci,
-                        funding_sources=ep.all_funding_sources or None,
-                        is_retracted=ep.is_retracted,
-                        is_corrected=ep.is_corrected,
-                        has_clinical_trial_number=bool(ep.clinical_trial_numbers),
-                        clinical_trial_numbers=ep.clinical_trial_numbers or None,
-                        enrichment_sources=ep.enrichment_sources,
+                try:
+                    papers = [{"doi": r.doi or "", "pmid": r.pmid or ""} for r in records]
+                    enriched = await enrich_papers_metadata(
+                        papers, openalex_client=oa_client, s2_client=s2_client,
+                        crossref_client=cr_client,
                     )
-                    rec.paper_metadata = pm
-                    if ep.is_retracted:
-                        retracted_titles.append(rec.title)
 
-                log(f"    [Metadata] Enriched {enriched_count}/{len(records)} records")
-                for title in retracted_titles:
-                    logger.warning(f"RETRACTED paper detected: {title}")
-                    log(f"    ⚠ RETRACTED: {title[:80]}")
+                    retracted_titles = []
+                    enriched_count = 0
+                    for rec, ep in zip(records, enriched):
+                        if not ep.enrichment_sources:
+                            continue
+                        enriched_count += 1
+                        pm = PaperMetadata(
+                            citation_count=ep.best_citation_count,
+                            influential_citation_count=ep.influential_citation_count,
+                            fwci=ep.fwci,
+                            funding_sources=ep.all_funding_sources or None,
+                            is_retracted=ep.is_retracted,
+                            is_corrected=ep.is_corrected,
+                            has_clinical_trial_number=bool(ep.clinical_trial_numbers),
+                            clinical_trial_numbers=ep.clinical_trial_numbers or None,
+                            enrichment_sources=ep.enrichment_sources,
+                        )
+                        rec.paper_metadata = pm
+                        if ep.is_retracted:
+                            retracted_titles.append(rec.title)
+
+                    log(f"    [Metadata] Enriched {enriched_count}/{len(records)} records")
+                    for title in retracted_titles:
+                        logger.warning(f"RETRACTED paper detected: {title}")
+                        log(f"    ⚠ RETRACTED: {title[:80]}")
+                finally:
+                    await oa_client.close()
+                    await s2_client.close()
+                    await cr_client.close()
         except Exception as e:
             logger.warning(f"Metadata enrichment failed (non-fatal): {e}")
             log(f"    [Metadata] Enrichment failed (non-fatal): {e}")

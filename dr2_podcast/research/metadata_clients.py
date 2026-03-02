@@ -208,6 +208,7 @@ class OpenAlexClient:
 
         return {
             "openalex_id": raw.get("id", ""),
+            "title": raw.get("title", ""),
             "doi": doi,
             "pmid": pmid,
             "cited_by_count": raw.get("cited_by_count", 0),
