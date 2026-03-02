@@ -42,6 +42,7 @@ import defusedxml.ElementTree as ET
 
 import httpx
 from bs4 import BeautifulSoup
+import openai
 from openai import AsyncOpenAI
 
 from dr2_podcast.research.search_service import SearxngClient, SearchResult
@@ -1889,14 +1890,26 @@ class ResearchAgent:
 
                     # Always use Smart Model for extraction — Fast Model (1B params)
                     # is too small for reliable 19-field JSON extraction from full-text
-                    resp = await self.smart_client.chat.completions.create(
-                        model=self.smart_model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": f"Title: {record.title}\n\nContent:\n{content}"}
-                        ],
-                        max_tokens=1536, temperature=0.1, timeout=300
-                    )
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Title: {record.title}\n\nContent:\n{content}"}
+                    ]
+                    try:
+                        resp = await self.smart_client.chat.completions.create(
+                            model=self.smart_model, messages=messages,
+                            max_tokens=1536, temperature=0.1, timeout=300
+                        )
+                    except openai.BadRequestError as ctx_err:
+                        if "context length" not in str(ctx_err).lower():
+                            raise
+                        # Token-dense content (tables, citations) — retry with quarter
+                        content = content[:len(content) // 4]
+                        logger.info(f"    Context length exceeded, retrying with {len(content)} chars for {record.title[:50]}")
+                        messages[1]["content"] = f"Title: {record.title}\n\nContent:\n{content}"
+                        resp = await self.smart_client.chat.completions.create(
+                            model=self.smart_model, messages=messages,
+                            max_tokens=1536, temperature=0.1, timeout=300
+                        )
 
                     raw = resp.choices[0].message.content.strip()
                     data = self._parse_json_response(raw)

@@ -83,22 +83,14 @@ tasks_lock = threading.RLock()
 
 # Task Queue
 task_queue = queue.Queue()
-# Expected artifacts for progress tracking
-EXPECTED_ARTIFACTS = [
-    "research_framing.md", "research_framing.pdf",
-    "affirmative_case.md", "falsification_case.md", "grade_synthesis.md",
-    "research_sources.json", "clinical_math.md",
-    "search_strategy_aff.json", "search_strategy_neg.json",
-    "screening_results_aff.json", "screening_results_neg.json",
-    "source_of_truth.md", "source_of_truth.pdf",
-    "url_validation_results.json",
-    "script_draft.md", "script_final.md", "script.txt",
-    "EPISODE_BLUEPRINT.md", "accuracy_audit.md", "accuracy_audit.pdf",
-    "podcast_generation.log", "session_metadata.txt",
-    "audio.wav"
-]
+# Expected artifacts — derived from pipeline's _FILE_SUBDIR_MAP (auto-updates)
+from dr2_podcast.pipeline import _FILE_SUBDIR_MAP
 
-# Language-specific extra artifacts (added on top of EXPECTED_ARTIFACTS)
+# Artifacts that are conditional / alternate names (not always produced)
+_CONDITIONAL_ARTIFACTS = {"SOURCE_OF_TRUTH.md", "ACCURACY_CORRECTIONS.md", "audio_mixed.wav"}
+EXPECTED_ARTIFACTS = sorted(f for f in _FILE_SUBDIR_MAP if f not in _CONDITIONAL_ARTIFACTS)
+
+# Language-specific extra artifacts (dynamic filenames not in _FILE_SUBDIR_MAP)
 EXPECTED_ARTIFACTS_EXTRA = {
     "ja": ["source_of_truth_ja.md", "source_of_truth_ja.pdf"],
 }
