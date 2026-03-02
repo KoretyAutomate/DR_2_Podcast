@@ -729,7 +729,8 @@ TASK_METADATA = {
         'description': 'Translate SOT to target language (conditional)',
         'agent': 'Podcast Producer',
         'dependencies': ['source_validation'],
-        'crew': 2
+        'crew': 2,
+        'conditional': True
     },
     'blueprint_task': {
         'name': 'Show Outline',

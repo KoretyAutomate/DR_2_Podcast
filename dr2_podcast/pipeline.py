@@ -28,7 +28,7 @@ from dr2_podcast.research.clinical import run_deep_research
 from dr2_podcast.utils import strip_think_blocks
 from dataclasses import fields as dc_fields
 
-from dr2_podcast.config import EVIDENCE_LIMITED_THRESHOLD
+from dr2_podcast.config import EVIDENCE_LIMITED_THRESHOLD, OUTPUT_DIR_OVERRIDE
 
 # --- Extracted modules (T4.1) ---
 from dr2_podcast.pipeline_sot import (
@@ -107,9 +107,9 @@ The affirmative research track found **zero candidate studies**. This typically 
 2. The topic is too narrow — no studies directly test the exact intervention.
 
 ## Suggested Rephrasing
-Try rephrasing the topic using canonical scientific terms such as:
-- "chrono-nutrition", "early time-restricted feeding", "caloric front-loading"
-- "circadian meal timing", "meal timing and metabolic outcomes"
+Try rephrasing the topic using canonical MeSH or scientific terminology
+instead of folk-language phrasing. The search strategies below show the
+terms that were attempted.
 
 ## Search Strategies Used
 ### Affirmative
@@ -163,7 +163,7 @@ def setup_logging(output_dir: Path):
 # load_dotenv() — called in __main__ block
 # Configuration loaded from .env
 script_dir = Path(__file__).resolve().parent.parent  # project root (one level up from package)
-base_output_dir = script_dir / "research_outputs"
+base_output_dir = Path(OUTPUT_DIR_OVERRIDE) if OUTPUT_DIR_OVERRIDE else script_dir / "research_outputs"
 # base_output_dir.mkdir(exist_ok=True) — called in __main__ block
 
 # --- TIMESTAMPED OUTPUT DIRECTORY ---
