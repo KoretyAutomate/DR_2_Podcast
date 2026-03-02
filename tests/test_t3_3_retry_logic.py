@@ -201,6 +201,19 @@ class TestCallSmartRetry(unittest.TestCase):
 class TestCallSmartModelRetry(unittest.TestCase):
     """Tests for _call_smart_model() in pipeline.py (sync)."""
 
+    def setUp(self):
+        """Set module globals so _call_smart_model doesn't raise RuntimeError."""
+        import dr2_podcast.pipeline as _p
+        self._orig_model = _p.SMART_MODEL
+        self._orig_url = _p.SMART_BASE_URL
+        _p.SMART_MODEL = "test-model"
+        _p.SMART_BASE_URL = "http://localhost:9999/v1"
+
+    def tearDown(self):
+        import dr2_podcast.pipeline as _p
+        _p.SMART_MODEL = self._orig_model
+        _p.SMART_BASE_URL = self._orig_url
+
     def test_retries_on_connection_error_with_escalating_delays(self):
         """_call_smart_model retries on ConnectionError with escalating backoff."""
         sleep_times = []
