@@ -65,9 +65,9 @@ class TestDeterministicClassification:
 
     def test_ambiguous_returns_none(self):
         result = classify_topic_deterministic("Is intermittent fasting beneficial?")
-        # Could be clinical or general wellness — may be ambiguous
-        # The word "fasting" is not a keyword. This should return None.
-        # Actually let's test with something truly ambiguous
+        # "fasting" is not a keyword. This should return None.
+        assert result is None
+        # Also test with something truly ambiguous
         result2 = classify_topic_deterministic("How does music affect the brain?")
         # "brain" is clinical but it's a single keyword → score 0.33 < 0.6
         assert result2 is None

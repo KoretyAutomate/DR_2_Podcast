@@ -378,22 +378,24 @@ class TestResumeArgParsing:
 
 
 class TestPhaseSkipLogic:
-    """Test that the _phase_done helper works correctly with checkpoint data."""
+    """Test that checkpoint-based phase skip logic works correctly."""
 
-    def test_phase_done_with_empty_set(self):
-        """When no phases completed, all should return False."""
-        completed = set()
-        assert 0 not in completed
-        assert 1 not in completed
-        assert 5 not in completed
+    def test_no_checkpoint_means_no_phases_done(self, tmp_output_dir):
+        """Without a checkpoint, no phases should be marked complete."""
+        from dr2_podcast.pipeline import load_checkpoint
+        ckpt = load_checkpoint(tmp_output_dir)
+        assert ckpt is None
 
-    def test_phase_done_with_some_completed(self):
-        """When some phases completed, only those should be True."""
-        completed = {0, 1, 2}
+    def test_saved_phases_are_completed(self, tmp_output_dir):
+        """Saved phases should appear in completed_phases set."""
+        from dr2_podcast.pipeline import save_checkpoint, load_checkpoint
+        save_checkpoint(tmp_output_dir, 0, "topic", "en", {})
+        save_checkpoint(tmp_output_dir, 1, "topic", "en", {})
+        ckpt = load_checkpoint(tmp_output_dir)
+        completed = set(ckpt["completed_phases"])
         assert 0 in completed
         assert 1 in completed
-        assert 2 in completed
-        assert 3 not in completed
+        assert 2 not in completed
         assert 5 not in completed
 
     def test_full_checkpoint_cycle(self, tmp_output_dir):

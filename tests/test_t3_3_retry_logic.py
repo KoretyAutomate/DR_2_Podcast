@@ -39,11 +39,7 @@ class TestCallSmartRetry(unittest.TestCase):
 
     def _run(self, coro):
         """Helper to run async code."""
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+        return asyncio.run(coro)
 
     def test_retries_on_connection_error_with_escalating_delays(self):
         """_call_smart retries on ConnectionError with increasing backoff."""
