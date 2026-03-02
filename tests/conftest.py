@@ -133,3 +133,52 @@ def mock_llm_response():
         return MockResponse(content)
 
     return _make
+
+
+@pytest.fixture
+def make_deep_extraction():
+    """Factory for DeepExtraction-like dicts."""
+    def _make(**overrides):
+        base = {"pmid": "12345678", "doi": "10.1000/test", "title": "Test Study",
+                "authors": "Smith J et al.", "year": "2023", "journal": "Test J",
+                "study_type": "RCT", "sample_size": "100", "population": "Adults",
+                "intervention": "Drug A", "comparator": "Placebo",
+                "primary_outcome": "Recovery", "effect_size": "0.5",
+                "ci_lower": "0.2", "ci_upper": "0.8", "p_value": "0.01",
+                "risk_of_bias": "Low", "key_findings": "Significant improvement",
+                "limitations": "Small sample", "abstract": "Test abstract."}
+        base.update(overrides)
+        return base
+    return _make
+
+
+@pytest.fixture
+def make_wide_net_record():
+    """Factory for WideNetRecord-like dicts."""
+    def _make(**overrides):
+        base = {"pmid": "12345678", "doi": "10.1000/test", "title": "Test Study",
+                "citation_count": 50, "fwci": 1.2, "source": "pubmed"}
+        base.update(overrides)
+        return base
+    return _make
+
+
+@pytest.fixture
+def make_pipeline_data(make_deep_extraction, make_wide_net_record):
+    """Factory for minimal pipeline_data dict (input to build_imrad_sot)."""
+    def _make(**overrides):
+        ext = make_deep_extraction()
+        base = {
+            "domain": "clinical", "framing_context": "Test topic framing",
+            "search_date": "2026-03-01",
+            "aff_strategy": {"tiers": []}, "fal_strategy": {"tiers": []},
+            "aff_extractions": [ext], "fal_extractions": [ext],
+            "aff_top": [make_wide_net_record()], "fal_top": [make_wide_net_record()],
+            "math_report": "No math applicable.", "impacts": [],
+            "aff_case": "Affirmative case text.", "fal_case": "Falsification case text.",
+            "grade_synthesis": "### Overall\nGRADE: Moderate\nVerdict: Supported",
+            "aff_metrics": {"candidates": 10}, "fal_metrics": {"candidates": 8},
+        }
+        base.update(overrides)
+        return base
+    return _make
