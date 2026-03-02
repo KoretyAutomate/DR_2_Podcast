@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from openai import AsyncOpenAI
 
-from dr2_podcast.utils import safe_float, safe_int, safe_str
+from dr2_podcast.utils import safe_float, safe_int, safe_str, async_call_smart
 from dr2_podcast.research.metadata_clients import OpenAlexClient, ERICClient, MetadataCache
 from dr2_podcast.research.search_service import SearxngClient
 from dr2_podcast.research.effect_size_math import (
@@ -179,27 +179,11 @@ def _classify_study_type(type_str: str) -> Tuple[str, int]:
 
 async def _call_smart_model(client, model, system_prompt, user_prompt,
                             max_tokens=4000, temperature=0.3, timeout=120):
-    """Call the smart model with retry logic."""
-    for attempt in range(3):
-        try:
-            resp = await client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": f"/no_think {system_prompt}"},
-                    {"role": "user", "content": user_prompt},
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-                timeout=timeout,
-            )
-            return resp.choices[0].message.content.strip()
-        except Exception as e:
-            if attempt < 2:
-                logger.warning(f"Smart model call failed (attempt {attempt+1}): {e}")
-                await asyncio.sleep(2 ** attempt)
-            else:
-                raise
-    return ""
+    """Call the smart model with retry logic. Delegates to shared async_call_smart()."""
+    return await async_call_smart(
+        client, model, system_prompt, user_prompt,
+        max_tokens=max_tokens, temperature=temperature, timeout=timeout
+    )
 
 
 def _parse_json_response(text: str) -> dict:
@@ -386,7 +370,7 @@ class SocialScienceOrchestrator:
         log(f"\n✓ Social science pipeline complete in {duration:.0f}s")
 
         # Build report objects compatible with pipeline.py expectations
-        from dr2_podcast.research.clinical import ResearchReport, SummarizedSource, StudyMetadata
+        from dr2_podcast.pipeline_types import ResearchReport, SummarizedSource, StudyMetadata
 
         def _to_report(case_text, extractions, role):
             sources = []
@@ -474,17 +458,25 @@ class SocialScienceOrchestrator:
 
     # --- Step 1: PECO Strategy Formulation ---
 
-    async def _formulate_strategy(
-        self, topic: str, role: str, framing: str, decomposition: str, log=print
+    async def _generate_peco_plan(
+        self, topic: str, role: str, framing: str, decomposition: str,
+        auditor_feedback: str = "", log=print
     ) -> PECOSearchPlan:
         """Generate a PECO-based tiered keyword plan."""
         role_desc = "supporting" if role == "affirmative" else "challenging"
+
+        feedback_section = ""
+        if auditor_feedback:
+            feedback_section = (
+                f"\n\nAUDITOR FEEDBACK (address these issues):\n{auditor_feedback}\n"
+            )
 
         prompt = (
             f"You are a social science researcher designing a search strategy.\n\n"
             f"TOPIC: {topic}\n"
             f"ROLE: Find evidence {role_desc} this claim.\n"
-            f"CANONICAL TERMS: {decomposition}\n\n"
+            f"CANONICAL TERMS: {decomposition}\n"
+            f"{feedback_section}\n"
             "Generate a PECO framework and three tiers of search keywords.\n\n"
             "Return JSON:\n"
             '{\n'
@@ -508,9 +500,72 @@ class SocialScienceOrchestrator:
             tier2=data.get("tier2", {"intervention": [], "outcome": [], "population": []}),
             tier3=data.get("tier3", {"intervention": [], "outcome": [], "population": []}),
             role=role,
-            auditor_approved=True,  # Simplified for initial implementation
         )
         log(f"    PECO: P={plan.peco.get('P','')}, E={plan.peco.get('E','')}, O={plan.peco.get('O','')}")
+        return plan
+
+    async def _audit_peco_plan(
+        self, plan: PECOSearchPlan, topic: str, log=print
+    ) -> Tuple[bool, str]:
+        """Audit a PECO search plan for quality. Returns (approved, feedback)."""
+        plan_json = json.dumps({
+            "peco": plan.peco,
+            "tier1": plan.tier1,
+            "tier2": plan.tier2,
+            "tier3": plan.tier3,
+            "role": plan.role,
+        }, indent=2)
+
+        prompt = (
+            f"Review this PECO search plan for the topic: {topic}\n\n"
+            f"Plan:\n{plan_json}\n\n"
+            "Check:\n"
+            "1. PECO framework completeness (Population, Exposure, Comparison, Outcome)\n"
+            "2. Tier progression (exact → synonyms → broader concepts)\n"
+            "3. Keyword quality (specific, searchable academic terms)\n"
+            "4. Role alignment (terms match the stated research role)\n"
+            "5. Coverage (no obvious gaps in search strategy)\n\n"
+            "Return JSON:\n"
+            '{"approved": true/false, "feedback": "specific issues or approval notes"}'
+        )
+
+        try:
+            result = await _call_smart_model(
+                self.smart_client, self.smart_model,
+                "You are a research methodology auditor. Return only JSON.",
+                prompt, max_tokens=1000,
+            )
+            data = _parse_json_response(result)
+            approved = bool(data.get("approved", False))
+            feedback = data.get("feedback", "No feedback provided")
+            log(f"    Auditor: {'APPROVED' if approved else 'REVISION NEEDED'}")
+            return approved, feedback
+        except (json.JSONDecodeError, Exception) as e:
+            logger.warning(f"Auditor parse error: {e}")
+            return False, f"Auditor response could not be parsed: {e}"
+
+    async def _formulate_strategy(
+        self, topic: str, role: str, framing: str, decomposition: str, log=print
+    ) -> PECOSearchPlan:
+        """Generate and audit a PECO search plan with revision loop."""
+        MAX_REVISIONS = 2
+        feedback = ""
+        plan = None
+        for attempt in range(MAX_REVISIONS + 1):
+            plan = await self._generate_peco_plan(
+                topic, role, framing, decomposition,
+                auditor_feedback=feedback, log=log
+            )
+            plan.revision_count = attempt
+            approved, feedback = await self._audit_peco_plan(plan, topic, log=log)
+            if approved:
+                plan.auditor_approved = True
+                plan.auditor_notes = feedback
+                return plan
+        # Exhausted revisions — proceed with warning
+        plan.auditor_approved = False
+        plan.auditor_notes = f"Not approved after {MAX_REVISIONS} revisions: {feedback}"
+        log(f"    ⚠ Proceeding with unapproved plan after {MAX_REVISIONS} revisions")
         return plan
 
     # --- Step 2: Cascading Search ---

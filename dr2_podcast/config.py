@@ -12,6 +12,9 @@ FAST_BASE_URL = os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1")
 MID_MODEL = os.environ.get("MID_MODEL_NAME", "qwen2.5:7b")
 MID_BASE_URL = os.environ.get("MID_LLM_BASE_URL", os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1"))
 
+# --- Output Directory Override ---
+OUTPUT_DIR_OVERRIDE = os.environ.get("OUTPUT_DIR")
+
 # --- Service URLs ---
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:8080")
 QWEN3_TTS_URL = os.environ.get("QWEN3_TTS_API_URL", "http://localhost:8082/tts")

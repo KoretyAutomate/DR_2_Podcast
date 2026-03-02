@@ -5,6 +5,7 @@ and related functions, enabling static type checking and documenting the
 data contracts between pipeline phases.
 """
 
+from dataclasses import dataclass, field, fields
 from typing import TypedDict, List, Optional, Dict, Any
 
 
@@ -41,6 +42,73 @@ class PipelineData(TypedDict, total=False):
     metrics: PipelineMetrics
 
 
+@dataclass
+class StudyMetadata:
+    """Structured metadata extracted from a scientific source."""
+    study_type: Optional[str] = None       # RCT, meta-analysis, cohort, observational, etc.
+    sample_size: Optional[str] = None      # "n=1234" or None
+    key_result: Optional[str] = None       # Main quantitative finding
+    publication_year: Optional[int] = None
+    journal_name: Optional[str] = None
+    authors: Optional[str] = None          # "First Author et al."
+    effect_size: Optional[str] = None      # "HR 0.82", "OR 1.5", "d=0.3"
+    limitations: Optional[str] = None      # Author-stated limitations
+    demographics: Optional[str] = None     # "age 25-45, 60% female, healthy adults"
+    funding_source: Optional[str] = None   # "Industry-funded", "NIH grant", "Independent", etc.
+    research_tier: Optional[int] = None    # 1=folk 2=synonym 3=compound
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in self.__dict__.items() if v is not None}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "StudyMetadata":
+        valid_fields = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in valid_fields})
+
+@dataclass
+class SummarizedSource:
+    url: str
+    title: str
+    summary: str
+    query: str
+    goal: str
+    error: Optional[str] = None
+    metadata: Optional[StudyMetadata] = None
+
+@dataclass
+class SearchMetrics:
+    """PRISMA-style search flow metrics for auto-generated methodology sections."""
+    search_date: str                    # ISO date
+    databases_searched: List[str]       # ["PubMed", "Google Scholar", "Google", "Bing", "Brave"]
+    total_identified: int               # raw results before dedup
+    total_after_dedup: int              # after dedup
+    total_fetched: int                  # pages fetched
+    total_fetch_errors: int             # fetch failures
+    total_with_content: int             # pages with extractable content
+    total_summarized: int               # successfully summarized
+    academic_sources: int               # pubmed + scholar count
+    general_web_sources: int            # general web count
+    tier1_sufficient_count: int = 0     # queries where Tier 1 was sufficient
+    tier3_expanded_count: int = 0       # queries that needed Tier 3
+    wide_net_total: int = 0             # total records from wide net search (Step 2)
+    screened_in: int = 0                # records selected after screening (Step 3)
+    fulltext_retrieved: int = 0         # full-text articles successfully retrieved (Step 4)
+    fulltext_errors: int = 0            # full-text retrieval failures
+
+@dataclass
+class ResearchReport:
+    topic: str
+    role: str
+    sources: List[SummarizedSource]
+    report: str
+    iterations_used: int
+    total_urls_fetched: int
+    total_summaries: int
+    total_errors: int
+    duration_seconds: float
+    search_metrics: Optional[SearchMetrics] = None
+
+
 class DeepResearchResult(TypedDict):
     """Return type of run_deep_research() in both clinical and social science pipelines.
 
@@ -50,7 +118,7 @@ class DeepResearchResult(TypedDict):
         audit:         ResearchReport for the GRADE synthesis / audit
         pipeline_data: Raw pipeline data for SOT assembly
     """
-    lead: Any              # ResearchReport dataclass
-    counter: Any           # ResearchReport dataclass
-    audit: Any             # ResearchReport dataclass
+    lead: ResearchReport
+    counter: ResearchReport
+    audit: ResearchReport
     pipeline_data: PipelineData

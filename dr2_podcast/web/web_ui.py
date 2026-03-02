@@ -8,30 +8,36 @@ import sys
 import subprocess
 import threading
 import json
+import logging
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict
 import queue
 import secrets
+import re
 import shutil
 import base64
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 import uvicorn
 import httpx
 from dotenv import load_dotenv
 
+from dr2_podcast.config import SMART_BASE_URL, FAST_BASE_URL, OUTPUT_DIR_OVERRIDE
 from dr2_podcast.tools.upload_utils import validate_upload_config, upload_to_buzzsprout, upload_to_youtube
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 # Configuration — project root is two levels up from dr2_podcast/web/
 SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent
-OUTPUT_DIR = SCRIPT_DIR / "research_outputs"
+OUTPUT_DIR = Path(OUTPUT_DIR_OVERRIDE) if OUTPUT_DIR_OVERRIDE else SCRIPT_DIR / "research_outputs"
 TASKS_FILE = SCRIPT_DIR / "podcast_tasks.json"
 TOPIC_INDEX_FILE = OUTPUT_DIR / "topic_index.json"
 
@@ -58,7 +64,15 @@ print("export PODCAST_WEB_USER=your_username", file=sys.stderr)
 print("export PODCAST_WEB_PASSWORD=your_password", file=sys.stderr)
 print("="*60, file=sys.stderr)
 
-app = FastAPI(title="DR_2_Podcast Generator")
+@asynccontextmanager
+async def lifespan(app):
+    threading.Thread(target=worker_thread, daemon=True).start()
+    load_tasks()
+    prune_topic_index()
+    backfill_topic_index()
+    yield
+
+app = FastAPI(title="DR_2_Podcast Generator", lifespan=lifespan)
 security = HTTPBasic()
 # Credential fields stripped from API responses (SEC-04)
 _CREDENTIAL_FIELDS = {"buzzsprout_api_key", "buzzsprout_account_id", "youtube_secret_path"}
@@ -139,8 +153,17 @@ def load_tasks():
 
 def save_tasks():
     with tasks_lock:
-        with open(TASKS_FILE, 'w') as f:
-            json.dump(tasks_db, f, indent=2)
+        tmp = TASKS_FILE.with_suffix('.tmp')
+        try:
+            with open(tmp, 'w') as f:
+                json.dump(tasks_db, f, indent=2, default=str)
+            os.replace(tmp, TASKS_FILE)
+        except Exception:
+            logger.exception("Failed to save tasks to %s", TASKS_FILE)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 # --- Topic Index: central registry of completed research runs ---
@@ -214,8 +237,6 @@ def register_topic(topic: str, output_dir: str, language: str = "en",
 def backfill_topic_index():
     """Prune stale entries, then scan research_outputs/ to register any directories
     not yet in the index and refresh has_sot on all existing entries."""
-    import re as _re
-
     prune_topic_index()
     index = load_topic_index()
     known_dirs = {entry["output_dir"] for entry in index}
@@ -246,10 +267,10 @@ def backfill_topic_index():
         meta_path = d / "session_metadata.txt"
         if meta_path.exists():
             meta_text = meta_path.read_text()
-            m = _re.search(r'^Topic:\s*(.+)$', meta_text, _re.MULTILINE)
+            m = re.search(r'^Topic:\s*(.+)$', meta_text, re.MULTILINE)
             if m:
                 topic = m.group(1).strip()
-            lm = _re.search(r'^Language:\s*\S+\s*\((\w+)\)', meta_text, _re.MULTILINE)
+            lm = re.search(r'^Language:\s*\S+\s*\((\w+)\)', meta_text, re.MULTILINE)
             if lm:
                 lang = lm.group(1).strip()
 
@@ -337,16 +358,6 @@ def worker_thread():
             current_task_id = None
             task_queue.task_done()
 
-# Start worker thread on import (or main)
-threading.Thread(target=worker_thread, daemon=True).start()
-
-# Load existing tasks on startup
-load_tasks()
-
-# Sync topic index: prune deleted dirs, then pick up any unregistered runs
-prune_topic_index()
-backfill_topic_index()
-
 class PodcastRequest(BaseModel):
     topic: str
     language: str = "en"
@@ -358,9 +369,9 @@ class PodcastRequest(BaseModel):
     channel_mission: str = ""
     upload_to_buzzsprout: bool = False
     upload_to_youtube: bool = False
-    buzzsprout_api_key: str = ""
-    buzzsprout_account_id: str = ""
-    youtube_secret_path: str = ""
+    buzzsprout_api_key: SecretStr = SecretStr("")
+    buzzsprout_account_id: SecretStr = SecretStr("")
+    youtube_secret_path: SecretStr = SecretStr("")
 
 class GenerateIntroRequest(BaseModel):
     channel_name: str = ""
@@ -381,9 +392,9 @@ class ReuseGenerateRequest(BaseModel):
     podcast_hosts: str = "random"
     upload_to_buzzsprout: bool = False
     upload_to_youtube: bool = False
-    buzzsprout_api_key: str = ""
-    buzzsprout_account_id: str = ""
-    youtube_secret_path: str = ""
+    buzzsprout_api_key: SecretStr = SecretStr("")
+    buzzsprout_account_id: SecretStr = SecretStr("")
+    youtube_secret_path: SecretStr = SecretStr("")
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     """Simple authentication"""
@@ -1739,7 +1750,6 @@ async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify
     then asks vLLM to score similarity.
     """
     try:
-        import re as _re
         from datetime import timedelta
 
         cutoff_str = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -1796,10 +1806,10 @@ async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify
         )
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"].strip()
-        content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL).strip()
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
         # Parse scores from LLM response
-        array_match = _re.search(r'\[[\d\s,]+\]', content)
+        array_match = re.search(r'\[[\d\s,]+\]', content)
         if not array_match:
             return {"has_match": False, "matches": []}
         scores = json.loads(array_match.group())
@@ -1823,8 +1833,6 @@ async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify
 @app.post("/api/generate-reuse")
 async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(verify_credentials)):
     """Start podcast generation reusing a previous run's research."""
-    import re as _re
-
     # Resolve reuse_dir from output_dir or task_id
     reuse_dir = None
     if request.reuse_output_dir:
@@ -1863,7 +1871,7 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
         meta_path = reuse_dir / "session_metadata.txt"
         if meta_path.exists():
             meta_text = meta_path.read_text()
-            lang_match = _re.search(r'^Language:\s*\S+\s*\((\w+)\)', meta_text, _re.MULTILINE)
+            lang_match = re.search(r'^Language:\s*\S+\s*\((\w+)\)', meta_text, re.MULTILINE)
             if lang_match:
                 old_lang = lang_match.group(1).strip()
 
@@ -1911,9 +1919,9 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
         save_tasks()
 
     # Store upload credentials in task data for explicit passing (not os.environ)
-    task["buzzsprout_api_key"] = request.buzzsprout_api_key or None
-    task["buzzsprout_account_id"] = request.buzzsprout_account_id or None
-    task["youtube_secret_path"] = request.youtube_secret_path or None
+    task["buzzsprout_api_key"] = request.buzzsprout_api_key.get_secret_value() or None
+    task["buzzsprout_account_id"] = request.buzzsprout_account_id.get_secret_value() or None
+    task["youtube_secret_path"] = request.youtube_secret_path.get_secret_value() or None
 
     task_queue.put(task)
     return {"task_id": task_id, "status": "queued", "reuse_mode": reuse_mode}
@@ -1922,7 +1930,6 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
 @app.post("/api/generate-intro")
 async def generate_intro(request: GenerateIntroRequest, username: str = Depends(verify_credentials)):
     """Generate a channel intro using the LLM (smart model with fast-model fallback)."""
-    import re
     lang_label = "Japanese" if request.language == "ja" else "English"
     name    = request.channel_name    or "our podcast"
     target  = request.core_target     or "curious listeners"
@@ -2025,9 +2032,9 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
         save_tasks()
 
     # Store upload credentials in task data for explicit passing (not os.environ)
-    task["buzzsprout_api_key"] = request.buzzsprout_api_key or None
-    task["buzzsprout_account_id"] = request.buzzsprout_account_id or None
-    task["youtube_secret_path"] = request.youtube_secret_path or None
+    task["buzzsprout_api_key"] = request.buzzsprout_api_key.get_secret_value() or None
+    task["buzzsprout_account_id"] = request.buzzsprout_account_id.get_secret_value() or None
+    task["youtube_secret_path"] = request.youtube_secret_path.get_secret_value() or None
 
     # Add to queue instead of starting thread immediately
     task_queue.put(task)
@@ -2097,9 +2104,11 @@ def _close_phase(task_id: str):
 
 def _preflight_check() -> Optional[str]:
     """Test vLLM and Ollama reachability. Returns error message or None."""
+    smart_health = SMART_BASE_URL.rstrip("/") + "/models"
+    fast_health = FAST_BASE_URL.rstrip("/").replace("/v1", "") + "/api/tags"
     errors = []
-    for name, url in [("vLLM", "http://localhost:8000/v1/models"),
-                      ("Ollama", "http://localhost:11434/api/tags")]:
+    for name, url in [("vLLM", smart_health),
+                      ("Ollama", fast_health)]:
         try:
             resp = httpx.get(url, timeout=3.0)
             resp.raise_for_status()
