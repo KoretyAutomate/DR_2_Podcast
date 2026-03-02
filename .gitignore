@@ -45,3 +45,4 @@ docker/qwen3-tts/outputs/
 docker/qwen3-tts/logs/
 docker/qwen3-tts/.env
 docker/qwen3-tts/build.log
+PLAN.md
