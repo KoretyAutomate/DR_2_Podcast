@@ -1433,13 +1433,14 @@ def _create_agents_and_tasks():
 # ================================================================
 
 
-def build_imrad_sot(topic, reports, ev_quality, aff_cand, domain="clinical"):
+def build_imrad_sot(topic, reports, ev_quality, aff_cand, domain="clinical", lang="en"):
     """Wrapper — delegates to pipeline_sot with output_dir and output_path."""
     return _build_imrad_sot_impl(
         topic, reports, ev_quality, aff_cand,
         domain=domain,
         output_dir=output_dir,
         output_path_fn=output_path,
+        language=lang,
     )
 
 
@@ -1869,12 +1870,21 @@ if __name__ == "__main__":
             _r_sot_translated_file = None
 
             if translation_task is not None and sot_content:
-                _r_translated, _r_sot_translated_file, _r_tl_summary = _translate_and_inject_sot(
-                    sot_content, language, language_config, topic_name,
-                    new_output_dir, sot_path,
-                    _truncate_at_boundary(sot_content, 8000), "",
-                    blueprint_task, script_task, audit_task, translation_task
-                )
+                # Check for pre-translated SoT on disk (from template build)
+                _r_ja_path = output_path(new_output_dir, f"source_of_truth_{language}.md")
+                if language != 'en' and _r_ja_path.exists():
+                    _r_translated = _r_ja_path.read_text()
+                    _r_sot_translated_file = _r_ja_path
+                    _r_tl_summary = summarize_report_with_fast_model(
+                        _r_translated, "sot_translated", topic_name)
+                    logger.info("\u2713 Reuse: using existing template-built %s SoT", language.upper())
+                else:
+                    _r_translated, _r_sot_translated_file, _r_tl_summary = _translate_and_inject_sot(
+                        sot_content, language, language_config, topic_name,
+                        new_output_dir, sot_path,
+                        _truncate_at_boundary(sot_content, 8000), "",
+                        blueprint_task, script_task, audit_task, translation_task
+                    )
                 if _r_sot_translated_file:
                     sot_translated_file = _r_sot_translated_file
 
@@ -2073,12 +2083,21 @@ if __name__ == "__main__":
                 _s_sot_translated_file = None
 
                 if translation_task is not None and sot_content:
-                    _s_translated, _s_sot_translated_file, _s_tl_summary = _translate_and_inject_sot(
-                        sot_content, language, language_config, topic_name,
-                        new_output_dir, sot_path,
-                        _truncate_at_boundary(sot_content, 8000), "",
-                        blueprint_task, script_task, audit_task, translation_task
-                    )
+                    # Check for pre-translated SoT on disk (from template build)
+                    _s_ja_path = output_path(new_output_dir, f"source_of_truth_{language}.md")
+                    if language != 'en' and _s_ja_path.exists():
+                        _s_translated = _s_ja_path.read_text()
+                        _s_sot_translated_file = _s_ja_path
+                        _s_tl_summary = summarize_report_with_fast_model(
+                            _s_translated, "sot_translated", topic_name)
+                        logger.info("\u2713 Supplemental: using existing template-built %s SoT", language.upper())
+                    else:
+                        _s_translated, _s_sot_translated_file, _s_tl_summary = _translate_and_inject_sot(
+                            sot_content, language, language_config, topic_name,
+                            new_output_dir, sot_path,
+                            _truncate_at_boundary(sot_content, 8000), "",
+                            blueprint_task, script_task, audit_task, translation_task
+                        )
                     if _s_sot_translated_file:
                         sot_translated_file = _s_sot_translated_file
 
@@ -2358,6 +2377,7 @@ if __name__ == "__main__":
     _research_domain = domain_classification.domain.value  # "clinical" | "social_science" | "general"
 
     sot_content = ""  # Will hold the synthesized Source-of-Truth
+    sot_content_ja = None  # Pre-translated SoT for non-English languages (built from templates)
     sot_file = None   # Path to source_of_truth.md (set after deep research completes)
     sot_summary = ""  # Fast-model summary of sot_content (set after deep research completes)
     aff_candidates = 0
@@ -2383,6 +2403,10 @@ if __name__ == "__main__":
         if _sot_path.exists():
             sot_content = _sot_path.read_text()
             sot_file = _sot_path
+        # Restore pre-translated SoT from disk if it exists
+        _sot_ja_path = output_path(output_dir, f"source_of_truth_{language}.md")
+        if language != 'en' and _sot_ja_path.exists():
+            sot_content_ja = _sot_ja_path.read_text()
         # Restore sot_summary from checkpoint or re-generate
         sot_summary = _pipeline_state.get("sot_summary", "")
         if not sot_summary and sot_content:
@@ -2539,6 +2563,27 @@ if __name__ == "__main__":
             with open(sot_file, 'w') as f:
                 f.write(sot_content)
             logger.info(f"✓ Source of Truth (IMRaD) generated from deep research ({len(sot_content)} chars)")
+
+            # Build pre-translated SoT for non-English languages (no LLM translation needed)
+            sot_content_ja = None
+            if language != 'en' and deep_reports:
+                sot_content_ja = build_imrad_sot(
+                    topic=topic_name, reports=deep_reports,
+                    ev_quality=evidence_quality, aff_cand=aff_candidates,
+                    domain=_research_domain, lang=language,
+                )
+                if evidence_quality == "limited":
+                    sot_content_ja = (
+                        "## \u26a0 \u30a8\u30d3\u30c7\u30f3\u30b9\u306e\u8cea\u306b\u95a2\u3059\u308b\u6ce8\u610f\n\n"
+                        f"\u80af\u5b9a\u7684\u7814\u7a76\u30c8\u30e9\u30c3\u30af\u306f**{aff_candidates}\u4ef6\u306e\u5019\u88dc\u7814\u7a76**\u306e\u307f\u3092\u53d6\u5f97\u3057\u307e\u3057\u305f"
+                        f"\uff08\u95be\u5024: {EVIDENCE_LIMITED_THRESHOLD}\uff09\u3002"
+                        "\u4ee5\u4e0b\u306e\u7d71\u5408\u306f\u9650\u3089\u308c\u305f\u76f4\u63a5\u7684\u30a8\u30d3\u30c7\u30f3\u30b9\u306b\u57fa\u3065\u3044\u3066\u3044\u307e\u3059\u3002"
+                        "\u4e3b\u5f35\u306f\u614e\u91cd\u306b\u89e3\u91c8\u3055\u308c\u308b\u3079\u304d\u3067\u3059\u3002\n\n"
+                    ) + sot_content_ja
+                sot_ja_file = output_path(output_dir, f"source_of_truth_{language}.md")
+                with open(sot_ja_file, 'w', encoding='utf-8') as f:
+                    f.write(sot_content_ja)
+                logger.info("\u2713 %s SoT built from templates (%d chars)", language.upper(), len(sot_content_ja))
 
             # Summarize for injection into Crew 3 task descriptions
             logger.info("Summarizing Source-of-Truth with fast model...")
@@ -2756,14 +2801,39 @@ if __name__ == "__main__":
                 blueprint_task.description += _tl_injection
                 audit_task.description += _tl_injection
     elif translation_task is not None and sot_content:
-        translated_sot, sot_translated_file, translated_sot_summary = _translate_and_inject_sot(
-            sot_content, language, language_config, topic_name,
-            output_dir, sot_file,
-            sot_summary, _grade_injection,
-            blueprint_task, script_task, audit_task, translation_task
-        )
-        # Save Phase 3 checkpoint
-        _save_phase(3, {"translated_sot_summary": translated_sot_summary})
+        if sot_content_ja is not None:
+            # JA SoT already built from pre-translated templates — skip LLM translation
+            logger.info(f"\nPHASE 3: REPORT TRANSLATION (skipped — using template-built SoT)")
+            translated_sot = sot_content_ja
+            sot_translated_file = output_path(output_dir, f"source_of_truth_{language}.md")
+            translated_sot_summary = summarize_report_with_fast_model(
+                translated_sot, "sot_translated", topic_name)
+            if translated_sot_summary:
+                tl_injection = _build_sot_injection_for_stage(
+                    1, sot_file, sot_translated_file,
+                    sot_summary, translated_sot_summary, _grade_injection, language_config
+                )
+                blueprint_task.description += tl_injection
+                script_task.description += tl_injection
+                audit_task.description += tl_injection
+            from types import SimpleNamespace
+            translation_task.output = SimpleNamespace(raw=(
+                f"[Translation complete — {len(translated_sot):,} chars (template-built)]\n"
+                f"Translated SOT saved: {sot_translated_file}\n"
+                f"Key research summary injected into task descriptions."
+            ))
+            logger.info("\u2713 Template-built %s SoT injected into Crew 3 (%d chars)", language.upper(), len(translated_sot))
+            _save_phase(3, {"translated_sot_summary": translated_sot_summary})
+        else:
+            # Fallback: full LLM translation
+            translated_sot, sot_translated_file, translated_sot_summary = _translate_and_inject_sot(
+                sot_content, language, language_config, topic_name,
+                output_dir, sot_file,
+                sot_summary, _grade_injection,
+                blueprint_task, script_task, audit_task, translation_task
+            )
+            # Save Phase 3 checkpoint
+            _save_phase(3, {"translated_sot_summary": translated_sot_summary})
     else:
         # No translation needed (English) — mark Phase 3 done
         if not _phase_done(3):

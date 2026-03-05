@@ -271,3 +271,86 @@ class TestBuildImradSot:
         result = build_imrad_sot("Missing Keys Topic", reports, "unknown", 0)
         assert isinstance(result, str)
         assert "Missing Keys Topic" in result
+
+    def test_ja_sot_has_japanese_headers(self):
+        """JA SoT should contain Japanese section headers."""
+        reports = {
+            "pipeline_data": {
+                "aff_extractions": [], "fal_extractions": [],
+                "aff_top": [], "fal_top": [],
+                "impacts": [], "metrics": {},
+                "framing_context": "テストトピック",
+                "search_date": "2026-01-01",
+            },
+            "audit": _make_report("Final GRADE: High\nSome audit text."),
+            "lead": _make_report("肯定的ケースのテキスト"),
+            "counter": _make_report("反証ケースのテキスト"),
+        }
+        result = build_imrad_sot("Test Topic JA", reports, "sufficient", 5,
+                                 domain="clinical", language="ja")
+        assert "## 要約" in result
+        assert "## 1. 序論" in result
+        assert "## 2. 方法" in result
+        assert "## 3. 結果" in result
+        assert "## 4. 考察" in result
+        assert "## 5. 参考文献" in result
+
+    def test_ja_sot_no_chinese_contamination_in_boilerplate(self):
+        """JA SoT boilerplate should not contain Simplified Chinese characters."""
+        reports = {
+            "pipeline_data": {
+                "aff_extractions": [], "fal_extractions": [],
+                "aff_top": [], "fal_top": [],
+                "impacts": [], "metrics": {},
+                "framing_context": "",
+                "search_date": "2026-01-01",
+            },
+            "audit": _make_report("Final GRADE: Moderate\nAudit."),
+            "lead": _make_report("Aff case."),
+            "counter": _make_report("Fal case."),
+        }
+        result = build_imrad_sot("Chinese Test", reports, "sufficient", 5,
+                                 domain="clinical", language="ja")
+        # Check for known Chinese-only characters
+        chinese_only = set("执补认效营维剂证结显临摄随筛杂混")
+        found = [ch for ch in result if ch in chinese_only]
+        assert not found, f"Chinese chars found: {found}"
+
+    def test_en_sot_unchanged_backward_compat(self):
+        """EN SoT should be identical whether language='en' is explicit or default."""
+        reports = {
+            "pipeline_data": {
+                "aff_extractions": [], "fal_extractions": [],
+                "aff_top": [], "fal_top": [],
+                "impacts": [], "metrics": {},
+                "framing_context": "Test",
+                "search_date": "2026-01-01",
+            },
+            "audit": _make_report("Final GRADE: Low\nAudit."),
+            "lead": _make_report("Aff."),
+            "counter": _make_report("Fal."),
+        }
+        default_result = build_imrad_sot("Compat", reports, "sufficient", 5)
+        explicit_result = build_imrad_sot("Compat", reports, "sufficient", 5,
+                                          language="en")
+        assert default_result == explicit_result
+
+    def test_think_tags_stripped(self):
+        """<think> blocks in report text should be stripped."""
+        reports = {
+            "pipeline_data": {
+                "aff_extractions": [], "fal_extractions": [],
+                "aff_top": [], "fal_top": [],
+                "impacts": [], "metrics": {},
+                "framing_context": "",
+                "search_date": "2026-01-01",
+            },
+            "audit": _make_report("<think>internal reasoning</think>Final GRADE: High\nAudit."),
+            "lead": _make_report("<think>planning</think>Affirmative case."),
+            "counter": _make_report("<think>analysis</think>Falsification case."),
+        }
+        result = build_imrad_sot("Think Test", reports, "sufficient", 5)
+        assert "<think>" not in result
+        assert "internal reasoning" not in result
+        assert "Affirmative case." in result
+        assert "Falsification case." in result
