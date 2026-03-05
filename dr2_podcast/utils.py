@@ -11,8 +11,24 @@ from bs4 import BeautifulSoup
 
 
 def strip_think_blocks(text: str) -> str:
-    """Remove <think>...</think> blocks from LLM output (Qwen3 thinking mode safety net)."""
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    """Remove <think>...</think> blocks from LLM output (Qwen3 thinking mode safety net).
+
+    Handles both closed (<think>...</think>) and unclosed (<think>... without
+    closing tag, e.g. when truncated by max_tokens) blocks.
+    """
+    # First strip properly closed blocks
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    # Handle unclosed <think> block (no closing tag — truncated output)
+    if text.startswith("<think>"):
+        # Find the first JSON-start character after the unclosed think block
+        first_brace = text.find("{")
+        first_bracket = text.find("[")
+        starts = [i for i in (first_brace, first_bracket) if i > 0]
+        if starts:
+            text = text[min(starts):]
+        else:
+            text = ""
+    return text.strip()
 
 
 def extract_content_from_html(soup: BeautifulSoup, max_chars: int = 8000) -> str:

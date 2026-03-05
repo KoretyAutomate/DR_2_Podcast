@@ -216,6 +216,7 @@ class DeepExtraction:
     biological_mechanism: Optional[str] = None
     control_event_rate: Optional[float] = None      # CER — needed for Step 7
     experimental_event_rate: Optional[float] = None  # EER — needed for Step 7
+    outcome_is_adverse: Optional[bool] = None        # True = event is bad (default assumption)
     primary_outcome: Optional[str] = None
     secondary_outcomes: Optional[List[str]] = None
     blinding: Optional[str] = None
@@ -1078,6 +1079,39 @@ class ResearchAgent:
 
     # --- New Clinical Pipeline Methods (Steps 1-6) ---
 
+    @staticmethod
+    def _truncate_after_json(text: str) -> str:
+        """Truncate trailing text after the outermost JSON object/array closes."""
+        if not text:
+            return text
+        opener = text[0]
+        closer = "}" if opener == "{" else "]" if opener == "[" else None
+        if closer is None:
+            return text
+        depth = 0
+        in_string = False
+        escape = False
+        for i, ch in enumerate(text):
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                if in_string:
+                    escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch in "{[":
+                depth += 1
+            elif ch in "}]":
+                depth -= 1
+                if depth == 0:
+                    return text[:i + 1]
+        return text  # unclosed — return as-is for downstream repair
+
     def _parse_json_response(self, raw: str) -> Any:
         """Parse JSON from smart model output, handling code blocks and LLM noise."""
         if not raw or not raw.strip():
@@ -1095,13 +1129,20 @@ class ResearchAgent:
         starts = [i for i in (first_brace, first_bracket) if i >= 0]
         if starts:
             raw = raw[min(starts):]
+        # Truncate trailing text after JSON object closes (handles "extra data" errors)
+        raw = self._truncate_after_json(raw)
         # Try parsing as-is
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
-            # Try appending missing closing brace/bracket
+            # Repair: close unterminated string, then try appending closing braces
             stripped = raw.rstrip()
-            for suffix in ["}", "}}", "]", "]}"]:
+            # If last non-whitespace is inside a string (odd unescaped quotes),
+            # close the string first
+            quote_count = stripped.count('"') - stripped.count('\\"')
+            if quote_count % 2 == 1:
+                stripped += '"'
+            for suffix in ["}", "}}", "]", "]}", ""]:
                 try:
                     data = json.loads(stripped + suffix)
                     break
@@ -1305,6 +1346,16 @@ class ResearchAgent:
             # Tier 3 inherits outcome and population from Tier 2
             plan.tier3.outcome = list(plan.tier2.outcome)
             plan.tier3.population = list(plan.tier2.population)
+
+            # Guard: if Tier 3 intervention wasn't broadened (same as Tier 1),
+            # use canonical_terms from topic decomposition as a broader fallback.
+            t3_set = set(t.lower().strip() for t in plan.tier3.intervention)
+            t1_set = set(t.lower().strip() for t in plan.tier1.intervention)
+            if t3_set == t1_set or not plan.tier3.intervention:
+                canonical = (decomposition or {}).get("canonical_terms", [])
+                if canonical:
+                    plan.tier3.intervention = list(canonical)
+                    log(f"    [Step 1] Tier 3 intervention not broadened — using canonical terms: {canonical[:4]}")
 
             log(f"    [Step 1] Tier 1 intervention: {plan.tier1.intervention[:3]}")
             log(f"    [Step 1] Tier 2 intervention (inherited T1): {plan.tier2.intervention[:3]}")
@@ -1556,6 +1607,51 @@ class ResearchAgent:
             except Exception as e:
                 logger.error(f"Google Scholar search failed: {e}")
 
+        # Zero-result fallback: if all tiers returned nothing, retry with
+        # intervention-only query (no outcome/population AND clause) to cast a
+        # wider net — let Step 3 screening do the filtering.
+        if not all_records:
+            log("    [Step 2] Zero results from cascade — retrying with intervention-only queries")
+            for tier_num, tier_kw, filters in tier_configs:
+                if not tier_kw.intervention:
+                    continue
+                intervention_only = TierKeywords(
+                    intervention=tier_kw.intervention, outcome=[], population=[],
+                    rationale="fallback-intervention-only",
+                )
+                query = self._build_tier_query(intervention_only, filters)
+                if not query:
+                    continue
+                log(f"    [Tier {tier_num} fallback] Query: {query[:140]}...")
+                try:
+                    articles = await pubmed.search_extended(query, max_results=200)
+                    for art in articles:
+                        pmid = art.get("pmid", "")
+                        url = art.get("url", "")
+                        if pmid and pmid in seen_pmids:
+                            continue
+                        if url and url in seen_urls:
+                            continue
+                        if pmid:
+                            seen_pmids.add(pmid)
+                        if url:
+                            seen_urls.add(url)
+                        all_records.append(WideNetRecord(
+                            pmid=pmid, doi=art.get("doi"),
+                            title=art.get("title", ""),
+                            abstract=art.get("abstract", ""),
+                            study_type=art.get("study_type", "other"),
+                            sample_size=None, primary_objective=None,
+                            year=art.get("year"), journal=art.get("journal"),
+                            authors=art.get("authors"), url=url,
+                            source_db="pubmed", research_tier=tier_num,
+                        ))
+                except Exception as e:
+                    logger.error(f"Tier {tier_num} fallback search failed: {e}")
+                if len(all_records) >= TIER_CASCADE_THRESHOLD:
+                    break
+            log(f"    [Step 2] Fallback pool: {len(all_records)} records")
+
         log(f"    [Step 2] Total pool: {len(all_records)} records (highest tier: {highest_tier})")
 
         # Fast-model screening for study_type / sample_size on "other" records
@@ -1762,20 +1858,40 @@ class ResearchAgent:
 
     @staticmethod
     def _load_extraction_cache(output_dir: str = None) -> dict:
-        """Load PMID extraction cache from output_dir or research_outputs/extraction_cache.json."""
-        cache_path = Path(output_dir) / "extraction_cache.json" if output_dir else Path("research_outputs/extraction_cache.json")
-        if cache_path.exists():
-            try:
-                with open(cache_path, 'r') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, OSError):
-                return {}
+        """Load PMID extraction cache from output_dir/meta/ (with root fallback)."""
+        if output_dir:
+            cache_path = Path(output_dir) / "meta" / "extraction_cache.json"
+            if cache_path.exists():
+                try:
+                    with open(cache_path, 'r') as f:
+                        return json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    return {}
+            # Backward compat: check old root-level location
+            legacy_path = Path(output_dir) / "extraction_cache.json"
+            if legacy_path.exists():
+                try:
+                    with open(legacy_path, 'r') as f:
+                        return json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    return {}
+        else:
+            cache_path = Path("research_outputs/extraction_cache.json")
+            if cache_path.exists():
+                try:
+                    with open(cache_path, 'r') as f:
+                        return json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    return {}
         return {}
 
     @staticmethod
     def _save_extraction_cache(cache: dict, output_dir: str = None):
-        """Save PMID extraction cache to output_dir or research_outputs/extraction_cache.json."""
-        cache_path = Path(output_dir) / "extraction_cache.json" if output_dir else Path("research_outputs/extraction_cache.json")
+        """Save PMID extraction cache to output_dir/meta/extraction_cache.json."""
+        if output_dir:
+            cache_path = Path(output_dir) / "meta" / "extraction_cache.json"
+        else:
+            cache_path = Path("research_outputs/extraction_cache.json")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_path, 'w') as f:
             json.dump(cache, f, indent=2)
@@ -1797,6 +1913,7 @@ class ResearchAgent:
             biological_mechanism=cached.get("biological_mechanism"),
             control_event_rate=cached.get("cer"),
             experimental_event_rate=cached.get("eer"),
+            outcome_is_adverse=cached.get("outcome_is_adverse"),
             primary_outcome=cached.get("primary_outcome"),
             secondary_outcomes=cached.get("secondary_outcomes"),
             blinding=cached.get("blinding"),
@@ -1863,6 +1980,15 @@ class ResearchAgent:
                     system_prompt = (
                         "You are a clinical data extraction specialist. Read this study and extract "
                         "ALL of the following variables. Use null for any field not found.\n\n"
+                        "IMPORTANT for control_event_rate / experimental_event_rate:\n"
+                        "- The 'event' MUST be an ADVERSE or NEGATIVE outcome (e.g., disease incidence, "
+                        "mortality, hospitalization, weight gain, metabolic worsening).\n"
+                        "- If the study measures a POSITIVE outcome (e.g., weight loss, improvement, "
+                        "remission), INVERT it: report the proportion who did NOT improve.\n"
+                        "- Example: if 63% of experimental group lost weight, the adverse event "
+                        "(no weight loss) rate is 0.37.\n"
+                        "- Set outcome_is_adverse to false ONLY if you could not invert and are "
+                        "reporting a beneficial event rate directly.\n\n"
                         "Return ONLY valid JSON:\n"
                         "{\n"
                         '  "attrition_pct": "exact dropout percentage or null",\n'
@@ -1874,6 +2000,7 @@ class ResearchAgent:
                         '  "biological_mechanism": "mechanism/pathway or null",\n'
                         '  "control_event_rate": 0.15,\n'
                         '  "experimental_event_rate": 0.10,\n'
+                        '  "outcome_is_adverse": true,\n'
                         '  "primary_outcome": "exact primary endpoint or null",\n'
                         '  "secondary_outcomes": ["endpoint1", "endpoint2"],\n'
                         '  "blinding": "double-blind | single-blind | open-label | null",\n'
@@ -1897,7 +2024,7 @@ class ResearchAgent:
                     try:
                         resp = await self.smart_client.chat.completions.create(
                             model=self.smart_model, messages=messages,
-                            max_tokens=1536, temperature=0.1, timeout=300
+                            max_tokens=2048, temperature=0.1, timeout=300
                         )
                     except openai.BadRequestError as ctx_err:
                         if "context length" not in str(ctx_err).lower():
@@ -1908,7 +2035,7 @@ class ResearchAgent:
                         messages[1]["content"] = f"Title: {record.title}\n\nContent:\n{content}"
                         resp = await self.smart_client.chat.completions.create(
                             model=self.smart_model, messages=messages,
-                            max_tokens=1536, temperature=0.1, timeout=300
+                            max_tokens=2048, temperature=0.1, timeout=300
                         )
 
                     raw = resp.choices[0].message.content.strip()
@@ -1945,6 +2072,7 @@ class ResearchAgent:
                         biological_mechanism=safe_str(data.get("biological_mechanism")),
                         control_event_rate=safe_float(data.get("control_event_rate")),
                         experimental_event_rate=safe_float(data.get("experimental_event_rate")),
+                        outcome_is_adverse=safe_bool(data.get("outcome_is_adverse")),
                         primary_outcome=safe_str(data.get("primary_outcome")),
                         secondary_outcomes=safe_list(data.get("secondary_outcomes")),
                         blinding=safe_str(data.get("blinding")),
