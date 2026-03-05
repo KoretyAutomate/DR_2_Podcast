@@ -9,40 +9,35 @@ _format_study_characteristics_table, _format_references).
 
 import re
 from pathlib import Path
+from dr2_podcast.utils import strip_think_blocks
 
 
-def _extract_conclusion_status(grade_report: str, domain: str = "clinical") -> tuple:
+def _extract_conclusion_status(grade_report: str, domain: str = "clinical",
+                               language: str = "en") -> tuple:
     """Extract evidence level, conclusion status, and executive summary.
 
     Supports both GRADE (clinical) and Evidence Quality (social science) levels.
+    Uses i18n status_map when language != 'en'.
     """
+    from dr2_podcast.sot_i18n import get_templates
+    tmpl = get_templates(language)
+    tmpl_status = tmpl["status_map"]
+
     if domain == "social_science":
         # Social science evidence quality levels
         m = re.search(
             r'Final\s+Evidence\s+Quality[:\s]*\*{0,2}(STRONG|MODERATE_STRONG|MODERATE_WEAK|MODERATE|WEAK|VERY_WEAK)\*{0,2}',
             grade_report, re.IGNORECASE)
         grade = m.group(1).strip().upper() if m else "Not Determined"
-        status_map = {
-            "STRONG": "Scientifically Supported",
-            "MODERATE_STRONG": "Well Supported \u2014 Robust Evidence",
-            "MODERATE": "Partially Supported \u2014 Further Research Recommended",
-            "MODERATE_WEAK": "Tentatively Supported \u2014 More Rigorous Studies Needed",
-            "WEAK": "Insufficient Evidence \u2014 More Research Needed",
-            "VERY_WEAK": "Not Supported by Current Evidence",
-        }
+        status_map = tmpl_status.get("social_science", {})
     else:
         # Clinical GRADE levels
         m = re.search(
             r'Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}',
             grade_report, re.IGNORECASE)
         grade = m.group(1).strip() if m else "Not Determined"
-        status_map = {
-            "High": "Scientifically Supported",
-            "Moderate": "Partially Supported \u2014 Further Research Recommended",
-            "Low": "Insufficient Evidence \u2014 More Research Needed",
-            "Very Low": "Not Supported by Current Evidence",
-        }
-    status = status_map.get(grade, "Under Evaluation")
+        status_map = tmpl_status.get("clinical", {})
+    status = status_map.get(grade, tmpl_status.get("default_status", "Under Evaluation"))
 
     m2 = re.search(r'Executive\s+Summary[#\s:]*\n+(.+?)(?:\n\n|\n#)',
                    grade_report, re.DOTALL)
@@ -310,6 +305,7 @@ def build_imrad_sot(
     domain: str = "clinical",
     output_dir=None,
     output_path_fn=None,
+    language: str = "en",
 ) -> str:
     """Assemble the Source of Truth document in IMRaD scientific paper format.
 
@@ -317,7 +313,11 @@ def build_imrad_sot(
         domain: "clinical" or "social_science" -- controls framework terminology
         output_dir: Path to the current output directory (for reading clinical_math.md).
         output_path_fn: Callable(run_dir, filename) -> Path.
+        language: "en" or "ja" -- selects pre-translated boilerplate templates.
     """
+    from dr2_podcast.sot_i18n import get_templates, t
+    tmpl = get_templates(language)
+
     pd = reports.get("pipeline_data", {})
     # Auto-detect domain from pipeline_data if not explicitly set
     if pd.get("domain") == "social_science":
@@ -336,9 +336,9 @@ def build_imrad_sot(
     all_wide = aff_top + fal_top
 
     _empty_rpt = type('_E', (), {'report': '', 'total_summaries': 0, 'total_urls_fetched': 0, 'duration_seconds': 0, 'sources': []})()
-    audit_text = reports.get("audit", _empty_rpt).report
-    aff_case_text = reports.get("lead", _empty_rpt).report
-    fal_case_text = reports.get("counter", _empty_rpt).report
+    audit_text = strip_think_blocks(reports.get("audit", _empty_rpt).report)
+    aff_case_text = strip_think_blocks(reports.get("lead", _empty_rpt).report)
+    fal_case_text = strip_think_blocks(reports.get("counter", _empty_rpt).report)
 
     # Dispatch to domain-specific SOT builder
     if domain == "social_science":
@@ -348,7 +348,8 @@ def build_imrad_sot(
             framing, search_date, aff_strategy, fal_strategy,
         )
 
-    grade_level, conclusion_status, exec_summary = _extract_conclusion_status(audit_text)
+    grade_level, conclusion_status, exec_summary = _extract_conclusion_status(
+        audit_text, language=language)
     grade_sections = _parse_grade_sections(audit_text)
 
     m = metrics
@@ -369,237 +370,173 @@ def build_imrad_sot(
     pico_summary = ""
     if aff_strategy and hasattr(aff_strategy, 'pico'):
         p = aff_strategy.pico
-        pico_summary = (
-            f"**P** (Population): {p.get('population', 'N/A')}  \n"
-            f"**I** (Intervention): {p.get('intervention', 'N/A')}  \n"
-            f"**C** (Comparison): {p.get('comparison', 'N/A')}  \n"
-            f"**O** (Outcome): {p.get('outcome', 'N/A')}"
-        )
+        pico_summary = tmpl["pico_summary_template"].format(
+            population=p.get('population', 'N/A'),
+            intervention=p.get('intervention', 'N/A'),
+            comparison=p.get('comparison', 'N/A'),
+            outcome=p.get('outcome', 'N/A'))
 
     # Determine representative NNT for abstract
     nnt_summary = ""
     if impacts:
         benefit = [i for i in impacts if i.direction == "benefit"]
         ref_impact = benefit[0] if benefit else impacts[0]
-        nnt_summary = (
-            f"The primary quantitative finding is NNT = **{ref_impact.nnt:.1f}** "
-            f"({ref_impact.direction}; ARR = {ref_impact.arr:+.4f})."
-        )
+        nnt_summary = tmpl["nnt_summary_template"].format(
+            nnt=ref_impact.nnt, direction=ref_impact.direction, arr=ref_impact.arr)
+
+    track_labels = tmpl["track_labels"]
 
     # -- ABSTRACT --
-    out = [f"# Source of Truth: {topic}\n"]
-    out.append("## Abstract\n")
+    out = [t(tmpl, "title", "prefix", topic=topic)]
+    out.append(t(tmpl, "abstract", "header"))
     if pico_summary:
-        out.append(f"**Clinical Question (PICO):**  \n{pico_summary}\n")
-    out.append(
-        f"**Methods:** Dual-track systematic review using parallel Affirmative and "
-        f"Falsification search strategies. A total of {total_wide} records were identified "
-        f"across PubMed and Google Scholar; {total_screened} were screened to top candidates "
-        f"per track; {total_ft_ok} full-text articles were retrieved and deeply extracted. "
-        f"Absolute Risk Reduction (ARR) and Number Needed to Treat (NNT) were calculated "
-        f"deterministically in Python (no LLM). Evidence quality was assessed using the "
-        f"GRADE framework.\n"
-    )
+        out.append(t(tmpl, "abstract", "pico_label", pico_summary=pico_summary))
+    out.append(t(tmpl, "abstract", "methods",
+                 total_wide=total_wide, total_screened=total_screened,
+                 total_ft_ok=total_ft_ok))
     if nnt_summary:
-        out.append(f"**Key Finding:** {nnt_summary}\n")
-    out.append(
-        f"**Evidence Quality (GRADE):** {grade_level}  \n"
-        f"**Conclusion:** {conclusion_status}\n"
-    )
+        out.append(t(tmpl, "abstract", "key_finding", nnt_summary=nnt_summary))
+    out.append(t(tmpl, "abstract", "evidence_quality",
+                 grade_level=grade_level, conclusion_status=conclusion_status))
     if exec_summary:
         out.append(f"\n{exec_summary}\n")
 
     # -- 1. INTRODUCTION --
-    out.append("\n---\n\n## 1. Introduction\n")
+    out.append(t(tmpl, "introduction", "header"))
     if framing:
         out.append(framing.strip() + "\n")
     else:
-        out.append(
-            f"This systematic review was initiated to evaluate the scientific evidence "
-            f"for and against the following research question: **{topic}**\n"
-        )
-    out.append(
-        "\nThis review employs a dual-hypothesis design. Two parallel search tracks "
-        "were run simultaneously:\n\n"
-        "- **Affirmative Track**: Seeks evidence supporting the hypothesis.\n"
-        "- **Falsification Track**: Adversarially seeks evidence of null results, harms, "
-        "methodological flaws, and confounders.\n"
-    )
+        out.append(t(tmpl, "introduction", "default_framing", topic=topic))
+    out.append(t(tmpl, "introduction", "dual_hypothesis"))
     if aff_strategy and hasattr(aff_strategy, 'pico'):
         p = aff_strategy.pico
-        out.append(
-            f"\n**Affirmative Hypothesis:** In {p.get('population', 'the target population')}, "
-            f"does {p.get('intervention', 'the intervention')} improve "
-            f"{p.get('outcome', 'the primary outcome')} compared to "
-            f"{p.get('comparison', 'control')}?\n"
-        )
+        out.append(t(tmpl, "introduction", "aff_hypothesis",
+                     population=p.get('population', 'the target population'),
+                     intervention=p.get('intervention', 'the intervention'),
+                     outcome=p.get('outcome', 'the primary outcome'),
+                     comparison=p.get('comparison', 'control')))
     if fal_strategy and hasattr(fal_strategy, 'pico'):
         fp = fal_strategy.pico
-        out.append(
-            f"\n**Falsification Hypothesis:** Does {fp.get('intervention', 'the intervention')} "
-            f"fail to improve, or actively harm, {fp.get('outcome', 'the primary outcome')} "
-            f"in {fp.get('population', 'the target population')}?\n"
-        )
+        out.append(t(tmpl, "introduction", "fal_hypothesis",
+                     intervention=fp.get('intervention', 'the intervention'),
+                     outcome=fp.get('outcome', 'the primary outcome'),
+                     population=fp.get('population', 'the target population')))
 
     # -- 2. METHODS --
-    out.append("\n---\n\n## 2. Methods\n")
+    out.append(t(tmpl, "methods", "header"))
 
     # 2.1 Search Strategy
-    out.append("### 2.1 Search Strategy\n")
-    for label, strategy in [("Affirmative", aff_strategy), ("Falsification", fal_strategy)]:
+    out.append(t(tmpl, "methods", "search_strategy_header"))
+    for label_key, strategy in [("affirmative", aff_strategy), ("falsification", fal_strategy)]:
         if not strategy or not hasattr(strategy, 'pico'):
             continue
-        out.append(f"#### {label} Track\n")
+        label = track_labels[label_key]
+        out.append(t(tmpl, "methods", "track_header", label=label))
         p = strategy.pico
-        out.append(
-            f"**PICO Framework:**  \n"
-            f"- **P** (Population): {p.get('population', 'N/A')}  \n"
-            f"- **I** (Intervention): {p.get('intervention', 'N/A')}  \n"
-            f"- **C** (Comparison): {p.get('comparison', 'N/A')}  \n"
-            f"- **O** (Outcome): {p.get('outcome', 'N/A')}\n"
-        )
+        out.append(t(tmpl, "methods", "pico_framework",
+                     population=p.get('population', 'N/A'),
+                     intervention=p.get('intervention', 'N/A'),
+                     comparison=p.get('comparison', 'N/A'),
+                     outcome=p.get('outcome', 'N/A')))
         # Tiered keyword plan (new architecture)
         if hasattr(strategy, 'tier1'):
+            tier_label_list = tmpl["methods"]["tier_labels"]
             tier_map = [
-                ("Tier 1 \u2014 Established evidence (exact folk terms)", strategy.tier1),
-                ("Tier 2 \u2014 Supporting evidence (canonical synonyms)", strategy.tier2),
-                ("Tier 3 \u2014 Speculative extrapolation (compound class)", strategy.tier3),
+                (tier_label_list[0], strategy.tier1),
+                (tier_label_list[1], strategy.tier2),
+                (tier_label_list[2], strategy.tier3),
             ]
-            out.append("\n**Three-Tier Keyword Plan:**\n")
+            out.append(t(tmpl, "methods", "three_tier_header"))
             for tier_label, tier_kw in tier_map:
                 if hasattr(tier_kw, 'intervention') and tier_kw.intervention:
                     out.append(f"\n*{tier_label}*\n")
-                    out.append(f"- Intervention: {', '.join(tier_kw.intervention)}\n")
-                    out.append(f"- Outcome: {', '.join(tier_kw.outcome)}\n")
+                    out.append(t(tmpl, "methods", "intervention_label",
+                                 terms=', '.join(tier_kw.intervention)))
+                    out.append(t(tmpl, "methods", "outcome_label",
+                                 terms=', '.join(tier_kw.outcome)))
                     if tier_kw.population:
-                        out.append(f"- Population: {', '.join(tier_kw.population)}\n")
-                    out.append(f"- *Rationale: {tier_kw.rationale}*\n")
+                        out.append(t(tmpl, "methods", "population_label",
+                                     terms=', '.join(tier_kw.population)))
+                    out.append(t(tmpl, "methods", "rationale_label",
+                                 rationale=tier_kw.rationale))
             if strategy.auditor_approved:
-                out.append(f"\n\u2705 *Auditor approved after {strategy.revision_count} revision(s).*\n")
+                out.append(t(tmpl, "methods", "auditor_approved",
+                             revision_count=strategy.revision_count))
             else:
-                out.append(f"\n\u26a0 *Auditor not approved (proceeded after max revisions). Notes: {strategy.auditor_notes[:200]}*\n")
+                out.append(t(tmpl, "methods", "auditor_not_approved",
+                             notes=strategy.auditor_notes[:200]))
         # Legacy: Boolean search strings (old architecture -- kept for backward compat)
         elif hasattr(strategy, 'mesh_terms') and strategy.mesh_terms:
             mt = strategy.mesh_terms
-            out.append("\n**MeSH Terms:**\n")
+            out.append(t(tmpl, "methods", "mesh_terms_header"))
             for cat, terms in mt.items():
                 if terms:
                     out.append(f"- *{cat.capitalize()}*: {', '.join(terms)}\n")
         if hasattr(strategy, 'search_strings') and strategy.search_strings:
             ss = strategy.search_strings
-            out.append("\n**Boolean Search Strings:**\n")
+            out.append(t(tmpl, "methods", "boolean_search_header"))
             for db, query in ss.items():
                 if query:
                     out.append(f"- **{db.replace('_', ' ').title()}**: `{query}`\n")
         out.append("\n")
 
     # 2.2 Data Collection
-    out.append("### 2.2 Data Collection\n")
+    out.append(t(tmpl, "methods", "data_collection_header"))
     aff_tier = pd.get("aff_highest_tier", 1)
     fal_tier = pd.get("fal_highest_tier", 1)
-    tier_labels = {1: "Tier 1 (established \u2014 exact folk terms)",
-                   2: "Tier 2 (supporting \u2014 canonical synonyms)",
-                   3: "Tier 3 (speculative \u2014 compound class)"}
-    out.append(
-        f"- **Databases searched:** PubMed (NCBI E-utilities), Google Scholar (via SearXNG)\n"
-        f"- **Search date:** {search_date}\n"
-        f"- **Search architecture:** Three-tier cascading keyword search. "
-        f"Tier 1 runs first (exact folk terms). If pool < 50 records, Tier 2 runs "
-        f"(canonical synonyms). If still < 50, Tier 3 runs (compound class/mechanism \u2014 "
-        f"results require inference and are flagged as speculative extrapolation).\n"
-        f"- **Affirmative track cascade reached:** {tier_labels.get(aff_tier, str(aff_tier))}\n"
-        f"- **Falsification track cascade reached:** {tier_labels.get(fal_tier, str(fal_tier))}\n"
-    )
+    tier_cascade = tmpl["methods"]["tier_cascade_labels"]
+    out.append(t(tmpl, "methods", "data_collection_body",
+                 search_date=search_date,
+                 aff_tier_label=tier_cascade.get(aff_tier, str(aff_tier)),
+                 fal_tier_label=tier_cascade.get(fal_tier, str(fal_tier))))
     if aff_tier == 3 or fal_tier == 3:
-        out.append(
-            f"- \u26a0 **Note:** One or both tracks reached Tier 3. Tier 3 evidence involves the "
-            f"active compound class (e.g., caffeine from any source, not coffee specifically). "
-            f"These results require an inference step to apply to the original substance and "
-            f"are presented as speculative extrapolation in this review.\n"
-        )
-    out.append(
-        f"- **Affirmative track records identified:** {aff_wide}\n"
-        f"- **Falsification track records identified:** {fal_wide}\n"
-        f"- **Total records identified:** {total_wide}\n"
-    )
+        out.append(t(tmpl, "methods", "tier3_warning"))
+    out.append(t(tmpl, "methods", "track_records",
+                 aff_wide=aff_wide, fal_wide=fal_wide, total_wide=total_wide))
 
     # 2.3 Screening & Selection
-    out.append("\n### 2.3 Screening & Selection\n")
-    out.append(
-        "Title and abstract screening was performed by the Smart Model (Qwen3-32B-AWQ) "
-        "using structured inclusion/exclusion criteria:\n\n"
-        "**Inclusion criteria:** Human clinical studies (RCTs, meta-analyses, systematic reviews, "
-        "large cohort studies); sample size \u2265 30 participants; published in peer-reviewed journals; "
-        "directly relevant to the PICO question.\n\n"
-        "**Exclusion criteria:** Animal models; in vitro studies; case reports (n < 5); "
-        "conference abstracts without full data; non-English publications; retracted publications.\n\n"
-        f"- **Affirmative track screened to top candidates:** {aff_screened}\n"
-        f"- **Falsification track screened to top candidates:** {fal_screened}\n"
-        f"- **Total articles selected for full-text retrieval:** {total_screened}\n"
-    )
+    out.append(t(tmpl, "methods", "screening_header"))
+    out.append(t(tmpl, "methods", "screening_body",
+                 aff_screened=aff_screened, fal_screened=fal_screened,
+                 total_screened=total_screened))
 
     # 2.4 Data Extraction
-    out.append("\n### 2.4 Data Extraction\n")
-    out.append(
-        "Full-text articles were retrieved using a 4-tier cascade:\n\n"
-        "1. **PMC EFetch** (NCBI EUtils `elink` + `efetch`): Open-access full XML\n"
-        "2. **Europe PMC REST API**: Full-text XML for OA articles\n"
-        "3. **Unpaywall API**: Open-access PDF/HTML links via DOI\n"
-        "4. **NCBI Abstract EFetch**: Official abstract XML (fallback for paywalled articles)\n\n"
-        f"- **Affirmative track full-text retrieved:** {aff_ft_ok} "
-        f"(errors: {aff_ft_err})\n"
-        f"- **Falsification track full-text retrieved:** {fal_ft_ok} "
-        f"(errors: {fal_ft_err})\n"
-        f"- **Total full texts successfully retrieved:** {total_ft_ok}\n\n"
-        "Clinical variables were extracted from each full text by the Fast Model "
-        "(llama3.2:1b) using a structured extraction template capturing: "
-        "study design, sample sizes, demographics, follow-up period, "
-        "Control Event Rate (CER), Experimental Event Rate (EER), "
-        "effect size with confidence intervals, blinding, randomization method, "
-        "intention-to-treat analysis, funding source, and risk of bias.\n"
-    )
+    out.append(t(tmpl, "methods", "extraction_header"))
+    out.append(t(tmpl, "methods", "extraction_body",
+                 aff_ft_ok=aff_ft_ok, aff_ft_err=aff_ft_err,
+                 fal_ft_ok=fal_ft_ok, fal_ft_err=fal_ft_err,
+                 total_ft_ok=total_ft_ok))
 
     # 2.5 Statistical Analysis
-    out.append("\n### 2.5 Statistical Analysis\n")
-    out.append(
-        "**Deterministic Clinical Math (Step 6):** ARR, RRR, and NNT were calculated "
-        "using pure Python arithmetic from extracted CER and EER values \u2014 no LLM involvement:\n\n"
-        "- ARR (Absolute Risk Reduction) = CER \u2212 EER\n"
-        "- RRR (Relative Risk Reduction) = ARR / CER\n"
-        "- NNT (Number Needed to Treat) = 1 / |ARR|\n\n"
-        "**GRADE Framework (Step 7):** Evidence quality was assessed by the Smart Model "
-        "using the Grading of Recommendations, Assessment, Development, and Evaluations "
-        "(GRADE) framework. Starting quality was HIGH for RCTs and LOW for observational "
-        "studies, then adjusted for: risk of bias, inconsistency, indirectness, imprecision, "
-        "and publication bias (downgrade factors); and large effect size, dose-response "
-        "gradient, and plausible confounders (upgrade factors).\n"
-    )
+    out.append(t(tmpl, "methods", "stats_header"))
+    out.append(t(tmpl, "methods", "stats_body"))
 
     # -- 3. RESULTS --
-    out.append("\n---\n\n## 3. Results\n")
+    out.append(t(tmpl, "results", "header"))
 
     # 3.1 Study Selection (PRISMA)
-    out.append("### 3.1 Study Selection\n")
+    out.append(t(tmpl, "results", "study_selection_header"))
     prisma_from_grade = grade_sections.get("prisma flow diagram", "")
+    prisma_rows = tmpl["results"]["prisma_rows"]
     out.append(
-        "**PRISMA Flow:**\n\n"
-        f"| Stage | Affirmative | Falsification | Total |\n"
-        f"|-------|-------------|---------------|-------|\n"
-        f"| Records identified | {aff_wide} | {fal_wide} | {total_wide} |\n"
-        f"| Screened (top candidates) | {aff_screened} | {fal_screened} | {total_screened} |\n"
-        f"| Full-text retrieved | {aff_ft_ok} | {fal_ft_ok} | {total_ft_ok} |\n"
-        f"| Full-text errors | {aff_ft_err} | {fal_ft_err} | {total_ft_err} |\n"
-        f"| Included in synthesis | {len(aff_extractions)} | {len(fal_extractions)} | {len(all_extractions)} |\n"
+        t(tmpl, "results", "prisma_label")
+        + tmpl["results"]["prisma_table_header"]
+        + prisma_rows["identified"].format(aff=aff_wide, fal=fal_wide, total=total_wide)
+        + prisma_rows["screened"].format(aff=aff_screened, fal=fal_screened, total=total_screened)
+        + prisma_rows["fulltext"].format(aff=aff_ft_ok, fal=fal_ft_ok, total=total_ft_ok)
+        + prisma_rows["errors"].format(aff=aff_ft_err, fal=fal_ft_err, total=total_ft_err)
+        + prisma_rows["included"].format(aff=len(aff_extractions), fal=len(fal_extractions),
+                                          total=len(all_extractions))
     )
     if prisma_from_grade:
         out.append(f"\n{prisma_from_grade}\n")
 
     # 3.2 Study Characteristics
-    out.append("\n### 3.2 Study Characteristics\n")
+    out.append(t(tmpl, "results", "study_chars_header"))
     out.append(_format_study_characteristics_table(all_extractions))
 
     # 3.3 Clinical Impact
-    out.append("\n### 3.3 Clinical Impact (Deterministic Math)\n")
+    out.append(t(tmpl, "results", "clinical_impact_header"))
     # Try to read clinical_math.md from output directory
     _math_content = None
     if output_dir is not None and output_path_fn is not None:
@@ -609,8 +546,7 @@ def build_imrad_sot(
     if _math_content:
         out.append(_math_content + "\n")
     elif impacts:
-        rows = ["| Study | CER | EER | ARR | RRR | NNT | Direction |",
-                "|-------|-----|-----|-----|-----|-----|-----------|"]
+        rows = [tmpl["results"]["impact_table_header"]]
         for i in impacts:
             rows.append(
                 f"| {i.study_id} | {i.cer:.3f} | {i.eer:.3f} | "
@@ -620,74 +556,54 @@ def build_imrad_sot(
         for i in impacts:
             out.append(f"- **{i.study_id}**: {i.nnt_interpretation}\n")
     else:
-        out.append("*No studies provided both CER and EER \u2014 NNT calculation not available.*\n")
+        out.append(t(tmpl, "results", "no_impact_data"))
 
     # -- 4. DISCUSSION --
-    out.append("\n---\n\n## 4. Discussion\n")
+    out.append(t(tmpl, "discussion", "header"))
 
     # 4.1 Affirmative Case
-    out.append("### 4.1 Affirmative Case\n")
+    out.append(t(tmpl, "discussion", "aff_case_header"))
     out.append(aff_case_text.strip() + "\n")
 
     # 4.2 Falsification Case
-    out.append("\n### 4.2 Falsification Case\n")
+    out.append(t(tmpl, "discussion", "fal_case_header"))
     out.append(fal_case_text.strip() + "\n")
 
     # 4.3 GRADE Evidence Assessment
-    out.append("\n### 4.3 GRADE Evidence Assessment\n")
+    out.append(t(tmpl, "discussion", "grade_header"))
     ep = grade_sections.get("evidence profile", "")
     ga = grade_sections.get("grade assessment", "")
     if ep:
-        out.append(f"**Evidence Profile:**\n\n{ep}\n")
+        out.append(t(tmpl, "discussion", "evidence_profile_label", text=ep))
     if ga:
-        out.append(f"\n**GRADE Assessment:**\n\n{ga}\n")
+        out.append(t(tmpl, "discussion", "grade_assessment_label", text=ga))
     if not ep and not ga:
         # Fallback: include the full audit text minus already-extracted sections
         out.append(audit_text.strip() + "\n")
 
     # 4.4 Balanced Verdict
-    out.append("\n### 4.4 Balanced Verdict\n")
+    out.append(t(tmpl, "discussion", "verdict_header"))
     bv = grade_sections.get("balanced verdict", "")
     if bv:
         out.append(bv + "\n")
     else:
-        out.append(
-            f"**Evidence Quality (GRADE):** {grade_level}  \n"
-            f"**Conclusion:** {conclusion_status}\n"
-        )
+        out.append(t(tmpl, "discussion", "verdict_fallback",
+                     grade_level=grade_level, conclusion_status=conclusion_status))
 
     # 4.5 Limitations
-    out.append("\n### 4.5 Limitations\n")
-    out.append(
-        "The following pipeline-specific limitations apply to this synthesis:\n\n"
-        "- The Fast Model (llama3.2:1b) may have misclassified study designs or "
-        "misextracted clinical variables from complex full-text articles.\n"
-        "- Articles not available via PMC, Europe PMC, or Unpaywall were reduced to "
-        "abstract-level data, limiting extraction depth for paywalled literature.\n"
-        "- The 500-result cap per track may exclude relevant studies not retrieved "
-        "in the top results from PubMed or Google Scholar.\n"
-        "- CER/EER extraction relies on the Fast Model correctly identifying "
-        "event rates in text; studies reporting outcomes without explicit event "
-        "rates could not be included in NNT calculations.\n"
-        "- Non-English language publications were excluded.\n"
-    )
+    out.append(t(tmpl, "discussion", "limitations_header"))
+    out.append(t(tmpl, "discussion", "limitations_body"))
 
     # 4.6 Recommendations
-    out.append("\n### 4.6 Recommendations for Further Research\n")
+    out.append(t(tmpl, "discussion", "recs_header"))
     recs = grade_sections.get("recommendations for further research", "")
     if recs:
         out.append(recs + "\n")
     else:
-        out.append(
-            "- Conduct large-scale, long-term randomized controlled trials with "
-            "rigorous methodologies to address identified evidence gaps.\n"
-            "- Investigate outcomes in under-represented populations.\n"
-            "- Address potential biases and ensure transparency in study design "
-            "and reporting.\n"
-        )
+        out.append(t(tmpl, "discussion", "recs_fallback"))
 
     # -- 5. REFERENCES --
-    out.append("\n---\n\n## 5. References\n")
+    out.append(t(tmpl, "references", "header"))
     out.append(_format_references(all_extractions, all_wide))
 
     return '\n'.join(out)

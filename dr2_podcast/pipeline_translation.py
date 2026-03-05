@@ -183,16 +183,18 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
         chunks.append((len(chunks), header, body, False))
 
     # --- Build reassembly plan ---
+    # Collect indices of Discussion sub-chunks to exclude from standalone output
+    disc_sub_indices = set()
+    for c in chunks:
+        if c[3] == "discussion_marker":
+            disc_sub_indices.update(p[0] for p in c[2])
+
     output_plan = []
-    i = 0
-    while i < len(chunks):
-        idx, header, body_or_parts, flag = chunks[i]
+    for idx, header, body_or_parts, flag in chunks:
         if flag == "discussion_marker":
-            disc_indices = [p[0] for p in body_or_parts]
-            output_plan.append((header, "discussion", disc_indices))
-        else:
+            output_plan.append((header, "discussion", [p[0] for p in body_or_parts]))
+        elif idx not in disc_sub_indices:
             output_plan.append((header, "single", [idx]))
-        i += 1
 
     # --- Identify translatable chunks ---
     translatable = [(c[0], c[1], c[2]) for c in chunks if c[3] is False]
