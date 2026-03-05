@@ -26,18 +26,26 @@ class ClinicalImpact:
     direction: str          # "benefit" | "harm" | "no_effect"
 
 
-def calculate_impact(study_id: str, cer: float, eer: float) -> Optional[ClinicalImpact]:
+def calculate_impact(study_id: str, cer: float, eer: float,
+                     outcome_is_adverse: Optional[bool] = None) -> Optional[ClinicalImpact]:
     """
     Calculate ARR, RRR, NNT from CER and EER.
 
     ARR = CER - EER        (positive = benefit, negative = harm)
     RRR = ARR / CER        (relative measure)
     NNT = 1 / |ARR|        (patients needed to treat for one outcome)
+
+    If outcome_is_adverse is False, the "event" is beneficial (e.g. weight loss),
+    so the direction interpretation is flipped: EER > CER means benefit.
     """
     if cer is None or eer is None:
         return None
 
     arr = cer - eer
+    # If the event is beneficial (not adverse), flip ARR so that
+    # EER > CER (more beneficial events in experimental) = positive ARR = benefit
+    if outcome_is_adverse is False:
+        arr = -arr
     if abs(arr) < 1e-10:
         return ClinicalImpact(
             study_id=study_id, cer=cer, eer=eer,
@@ -67,7 +75,8 @@ def batch_calculate(extractions: List["DeepExtraction"]) -> List[ClinicalImpact]
             impact = calculate_impact(
                 study_id=ex.pmid or ex.title,
                 cer=ex.control_event_rate,
-                eer=ex.experimental_event_rate
+                eer=ex.experimental_event_rate,
+                outcome_is_adverse=getattr(ex, "outcome_is_adverse", None),
             )
             if impact:
                 results.append(impact)
