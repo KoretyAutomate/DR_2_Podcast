@@ -46,6 +46,7 @@ from dr2_podcast.pipeline_script import (
     _validate_script as _validate_script_impl,
     _add_reaction_guidance as _add_reaction_guidance_impl,
     _quick_content_audit as _quick_content_audit_impl,
+    _run_condense_pass as _run_condense_pass_impl,
     _run_trim_pass as _run_trim_pass_impl,
     SCRIPT_TOLERANCE,
 )
@@ -216,9 +217,8 @@ _FILE_SUBDIR_MAP = {
     "screening_results_neg.json": "research",
     "url_validation_results.json": "research",
     "domain_classification.json": "research",
-    "RESEARCH_FRAMING.md": "research",
+    "extraction_cache.json": "meta",
     "EPISODE_BLUEPRINT.md": "research",
-    "ACCURACY_AUDIT.md": "research",
     "accuracy_audit.md": "research",
     "ACCURACY_CORRECTIONS.md": "research",
     # scripts/ — podcast scripts
@@ -691,7 +691,6 @@ LEGACY_ARTIFACT_NAMES = {
     "show_outline.md": "show_notes.md",
     "SHOW_OUTLINE.md": "SHOW_NOTES.md",
     "accuracy_audit.md": "accuracy_check.md",
-    "ACCURACY_AUDIT.md": "ACCURACY_CHECK.md",
     "accuracy_audit.pdf": "accuracy_check.pdf",
     "script_draft.md": "podcast_script_raw.md",
     "script_final.md": "podcast_script_polished.md",
@@ -1154,14 +1153,18 @@ def _validate_script(script_text, target_length, tolerance, language_config, sot
     )
 
 
-def _run_trim_pass(script_text, inventory, target_length, language_config,
-                   session_roles, topic_name, target_instruction):
+def _run_condense_pass(script_text, inventory, target_length, language_config,
+                       session_roles, topic_name, target_instruction):
     """Wrapper — delegates to pipeline_script with _call_smart_model."""
-    return _run_trim_pass_impl(
+    return _run_condense_pass_impl(
         script_text, inventory, target_length, language_config,
         session_roles, topic_name, target_instruction,
         _call_smart_model=_call_smart_model,
     )
+
+
+# Backward-compatible alias
+_run_trim_pass = _run_condense_pass
 
 
 
@@ -1289,7 +1292,7 @@ def read_full_report(report_name: str) -> str:
         "lead": "affirmative_case.md",
         "counter": "falsification_case.md",
         "audit": "grade_synthesis.md",
-        "framing": "RESEARCH_FRAMING.md",
+        "framing": "research_framing.md",
     }
     key = report_name.strip().lower()
     if key not in name_map:
@@ -1449,34 +1452,26 @@ def build_imrad_sot(topic, reports, ev_quality, aff_cand, domain="clinical", lan
 # SHARED PIPELINE FUNCTIONS  (T2.3 — deduplicated from 3 code paths)
 # ════════════════════════════════════════════════════════════════════════
 
-def _inject_blueprint_checklist(blueprint_task, script_task, length_mode, script_base_desc):
-    """Parse Section 8 inventory from blueprint and inject coverage checklist into script task.
+def _inject_blueprint_checklist(blueprint_task, script_task, script_base_desc):
+    """Parse discussion points from blueprint and inject coverage checklist into script task.
 
+    All discussion items are always included --- the polish phase handles condensing.
     Returns (inventory_dict, updated_script_base_desc).
     """
     blueprint_raw = strip_think_blocks(blueprint_task.output.raw)
     inventory = _parse_blueprint_inventory(blueprint_raw)
     if inventory:
-        tier_filter = {
-            'short': {'Basic'},
-            'medium': {'Basic', 'Context'},
-            'long': {'Basic', 'Context', 'Deep-dive'},
-        }
-        allowed_tiers = tier_filter.get(length_mode, {'Basic', 'Context', 'Deep-dive'})
-        checklist_lines = ["\n\nCOVERAGE CHECKLIST — discuss EACH item below in its Act:"]
+        checklist_lines = ["\n\nCOVERAGE CHECKLIST --- discuss EACH item below in its Act:"]
         for act_label, items in inventory.items():
-            filtered = [it for it in items if it['tier'] in allowed_tiers]
-            if filtered:
-                checklist_lines.append(f"\n{act_label}:")
-                for it in filtered:
-                    checklist_lines.append(f"  [{it['tier']}] {it['question']}")
-                    checklist_lines.append(f"    \u2192 {it['answer'][:120]}...")
+            checklist_lines.append(f"\n{act_label}:")
+            for it in items:
+                checklist_lines.append(f"  {it['question']}")
+                checklist_lines.append(f"    -> {it['answer'][:120]}...")
         checklist_block = '\n'.join(checklist_lines)
         script_task.description = script_base_desc + checklist_block
         script_base_desc = script_task.description  # CRITICAL: update base for retry tasks
-        logger.info(f"  Coverage checklist injected: "
-              f"{sum(len(v) for v in inventory.values())} items "
-              f"filtered to {len(allowed_tiers)} tiers")
+        logger.info("  Coverage checklist injected: %d items",
+                     sum(len(v) for v in inventory.values()))
     return inventory or {}, script_base_desc
 
 
@@ -1509,12 +1504,12 @@ def _run_polish_loop(draft_text, draft_count, inventory, target_length_int,
     """
     # Pre-polish trim: if over-target, reduce before polish to prevent poor cuts
     if draft_count > target_length_int * (1 + SCRIPT_TOLERANCE) and inventory:
-        logger.info(f"  Draft over target ({draft_count}/{target_length_int}) — running inventory trim pass...")
-        draft_text = _run_trim_pass(draft_text, inventory, target_length_int,
-                                    language_config, session_roles, topic_name, target_instruction)
+        logger.info(f"  Draft over target ({draft_count}/{target_length_int}) — running condense pass...")
+        draft_text = _run_condense_pass(draft_text, inventory, target_length_int,
+                                        language_config, session_roles, topic_name, target_instruction)
         draft_text = _deduplicate_script(draft_text, language_config)
         draft_count = _count_words(draft_text, language_config)
-        logger.info(f"  Post-trim: {draft_count} {language_config['length_unit']}")
+        logger.info(f"  Post-condense: {draft_count} {language_config['length_unit']}")
     elif draft_count < target_length_int * (1 - SCRIPT_TOLERANCE):
         logger.warning(f"  \u26a0 Draft still under target ({draft_count}/{target_length_int}) — proceeding to polish anyway")
 
@@ -1918,7 +1913,7 @@ if __name__ == "__main__":
 
             # Inject blueprint inventory into script task
             _r_inventory, _reuse_script_base_desc = _inject_blueprint_checklist(
-                blueprint_task, script_task, length_mode, _reuse_script_base_desc)
+                blueprint_task, script_task, _reuse_script_base_desc)
 
             # Phase 5: Script Draft
             logger.info(f"\n  PHASE 5: SCRIPT DRAFT")
@@ -2131,7 +2126,7 @@ if __name__ == "__main__":
 
                 # Inject blueprint inventory into script task
                 _s_inventory, _supp_script_base_desc = _inject_blueprint_checklist(
-                    blueprint_task, script_task, length_mode, _supp_script_base_desc)
+                    blueprint_task, script_task, _supp_script_base_desc)
 
                 # Phase 5: Script Draft
                 logger.info(f"\n  PHASE 5: SCRIPT DRAFT")
@@ -2890,7 +2885,7 @@ if __name__ == "__main__":
                 blueprint_task.output = _FakeOutput(_bp_text)
             # Re-inject blueprint inventory into script task
             _bp_inventory, script_task_base_description = _inject_blueprint_checklist(
-                blueprint_task, script_task, length_mode, script_task_base_description)
+                blueprint_task, script_task, script_task_base_description)
         else:
             logger.info(f"\n{'='*60}")
             logger.info("PHASE 4: EPISODE BLUEPRINT")
@@ -2906,7 +2901,7 @@ if __name__ == "__main__":
 
             # Inject blueprint inventory into script task
             _bp_inventory, script_task_base_description = _inject_blueprint_checklist(
-                blueprint_task, script_task, length_mode, script_task_base_description)
+                blueprint_task, script_task, script_task_base_description)
 
             # Save Phase 4 checkpoint
             _save_phase(4)

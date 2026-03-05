@@ -609,7 +609,11 @@ def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav",
     try:
         logger.info(f"Post-processing audio: {wav_path}")
 
-        BGM_LIBRARY_DIR = Path(__file__).parent / "Podcast BGM"
+        # BGM library lives at project root, not next to this file
+        _project_root = Path(__file__).resolve().parent.parent.parent
+        BGM_LIBRARY_DIR = _project_root / "Podcast BGM"
+        if not BGM_LIBRARY_DIR.exists():
+            BGM_LIBRARY_DIR = Path.cwd() / "Podcast BGM"
         music_path = None
 
         # 1. Select Music from Library

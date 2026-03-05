@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from crewai import Agent, Task
+from dr2_podcast.prompt_strings import get_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -305,7 +306,7 @@ def create_agents_and_tasks(
             f"evidence criteria, search directions, and hypotheses. {english_instruction}"
         ),
         agent=framing_agent,
-        output_file=os.path.relpath(output_path_fn(output_dir, "RESEARCH_FRAMING.md"))
+        output_file=os.path.relpath(output_path_fn(output_dir, "research_framing.md"))
     )
 
     # Build channel intro directive for script
@@ -322,19 +323,12 @@ def create_agents_and_tasks(
             f"     {SESSION_ROLES['presenter']['label']}: Welcome to Deep Research Podcast. Today we're diving deep into {topic_name}.\n\n"
         )
 
-    # Compute approximate word allocations per act
-    _act1_target = int(target_length_int * 0.20)
-    _act2_target = int(target_length_int * 0.35)
-    _act3_target = int(target_length_int * 0.25)
-    _act4_target = int(target_length_int * 0.20)
+    # Only Act 2 has a numeric target (above 50%); other acts fill as needed
+    _act2_min = int(target_length_int * 0.50)
+    _core_target_or_default = core_target or "our listeners"
 
-    # Build core_target line (avoid backslash inside f-string on Python 3.11)
-    _newline = chr(10)
-    _act4_audience_line = (
-        f'     - Tailor recommendations specifically to {core_target}{_newline}'
-        if core_target
-        else f'     - Who should pay attention vs. who can safely ignore this{_newline}'
-    )
+    # One Action tailoring text (avoid backslash inside f-string on Python 3.11)
+    _one_action_tail = "tailored to " + core_target if core_target else "to try this week"
 
     script_task = Task(
         description=(
@@ -346,33 +340,21 @@ def create_agents_and_tasks(
             f"     Based on the hook question from the Episode Blueprint.\n"
             f"     {SESSION_ROLES['presenter']['label']}: [Provocative question from Blueprint --- must be a question, NOT a statement]\n"
             f"     {SESSION_ROLES['questioner']['label']}: [Engaged reaction: 'Oh, that's a great question!' or 'Hmm, I actually have no idea...']\n\n"
-            f"  3. ACT 1 --- THE CLAIM (~{_act1_target:,} {target_unit_plural}):\n"
-            f"     What people believe. The folk wisdom. Why this matters personally.\n"
-            f"     - Presenter sets up the common belief or question\n"
-            f"     - Questioner validates: 'Right, I've heard that too' / 'That's what everyone says'\n"
-            f"     - Establish emotional stakes: why should the listener care?\n\n"
-            f"  4. ACT 2 --- THE EVIDENCE (~{_act2_target:,} {target_unit_plural}):\n"
-            f"     What science actually says. Use BOTH supporting and contradicting evidence from the Blueprint.\n"
-            f"     - Present key studies with GRADE-informed framing from the Blueprint's Section 6\n"
-            f"     - Include specific numbers (NNT, ARR, sample sizes) where available\n"
-            f"     - Questioner challenges: 'But how strong is that evidence?' / 'What about the studies that say otherwise?'\n"
-            f"     - Address contradicting evidence honestly --- do NOT cherry-pick\n\n"
-            f"  5. ACT 3 --- THE NUANCE (~{_act3_target:,} {target_unit_plural}):\n"
-            f"     Where it gets complicated.\n"
-            f"     - GRADE confidence level and what it means for the listener\n"
-            f"     - Population differences, dose-response relationships, timing factors\n"
-            f"     - Questioner pushes: 'So it's not as simple as people think?'\n"
-            f"     - Acknowledge what we DON'T know --- science is honest about its limits\n\n"
-            f"  6. ACT 4 --- THE PROTOCOL (~{_act4_target:,} {target_unit_plural}):\n"
-            f"     Translate science into daily life.\n"
-            f"     - Specific, practical recommendations\n"
-            f"     - 'In practical terms, this means...'\n"
-            f"{_act4_audience_line}"
-            f"     - Questioner: 'So what should our listeners actually DO with this?'\n\n"
-            f"  7. WRAP-UP (~60 {target_unit_plural}, ~25 seconds):\n"
+            + get_prompt("script", "act1", language)
+            + get_prompt("script", "act2", language,
+                         act2_min=f"{_act2_min:,}",
+                         target_unit_plural=target_unit_plural)
+            + get_prompt("script", "act3", language,
+                         core_target_or_default=_core_target_or_default)
+            + get_prompt("script", "act4", language,
+                         core_target_or_default=_core_target_or_default)
+            + get_prompt("script", "length_note", language,
+                         target_script=target_script,
+                         target_unit_plural=target_unit_plural)
+            + f"  7. WRAP-UP (~60 {target_unit_plural}, ~25 seconds):\n"
             f"     Three-sentence summary of the most important takeaways.\n\n"
             f"  8. THE 'ONE ACTION' ENDING (~40 {target_unit_plural}, ~15 seconds):\n"
-            f"     {SESSION_ROLES['presenter']['label']}: 'If you take ONE thing from today --- [action{'tailored to ' + core_target if core_target else 'to try this week'}].'\n"
+            f"     {SESSION_ROLES['presenter']['label']}: 'If you take ONE thing from today --- [action {_one_action_tail}].'\n"
             f"     {SESSION_ROLES['questioner']['label']}: [Brief agreement + sign-off]\n\n"
             f"PERSONALITY DIRECTIVES:\n"
             f"- ENERGY: Vary vocal energy --- excited for surprising findings, thoughtful pauses for nuance, urgency for practical advice\n"
@@ -393,7 +375,7 @@ def create_agents_and_tasks(
             f"{SESSION_ROLES['questioner']['label']}: [dialogue]\n\n"
             f"TARGET LENGTH: AT LEAST {target_script} {target_unit_plural} (= {_target_min} minutes). "
             f"Aim for {int(target_length_int * 1.2):,} {target_unit_plural}. "
-            f"Writing more than the target is fine --- it will be trimmed during polish. "
+            f"Writing more than the target is fine --- it will be condensed during polish. "
             f"Writing less will cause the production to FAIL. Cover ALL items in the Coverage Checklist above.\n"
             f"ACT CHECKLIST: You must write all 4 acts plus Hook, Channel Intro, Wrap-up, and One Action. Count them as you write.\n"
             f"TO REACH THIS LENGTH: You must be extremely detailed and conversational. For every single claim or mechanism, you MUST provide:\n"
@@ -414,7 +396,7 @@ def create_agents_and_tasks(
             f"A {target_script}-{target_unit_singular} podcast dialogue about {topic_name} between "
             f"{SESSION_ROLES['presenter']['label']} (presents and explains) "
             f"and {SESSION_ROLES['questioner']['label']} (asks bridging questions). "
-            f"Follows 8-part structure: Hook, Channel Intro, 4 Acts (Claim, Evidence, Nuance, Protocol), Wrap-up, One Action. "
+            f"Follows 8-part structure: Hook, Channel Intro, 4 Acts (Claim, Evidence & Nuance, Holistic Conclusion, Protocol), Wrap-up, One Action. "
             f"{target_instruction}"
         ),
         agent=producer_agent,
@@ -463,10 +445,7 @@ def create_agents_and_tasks(
             f"VERIFY 8-PART STRUCTURE (all must be present):\n"
             f"  1. Channel Intro\n"
             f"  2. Hook (provocative question)\n"
-            f"  3. Act 1 --- The Claim\n"
-            f"  4. Act 2 --- The Evidence\n"
-            f"  5. Act 3 --- The Nuance\n"
-            f"  6. Act 4 --- The Protocol\n"
+            + get_prompt("polish", "structure_acts", language) +
             f"  7. Wrap-up\n"
             f"  8. One Action Ending\n\n"
             + (f"CHANNEL INTRO VERIFICATION:\n"
@@ -546,7 +525,7 @@ def create_agents_and_tasks(
         ),
         agent=auditor_agent,
         context=[polish_task],
-        output_file=os.path.relpath(output_path_fn(output_dir, "ACCURACY_AUDIT.md"))
+        output_file=os.path.relpath(output_path_fn(output_dir, "accuracy_audit.md"))
     )
 
     # --- Audience context for blueprint & script prompts ---
@@ -589,22 +568,41 @@ def create_agents_and_tasks(
             f"Choose ONE:\n"
             f"- [PPP] Problem-Proof-Protocol --- if the topic has a clear actionable outcome\n"
             f"- [QEI] Question-Evidence-Insight --- if the topic is exploratory with no single recommendation\n\n"
-            f"## 5. Narrative Arc (4 Acts)\n"
-            f"### Act 1 --- The Claim (~20% of episode)\n"
-            f"What people believe. The folk wisdom or common assumption. Why this matters personally.\n"
-            f"Key points to cover: [3-4 bullets]\n\n"
-            f"### Act 2 --- The Evidence (~35% of episode)\n"
-            f"What science actually says. Key studies from BOTH supporting and contradicting evidence.\n"
-            f"Supporting evidence: [2-3 key studies with how to frame them]\n"
-            f"Contradicting evidence: [1-2 key studies]\n"
-            f"Key numbers to cite: [NNT, ARR, sample sizes if available]\n\n"
-            f"### Act 3 --- The Nuance (~25% of episode)\n"
-            f"Where it gets complicated. Contested findings, population differences, dose-response, limitations.\n"
-            f"Key nuance points: [2-3 bullets]\n\n"
-            f"### Act 4 --- The Protocol (~20% of episode)\n"
-            f"Actionable translation to daily life.\n"
-            f"'One Action' for the ending: [specific, memorable, doable this week]\n\n"
-            f"## 6. GRADE-Informed Framing Guide\n"
+            + get_prompt("blueprint", "section5_intro", language,
+                        core_target_or_default=core_target or "curious listener")
+            + get_prompt("blueprint", "act1_header", language)
+            + get_prompt("blueprint", "act1_description", language)
+            + "\n"
+            + get_prompt("blueprint", "act1_discussion", language,
+                         core_target_or_default=core_target or "curious listener")
+            + "\n"
+            + get_prompt("blueprint", "act2_header", language)
+            + get_prompt("blueprint", "act2_description", language)
+            + "\n"
+            + get_prompt("blueprint", "act2_bad_example", language) + "\n"
+            + get_prompt("blueprint", "act2_good_example", language) + "\n\n"
+            + get_prompt("blueprint", "act2_sub_structure", language)
+            + "\n"
+            + get_prompt("blueprint", "act2_discussion", language,
+                         core_target_or_default=core_target or "curious listener")
+            + "\n"
+            + get_prompt("blueprint", "act3_header", language)
+            + get_prompt("blueprint", "act3_description", language,
+                         core_target_or_default=core_target or "curious listener")
+            + "\n"
+            + get_prompt("blueprint", "act3_discussion", language,
+                         core_target_or_default=core_target or "curious listener")
+            + "\n"
+            + get_prompt("blueprint", "act4_header", language)
+            + get_prompt("blueprint", "act4_description", language,
+                         core_target_or_default=core_target or "curious listener")
+            + "\n"
+            + get_prompt("blueprint", "act4_bad_example", language) + "\n"
+            + get_prompt("blueprint", "act4_good_example", language) + "\n\n"
+            + get_prompt("blueprint", "act4_discussion", language,
+                         core_target_or_default=core_target or "curious listener")
+            + "\n"
+            + f"## 6. GRADE-Informed Framing Guide\n"
             f"For each major claim in the episode, specify the appropriate framing language.\n"
             f"Use this mapping based on the evidence confidence:\n"
             f"- HIGH confidence -> 'Research clearly demonstrates...'\n"
@@ -623,30 +621,12 @@ def create_agents_and_tasks(
             f"  - Key Finding: [One sentence summary]\n\n"
             f"Include validity ratings from the Reliability Scorecard. "
             f"Mark broken links as 'X Broken Link'.\n\n"
-            f"## 8. Discussion Inventory\n"
-            f"For each of the 4 Acts, list 3-4 discussion items the script writer can elaborate on.\n"
-            f"Classify each item's complexity:\n"
-            f"  - Basic: core concept --- most listeners need this to follow the episode\n"
-            f"  - Context: helpful background --- enriches understanding, skippable for experts\n"
-            f"  - Deep-dive: specialist detail --- for curious listeners, optional depth\n\n"
-            f"Format STRICTLY as:\n"
-            f"### Act 1 --- The Claim\n"
-            f"- [Basic] Q: [question a curious listener would ask about this act]\n"
-            f"  A: [50-100 word answer with specific details from the research]\n"
-            f"- [Context] Q: ...\n"
-            f"  A: ...\n\n"
-            f"### Act 2 --- The Evidence\n"
-            f"[same format]\n\n"
-            f"### Act 3 --- The Nuance\n"
-            f"[same format]\n\n"
-            f"### Act 4 --- The Protocol\n"
-            f"[same format]\n\n"
             f"{target_instruction}"
         ),
         expected_output=(
-            f"Episode Blueprint with all 8 sections: thesis, listener value proposition, hook, "
-            f"content framework (PPP or QEI), 4-act narrative arc, GRADE framing guide, citations, "
-            f"and Discussion Inventory (Section 8) with 3-4 Basic/Context/Deep-dive Q&A pairs per act. "
+            f"Episode Blueprint with all 7 sections: thesis, listener value proposition, hook, "
+            f"content framework (PPP or QEI), 4-act narrative arc with 5-8 inline discussion points per act "
+            f"(3-5 for Act 3), GRADE framing guide, and citations. "
             f"{target_instruction}"
         ),
         agent=producer_agent,
