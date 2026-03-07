@@ -99,7 +99,7 @@ class TestDeduplicateScript:
 
 class TestParseBlueprintInventory:
 
-    def test_valid_section8(self, sample_blueprint):
+    def test_valid_section5(self, sample_blueprint):
         inv = _parse_blueprint_inventory(sample_blueprint)
         assert len(inv) > 0
         # Should have Act 1 through Act 4
@@ -107,25 +107,24 @@ class TestParseBlueprintInventory:
         assert any("Act 1" in k for k in act_keys)
         assert any("Act 4" in k for k in act_keys)
 
-    def test_items_have_tier_question_answer(self, sample_blueprint):
+    def test_items_have_question_answer(self, sample_blueprint):
         inv = _parse_blueprint_inventory(sample_blueprint)
         for act_label, items in inv.items():
             for it in items:
-                assert "tier" in it
                 assert "question" in it
                 assert "answer" in it
 
-    def test_missing_section8_returns_empty(self):
+    def test_items_have_no_tier(self, sample_blueprint):
+        """New format items should not have a 'tier' key."""
+        inv = _parse_blueprint_inventory(sample_blueprint)
+        for items in inv.values():
+            for it in items:
+                assert "tier" not in it
+
+    def test_missing_section5_and_8_returns_empty(self):
         text = "# Blueprint\n## 1. Thesis\nSome content.\n## 7. Citations\nRefs here."
         inv = _parse_blueprint_inventory(text)
         assert inv == {}
-
-    def test_tier_values_normalized(self, sample_blueprint):
-        inv = _parse_blueprint_inventory(sample_blueprint)
-        valid_tiers = {"Basic", "Context", "Deep-dive", "Unknown"}
-        for items in inv.values():
-            for it in items:
-                assert it["tier"] in valid_tiers
 
 
 # ---------------------------------------------------------------------------

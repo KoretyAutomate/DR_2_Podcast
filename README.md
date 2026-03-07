@@ -83,7 +83,7 @@ Launch:
 ```bash
 ./start_podcast_web_ui.sh
 # or directly:
-python web_ui.py --port 8501
+python -m dr2_podcast.web.web_ui --port 8501
 ```
 
 ## Agents
@@ -104,12 +104,12 @@ The system uses three local LLMs working in tandem:
 | Role | Default Model | Hosted On | Purpose |
 |------|---------------|-----------|---------|
 | **Smart model** | `Qwen/Qwen3-32B-AWQ` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing |
-| **Mid-tier model** | `qwen2.5:7b` | Ollama (port 11434) | Pipelined report translation (Phase 3) |
+| **Mid-tier model** | `translategemma:12b` | Ollama (port 11434) | Pipelined report translation (Phase 3) |
 | **Fast model** | `llama3.2:1b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
 
 Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `MID_MODEL_NAME`, `MID_LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
 
-The mid-tier model handles Phase 3 translation via a **pipelined architecture**: the 7B model translates each SOT section (~4x faster than the 32B smart model), while the smart model audits completed translations concurrently — so translation and auditing overlap instead of running sequentially. If the mid-tier model is unavailable, the pipeline falls back to smart-model-only mode (sequential translate then audit).
+The mid-tier model handles Phase 3 translation via a **pipelined architecture**: TranslateGemma 12B (a purpose-built translation model by Google) translates each SOT section on GPU, while the smart model audits completed translations concurrently — so translation and auditing overlap instead of running sequentially. If the mid-tier model is unavailable, the pipeline falls back to smart-model-only mode (sequential translate then audit).
 
 If the fast model is unavailable, the smart model handles all summarization (slower but functional).
 
@@ -222,7 +222,7 @@ Dispatches to the appropriate 7-step pipeline based on the Phase 0 domain result
 Batch HEAD requests validate all cited URLs. The Source-of-Truth is then assembled in **IMRaD format** (Introduction, Methods, Results, and Discussion) — a structured scientific paper format derived deterministically from the pipeline's raw outputs. See [Source of Truth (IMRaD Format)](#source-of-truth-imrad-format) below.
 
 ### Phase 3 — Report Translation (conditional)
-For non-English output, the Source-of-Truth is translated using a **pipelined architecture**: the mid-tier model (`qwen2.5:7b`) translates each IMRaD section while the smart model (`Qwen3-32B`) audits completed translations concurrently — fixing Chinese contamination, garbled text, and terminology errors. Sections larger than 8K characters are translated directly by the smart model to avoid truncation. Skipped entirely for English runs.
+For non-English output, the Source-of-Truth is translated using a **pipelined architecture**: TranslateGemma 12B (`translategemma:12b`) translates each IMRaD section on GPU while the smart model (`Qwen3-32B`) audits completed translations concurrently — fixing garbled text and terminology errors. Sections larger than 8K characters are translated directly by the smart model to avoid truncation. Skipped entirely for English runs.
 
 ### Phase 4 — Episode Blueprint (Crew 3)
 The Producer generates a 7-section Episode Blueprint: episode thesis, listener value proposition, hook question, content framework (PPP or QEI), 4-act narrative arc, GRADE-informed evidence framing, and citation plan. The Source-of-Truth summary is injected directly into task descriptions.
@@ -294,7 +294,7 @@ docker run --runtime nvidia --gpus all -p 8000:8000 \
 ```bash
 ollama serve
 ollama pull llama3.2:1b             # Fast model (default)
-ollama pull qwen2.5:7b              # Mid-tier model (pipelined translation)
+ollama pull translategemma:12b      # Mid-tier model (pipelined translation)
 # Optional fast model upgrade:
 ollama pull phi4-mini
 # Then set: export FAST_MODEL_NAME="phi4-mini"
@@ -347,7 +347,7 @@ export MODEL_NAME="Qwen/Qwen3-32B-AWQ"
 export LLM_BASE_URL="http://localhost:8000/v1"
 export FAST_MODEL_NAME="llama3.2:1b"
 export FAST_LLM_BASE_URL="http://localhost:11434/v1"
-export MID_MODEL_NAME="qwen2.5:7b"
+export MID_MODEL_NAME="translategemma:12b"
 export MID_LLM_BASE_URL="http://localhost:11434/v1"
 
 # Web UI authentication (auto-generated if not set)
@@ -367,13 +367,13 @@ export YOUTUBE_CLIENT_SECRET_PATH="/path/to/client_secret.json"
 ./start_podcast_web_ui.sh
 
 # Via CLI
-python pipeline.py --topic "neuroplasticity and exercise" --language en
+python -m dr2_podcast.pipeline --topic "neuroplasticity and exercise" --language en
 
 # Reuse previous research (skip research phases, regenerate podcast only)
-python pipeline.py --reuse-dir research_outputs/2025-01-15_10-30-00 --crew3-only
+python -m dr2_podcast.pipeline --reuse-dir research_outputs/2025-01-15_10-30-00 --crew3-only
 
 # Reuse with LLM-assessed supplemental research if needed
-python pipeline.py --reuse-dir research_outputs/2025-01-15_10-30-00 --check-supplemental
+python -m dr2_podcast.pipeline --reuse-dir research_outputs/2025-01-15_10-30-00 --check-supplemental
 ```
 
 ## Accessibility Levels
@@ -392,37 +392,42 @@ All outputs are saved to a timestamped directory under `research_outputs/`:
 
 ```
 research_outputs/YYYY-MM-DD_HH-MM-SS/
-├── research_framing.md               Phase 0 — domain-aware scope and hypotheses
-├── research_framing.pdf
-├── domain_classification.json        Phase 0 — domain routing decision (clinical vs. social science)
-├── affirmative_case.md               Step 5a — affirmative case
-├── falsification_case.md             Step 5b — falsification case
-├── grade_synthesis.md                Step 7 — GRADE synthesis
-├── research_sources.json             Research library (structured source data)
-├── clinical_math.md                  Step 6 — deterministic ARR/NNT table
-├── search_strategy_aff.json          Step 1a — affirmative PICO/MeSH/Boolean
-├── search_strategy_neg.json          Step 1b — falsification PICO/MeSH/Boolean
-├── screening_results_aff.json        Step 3a — affirmative screening decisions
-├── screening_results_neg.json        Step 3b — falsification screening decisions
-├── source_of_truth.md                IMRaD scientific paper (Abstract, Intro, Methods, Results, Discussion, References)
-├── source_of_truth.pdf
-├── source_of_truth_ja.md             Phase 3 — translated SOT (Japanese only)
-├── source_of_truth_ja.pdf            Phase 3 — translated SOT PDF (Japanese only)
-├── url_validation_results.json       Phase 2 — batch URL validation results
-├── EPISODE_BLUEPRINT.md              Phase 4 — episode blueprint (thesis, hook, narrative arc, citations)
-├── script_draft.md                   Phase 5 — draft script
-├── script_final.md                   Phase 6 — polished script
-├── script.txt                        Final script for TTS
-├── accuracy_audit.md                 Phase 7 — drift detection
-├── accuracy_audit.pdf
-├── ACCURACY_CORRECTIONS.md           Phase 7 — corrections applied (only if HIGH-severity drift)
-├── audio.wav                         Phase 8 — raw TTS podcast audio (24kHz WAV)
-├── audio_mixed.wav                   Phase 8 — final podcast with BGM mixing
-├── session_metadata.txt              Topic, language, character assignments
-└── podcast_generation.log            Execution log
+├── research/
+│   ├── research_framing.md           Phase 0 — domain-aware scope and hypotheses
+│   ├── domain_classification.json    Phase 0 — domain routing decision (clinical vs. social science)
+│   ├── affirmative_case.md           Step 5a — affirmative case
+│   ├── falsification_case.md         Step 5b — falsification case
+│   ├── grade_synthesis.md            Step 7 — GRADE synthesis
+│   ├── research_sources.json         Research library (structured source data)
+│   ├── clinical_math.md              Step 6 — deterministic ARR/NNT table
+│   ├── search_strategy_aff.json      Step 1a — affirmative PICO/MeSH/Boolean
+│   ├── search_strategy_neg.json      Step 1b — falsification PICO/MeSH/Boolean
+│   ├── screening_results_aff.json    Step 3a — affirmative screening decisions
+│   ├── screening_results_neg.json    Step 3b — falsification screening decisions
+│   ├── source_of_truth.md            IMRaD scientific paper (Abstract, Intro, Methods, Results, Discussion, References)
+│   ├── source_of_truth_ja.md         Phase 3 — translated SOT (Japanese only)
+│   ├── url_validation_results.json   Phase 2 — batch URL validation results
+│   ├── EPISODE_BLUEPRINT.md          Phase 4 — episode blueprint (thesis, hook, narrative arc, citations)
+│   └── accuracy_audit.md             Phase 7 — drift detection
+├── scripts/
+│   ├── script_draft.md               Phase 5 — draft script
+│   ├── script_polished.md            Phase 6 — polished script
+│   ├── script_final.md               Phase 7 — final script (post-audit corrections if needed)
+│   └── script.txt                    Final script for TTS
+├── audio/
+│   └── audio.wav                     Phase 8 — TTS podcast audio (24kHz WAV) with BGM mixing
+├── meta/
+│   ├── session_metadata.txt          Topic, language, character assignments
+│   ├── podcast_generation.log        Execution log
+│   ├── checkpoint.json               Resume checkpoint for interrupted runs
+│   ├── research_framing.pdf          PDF export of research framing
+│   ├── source_of_truth.pdf           PDF export of IMRaD SOT
+│   ├── source_of_truth_ja.pdf        PDF export of translated SOT (Japanese only)
+│   └── accuracy_audit.pdf            PDF export of accuracy audit
+└── extraction_cache.json             Step 4 — PMID-keyed extraction cache
 
 research_outputs/
-└── extraction_cache.json             Step 4 — PMID-keyed extraction cache (persistent across all runs)
+└── extraction_cache.json             Step 4 — persistent PMID-keyed extraction cache (shared across all runs)
 ```
 
 ## Source of Truth (IMRaD Format)
@@ -442,29 +447,40 @@ The evidence quality banner (`⚠ Evidence Quality Notice`) is prepended when th
 
 ## Project Structure
 
-| File / Directory | Purpose |
-|------------------|---------|
-| `pipeline.py` | Main pipeline — agents, tasks, orchestration, research library tools |
-| `web_ui.py` | FastAPI web UI with live progress tracking, task queue, and upload integration |
-| `clinical_research.py` | 7-step clinical research pipeline (concept decomposition → tiered keywords + auditor gate → cascade search → tier-aware screen → extract → cases → math → GRADE) |
-| `clinical_math.py` | Deterministic ARR/NNT calculator — pure Python, zero LLM involvement |
-| `effect_size_math.py` | Deterministic effect size calculator — Cohen's d, Hedges' g, OR-to-d, r-to-d (no LLM) |
-| `domain_classifier.py` | Topic domain classifier (clinical vs. social science) — deterministic keyword rules + LLM fallback |
-| `social_science_research.py` | 7-step social science research pipeline (PECO framework, OpenAlex + ERIC, effect sizes, evidence quality levels) |
-| `metadata_clients.py` | Async API clients for OpenAlex, Semantic Scholar, Crossref, ERIC with SQLite rate-limit caching |
-| `wwc_database.py` | Local SQLite database for What Works Clearinghouse education intervention quality ratings |
-| `fulltext_fetcher.py` | 4-tier full-text fetcher: PMC OA → Europe PMC → Unpaywall → publisher scrape |
-| `search_service.py` | SearXNG client, page scraping, content extraction |
-| `audio_engine.py` | Kokoro TTS rendering with dual-voice stitching and BGM post-processing |
-| `audio_mixer.py` | BGM mixing with pre-roll, post-roll, and transition bumps |
-| `link_validator.py` | URL validation via HEAD requests |
-| `upload_utils.py` | Buzzsprout and YouTube upload utilities |
-| `test_clinical_math.py` | Unit tests for clinical_math.py (17 tests) |
-| `test_effect_size_math.py` | Unit tests for effect_size_math.py (34 tests) |
-| `test_metadata_clients.py` | Unit tests for metadata_clients.py (31 tests) |
-| `test_wwc_database.py` | Unit tests for wwc_database.py (19 tests) |
-| `test_domain_classifier.py` | Unit tests for domain_classifier.py (16 tests) |
-| `test_blueprint_inventory.py` | Feature tests — blueprint discussion inventory and script expansion removal |
+```
+dr2_podcast/                          # Main package
+├── pipeline.py                       # Main orchestrator (~3,200 lines)
+├── pipeline_crew.py                  # CrewAI agent/task definitions
+├── pipeline_script.py                # Script validation and trimming
+├── pipeline_sot.py                   # Source-of-Truth (IMRaD) builder
+├── pipeline_translation.py           # Translation pipeline (pipelined translate + audit)
+├── pipeline_types.py                 # TypedDicts for data contracts
+├── config.py                         # Centralized configuration and model settings
+├── utils.py                          # Shared utility functions
+├── prompt_strings.py                 # Externalized LLM prompt strings (EN/JA)
+├── sot_i18n.py                       # Internationalized IMRaD templates (EN/JA)
+├── research/                         # Research sub-package
+│   ├── clinical.py                   # 7-step clinical pipeline (PICO/GRADE)
+│   ├── clinical_math.py              # Deterministic ARR/NNT calculator (no LLM)
+│   ├── effect_size_math.py           # Cohen's d, Hedges' g, OR-to-d, r-to-d (no LLM)
+│   ├── domain_classifier.py          # Clinical vs. social science classifier
+│   ├── search_service.py             # SearXNG client, page scraping, content extraction
+│   ├── fulltext_fetcher.py           # 4-tier full-text fetcher (PMC/Unpaywall/scrape)
+│   ├── metadata_clients.py           # OpenAlex, Semantic Scholar, Crossref, ERIC clients
+│   ├── social_science.py             # 7-step social science pipeline (PECO/effect sizes)
+│   └── wwc_database.py               # What Works Clearinghouse SQLite database
+├── audio/
+│   └── engine.py                     # Kokoro TTS + BGM mixing (dual-voice, 24kHz WAV)
+├── web/
+│   └── web_ui.py                     # FastAPI web UI (progress tracking, queue, uploads)
+└── tools/
+    ├── link_validator.py              # URL validation via HEAD requests
+    └── upload_utils.py                # Buzzsprout and YouTube upload utilities
+tests/                                # Test suite (22 files, ~195 tests)
+```
+
+| Support Files | Purpose |
+|---------------|---------|
 | `start_podcast_web_ui.sh` | Web UI launcher script |
 | `start_vllm_docker.sh` | vLLM Docker container launcher |
 | `docker/qwen3-tts/` | Qwen3-TTS FastAPI server for high-quality Japanese TTS (conda env: `qwen3_tts`) |

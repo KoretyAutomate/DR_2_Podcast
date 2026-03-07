@@ -9,7 +9,7 @@ SMART_MODEL = os.environ.get("MODEL_NAME", "")
 SMART_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
 FAST_MODEL = os.environ.get("FAST_MODEL_NAME", "")
 FAST_BASE_URL = os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1")
-MID_MODEL = os.environ.get("MID_MODEL_NAME", "qwen2.5:7b")
+MID_MODEL = os.environ.get("MID_MODEL_NAME", "translategemma:12b")
 MID_BASE_URL = os.environ.get("MID_LLM_BASE_URL", os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1"))
 
 # --- Output Directory Override ---

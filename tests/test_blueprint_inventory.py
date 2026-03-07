@@ -1,8 +1,8 @@
 """
-Unit tests for Blueprint Discussion Inventory + Script Trimming.
+Unit tests for Blueprint Discussion Inventory + Script Condensing.
 
 Tests _parse_blueprint_inventory, _count_words, _deduplicate_script,
-_run_trim_pass, and the coverage checklist injection logic.
+_run_condense_pass (_run_trim_pass alias), and the coverage checklist injection logic.
 
 All functions are imported from pipeline.py — no inline copies.
 """
@@ -20,7 +20,7 @@ from dr2_podcast.pipeline import (
 )
 
 
-# ── Test A: _parse_blueprint_inventory on mock input ─────────────────────
+# ── Test A: _parse_blueprint_inventory on new Section 5 format ────────────
 
 
 class TestParseBlueprintInventoryMock:
@@ -39,37 +39,38 @@ class TestParseBlueprintInventoryMock:
         act1_keys = [k for k in result if 'Act 1' in k]
         assert len(act1_keys) == 1
 
-    def test_act1_basic_tier_parsed(self, sample_blueprint):
+    def test_items_have_no_tier_key(self, sample_blueprint):
+        """New format items should not have a 'tier' key."""
         result = _parse_blueprint_inventory(sample_blueprint)
         act1_key = next(k for k in result if 'Act 1' in k)
-        tiers = [it['tier'] for it in result[act1_key]]
-        assert 'Basic' in tiers
+        for item in result[act1_key]:
+            assert 'tier' not in item
 
-    def test_act1_context_tier_parsed(self, sample_blueprint):
+    def test_items_have_question_and_answer(self, sample_blueprint):
         result = _parse_blueprint_inventory(sample_blueprint)
         act1_key = next(k for k in result if 'Act 1' in k)
-        tiers = [it['tier'] for it in result[act1_key]]
-        assert 'Context' in tiers
-
-    def test_act1_deep_dive_tier_parsed(self, sample_blueprint):
-        result = _parse_blueprint_inventory(sample_blueprint)
-        act1_key = next(k for k in result if 'Act 1' in k)
-        tiers = [it['tier'] for it in result[act1_key]]
-        assert 'Deep-dive' in tiers
+        for item in result[act1_key]:
+            assert 'question' in item
+            assert 'answer' in item
 
     def test_question_text_extracted(self, sample_blueprint):
         result = _parse_blueprint_inventory(sample_blueprint)
         act1_key = next(k for k in result if 'Act 1' in k)
-        basic = next(it for it in result[act1_key] if it['tier'] == 'Basic')
-        assert len(basic['question']) > 5
+        first = result[act1_key][0]
+        assert len(first['question']) > 5
 
     def test_answer_text_extracted(self, sample_blueprint):
         result = _parse_blueprint_inventory(sample_blueprint)
         act1_key = next(k for k in result if 'Act 1' in k)
-        basic = next(it for it in result[act1_key] if it['tier'] == 'Basic')
-        assert len(basic['answer']) > 10
+        first = result[act1_key][0]
+        assert len(first['answer']) > 10
 
-    def test_no_section8_returns_empty_dict(self):
+    def test_act1_has_three_items(self, sample_blueprint):
+        result = _parse_blueprint_inventory(sample_blueprint)
+        act1_key = next(k for k in result if 'Act 1' in k)
+        assert len(result[act1_key]) == 3
+
+    def test_no_section5_or_8_returns_empty_dict(self):
         result = _parse_blueprint_inventory("## 1. Intro\nHello.\n## 2. Body\nContent here.\n")
         assert result == {}
 
@@ -78,60 +79,67 @@ class TestParseBlueprintInventoryMock:
         assert result == {}
 
 
+class TestParseBlueprintInventoryLegacy:
+    """Test backward compatibility with legacy Section 8 format."""
+
+    def test_legacy_section8_parsed(self, sample_blueprint_legacy):
+        result = _parse_blueprint_inventory(sample_blueprint_legacy)
+        assert isinstance(result, dict)
+        assert len(result) > 0
+
+    def test_legacy_items_have_no_tier(self, sample_blueprint_legacy):
+        """Even legacy items should be returned without tier key."""
+        result = _parse_blueprint_inventory(sample_blueprint_legacy)
+        act1_key = next(k for k in result if 'Act 1' in k)
+        for item in result[act1_key]:
+            assert 'tier' not in item
+
+    def test_legacy_question_extracted(self, sample_blueprint_legacy):
+        result = _parse_blueprint_inventory(sample_blueprint_legacy)
+        act1_key = next(k for k in result if 'Act 1' in k)
+        assert any('coffee' in it['question'].lower() for it in result[act1_key])
+
+
 # ── Test B: Coverage checklist injection logic ───────────────────────────
 
 
 class TestCoverageChecklistInjection:
-    """Test the tier-filtering logic used by _inject_blueprint_checklist."""
+    """Test the checklist injection logic (no tier filtering — all items included)."""
 
     @staticmethod
-    def _build_checklist(inventory, length_mode):
-        """Reproduce the tier-filtering logic from _inject_blueprint_checklist."""
-        tier_filter = {
-            'short': {'Basic'},
-            'medium': {'Basic', 'Context'},
-            'long': {'Basic', 'Context', 'Deep-dive'},
-        }
-        allowed_tiers = tier_filter.get(length_mode, {'Basic', 'Context', 'Deep-dive'})
-        checklist_lines = ["\n\nCOVERAGE CHECKLIST — discuss EACH item below in its Act:"]
+    def _build_checklist(inventory):
+        """Reproduce the injection logic from _inject_blueprint_checklist."""
+        checklist_lines = ["\n\nCOVERAGE CHECKLIST --- discuss EACH item below in its Act:"]
         for act_label, items in inventory.items():
-            filtered = [it for it in items if it['tier'] in allowed_tiers]
-            if filtered:
-                checklist_lines.append(f"\n{act_label}:")
-                for it in filtered:
-                    checklist_lines.append(f"  [{it['tier']}] {it['question']}")
-                    checklist_lines.append(f"    \u2192 {it['answer'][:120]}...")
+            checklist_lines.append(f"\n{act_label}:")
+            for it in items:
+                checklist_lines.append(f"  {it['question']}")
+                checklist_lines.append(f"    -> {it['answer'][:120]}...")
         return '\n'.join(checklist_lines)
 
-    def test_short_mode_only_basic(self, sample_inventory):
-        desc = self._build_checklist(sample_inventory, 'short')
-        assert '[Basic]' in desc
-        assert '[Context]' not in desc
-        assert '[Deep-dive]' not in desc
-
-    def test_medium_mode_basic_and_context(self, sample_inventory):
-        desc = self._build_checklist(sample_inventory, 'medium')
-        assert '[Basic]' in desc
-        assert '[Context]' in desc
-        assert '[Deep-dive]' not in desc
-
-    def test_long_mode_all_tiers(self, sample_inventory):
-        desc = self._build_checklist(sample_inventory, 'long')
-        assert '[Basic]' in desc
-        assert '[Context]' in desc
-        assert '[Deep-dive]' in desc
+    def test_all_items_included(self, sample_inventory):
+        desc = self._build_checklist(sample_inventory)
+        assert 'Does coffee really improve brain function?' in desc
+        assert 'What neuroimaging studies' in desc
+        assert 'Can tolerance be managed' in desc
 
     def test_checklist_has_header(self, sample_inventory):
-        desc = self._build_checklist(sample_inventory, 'long')
+        desc = self._build_checklist(sample_inventory)
         assert 'COVERAGE CHECKLIST' in desc
 
     def test_checklist_contains_question_text(self, sample_inventory):
-        desc = self._build_checklist(sample_inventory, 'long')
+        desc = self._build_checklist(sample_inventory)
         assert 'Does coffee really improve brain function?' in desc
 
     def test_checklist_contains_answer_text(self, sample_inventory):
-        desc = self._build_checklist(sample_inventory, 'long')
+        desc = self._build_checklist(sample_inventory)
         assert 'multiple RCTs' in desc
+
+    def test_no_tier_labels_in_output(self, sample_inventory):
+        desc = self._build_checklist(sample_inventory)
+        assert '[Basic]' not in desc
+        assert '[Context]' not in desc
+        assert '[Deep-dive]' not in desc
 
 
 # ── Test C: _count_words ─────────────────────────────────────────────────
@@ -226,8 +234,13 @@ class TestPipelineCodeState:
         import dr2_podcast.pipeline as pipeline
         assert callable(getattr(pipeline, '_parse_blueprint_inventory', None))
 
-    def test_run_trim_pass_exists(self):
-        """Function must be importable from pipeline (wrapper delegating to pipeline_script)."""
+    def test_run_condense_pass_exists(self):
+        """Function must be importable from pipeline."""
+        import dr2_podcast.pipeline as pipeline
+        assert callable(getattr(pipeline, '_run_condense_pass', None))
+
+    def test_run_trim_pass_alias_exists(self):
+        """Backward-compatible alias must exist."""
         import dr2_podcast.pipeline as pipeline
         assert callable(getattr(pipeline, '_run_trim_pass', None))
 
@@ -242,10 +255,10 @@ class TestPipelineCodeState:
         assert 'min_acceptable' in self.source
 
 
-# ── Test F: _run_trim_pass with mocked LLM ──────────────────────────────
+# ── Test F: _run_condense_pass (via _run_trim_pass alias) with mocked LLM ──
 
 
-class TestRunTrimPass:
+class TestRunCondensePass:
 
     LONG_SCRIPT = (
         "Host: Welcome to Science Unpacked. Today we examine coffee.\n\n"
@@ -266,16 +279,13 @@ class TestRunTrimPass:
         "Host: That's our One Action for today."
     )
 
-    TRIM_INVENTORY = {
-        "Act 1 — The Evidence": [
-            {'tier': 'Deep-dive',
-             'question': 'What neuroimaging studies support caffeine mechanisms?',
+    CONDENSE_INVENTORY = {
+        "Act 1 --- Evidence & Nuance": [
+            {'question': 'What neuroimaging studies support caffeine mechanisms?',
              'answer': 'PET studies show dose-dependent adenosine receptor occupancy.'},
-            {'tier': 'Context',
-             'question': 'How do habitual users differ from non-habitual?',
+            {'question': 'How do habitual users differ from non-habitual?',
              'answer': 'Non-habitual drinkers show larger acute effects.'},
-            {'tier': 'Basic',
-             'question': 'What dose range shows cognitive benefits?',
+            {'question': 'What dose range shows cognitive benefits?',
              'answer': '200-400mg is the established optimal range.'},
         ],
     }
@@ -286,12 +296,12 @@ class TestRunTrimPass:
     }
 
     def test_returns_string(self, english_lang_config):
-        """Trim pass returns a string even when LLM call is mocked."""
-        trimmed_text = "Host: Welcome. Guest: Short answer. Host: One Action for today."
-        with patch('dr2_podcast.pipeline._call_smart_model', return_value=trimmed_text):
+        """Condense pass returns a string even when LLM call is mocked."""
+        condensed_text = "Host: Welcome. Guest: Short answer. Host: One Action for today."
+        with patch('dr2_podcast.pipeline._call_smart_model', return_value=condensed_text):
             result = _run_trim_pass(
                 script_text=self.LONG_SCRIPT,
-                inventory=self.TRIM_INVENTORY,
+                inventory=self.CONDENSE_INVENTORY,
                 target_length=50,
                 language_config=english_lang_config,
                 session_roles=self.SESSION_ROLES,
@@ -301,12 +311,12 @@ class TestRunTrimPass:
         assert isinstance(result, str)
 
     def test_result_shorter_than_input(self, english_lang_config):
-        """Mocked LLM returns shorter text, trim pass should use it."""
+        """Mocked LLM returns shorter text, condense pass should use it."""
         short = "Host: Coffee helps cognition. Guest: Agreed. Host: One Action."
         with patch('dr2_podcast.pipeline._call_smart_model', return_value=short):
             result = _run_trim_pass(
                 script_text=self.LONG_SCRIPT,
-                inventory=self.TRIM_INVENTORY,
+                inventory=self.CONDENSE_INVENTORY,
                 target_length=50,
                 language_config=english_lang_config,
                 session_roles=self.SESSION_ROLES,
@@ -317,11 +327,11 @@ class TestRunTrimPass:
             self.LONG_SCRIPT, english_lang_config
         )
 
-    def test_no_trim_when_under_target(self, english_lang_config):
+    def test_no_condense_when_under_target(self, english_lang_config):
         """Script already under target should be returned unchanged."""
         result = _run_trim_pass(
             script_text=self.LONG_SCRIPT,
-            inventory=self.TRIM_INVENTORY,
+            inventory=self.CONDENSE_INVENTORY,
             target_length=99999,
             language_config=english_lang_config,
             session_roles=self.SESSION_ROLES,
@@ -330,30 +340,12 @@ class TestRunTrimPass:
         )
         assert result == self.LONG_SCRIPT
 
-    def test_no_removable_items(self, english_lang_config):
-        """Inventory with only Basic items means nothing can be trimmed."""
-        basic_only = {
-            "Act 1": [
-                {'tier': 'Basic', 'question': 'Q1', 'answer': 'A1'},
-            ]
-        }
-        result = _run_trim_pass(
-            script_text=self.LONG_SCRIPT,
-            inventory=basic_only,
-            target_length=10,
-            language_config=english_lang_config,
-            session_roles=self.SESSION_ROLES,
-            topic_name="Test",
-            target_instruction="",
-        )
-        assert result == self.LONG_SCRIPT
-
     def test_llm_failure_returns_original(self, english_lang_config):
-        """If LLM call raises, trim pass should return the original script."""
+        """If LLM call raises, condense pass should return the original script."""
         with patch('dr2_podcast.pipeline._call_smart_model', side_effect=Exception("LLM down")):
             result = _run_trim_pass(
                 script_text=self.LONG_SCRIPT,
-                inventory=self.TRIM_INVENTORY,
+                inventory=self.CONDENSE_INVENTORY,
                 target_length=50,
                 language_config=english_lang_config,
                 session_roles=self.SESSION_ROLES,
