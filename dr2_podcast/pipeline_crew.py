@@ -228,7 +228,8 @@ def create_agents_and_tasks(
                if language == 'ja' else '')
         ),
         llm=dgx_llm_creative,
-        verbose=True
+        verbose=True,
+        tools=[read_full_report],
     )
 
     editor_agent = Agent(
@@ -547,6 +548,21 @@ def create_agents_and_tasks(
     blueprint_task = Task(
         description=(
             f"Create an Episode Blueprint for the podcast episode on \"{topic_name}\".\n\n"
+            f"RESEARCH WORKFLOW — Follow these two passes:\n\n"
+            f"Pass 1 (Full Read): Start by reading the complete Source of Truth:\n"
+            f"  ReadFullReport('sot')\n"
+            f"This automatically gives you the SOT in the target language. Use it to understand\n"
+            f"the full evidence landscape and draft the high-level Episode Blueprint structure:\n"
+            f"narrative arc, segment order, key claims, debate tension.\n\n"
+            f"Pass 2 (Deep Dive): Based on your blueprint, read 2-3 specific SOT sections\n"
+            f"to enrich areas that need more depth:\n"
+            f"  ReadFullReport('sot:discussion')  <- §5: affirmative case, falsification, GRADE\n"
+            f"  ReadFullReport('sot:results')     <- §4: study characteristics, effect sizes\n"
+            f"  ReadFullReport('sot:abstract')    <- §1: high-level findings summary\n"
+            f"Use these details to add specific data points, study findings, and nuance\n"
+            f"to your blueprint. Your blueprint MUST reflect BOTH supporting (§5.1) and\n"
+            f"contradicting (§5.2) evidence.\n\n"
+            f"Do NOT use more than 4 total ReadFullReport calls to stay within context limits.\n\n"
             f"This is a CONTENT STRATEGY document that guides the script writer. It defines what the episode "
             f"will say, why listeners should care, and how to structure the narrative.\n\n"
             f"OUTPUT FORMAT --- produce ALL 7 sections:\n\n"
