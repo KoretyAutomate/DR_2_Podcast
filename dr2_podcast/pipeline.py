@@ -1057,7 +1057,9 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000,
 
 
 def _call_mid_model(system: str, user: str, max_tokens: int = 4000, temperature: float = 0.1, timeout: int = 0) -> str:
-    """Call the Mid-Tier Model (Ollama qwen2.5:7b) for translation.
+    """Call the Mid-Tier Model (TranslateGemma via Ollama) for translation.
+    TranslateGemma uses a single user message (no system message) — the system
+    prompt is prepended to the user content automatically.
     Falls back to Smart Model if mid-tier is unavailable.
     timeout: seconds to wait. 0 = auto-scale based on max_tokens (~40 tok/s + 60s buffer).
     """
@@ -1072,11 +1074,12 @@ def _call_mid_model(system: str, user: str, max_tokens: int = 4000, temperature:
             base_url=MID_BASE_URL,
             api_key=os.getenv("LLM_API_KEY", "NA"),
         )
+        # TranslateGemma expects a single user message with instruction + text
+        combined_content = system + "\n\n" + user if system else user
         resp = client.chat.completions.create(
             model=MID_MODEL,
             messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": combined_content},
             ],
             max_tokens=max_tokens,
             temperature=temperature,
@@ -1277,24 +1280,72 @@ def read_research_source(role_and_index: str) -> str:
     )
 
 
+def _extract_sot_section(content: str, section_name: str) -> str | None:
+    """Extract a top-level section (## N. Title) from the SOT document."""
+    section_map = {
+        "abstract": "1.",
+        "introduction": "2.",
+        "methods": "3.",
+        "results": "4.",
+        "discussion": "5.",
+        "references": "6.",
+    }
+    prefix = section_map.get(section_name.lower())
+    if prefix is None:
+        return None
+
+    lines = content.split("\n")
+    capturing = False
+    result = []
+    for line in lines:
+        if line.startswith(f"## {prefix}"):
+            capturing = True
+            result.append(line)
+        elif capturing and re.match(r'^## \d+\.', line):
+            break  # next top-level section
+        elif capturing:
+            result.append(line)
+
+    return "\n".join(result) if result else None
+
 @tool("ReadFullReport")
 def read_full_report(report_name: str) -> str:
-    """Read a full research report from disk. Available reports:
+    """Read a full research report or a specific section of the Source of Truth.
+
+    Available reports:
     - "lead": Full supporting evidence report
     - "counter": Full opposing evidence report
     - "audit": Full audit synthesis report
     - "framing": Research framing document
+    - "sot": Source of Truth (automatically resolves to the target language)
 
-    WARNING: Reports can be very long. Prefer ListResearchSources + ReadResearchSource
-    to selectively read specific sources instead.
+    For section-level reading, use format "sot:section_name":
+    - "sot:abstract" — §1 Abstract
+    - "sot:introduction" — §2 Introduction
+    - "sot:methods" — §3 Methods (search strategy, data collection, stats)
+    - "sot:results" — §4 Results (study characteristics, effect sizes)
+    - "sot:discussion" — §5 Discussion (affirmative case, falsification case, GRADE)
+    - "sot:references" — §6 References
     """
+    sot_file = f"source_of_truth_{language}.md" if language != "en" else "source_of_truth.md"
+
     name_map = {
         "lead": "affirmative_case.md",
         "counter": "falsification_case.md",
         "audit": "grade_synthesis.md",
         "framing": "research_framing.md",
+        "sot": sot_file,
     }
+
     key = report_name.strip().lower()
+
+    # --- Section-reading mode: "sot:discussion" ---
+    section_name = None
+    if ":" in key:
+        base, section_name = key.split(":", 1)
+        key = base.strip()
+        section_name = section_name.strip()
+
     if key not in name_map:
         return f"Unknown report '{report_name}'. Available: {', '.join(name_map.keys())}"
 
@@ -1303,11 +1354,21 @@ def read_full_report(report_name: str) -> str:
         return f"Report file not found: {report_path}"
 
     content = report_path.read_text()
+
+    # If section requested, extract just that section
+    if section_name and key == "sot":
+        section = _extract_sot_section(content, section_name)
+        if section is None:
+            valid = ["abstract", "introduction", "methods", "results", "discussion", "references"]
+            return f"Section '{section_name}' not found. Available: {', '.join(valid)}"
+        return section
+
+    # Full document — truncate if too long
     if len(content) > 15000:
         return (
             content[:15000]
             + f"\n\n... [TRUNCATED — full report is {len(content)} chars. "
-            f"Use ListResearchSources + ReadResearchSource for targeted reading.] ..."
+            f"For SOT, use section reading: e.g. ReadFullReport('sot:discussion')] ..."
         )
     return content
 
@@ -1776,7 +1837,7 @@ if __name__ == "__main__":
 
     SMART_MODEL = os.environ["MODEL_NAME"]
     SMART_BASE_URL = os.environ["LLM_BASE_URL"]
-    MID_MODEL = os.environ.get("MID_MODEL_NAME", "qwen2.5:7b")
+    MID_MODEL = os.environ.get("MID_MODEL_NAME", "translategemma:12b")
     MID_BASE_URL = os.environ.get("MID_LLM_BASE_URL", os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1"))
 
     final_model_string = get_final_model_string()
@@ -2418,22 +2479,20 @@ if __name__ == "__main__":
             try:
                 from dr2_podcast.research.social_science import run_social_science_research
 
-                async def _run_ss_with_timeout():
-                    return await asyncio.wait_for(
-                        run_social_science_research(
-                            topic=topic_name,
-                            framing_context=framing_output,
-                            output_dir=str(output_dir),
-                        ),
-                        timeout=600,  # 10 min cap for entire pipeline
+                deep_reports = asyncio.run(
+                    run_social_science_research(
+                        topic=topic_name,
+                        framing_context=framing_output,
+                        output_dir=str(output_dir),
                     )
-
-                deep_reports = asyncio.run(_run_ss_with_timeout())
+                )
             except ImportError:
                 logger.warning("⚠ social_science_research module not yet available — falling back to clinical pipeline")
                 _research_domain = "clinical"  # fall through to clinical below
             except Exception as e:
-                logger.warning(f"⚠ Social science pipeline failed: {e} — falling back to clinical pipeline")
+                err_detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                logger.warning(f"⚠ Social science pipeline failed: {err_detail} — falling back to clinical pipeline")
+                logger.debug("Social science traceback:", exc_info=True)
                 _research_domain = "clinical"
 
         if _research_domain in ("clinical", "general"):
@@ -2559,26 +2618,10 @@ if __name__ == "__main__":
                 f.write(sot_content)
             logger.info(f"✓ Source of Truth (IMRaD) generated from deep research ({len(sot_content)} chars)")
 
-            # Build pre-translated SoT for non-English languages (no LLM translation needed)
+            # Do not pre-build a template JA SOT — templates only cover boilerplate
+            # headers, not the actual research content (cases, GRADE, framing), which
+            # stays in English. Phase 3 will translate the English SOT using mid-model.
             sot_content_ja = None
-            if language != 'en' and deep_reports:
-                sot_content_ja = build_imrad_sot(
-                    topic=topic_name, reports=deep_reports,
-                    ev_quality=evidence_quality, aff_cand=aff_candidates,
-                    domain=_research_domain, lang=language,
-                )
-                if evidence_quality == "limited":
-                    sot_content_ja = (
-                        "## \u26a0 \u30a8\u30d3\u30c7\u30f3\u30b9\u306e\u8cea\u306b\u95a2\u3059\u308b\u6ce8\u610f\n\n"
-                        f"\u80af\u5b9a\u7684\u7814\u7a76\u30c8\u30e9\u30c3\u30af\u306f**{aff_candidates}\u4ef6\u306e\u5019\u88dc\u7814\u7a76**\u306e\u307f\u3092\u53d6\u5f97\u3057\u307e\u3057\u305f"
-                        f"\uff08\u95be\u5024: {EVIDENCE_LIMITED_THRESHOLD}\uff09\u3002"
-                        "\u4ee5\u4e0b\u306e\u7d71\u5408\u306f\u9650\u3089\u308c\u305f\u76f4\u63a5\u7684\u30a8\u30d3\u30c7\u30f3\u30b9\u306b\u57fa\u3065\u3044\u3066\u3044\u307e\u3059\u3002"
-                        "\u4e3b\u5f35\u306f\u614e\u91cd\u306b\u89e3\u91c8\u3055\u308c\u308b\u3079\u304d\u3067\u3059\u3002\n\n"
-                    ) + sot_content_ja
-                sot_ja_file = output_path(output_dir, f"source_of_truth_{language}.md")
-                with open(sot_ja_file, 'w', encoding='utf-8') as f:
-                    f.write(sot_content_ja)
-                logger.info("\u2713 %s SoT built from templates (%d chars)", language.upper(), len(sot_content_ja))
 
             # Summarize for injection into Crew 3 task descriptions
             logger.info("Summarizing Source-of-Truth with fast model...")
@@ -2663,8 +2706,15 @@ if __name__ == "__main__":
             f"--- END SOURCE OF TRUTH ---\n"
         )
         script_task.description += sot_injection
-        blueprint_task.description += sot_injection
         audit_task.description += sot_injection
+
+        # Blueprint task gets a pointer only — the producer reads the full SOT via tools
+        blueprint_sot_injection = (
+            f"\n\nSOURCE OF TRUTH: Use ReadFullReport('sot') to read the full "
+            f"research document in the target language. Follow the two-pass workflow "
+            f"described above.\n"
+        )
+        blueprint_task.description += blueprint_sot_injection
 
     # Inject evidence level and key numbers into blueprint for informed framing
     _grade_injection = ""  # may be populated below; referenced by _crew_kickoff_guarded

@@ -189,7 +189,9 @@ VOICE_MAP = {
 }
 
 # Qwen3-TTS Configuration (for Japanese only — English uses Kokoro)
-QWEN3_TTS_API_URL = os.getenv("QWEN3_TTS_API_URL")  # Set in .env; required for Japanese TTS
+# Read at use time via _get_qwen3_tts_url() — .env may not be loaded at import time
+def _get_qwen3_tts_url():
+    return os.getenv("QWEN3_TTS_API_URL")
 
 
 def _chunk_japanese_text(text: str, max_chars: int = 80) -> list:
@@ -219,7 +221,7 @@ def _call_qwen3_tts_segment(text: str, speaker: int) -> tuple:
     speaker_name = "Host1" if speaker == 1 else "Host2"
     try:
         resp = requests.post(
-            f"{QWEN3_TTS_API_URL}/tts",
+            f"{_get_qwen3_tts_url()}/tts",
             json={"text": text, "speaker": speaker_name, "language": "Japanese"},
         )
         resp.raise_for_status()
@@ -229,7 +231,7 @@ def _call_qwen3_tts_segment(text: str, speaker: int) -> tuple:
         return audio.astype(np.float32), sr
     except requests.exceptions.ConnectionError:
         logger.error(
-            f"Qwen3-TTS API unreachable at {QWEN3_TTS_API_URL}. "
+            f"Qwen3-TTS API unreachable at {_get_qwen3_tts_url()}. "
             f"Start it: docker compose -f docker/qwen3-tts/docker-compose.yml up -d"
         )
         return None, None
@@ -255,20 +257,21 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
     logger.info("=" * 60)
     logger.info("QWEN3-TTS — JAPANESE AUDIO GENERATION")
     logger.info("=" * 60)
-    logger.info(f"API endpoint: {QWEN3_TTS_API_URL}")
+    qwen3_tts_url = _get_qwen3_tts_url()
+    logger.info(f"API endpoint: {qwen3_tts_url}")
     logger.info("Voices: Host1 → Aiden (male), Host2 → Ono_Anna (Japanese female)")
 
     # Health check
     try:
         import requests
-        health = requests.get(f"{QWEN3_TTS_API_URL}/health", timeout=5)
+        health = requests.get(f"{qwen3_tts_url}/health", timeout=5)
         if health.status_code == 200:
             logger.info("✓ Qwen3-TTS API is healthy")
         else:
             logger.warning(f"  Qwen3-TTS API health check returned {health.status_code}")
     except Exception:
         logger.error(
-            f"✗ Qwen3-TTS API not reachable at {QWEN3_TTS_API_URL}\n"
+            f"✗ Qwen3-TTS API not reachable at {qwen3_tts_url}\n"
             f"  Start it: docker compose -f docker/qwen3-tts/docker-compose.yml up -d"
         )
         return None
@@ -704,6 +707,9 @@ def clean_script_for_tts(script_text: str) -> str:
     # Remove markdown formatting
     clean = re.sub(r'\*\*', '', clean)  # Bold
     clean = re.sub(r'[*#\[\]]', '', clean)  # Italics, headers, brackets (NOT underscores — protects ___TRANSITION___ placeholders)
+
+    # Rename Japanese speaker labels "ホストN:" → "Speaker N:" (before English conversion)
+    clean = re.sub(r'^\*{0,2}ホスト\s*(\d)\s*\*{0,2}\s*[:：]', r'Speaker \1:', clean, flags=re.MULTILINE)
 
     # Rename speaker labels "Host N:" → "Speaker N:" so that any remaining
     # "Host 1" / "Host 2" in dialogue text can be safely stripped.

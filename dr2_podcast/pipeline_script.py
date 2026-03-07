@@ -1,10 +1,10 @@
 """
-Script validation, trimming, and deduplication utilities.
+Script validation, condensing, and deduplication utilities.
 
 Extracted from pipeline.py (T4.1).
 Contains: _validate_script, _count_words, _deduplicate_script,
-_parse_blueprint_inventory, _run_trim_pass, _add_reaction_guidance,
-_quick_content_audit.
+_parse_blueprint_inventory, _run_condense_pass (_run_trim_pass alias),
+_add_reaction_guidance, _quick_content_audit.
 """
 
 import logging
@@ -59,7 +59,7 @@ def _add_reaction_guidance(script_text: str, language_config: dict,
         all_lines = script_text.split('\n')
         host_entries = []  # (original_line_index, line_text)
         for i, line in enumerate(all_lines):
-            if re.match(r'^\*{0,2}Host\s+\d\s*\*{0,2}\s*[:\uff1a]', line):
+            if re.match(r'^\*{0,2}(?:Host\s+|ホスト\s*)\d\s*\*{0,2}\s*[:：]', line):
                 host_entries.append((i, line))
 
         if not host_entries:
@@ -305,17 +305,26 @@ def _deduplicate_script(script_text: str, language_config: dict) -> str:
 
 def _parse_blueprint_inventory(blueprint_text: str) -> dict:
     """
-    Parse Section 8 Discussion Inventory from blueprint output.
-    Returns {act_label: [{tier, question, answer}]} or {} if Section 8 absent.
+    Parse inline Discussion Points from Section 5 (Narrative Arc) of the blueprint.
+    Returns {act_label: [{question, answer}]} or {} if Section 5 absent.
     Logs a WARNING if parsing fails so callers can degrade gracefully.
+
+    Also supports legacy Section 8 format for backward compatibility with
+    existing blueprint outputs.
     """
-    # Find Section 8 (handle variations: ## 8., #8, **8.**)
+    # Try Section 5 first (new inline format)
     section_match = re.search(
-        r'(?:^|\n)(?:##\s*8\.?|#8\.?|\*\*8\.\*\*)\s*Discussion Inventory[^\n]*\n(.*?)(?=\n(?:##\s*\d+|#\d+|\*\*\d+\.\*\*)|\Z)',
+        r'(?:^|\n)(?:##\s*5\.?)\s*Narrative Arc[^\n]*\n(.*?)(?=\n(?:##\s*\d+)|\Z)',
         blueprint_text, re.DOTALL | re.IGNORECASE
     )
     if not section_match:
-        logger.warning("  blueprint Section 8 absent; coverage checklist skipped")
+        # Fall back to legacy Section 8
+        section_match = re.search(
+            r'(?:^|\n)(?:##\s*8\.?|#8\.?|\*\*8\.\*\*)\s*Discussion Inventory[^\n]*\n(.*?)(?=\n(?:##\s*\d+|#\d+|\*\*\d+\.\*\*)|\Z)',
+            blueprint_text, re.DOTALL | re.IGNORECASE
+        )
+    if not section_match:
+        logger.warning("  blueprint Section 5/8 absent; coverage checklist skipped")
         return {}
 
     section_text = section_match.group(1)
@@ -331,93 +340,78 @@ def _parse_blueprint_inventory(blueprint_text: str) -> dict:
             continue
         act_label = act_header.group(1).strip()
 
-        # Find all items: - [Tier] Q: ... \n   A: ...
         items = []
-        item_matches = re.finditer(
-            r'-\s*\[(Basic|Context|Deep-dive|Unknown)\]\s*Q:\s*([^\n]+)\n\s*A:\s*([^\n]+(?:\n(?!\s*-|\n)[^\n]+)*)',
-            block, re.IGNORECASE
-        )
-        for m in item_matches:
-            tier_raw = m.group(1).strip()
-            # Normalize tier label
-            tier_map = {'basic': 'Basic', 'context': 'Context', 'deep-dive': 'Deep-dive', 'unknown': 'Unknown'}
-            tier = tier_map.get(tier_raw.lower(), 'Unknown')
-            if tier == 'Unknown' and tier_raw.lower() not in tier_map:
-                logger.warning("  unrecognized tier '%s' in blueprint inventory; using 'Unknown'", tier_raw)
-            question = m.group(2).strip()
-            answer = m.group(3).strip()
-            items.append({'tier': tier, 'question': question, 'answer': answer})
+
+        # Try new format first: - Q: ... \n  A: ... (no tier prefix)
+        item_matches = list(re.finditer(
+            r'-\s*Q:\s*([^\n]+)\n\s*A:\s*([^\n]+(?:\n(?!\s*-|\n)[^\n]+)*)',
+            block
+        ))
+
+        if item_matches:
+            for m in item_matches:
+                question = m.group(1).strip()
+                answer = m.group(2).strip()
+                items.append({'question': question, 'answer': answer})
+        else:
+            # Fall back to legacy format: - [Tier] Q: ... \n  A: ...
+            legacy_matches = re.finditer(
+                r'-\s*\[(Basic|Context|Deep-dive|Unknown)\]\s*Q:\s*([^\n]+)\n\s*A:\s*([^\n]+(?:\n(?!\s*-|\n)[^\n]+)*)',
+                block, re.IGNORECASE
+            )
+            for m in legacy_matches:
+                question = m.group(2).strip()
+                answer = m.group(3).strip()
+                items.append({'question': question, 'answer': answer})
 
         if items:
             inventory[act_label] = items
 
     if not inventory:
-        logger.warning("  blueprint Section 8 found but no items parsed; coverage checklist skipped")
+        logger.warning("  blueprint discussion points found but no items parsed; coverage checklist skipped")
         return {}
 
     return inventory
 
 
-def _run_trim_pass(script_text: str, inventory: dict, target_length: int,
-                   language_config: dict, session_roles: dict,
-                   topic_name: str, target_instruction: str,
-                   *, _call_smart_model) -> str:
+def _run_condense_pass(script_text: str, inventory: dict, target_length: int,
+                       language_config: dict, session_roles: dict,
+                       topic_name: str, target_instruction: str,
+                       *, _call_smart_model) -> str:
     """
-    Trim an over-target script by removing Deep-dive items first, then Context items.
-    Within the same tier, prefer removing examples/analogies before mechanism explanations.
-    Returns trimmed text (or original if trim didn't help).
+    Condense an over-target script by rewriting verbose passages more concisely.
+    Merges overlapping points, tightens language, reduces filler.
+    Does NOT delete entire discussion topics — condenses them.
+    Returns condensed text (or original if condensing didn't help).
     """
+    from dr2_podcast.prompt_strings import get_prompt
+
     current = _count_words(script_text, language_config)
-    target_with_buffer = int(target_length * 1.05)  # trim to 105%, leave room for polish
+    target_with_buffer = int(target_length * 1.05)  # condense to 105%, leave room for polish
     length_unit = language_config['length_unit']
 
     if current <= target_with_buffer:
         return script_text  # already at or under target+buffer
 
-    # Collect removable items: Deep-dive first, then Context
-    removable = []
-    for act_label, items in inventory.items():
-        for it in items:
-            if it['tier'] == 'Deep-dive':
-                removable.append((0, act_label, it))  # priority 0 = first to remove
-    for act_label, items in inventory.items():
-        for it in items:
-            if it['tier'] == 'Context':
-                removable.append((1, act_label, it))  # priority 1 = second
-
-    if not removable:
-        logger.info("  Trim pass: no removable items (no Deep-dive or Context inventory items)")
-        return script_text
-
     presenter = session_roles['presenter']['label']
     questioner = session_roles['questioner']['label']
+    floor_count = int(target_length * 0.90)
 
-    # Build list of items to remove for the prompt
-    remove_list_lines = ["Items to remove in priority order (Deep-dive first, then Context):"]
-    for priority, act_label, it in removable:
-        remove_list_lines.append(f"  [{it['tier']}] ({act_label}) {it['question'][:80]}")
+    system_prompt = get_prompt("condense", "system", "en",
+                               topic_name=topic_name,
+                               current_count=str(current),
+                               length_unit=length_unit,
+                               target_count=str(target_with_buffer),
+                               presenter=presenter,
+                               questioner=questioner,
+                               floor_count=str(floor_count),
+                               target_instruction=target_instruction)
 
-    system_prompt = (
-        f"You are trimming a two-host science podcast script about \"{topic_name}\" "
-        f"from {current} {length_unit} down to approximately {target_with_buffer} {length_unit}.\n"
-        f"Hosts: {presenter} (presenter) and {questioner} (questioner).\n\n"
-        f"TRIMMING RULES:\n"
-        f"- Remove the discussion items listed below in priority order (Deep-dive first, then Context)\n"
-        f"- Within the same tier: remove examples and analogies BEFORE mechanism explanations\n"
-        f"- Do NOT remove Basic items\n"
-        f"- Preserve ALL [TRANSITION] markers exactly as-is\n"
-        f"- Preserve the One Action ending\n"
-        f"- Preserve speaker labels: {presenter}: and {questioner}:\n"
-        f"- Do NOT trim below {int(target_length * 0.90):,} {length_unit}\n"
-        f"- Return ONLY the trimmed script dialogue, no commentary\n"
-        f"{target_instruction}\n\n"
-        + '\n'.join(remove_list_lines)
-    )
-
-    user_prompt = (
-        f"SCRIPT TO TRIM ({current} {length_unit}):\n\n{script_text}\n\n"
-        f"Return the trimmed script at approximately {target_with_buffer} {length_unit}."
-    )
+    user_prompt = get_prompt("condense", "user", "en",
+                             current_count=str(current),
+                             length_unit=length_unit,
+                             script_text=script_text,
+                             target_count=str(target_with_buffer))
 
     try:
         result = _call_smart_model(
@@ -429,11 +423,15 @@ def _run_trim_pass(script_text: str, inventory: dict, target_length: int,
         result = strip_think_blocks(result)
         result_count = _count_words(result, language_config)
         if result_count < current:
-            logger.info("  Trim pass: %d -> %d %s", current, result_count, length_unit)
+            logger.info("  Condense pass: %d -> %d %s", current, result_count, length_unit)
             return _deduplicate_script(result, language_config)
         else:
-            logger.warning("  Trim pass did not reduce length (%d vs %d) -- using original", result_count, current)
+            logger.warning("  Condense pass did not reduce length (%d vs %d) -- using original", result_count, current)
             return script_text
     except Exception as e:
-        logger.warning("  Trim pass failed (%s) -- using original", e)
+        logger.warning("  Condense pass failed (%s) -- using original", e)
         return script_text
+
+
+# Keep old name as alias for backward compatibility with tests and call sites
+_run_trim_pass = _run_condense_pass

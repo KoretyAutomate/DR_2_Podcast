@@ -105,48 +105,27 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
     imrad_sections = _split_sot_imrad(sot_content)
 
     lang_name = language_config['name']
-    chinese_ban = ""
-    if language == 'ja':
-        chinese_ban = (
-            "ABSOLUTE RULE: Output MUST be in Japanese (\u65e5\u672c\u8a9e) ONLY. NEVER use Chinese (\u4e2d\u6587).\n"
-            "WRONG: \u6267\u884c\u529f\u80fd \u2192 CORRECT: \u5b9f\u884c\u6a5f\u80fd; WRONG: \u8865\u5145 \u2192 CORRECT: \u88dc\u5145\n"
-            "If unsure of the Japanese term, keep the English term \u2014 NEVER use Chinese.\n"
-            "Common errors to avoid:\n"
-            "\u6267\u884c\u2192\u5b9f\u884c, \u8865\u5145\u2192\u88dc\u5145, \u8ba4\u77e5\u2192\u8a8d\u77e5, \u6548\u679c\u2192\u52b9\u679c, \u8425\u517b\u2192\u6804\u990a,\n"
-            "\u7ef4\u751f\u7d20\u2192\u30d3\u30bf\u30df\u30f3, \u5242\u91cf\u2192\u7528\u91cf, \u8bc1\u636e\u2192\u30a8\u30d3\u30c7\u30f3\u30b9, \u7ed3\u8bba\u2192\u7d50\u8ad6,\n"
-            "\u663e\u8457\u2192\u986f\u8457, \u5206\u6790\u2192\u5206\u6790, \u4e34\u5e8a\u2192\u81e8\u5e8a, \u6444\u5165\u2192\u6442\u53d6, \u5065\u5eb7\u2192\u5065\u5eb7\n"
-            "Double-check: NO Simplified Chinese characters in your output.\n\n"
-        )
+    lang_code = language_config.get('code', language)
 
     translate_system = (
-        "{chinese_ban}"
-        "You are a medical translation specialist. Translate the following section into {lang_name}.\n"
+        "You are a professional English (en) to {lang_name} ({lang_code}) translator. "
+        "Your goal is to accurately convey the meaning and nuances of the original English text "
+        "while adhering to {lang_name} grammar, vocabulary, and cultural sensitivities. "
+        "Produce only the {lang_name} translation, without any additional explanations or commentary.\n"
         "RULES:\n"
         "- Preserve ALL markdown formatting (headers, tables, bullet points, bold, italic)\n"
         "- Keep study names, journal names, and URLs in English\n"
         "- Keep clinical abbreviations in English: ARR, NNT, GRADE, CER, EER, RCT, RRR, CI, OR, HR\n"
         "- Preserve ALL numerical values exactly (percentages, CI ranges, p-values, sample sizes)\n"
         "- Keep confidence labels (HIGH/MEDIUM/LOW/CONTESTED) in English\n"
-        "- Translate meaning, not word-for-word\n"
-        "- Output ONLY the translated text, no commentary"
-    ).format(chinese_ban=chinese_ban, lang_name=lang_name)
+        "- Translate meaning, not word-for-word"
+    ).format(lang_name=lang_name, lang_code=lang_code)
 
-    chinese_rules = ""
-    if language == 'ja':
-        chinese_rules = (
-            "CRITICAL FOCUS \u2014 Chinese contamination:\n"
-            "- Replace ANY Simplified Chinese characters with their Japanese equivalents\n"
-            "- Common errors: \u6267\u884c\u2192\u5b9f\u884c, \u8865\u5145\u2192\u88dc\u5145, \u8ba4\u77e5\u2192\u8a8d\u77e5, \u7814\u7a76\u2192\u7814\u7a76, \u6548\u679c\u2192\u52b9\u679c, "
-            "\u8425\u517b\u2192\u6804\u990a, \u7ef4\u751f\u7d20\u2192\u30d3\u30bf\u30df\u30f3, \u5242\u91cf\u2192\u7528\u91cf, \u8bc1\u636e\u2192\u30a8\u30d3\u30c7\u30f3\u30b9, \u7ed3\u8bba\u2192\u7d50\u8ad6, "
-            "\u663e\u8457\u2192\u986f\u8457, \u5206\u6790\u2192\u5206\u6790, \u4e34\u5e8a\u2192\u81e8\u5e8a, \u6444\u5165\u2192\u6442\u53d6, \u5065\u5eb7\u2192\u5065\u5eb7\n"
-            "- If you find Chinese sentences, translate them to Japanese\n\n"
-        )
 
     audit_system = (
         "You are a {lang_name} language quality auditor for medical documents.\n\n"
-        "{chinese_rules}"
         "Your task:\n"
-        "1. Find and fix any non-{lang_name} text (Chinese or untranslated English sentences)\n"
+        "1. Find and fix any non-{lang_name} text (untranslated English sentences)\n"
         "2. Fix garbled or unnatural transliterations\n"
         "3. Ensure medical terminology is correct in {lang_name}\n"
         "4. KEEP in English: study names, journal names, URLs, clinical abbreviations "
@@ -154,7 +133,7 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
         "5. Preserve ALL markdown formatting and numerical values exactly\n\n"
         "Return the COMPLETE corrected section. If no issues found, return the section unchanged.\n"
         "IMPORTANT: Output ONLY the corrected text. Do NOT include any commentary, explanation, or preamble."
-    ).format(lang_name=lang_name, chinese_rules=chinese_rules)
+    ).format(lang_name=lang_name)
 
     # --- Flatten sections into ordered chunk list ---
     # Each chunk: (index, header, body, passthrough_flag)
@@ -212,26 +191,20 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
     first_label = first_header if first_header else "preamble"
     max_tok = _estimate_translation_tokens(len(first_body))
     use_smart_first = len(first_body) > 8000
+    translate_user = "Please translate the following English text into {}:\n\n".format(lang_name)
     try:
         if use_smart_first:
             translated = _call_smart_model(
                 system=translate_system,
-                user="Translate this section:\n\n" + first_body,
+                user=translate_user + first_body,
                 max_tokens=max_tok, temperature=0.1,
             )
         else:
-            from openai import OpenAI as _MidOpenAI
-            _mid_client = _MidOpenAI(base_url=MID_BASE_URL, api_key=os.getenv("LLM_API_KEY", "NA"))
-            _mid_resp = _mid_client.chat.completions.create(
-                model=MID_MODEL,
-                messages=[
-                    {"role": "system", "content": translate_system},
-                    {"role": "user", "content": "Translate this section:\n\n" + first_body},
-                ],
+            translated = _call_mid_model(
+                system=translate_system,
+                user=translate_user + first_body,
                 max_tokens=max_tok, temperature=0.1,
-                timeout=max(180, int(max_tok / 40) + 60),
             )
-            translated = _mid_resp.choices[0].message.content.strip()
         results[first_chunk_idx] = translated
         model_tag = "smart" if use_smart_first else "mid"
         logger.info("  Translated %s (%d -> %d chars) [%s, 1/%d]",
@@ -243,7 +216,7 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
             try:
                 translated = _call_smart_model(
                     system=translate_system,
-                    user="Translate this section:\n\n" + first_body,
+                    user=translate_user + first_body,
                     max_tokens=max_tok, temperature=0.1,
                 )
                 results[first_chunk_idx] = translated
@@ -268,7 +241,7 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
             try:
                 translated = _call_smart_model(
                     system=translate_system,
-                    user="Translate this section:\n\n" + body,
+                    user=translate_user + body,
                     max_tokens=max_tok, temperature=0.1,
                 )
                 translate_count += 1
@@ -326,7 +299,7 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
                             translated = await asyncio.to_thread(
                                 lambda: _call_smart_model(
                                     system=translate_system,
-                                    user="Translate this section:\n\n" + body,
+                                    user=translate_user + body,
                                     max_tokens=max_tok, temperature=0.1,
                                 )
                             )
@@ -334,7 +307,7 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
                             translated = await asyncio.to_thread(
                                 lambda: _call_mid_model(
                                     system=translate_system,
-                                    user="Translate this section:\n\n" + body,
+                                    user=translate_user + body,
                                     max_tokens=max_tok, temperature=0.1,
                                 )
                             )
@@ -483,14 +456,7 @@ def _translate_prompt(prompt_text: str, language: str, language_config: dict,
                       *, _call_smart_model) -> str:
     """Translate a task prompt/instruction to the target language. Preserves structure."""
     lang_name = language_config['name']
-    chinese_ban = ""
-    if language == 'ja':
-        chinese_ban = (
-            "ABSOLUTE RULE: Translate to Japanese (\u65e5\u672c\u8a9e) ONLY. NEVER use Chinese.\n"
-            "WRONG: \u6267\u884c\u529f\u80fd \u2192 CORRECT: \u5b9f\u884c\u6a5f\u80fd\n\n"
-        )
     system = (
-        f"{chinese_ban}"
         f"Translate these podcast production instructions to {lang_name}.\n"
         f"KEEP intact: all markdown formatting (##, ###, numbered lists, bold), "
         f"variable placeholders, technical abbreviations (ARR, NNT, GRADE, RCT, CI, HR, OR), "
@@ -519,15 +485,9 @@ def _audit_script_language(script_text: str, language: str, language_config: dic
     if language == 'en':
         return script_text
     lang_name = language_config['name']
-    chinese_ban = ""
-    if language == 'ja':
-        chinese_ban = (
-            "Also fix any Chinese characters \u2014 replace with Japanese equivalents.\n"
-        )
     system = (
         f"You are a {lang_name} language consistency auditor for a podcast script.\n"
-        f"Find any non-{lang_name} sentences (English or Chinese) and translate them to natural {lang_name}.\n"
-        f"{chinese_ban}"
+        f"Find any non-{lang_name} sentences (English) and translate them to natural {lang_name}.\n"
         f"KEEP in English: scientific terms (ARR, NNT, GRADE, RCT, CI, HR, OR), "
         f"study abbreviations, URLs, speaker labels (Host 1:, Host 2:).\n"
         f"Return the COMPLETE corrected script preserving ALL [TRANSITION] markers "
