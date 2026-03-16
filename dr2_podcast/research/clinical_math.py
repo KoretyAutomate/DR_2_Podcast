@@ -86,7 +86,19 @@ def batch_calculate(extractions: List["DeepExtraction"]) -> List[ClinicalImpact]
 def format_math_report(impacts: List[ClinicalImpact]) -> str:
     """Format a deterministic math report for the Auditor."""
     if not impacts:
-        return "No studies provided both CER and EER. NNT calculation not possible.\n"
+        return (
+            "## Deterministic Clinical Impact Calculations\n\n"
+            "**Status:** Data Insufficient\n\n"
+            "NNT (Number Needed to Treat) calculation requires both Control Event Rate (CER) "
+            "and Experimental Event Rate (EER) from extracted studies. "
+            "The screening and extraction phases did not identify studies with both metrics available.\n\n"
+            "**Why NNT is not calculated:**\n"
+            "- Many studies report only one outcome (e.g., EER without CER)\n"
+            "- Some studies report qualitative outcomes or continuous measures (not binary event rates)\n"
+            "- Extraction may have incomplete data from full-text access constraints\n\n"
+            "**Impact:** Clinical effect sizes cannot be quantified numerically. "
+            "Evidence quality assessment and narrative synthesis remain unaffected.\n"
+        )
 
     lines = [
         "## Deterministic Clinical Impact Calculations\n",

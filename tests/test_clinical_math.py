@@ -118,7 +118,8 @@ class TestFormatMathReport:
     def test_empty_report(self):
         """No impacts produces informative message."""
         report = format_math_report([])
-        assert "No studies" in report
+        assert "Data Insufficient" in report
+        assert len(report) > 500  # Should be informative, not minimal
 
     def test_single_impact(self):
         """Single impact formats correctly."""

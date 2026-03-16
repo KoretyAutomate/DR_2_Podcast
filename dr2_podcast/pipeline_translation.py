@@ -95,8 +95,7 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
                               *, _call_smart_model, _call_mid_model,
                               SMART_BASE_URL, SMART_MODEL,
                               MID_BASE_URL, MID_MODEL) -> str:
-    """Pipelined: translate on mid-tier model, audit on smart model.
-    Translation and audit overlap via asyncio producer-consumer pattern.
+    """Translate SOT on mid-tier model (no audit — translation quality is sufficient).
     Falls back to sequential smart-model-only if mid-tier is unavailable.
     """
     # Strip leftover <think> blocks from Qwen3 thinking mode that may be embedded in the SOT
@@ -120,20 +119,6 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
         "- Keep confidence labels (HIGH/MEDIUM/LOW/CONTESTED) in English\n"
         "- Translate meaning, not word-for-word"
     ).format(lang_name=lang_name, lang_code=lang_code)
-
-
-    audit_system = (
-        "You are a {lang_name} language quality auditor for medical documents.\n\n"
-        "Your task:\n"
-        "1. Find and fix any non-{lang_name} text (untranslated English sentences)\n"
-        "2. Fix garbled or unnatural transliterations\n"
-        "3. Ensure medical terminology is correct in {lang_name}\n"
-        "4. KEEP in English: study names, journal names, URLs, clinical abbreviations "
-        "(ARR, NNT, GRADE, CER, EER, RCT, RRR, CI, OR, HR), confidence labels\n"
-        "5. Preserve ALL markdown formatting and numerical values exactly\n\n"
-        "Return the COMPLETE corrected section. If no issues found, return the section unchanged.\n"
-        "IMPORTANT: Output ONLY the corrected text. Do NOT include any commentary, explanation, or preamble."
-    ).format(lang_name=lang_name)
 
     # --- Flatten sections into ordered chunk list ---
     # Each chunk: (index, header, body, passthrough_flag)
@@ -252,41 +237,14 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
                 logger.warning("  Translation failed for %s: %s -- keeping original", label, e)
                 results[chunk_idx] = body
 
-        # Sequential audit pass
-        audit_count = 0
-        for chunk_idx, header, body in translatable:
-            label = header if header else "preamble"
-            translated_body = results.get(chunk_idx, body)
-            if not translated_body.strip():
-                continue
-            max_tok = _estimate_translation_tokens(len(translated_body))
-            try:
-                audited = _call_smart_model(
-                    system=audit_system,
-                    user="Audit and correct this {} medical document section:\n\n".format(lang_name) + translated_body,
-                    max_tokens=max_tok, temperature=0.1,
-                )
-                audit_count += 1
-                if len(audited) < len(translated_body) * 0.5:
-                    logger.warning("  Audit output too short for %s (%d vs %d) -- keeping translation",
-                        label, len(audited), len(translated_body))
-                else:
-                    results[chunk_idx] = audited
-                    logger.info("  Audited %s (%d -> %d chars) [smart, %d/%d]",
-                        label, len(translated_body), len(audited), audit_count, total_translatable)
-            except Exception as e:
-                logger.warning("  Audit failed for %s: %s -- keeping translation", label, e)
-
-        logger.info("  Translation+audit complete: %d translate + %d audit calls (sequential fallback)",
-            translate_count, audit_count)
+        logger.info("  Translation complete: %d translate calls (sequential, no audit)",
+            translate_count)
     else:
-        # --- PIPELINED: Mid-tier translates, smart model audits concurrently ---
-        logger.info("  Running pipelined translate (mid-tier) + audit (smart) [%s]", MID_MODEL)
+        # --- PIPELINED: Mid-tier translates (no audit) ---
+        logger.info("  Running pipelined translate (mid-tier) [%s, no audit]", MID_MODEL)
 
         async def _run_pipeline():
-            queue = asyncio.Queue()
             translate_count = 1  # first chunk already done
-            audit_count = 0
 
             async def producer():
                 nonlocal translate_count
@@ -319,72 +277,9 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
                     except Exception as e:
                         logger.warning("  Translation failed for %s: %s -- keeping original", label, e)
                         results[chunk_idx] = body
-                    await queue.put(chunk_idx)
-                # Signal done
-                await queue.put(None)
 
-            async def consumer():
-                nonlocal audit_count
-                # First: audit the already-translated first chunk
-                first_translated = results.get(first_chunk_idx, first_body)
-                if first_translated.strip():
-                    max_tok = _estimate_translation_tokens(len(first_translated))
-                    try:
-                        audited = await asyncio.to_thread(
-                            lambda: _call_smart_model(
-                                system=audit_system,
-                                user="Audit and correct this {} medical document section:\n\n".format(lang_name) + first_translated,
-                                max_tokens=max_tok, temperature=0.1,
-                            )
-                        )
-                        audit_count += 1
-                        if len(audited) >= len(first_translated) * 0.5:
-                            results[first_chunk_idx] = audited
-                            flabel = first_header if first_header else "preamble"
-                            logger.info("  Audited %s (%d -> %d chars) [smart, %d/%d]",
-                                flabel, len(first_translated), len(audited), audit_count, total_translatable)
-                        else:
-                            flabel = first_header if first_header else "preamble"
-                            logger.warning("  Audit output too short for %s -- keeping translation", flabel)
-                    except Exception as e:
-                        flabel = first_header if first_header else "preamble"
-                        logger.warning("  Audit failed for %s: %s -- keeping translation", flabel, e)
-
-                # Then: audit chunks as they arrive from producer
-                while True:
-                    chunk_idx = await queue.get()
-                    if chunk_idx is None:
-                        break
-                    translated_body = results.get(chunk_idx, "")
-                    if not translated_body.strip():
-                        continue
-                    # Find label for this chunk
-                    label = "section"
-                    for c in translatable:
-                        if c[0] == chunk_idx:
-                            label = c[1] if c[1] else "preamble"
-                            break
-                    max_tok = _estimate_translation_tokens(len(translated_body))
-                    try:
-                        audited = await asyncio.to_thread(
-                            lambda: _call_smart_model(
-                                system=audit_system,
-                                user="Audit and correct this {} medical document section:\n\n".format(lang_name) + translated_body,
-                                max_tokens=max_tok, temperature=0.1,
-                            )
-                        )
-                        audit_count += 1
-                        if len(audited) >= len(translated_body) * 0.5:
-                            results[chunk_idx] = audited
-                            logger.info("  Audited %s (%d -> %d chars) [smart, %d/%d]",
-                                label, len(translated_body), len(audited), audit_count, total_translatable)
-                        else:
-                            logger.warning("  Audit output too short for %s -- keeping translation", label)
-                    except Exception as e:
-                        logger.warning("  Audit failed for %s: %s -- keeping translation", label, e)
-
-            await asyncio.gather(producer(), consumer())
-            return translate_count, audit_count
+            await producer()
+            return translate_count
 
         # Run the async pipeline
         try:
@@ -394,10 +289,10 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
         if loop and loop.is_running():
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as pool:
-                t_count, a_count = pool.submit(lambda: asyncio.run(_run_pipeline())).result()
+                t_count = pool.submit(lambda: asyncio.run(_run_pipeline())).result()
         else:
-            t_count, a_count = asyncio.run(_run_pipeline())
-        logger.info("  Pipelined translation+audit complete: %d translate + %d audit calls", t_count, a_count)
+            t_count = asyncio.run(_run_pipeline())
+        logger.info("  Pipelined translation complete: %d translate calls (no audit)", t_count)
 
     # --- Reassemble output in original section order ---
     assembled_parts = []

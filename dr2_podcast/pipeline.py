@@ -15,7 +15,7 @@ from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 # load_dotenv() — called in __main__ block (avoid side effects on import)
-from crewai import Agent, Task, Crew, LLM
+from crewai import Agent, Task, Crew, LLM as _BaseLLM
 from crewai.tools import tool
 from markdown_it import MarkdownIt
 import weasyprint
@@ -72,6 +72,40 @@ from dr2_podcast.pipeline_crew import (
 
 
 logger = logging.getLogger(__name__)
+
+
+class LLM(_BaseLLM):
+    """CrewAI LLM wrapper that dynamically caps max_tokens to prevent context-window overflow.
+
+    When the accumulated prompt grows large, the remaining token budget shrinks.
+    Instead of sending max_tokens=16000 when only 15K tokens remain (causing a 400 error),
+    this wrapper reduces max_tokens to fit within the context window.
+    """
+
+    ctx_window: int = 32768
+
+    def _prepare_completion_params(self, messages, tools=None):
+        params = super()._prepare_completion_params(messages, tools)
+        configured_max = params.get("max_tokens")
+        if configured_max and self.ctx_window > 0:
+            # Estimate prompt tokens from message content length
+            total_chars = sum(
+                len(str(m.get("content", ""))) for m in params.get("messages", [])
+                if isinstance(m, dict)
+            )
+            # Conservative estimate: ~3.5 chars per token for mixed EN/JA content
+            est_prompt_tokens = int(total_chars / 3.5) + 500  # 500-token buffer for overhead
+            available = self.ctx_window - est_prompt_tokens
+            if available < configured_max:
+                capped = max(1024, available)
+                if capped < configured_max:
+                    logging.getLogger(__name__).warning(
+                        "  max_tokens capped: %d -> %d (prompt ~%d tokens, ctx %d)",
+                        configured_max, capped, est_prompt_tokens, self.ctx_window,
+                    )
+                    params["max_tokens"] = capped
+        return params
+
 
 class InsufficientEvidenceError(RuntimeError):
     """Raised when the affirmative research track finds zero candidates."""
@@ -141,6 +175,12 @@ def setup_logging(output_dir: Path):
         ],
         force=True
     )
+
+    # Suppress DEBUG logs from libraries that are verbose
+    logging.getLogger('fontTools').setLevel(logging.WARNING)
+    logging.getLogger('PIL').setLevel(logging.WARNING)
+    logging.getLogger('weasyprint').setLevel(logging.WARNING)
+    logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
     # Redirect stdout and stderr to logger
     class StreamToLogger(object):
@@ -2471,31 +2511,14 @@ if __name__ == "__main__":
         logger.info(f"  Restored: sot={len(sot_content)} chars, evidence={evidence_quality}, "
               f"aff={aff_candidates}, neg={neg_candidates}")
     else:
-        if _research_domain in ("social_science",):
-            # Social science pipeline (Phase E implementation)
+        # Determine domain for unified pipeline
+        _effective_domain = _research_domain if _research_domain in ("clinical", "social_science") else "clinical"
+
+        if _effective_domain == "social_science":
             logger.info(f"\n{'='*70}")
             logger.info(f"PHASE 1: SOCIAL SCIENCE RESEARCH (PECO Pipeline)")
             logger.info(f"{'='*70}")
-            try:
-                from dr2_podcast.research.social_science import run_social_science_research
-
-                deep_reports = asyncio.run(
-                    run_social_science_research(
-                        topic=topic_name,
-                        framing_context=framing_output,
-                        output_dir=str(output_dir),
-                    )
-                )
-            except ImportError:
-                logger.warning("⚠ social_science_research module not yet available — falling back to clinical pipeline")
-                _research_domain = "clinical"  # fall through to clinical below
-            except Exception as e:
-                err_detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
-                logger.warning(f"⚠ Social science pipeline failed: {err_detail} — falling back to clinical pipeline")
-                logger.debug("Social science traceback:", exc_info=True)
-                _research_domain = "clinical"
-
-        if _research_domain in ("clinical", "general"):
+        else:
             logger.info(f"\n{'='*70}")
             logger.info(f"PHASE 1: CLINICAL RESEARCH")
             logger.info(f"{'='*70}")
@@ -2526,7 +2549,8 @@ if __name__ == "__main__":
                 results_per_query=15,
                 fast_model_available=fast_model_available,
                 framing_context=framing_output,
-                output_dir=str(output_dir)
+                output_dir=str(output_dir),
+                domain=_effective_domain
             ))
 
             # C5: Gate — abort if affirmative track found zero candidates
@@ -2688,6 +2712,24 @@ if __name__ == "__main__":
             with open(validation_file, 'w') as f:
                 json.dump(validation_results, f, indent=2, ensure_ascii=False)
             logger.info(f"  Saved to {validation_file}")
+
+            # Filter broken/invalid sources from the research library
+            broken_urls = {url for url, status in validation_results.items()
+                           if "Broken" in status or "Invalid" in status or status.startswith("ERROR")}
+            if broken_urls and sources_file.exists():
+                try:
+                    src_data = json.loads(sources_file.read_text())
+                    for role in src_data:
+                        if isinstance(src_data[role], list):
+                            before = len(src_data[role])
+                            src_data[role] = [s for s in src_data[role] if s.get("url") not in broken_urls]
+                            removed = before - len(src_data[role])
+                            if removed:
+                                logger.info(f"  Filtered {removed} broken source(s) from '{role}'")
+                    sources_file.write_text(json.dumps(src_data, indent=2, ensure_ascii=False))
+                    logger.info(f"  Removed {len(broken_urls)} broken/invalid URL(s) from research library")
+                except Exception as e:
+                    logger.warning(f"  Failed to filter broken sources: {e}")
         else:
             logger.warning("  No URLs found to validate")
 
