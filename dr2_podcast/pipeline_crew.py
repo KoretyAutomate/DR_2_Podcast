@@ -116,7 +116,16 @@ def _crew_kickoff_guarded(crew_factory_fn, task, translation_task_obj, language,
             if stage > 1:
                 logger.warning("  %s: SOT stage %d selected (est %s tokens, budget %s)",
                       crew_name, stage, f"{est:,}", f"{budget:,}")
-            crew_factory_fn().kickoff()
+            try:
+                crew_factory_fn().kickoff()
+            except SystemExit as e:
+                # CrewAI raises SystemExit when context window is exhausted
+                # and respect_context_window=False. Convert to RuntimeError
+                # so the pipeline can handle it gracefully.
+                raise RuntimeError(
+                    f"{crew_name}: context window exhausted after summarization attempts. "
+                    f"Budget={budget:,}, est={est:,}. Original: {e}"
+                ) from e
             return
         # Over budget -- degrade to next stage
         logger.warning("  %s: Stage %d est %s tokens > budget %s. Degrading to stage %d...",

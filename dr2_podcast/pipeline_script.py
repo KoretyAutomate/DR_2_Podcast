@@ -305,7 +305,7 @@ def _deduplicate_script(script_text: str, language_config: dict) -> str:
 
 def _parse_blueprint_inventory(blueprint_text: str) -> dict:
     """
-    Parse inline Discussion Points from Section 5 (Narrative Arc) of the blueprint.
+    Parse inline Discussion Points from Section 5 of the blueprint.
     Returns {act_label: [{question, answer}]} or {} if Section 5 absent.
     Logs a WARNING if parsing fails so callers can degrade gracefully.
 
@@ -314,7 +314,7 @@ def _parse_blueprint_inventory(blueprint_text: str) -> dict:
     """
     # Try Section 5 first (new inline format)
     section_match = re.search(
-        r'(?:^|\n)(?:##\s*5\.?)\s*Narrative Arc[^\n]*\n(.*?)(?=\n(?:##\s*\d+)|\Z)',
+        r'(?:^|\n)(?:##\s*5\.?)\s*[^\n]+\n(.*?)(?=\n(?:##\s*\d+)|\Z)',
         blueprint_text, re.DOTALL | re.IGNORECASE
     )
     if not section_match:

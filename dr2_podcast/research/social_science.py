@@ -1,3 +1,5 @@
+# DEPRECATED: Social science pipeline merged into clinical.py Orchestrator (2026-03-07).
+# This file is retained for reference only. No code imports from it.
 """
 Social Science Research Pipeline — PECO framework with effect size analysis.
 

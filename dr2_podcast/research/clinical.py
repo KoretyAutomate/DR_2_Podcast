@@ -870,10 +870,6 @@ class ResearchAgent:
 
             log(f"      [{rq.goal[:40]}] {len(good_pages)}/{len(pages)} fetched → summarizing...")
             
-            # Log sources for UI visualization
-            for p in good_pages:
-                log(f"[SOURCE] {p.url}")
-
             # Summarize with fast model
             if self.fast_worker:
                 batch = await self.fast_worker.summarize_batch(good_pages, rq.goal, rq.query)
@@ -1213,6 +1209,7 @@ class ResearchAgent:
         log(f"    [Step 1] Generating tiered keywords ({role})...")
 
         is_adversarial = (role == "adversarial")
+        is_social = getattr(self, '_domain', 'clinical') == "social_science"
 
         framing_note = f"\n\nRESEARCH FRAMING:\n{framing_context[:3000]}" if framing_context else ""
 
@@ -1271,41 +1268,71 @@ class ResearchAgent:
                 "\"alertness\", \"executive function\", \"mental performance\"]\n"
             )
 
+        if is_social:
+            _search_db = "cascading academic database search"
+            _framework = "PECO"
+            _t1_exp = (
+                "  Exposure: exact folk/common names for *this specific exposure/factor* only.\n"
+                "  Example for screen time: [\"screen time\", \"smartphone use\", \"social media use\"]\n"
+                "  Do NOT include broader digital media — that belongs in Tier 3.\n"
+            )
+            _t3_exp = (
+                "  Exposure: broader conceptual category (source ambiguity accepted).\n"
+                "  Example: [\"digital media\", \"technology use\", \"internet exposure\", \"media consumption\"]\n"
+                "  These results require inference (e.g., any digital media -> screen time effect) and "
+                "will be flagged as speculative in the output.\n"
+            )
+            _fwk_json = '  "peco": {"population": "...", "exposure": "...", "comparison": "...", "outcome": "..."},\n'
+            _fwk_rule = "- Also produce a PECO summary.\n\n"
+            _exp_label = "exposure"
+        else:
+            _search_db = "cascading PubMed search"
+            _framework = "PICO"
+            _t1_exp = (
+                "  Intervention: exact folk/common names for *this specific substance* only.\n"
+                "  Example for coffee: [\"coffee\", \"coffee drinking\", \"coffee consumption\"]\n"
+                "  Do NOT include caffeine — caffeine also comes from tea, energy drinks, etc.\n"
+            )
+            _t3_exp = (
+                "  Intervention: active compound class / mechanism (source ambiguity accepted).\n"
+                "  Example: [\"caffeine\", \"methylxanthine\", \"adenosine antagonist\", \"caffeinated beverage\"]\n"
+                "  These results require inference (e.g., caffeine from any source -> coffee effect) and "
+                "will be flagged as speculative in the output.\n"
+            )
+            _fwk_json = '  "pico": {"population": "...", "intervention": "...", "comparison": "...", "outcome": "..."},\n'
+            _fwk_rule = "- Also produce a PICO summary.\n\n"
+            _exp_label = "intervention"
+
         system = (
             f"{role_header}"
-            "TASK: Produce three keyword tiers for a cascading PubMed search.\n"
+            f"TASK: Produce three keyword tiers for a {_search_db}.\n"
             "Each tier is a set of PLAIN KEYWORD LISTS — no Boolean operators, no MeSH notation, "
             "no brackets, no field tags. Just simple English phrases.\n\n"
             "TIER DEFINITIONS:\n\n"
             "TIER 1 — 'Established evidence' (strictest):\n"
-            "  Intervention: exact folk/common names for *this specific substance* only.\n"
-            "  Example for coffee: [\"coffee\", \"coffee drinking\", \"coffee consumption\"]\n"
-            "  Do NOT include caffeine — caffeine also comes from tea, energy drinks, etc.\n"
+            f"{_t1_exp}"
             f"{outcome_ex_t1}"
             "  Population: specific population relevant to the research question.\n"
             "  Example: [\"working adults\", \"employees\"]\n\n"
-            "TIER 2 — 'Supporting evidence' (broadened scope, same substance):\n"
-            "  Intervention: <<INHERITED FROM TIER 1 — do not generate, will be copied automatically>>\n"
+            "TIER 2 — 'Supporting evidence' (broadened scope):\n"
+            f"  {_exp_label.capitalize()}: <<INHERITED FROM TIER 1 — do not generate, will be copied automatically>>\n"
             f"{outcome_ex_t2}"
             "  Population: BROADER than Tier 1. Widen to more general populations.\n"
             "  Example: [\"adults\", \"healthy adults\"]\n\n"
-            "TIER 3 — 'Speculative extrapolation' (compound class):\n"
-            "  Intervention: active compound class / mechanism (source ambiguity accepted).\n"
-            "  Example: [\"caffeine\", \"methylxanthine\", \"adenosine antagonist\", \"caffeinated beverage\"]\n"
-            "  These results require inference (e.g., caffeine from any source → coffee effect) and "
-            "will be flagged as speculative in the output.\n"
+            "TIER 3 — 'Speculative extrapolation' (broader category):\n"
+            f"{_t3_exp}"
             "  Outcome: <<INHERITED FROM TIER 2 — do not generate, will be copied automatically>>\n"
             "  Population: <<INHERITED FROM TIER 2 — do not generate, will be copied automatically>>\n\n"
             "RULES:\n"
             "- Keyword lists must contain plain phrases only — no AND, OR, NOT, [MeSH], [tiab], etc.\n"
             "- Each term should be 1-4 words max.\n"
-            "- Tier 1 intervention must NOT contain compound-class terms.\n"
+            f"- Tier 1 {_exp_label} must NOT contain broad category terms.\n"
             "- Tier 2 outcome MUST include ALL Tier 1 outcome terms plus additional broader terms.\n"
             + ("- Outcome terms MUST be harm/null-focused — NOT benefit-oriented.\n" if is_adversarial else "")
-            + "- Also produce a PICO summary.\n\n"
-            "Return ONLY valid JSON (note: Tier 2 has no intervention, Tier 3 has no outcome/population):\n"
+            + f"{_fwk_rule}"
+            "Return ONLY valid JSON (note: Tier 2 has no intervention/exposure, Tier 3 has no outcome/population):\n"
             "{\n"
-            '  "pico": {"population": "...", "intervention": "...", "comparison": "...", "outcome": "..."},\n'
+            f"{_fwk_json}"
             '  "tier1": {\n'
             '    "intervention": ["term1", "term2"],\n'
             '    "outcome": ["term1", "term2"],\n'
@@ -1324,9 +1351,21 @@ class ResearchAgent:
         try:
             data = self._parse_json_response(raw)
 
+            # Map PECO → PICO for social science domain
+            if is_social and "peco" in data:
+                peco = data["peco"]
+                data["pico"] = {
+                    "population": peco.get("population", ""),
+                    "intervention": peco.get("exposure", ""),
+                    "comparison": peco.get("comparison", ""),
+                    "outcome": peco.get("outcome", ""),
+                }
+
             def parse_tier(d: dict) -> TierKeywords:
+                # Accept both "intervention" and "exposure" keys
+                intervention = d.get("intervention", []) or d.get("exposure", [])
                 return TierKeywords(
-                    intervention=d.get("intervention", []),
+                    intervention=intervention,
                     outcome=d.get("outcome", []),
                     population=d.get("population", []),
                     rationale=d.get("rationale", ""),
@@ -1513,6 +1552,8 @@ class ResearchAgent:
         Returns:
             (List[WideNetRecord], int) — records and highest tier reached.
         """
+        if getattr(self, '_domain', 'clinical') == "social_science":
+            return await self._tiered_search_social(plan, log)
         log(f"    [Step 2] Tiered cascade search ({plan.role})...")
         all_records: List[WideNetRecord] = []
         seen_pmids: set = set()
@@ -1568,6 +1609,7 @@ class ResearchAgent:
                         research_tier=tier_num,
                     ))
                     added += 1
+                    log("[STUDY_FOUND]")
                 log(f"    [Tier {tier_num}] +{added} new records (pool: {len(all_records)})")
             except Exception as e:
                 logger.error(f"Tier {tier_num} PubMed search failed: {e}")
@@ -1603,6 +1645,7 @@ class ResearchAgent:
                                 research_tier=1,
                             ))
                             scholar_added += 1
+                            log("[STUDY_FOUND]")
                         log(f"    [Scholar] +{scholar_added} records (Tier 1 keywords)")
             except Exception as e:
                 logger.error(f"Google Scholar search failed: {e}")
@@ -1646,6 +1689,7 @@ class ResearchAgent:
                             authors=art.get("authors"), url=url,
                             source_db="pubmed", research_tier=tier_num,
                         ))
+                        log("[STUDY_FOUND]")
                 except Exception as e:
                     logger.error(f"Tier {tier_num} fallback search failed: {e}")
                 if len(all_records) >= TIER_CASCADE_THRESHOLD:
@@ -1672,6 +1716,164 @@ class ResearchAgent:
 
         return all_records[:500], highest_tier
 
+    async def _tiered_search_social(
+        self, plan: TieredSearchPlan, log=logger.info
+    ) -> tuple:
+        """Step 2: Search OpenAlex + ERIC + Scholar for social science topics."""
+        log(f"    [Step 2] Social science search ({plan.role})...")
+        all_records: List[WideNetRecord] = []
+        seen_titles: set = set()
+        seen_urls: set = set()
+        highest_tier = 0
+
+        tier_configs = [
+            (1, plan.tier1),
+            (2, plan.tier2),
+            (3, plan.tier3),
+        ]
+
+        for tier_num, tier_kw in tier_configs:
+            terms = tier_kw.intervention + tier_kw.outcome
+            query = " ".join(terms[:5])
+            if not query.strip():
+                log(f"    [Tier {tier_num}] No terms — skipping")
+                continue
+
+            log(f"    [Tier {tier_num}] Query: {query[:140]}...")
+
+            # OpenAlex search
+            try:
+                oa_results = await self._openalex.search_works(query, per_page=50)
+                added = 0
+                for oa in oa_results:
+                    title = oa.get("title", "") or ""
+                    oa_doi = oa.get("doi") or ""
+                    url = ("https://doi.org/" + oa_doi) if oa_doi else ""
+                    if not title and not url:
+                        continue
+                    title_key = title.lower().strip()[:80]
+                    if title_key and title_key in seen_titles:
+                        continue
+                    if url and url in seen_urls:
+                        continue
+                    if title_key:
+                        seen_titles.add(title_key)
+                    if url:
+                        seen_urls.add(url)
+                    pri_loc = oa.get("primary_location")
+                    journal_name = None
+                    if isinstance(pri_loc, dict):
+                        src = pri_loc.get("source")
+                        if isinstance(src, dict):
+                            journal_name = src.get("display_name")
+                    all_records.append(WideNetRecord(
+                        pmid=None, doi=oa_doi or None,
+                        title=title,
+                        abstract=oa.get("abstract_text", "") or "",
+                        study_type=oa.get("type", "other"),
+                        sample_size=None, primary_objective=None,
+                        year=oa.get("publication_year"),
+                        journal=journal_name,
+                        authors=None,
+                        url=url, source_db="openalex",
+                        research_tier=tier_num,
+                    ))
+                    added += 1
+                    log("[STUDY_FOUND]")
+                log(f"    [Tier {tier_num}] OpenAlex: +{added} records")
+            except Exception as e:
+                logger.error(f"Tier {tier_num} OpenAlex search failed: {e}")
+
+            # ERIC search
+            try:
+                eric_results = await self._eric.search(query, max_results=30)
+                added = 0
+                for er in eric_results:
+                    title = er.get("title", "")
+                    url = er.get("url", "")
+                    title_key = title.lower().strip()[:80]
+                    if title_key and title_key in seen_titles:
+                        continue
+                    if url and url in seen_urls:
+                        continue
+                    if title_key:
+                        seen_titles.add(title_key)
+                    if url:
+                        seen_urls.add(url)
+                    er_authors = er.get("author", [])
+                    author_str = ", ".join(er_authors) if er_authors else None
+                    all_records.append(WideNetRecord(
+                        pmid=None, doi=None,
+                        title=title,
+                        abstract=er.get("description", ""),
+                        study_type="other",
+                        sample_size=None, primary_objective=None,
+                        year=er.get("year"),
+                        journal=er.get("source", ""),
+                        authors=author_str,
+                        url=url, source_db="eric",
+                        research_tier=tier_num,
+                    ))
+                    added += 1
+                    log("[STUDY_FOUND]")
+                log(f"    [Tier {tier_num}] ERIC: +{added} records")
+            except Exception as e:
+                logger.error(f"Tier {tier_num} ERIC search failed: {e}")
+
+            highest_tier = tier_num
+            if len(all_records) >= TIER_CASCADE_THRESHOLD:
+                log(f"    [Tier {tier_num}] Threshold ({TIER_CASCADE_THRESHOLD}) reached — stopping cascade")
+                break
+
+        # Scholar search — same as clinical
+        scholar_query = " ".join(plan.tier1.intervention + plan.tier1.outcome)
+        if scholar_query.strip():
+            try:
+                async with SearxngClient() as client:
+                    if await client.validate_connection():
+                        raw = await client.search(scholar_query, engines=['google scholar'], num_results=100)
+                        scholar_added = 0
+                        for r in raw:
+                            url = r.get("url", "") if isinstance(r, dict) else getattr(r, "url", "")
+                            if not url or url in seen_urls or is_junk_url(url):
+                                continue
+                            seen_urls.add(url)
+                            title = r.get("title", "") if isinstance(r, dict) else getattr(r, "title", "")
+                            snippet = r.get("content", "") if isinstance(r, dict) else getattr(r, "snippet", "")
+                            all_records.append(WideNetRecord(
+                                pmid=None, doi=None,
+                                title=title, abstract=snippet,
+                                study_type="other",
+                                sample_size=None, primary_objective=None,
+                                year=None, journal=None, authors=None,
+                                url=url, source_db="scholar",
+                                research_tier=1,
+                            ))
+                            scholar_added += 1
+                            log("[STUDY_FOUND]")
+                        log(f"    [Scholar] +{scholar_added} records")
+            except Exception as e:
+                logger.error(f"Google Scholar search failed: {e}")
+
+        log(f"    [Step 2] Total pool: {len(all_records)} records (highest tier: {highest_tier})")
+
+        # Fast-model screening for study_type on "other" records
+        needs_screening = [r for r in all_records if r.study_type == "other" and r.abstract]
+        if needs_screening and self.fast_worker:
+            log(f"    [Step 2] Fast-model typing {len(needs_screening)} abstracts...")
+            screened = await self._fast_screen_abstracts(needs_screening)
+            screening_map = {id(r): s for r, s in zip(needs_screening, screened)}
+            for r in all_records:
+                if id(r) in screening_map:
+                    s = screening_map[id(r)]
+                    if s.get("study_type"):
+                        r.study_type = s["study_type"]
+                    if s.get("sample_size"):
+                        r.sample_size = s["sample_size"]
+                    if s.get("primary_objective"):
+                        r.primary_objective = s["primary_objective"]
+
+        return all_records[:500], highest_tier
 
     async def _fast_screen_abstracts(self, records: List[WideNetRecord]) -> List[Dict]:
         """Use fast model to extract study_type, sample_size, primary_objective from abstracts."""
@@ -1949,6 +2151,7 @@ class ResearchAgent:
         Uses PMID-keyed cache to ensure identical NNT across runs for the same paper."""
         log(f"    [Step 4] Deep extraction from {len(articles)} articles (Smart Model)...")
         semaphore = asyncio.Semaphore(4)  # Lower concurrency for Smart Model (vLLM)
+        is_social = getattr(self, '_domain', 'clinical') == "social_science"
 
         # Load extraction cache
         extraction_cache = self._load_extraction_cache(output_dir)
@@ -1977,43 +2180,68 @@ class ResearchAgent:
             async with semaphore:
                 try:
                     content = text[:_SMART_CONTENT_CHARS]
-                    system_prompt = (
-                        "You are a clinical data extraction specialist. Read this study and extract "
-                        "ALL of the following variables. Use null for any field not found.\n\n"
-                        "IMPORTANT for control_event_rate / experimental_event_rate:\n"
-                        "- The 'event' MUST be an ADVERSE or NEGATIVE outcome (e.g., disease incidence, "
-                        "mortality, hospitalization, weight gain, metabolic worsening).\n"
-                        "- If the study measures a POSITIVE outcome (e.g., weight loss, improvement, "
-                        "remission), INVERT it: report the proportion who did NOT improve.\n"
-                        "- Example: if 63% of experimental group lost weight, the adverse event "
-                        "(no weight loss) rate is 0.37.\n"
-                        "- Set outcome_is_adverse to false ONLY if you could not invert and are "
-                        "reporting a beneficial event rate directly.\n\n"
-                        "Return ONLY valid JSON:\n"
-                        "{\n"
-                        '  "attrition_pct": "exact dropout percentage or null",\n'
-                        '  "effect_size": "primary effect with CI (e.g. HR 0.76, 95% CI 0.65-0.89) or null",\n'
-                        '  "demographics": "age range, sex ratio, population or null",\n'
-                        '  "follow_up_period": "duration (e.g. 5.2 years median) or null",\n'
-                        '  "funding_source": "exact funding source or null",\n'
-                        '  "conflicts_of_interest": "declared COI or None declared or null",\n'
-                        '  "biological_mechanism": "mechanism/pathway or null",\n'
-                        '  "control_event_rate": 0.15,\n'
-                        '  "experimental_event_rate": 0.10,\n'
-                        '  "outcome_is_adverse": true,\n'
-                        '  "primary_outcome": "exact primary endpoint or null",\n'
-                        '  "secondary_outcomes": ["endpoint1", "endpoint2"],\n'
-                        '  "blinding": "double-blind | single-blind | open-label | null",\n'
-                        '  "randomization_method": "method or null",\n'
-                        '  "intention_to_treat": true,\n'
-                        '  "sample_size_total": 1000,\n'
-                        '  "sample_size_intervention": 500,\n'
-                        '  "sample_size_control": 500,\n'
-                        '  "study_design": "parallel RCT | crossover RCT | meta-analysis | cohort | etc.",\n'
-                        '  "risk_of_bias": "low | some concerns | high | unclear",\n'
-                        '  "raw_facts": "3-5 key findings as bullet points"\n'
-                        "}"
-                    )
+                    if is_social:
+                        system_prompt = (
+                            "You are a social science data extraction specialist. Read this study and extract "
+                            "ALL of the following variables. Use null for any field not found.\n\n"
+                            "Return ONLY valid JSON:\n"
+                            "{\n"
+                            '  "effect_size": "0.45 (Cohen\'s d) or null",\n'
+                            '  "effect_size_type": "Cohen\'s d | Hedges\' g | OR | r | eta-squared | null",\n'
+                            '  "group_1_mean": 3.2,\n'
+                            '  "group_1_sd": 1.1,\n'
+                            '  "group_1_n": 150,\n'
+                            '  "group_2_mean": 2.8,\n'
+                            '  "group_2_sd": 1.0,\n'
+                            '  "group_2_n": 148,\n'
+                            '  "demographics": "age, sex, population or null",\n'
+                            '  "follow_up_period": "duration or null",\n'
+                            '  "funding_source": "source or null",\n'
+                            '  "study_design": "RCT | quasi-experimental | cohort | cross-sectional | meta-analysis | etc.",\n'
+                            '  "sample_size_total": 298,\n'
+                            '  "primary_outcome": "exact outcome or null",\n'
+                            '  "risk_of_bias": "low | some concerns | high | unclear",\n'
+                            '  "raw_facts": "3-5 key findings"\n'
+                            "}"
+                        )
+                    else:
+                        system_prompt = (
+                            "You are a clinical data extraction specialist. Read this study and extract "
+                            "ALL of the following variables. Use null for any field not found.\n\n"
+                            "IMPORTANT for control_event_rate / experimental_event_rate:\n"
+                            "- The 'event' MUST be an ADVERSE or NEGATIVE outcome (e.g., disease incidence, "
+                            "mortality, hospitalization, weight gain, metabolic worsening).\n"
+                            "- If the study measures a POSITIVE outcome (e.g., weight loss, improvement, "
+                            "remission), INVERT it: report the proportion who did NOT improve.\n"
+                            "- Example: if 63% of experimental group lost weight, the adverse event "
+                            "(no weight loss) rate is 0.37.\n"
+                            "- Set outcome_is_adverse to false ONLY if you could not invert and are "
+                            "reporting a beneficial event rate directly.\n\n"
+                            "Return ONLY valid JSON:\n"
+                            "{\n"
+                            '  "attrition_pct": "exact dropout percentage or null",\n'
+                            '  "effect_size": "primary effect with CI (e.g. HR 0.76, 95% CI 0.65-0.89) or null",\n'
+                            '  "demographics": "age range, sex ratio, population or null",\n'
+                            '  "follow_up_period": "duration (e.g. 5.2 years median) or null",\n'
+                            '  "funding_source": "exact funding source or null",\n'
+                            '  "conflicts_of_interest": "declared COI or None declared or null",\n'
+                            '  "biological_mechanism": "mechanism/pathway or null",\n'
+                            '  "control_event_rate": 0.15,\n'
+                            '  "experimental_event_rate": 0.10,\n'
+                            '  "outcome_is_adverse": true,\n'
+                            '  "primary_outcome": "exact primary endpoint or null",\n'
+                            '  "secondary_outcomes": ["endpoint1", "endpoint2"],\n'
+                            '  "blinding": "double-blind | single-blind | open-label | null",\n'
+                            '  "randomization_method": "method or null",\n'
+                            '  "intention_to_treat": true,\n'
+                            '  "sample_size_total": 1000,\n'
+                            '  "sample_size_intervention": 500,\n'
+                            '  "sample_size_control": 500,\n'
+                            '  "study_design": "parallel RCT | crossover RCT | meta-analysis | cohort | etc.",\n'
+                            '  "risk_of_bias": "low | some concerns | high | unclear",\n'
+                            '  "raw_facts": "3-5 key findings as bullet points"\n'
+                            "}"
+                        )
 
                     # Always use Smart Model for extraction — Fast Model (1B params)
                     # is too small for reliable 19-field JSON extraction from full-text
@@ -2095,10 +2323,6 @@ class ResearchAgent:
                         raw_facts=f"Extraction failed: {str(e)[:100]}",
                         paper_metadata=record.paper_metadata,
                     )
-
-        # Log sources for UI visualization
-        for record in records:
-            log(f"[SOURCE] {record.url}")
 
         results = await asyncio.gather(*[
             extract_one(art, rec) for art, rec in zip(articles, records)
@@ -2267,8 +2491,10 @@ class Orchestrator:
         brave_api_key: str = "",
         results_per_query: int = 5,
         max_iterations: int = MAX_RESEARCH_ITERATIONS,
-        fast_model_available: bool = True
+        fast_model_available: bool = True,
+        domain: str = "clinical",
     ):
+        self.domain = domain
         self.smart_client = AsyncOpenAI(base_url=smart_base_url, api_key="NA")
         self.fast_client = AsyncOpenAI(base_url=fast_base_url, api_key="NA") if fast_model_available else None
         self.smart_model = smart_model
@@ -2287,6 +2513,21 @@ class Orchestrator:
             smart_model, results_per_query, max_iterations
         )
         self.fast_model_available = fast_model_available
+
+        # Set domain on researchers for Step 2 dispatch
+        self.lead_researcher._domain = self.domain
+        self.counter_researcher._domain = self.domain
+
+        # Social science clients (OpenAlex + ERIC)
+        if domain == "social_science":
+            from dr2_podcast.research.metadata_clients import OpenAlexClient, ERICClient, MetadataCache
+            self._metadata_cache = MetadataCache()
+            self.openalex = OpenAlexClient(cache=self._metadata_cache)
+            self.eric = ERICClient(cache=self._metadata_cache)
+            self.lead_researcher._openalex = self.openalex
+            self.lead_researcher._eric = self.eric
+            self.counter_researcher._openalex = self.openalex
+            self.counter_researcher._eric = self.eric
 
         # Full-text fetcher for Step 4
         from dr2_podcast.research.fulltext_fetcher import FullTextFetcher
@@ -2321,7 +2562,8 @@ class Orchestrator:
 
         mode = "DUAL-MODEL" if self.fast_model_available else "SINGLE-MODEL"
         log(f"\n{'='*70}")
-        log(f"DEEP RESEARCH AGENT - Evidence-Based Clinical Pipeline ({mode})")
+        domain_label = "Social Science" if self.domain == "social_science" else "Clinical"
+        log(f"DEEP RESEARCH AGENT - Evidence-Based {domain_label} Pipeline ({mode})")
         log(f"{'='*70}")
         log(f"Topic: {topic}")
         if framing_context:
@@ -2466,17 +2708,25 @@ class Orchestrator:
             affirmative_track(), falsification_track()
         )
 
-        # --- Step 7: Deterministic Math ---
+        # --- Step 6: Deterministic Math ---
         log(f"\n{'='*70}")
-        log(f"STEP 6: DETERMINISTIC MATH (ARR/NNT)")
-        log(f"{'='*70}")
         all_extractions = aff_extractions + fal_extractions
-        impacts = clinical_math.batch_calculate(all_extractions)
-        math_report = clinical_math.format_math_report(impacts)
-        log(f"    Calculated clinical impact for {len(impacts)} studies with CER+EER data")
-        if impacts:
-            for imp in impacts:
-                log(f"      {imp.study_id}: NNT={imp.nnt:.1f} ({imp.direction})")
+        if self.domain == "social_science":
+            from dr2_podcast.research.effect_size_math import batch_calculate as es_batch_calculate, format_effect_size_report
+            log(f"STEP 6: DETERMINISTIC MATH (Effect Size)")
+            log(f"{'='*70}")
+            impacts = es_batch_calculate(all_extractions)
+            math_report = format_effect_size_report(impacts)
+            log(f"    Calculated effect sizes for {len(impacts)} studies")
+        else:
+            log(f"STEP 6: DETERMINISTIC MATH (ARR/NNT)")
+            log(f"{'='*70}")
+            impacts = clinical_math.batch_calculate(all_extractions)
+            math_report = clinical_math.format_math_report(impacts)
+            log(f"    Calculated clinical impact for {len(impacts)} studies with CER+EER data")
+            if impacts:
+                for imp in impacts:
+                    log(f"      {imp.study_id}: NNT={imp.nnt:.1f} ({imp.direction})")
 
         # --- Step 8: GRADE Synthesis ---
         log(f"\n{'='*70}")
@@ -2513,9 +2763,11 @@ class Orchestrator:
         aff_sources = self._extractions_to_sources(aff_extractions, "affirmative")
         fal_sources = self._extractions_to_sources(fal_extractions, "falsification")
 
+        db_list = ["OpenAlex", "ERIC", "Google Scholar"] if self.domain == "social_science" else ["PubMed", "Google Scholar"]
+
         combined_metrics = SearchMetrics(
             search_date=search_date,
-            databases_searched=["PubMed", "Google Scholar"],
+            databases_searched=db_list,
             total_identified=total_wide,
             total_after_dedup=total_wide,  # dedup happens inside PubMedClient
             total_fetched=total_ft_ok + total_ft_err,
@@ -2542,7 +2794,7 @@ class Orchestrator:
             duration_seconds=lead_duration,
             search_metrics=SearchMetrics(
                 search_date=search_date,
-                databases_searched=["PubMed", "Google Scholar"],
+                databases_searched=db_list,
                 total_identified=aff_wide_net_total,
                 total_after_dedup=aff_wide_net_total,
                 total_fetched=aff_fulltext_ok + aff_fulltext_err,
@@ -2569,7 +2821,7 @@ class Orchestrator:
             duration_seconds=lead_duration,
             search_metrics=SearchMetrics(
                 search_date=search_date,
-                databases_searched=["PubMed", "Google Scholar"],
+                databases_searched=db_list,
                 total_identified=fal_wide_net_total,
                 total_after_dedup=fal_wide_net_total,
                 total_fetched=fal_fulltext_ok + fal_fulltext_err,
@@ -2602,9 +2854,17 @@ class Orchestrator:
         log(f"ALL RESEARCH COMPLETE in {total_time:.0f}s")
         log(f"  Affirmative: {len(aff_extractions)} studies from {aff_wide_net_total} candidates")
         log(f"  Falsification: {len(fal_extractions)} studies from {fal_wide_net_total} candidates")
-        log(f"  Clinical math: {len(impacts)} studies with NNT data")
+        math_label = "Effect size math" if self.domain == "social_science" else "Clinical math"
+        math_detail = "effect size data" if self.domain == "social_science" else "NNT data"
+        log(f"  {math_label}: {len(impacts)} studies with {math_detail}")
         log(f"  Total articles analyzed: {len(all_extractions)}")
         log(f"{'='*70}\n")
+
+        # Close social science clients if used
+        if self.domain == "social_science":
+            await self.openalex.close()
+            await self.eric.close()
+            self._metadata_cache.close()
 
         return {
             "lead": lead_report,
@@ -2612,6 +2872,7 @@ class Orchestrator:
             "audit": audit_report,
             # Raw pipeline data for IMRaD SOT assembly (additive — backward-compatible)
             "pipeline_data": {
+                "domain": self.domain,
                 "aff_strategy": aff_strategy,
                 "fal_strategy": fal_strategy,
                 "aff_extractions": aff_extractions,
@@ -2645,64 +2906,106 @@ class Orchestrator:
         aff_extractions: Optional[List[DeepExtraction]] = None,
         fal_extractions: Optional[List[DeepExtraction]] = None,
     ) -> str:
-        """Step 8: GRADE framework synthesis by the Auditor."""
-        log(f"    [Step 7] GRADE synthesis...")
+        """Step 7: GRADE / Evidence Quality synthesis by the Auditor."""
+        synthesis_label = "Evidence Quality" if self.domain == "social_science" else "GRADE"
+        log(f"    [Step 7] {synthesis_label} synthesis...")
 
         pico_str = json.dumps(aff_strategy.pico)
 
-        audit_system = (
-            "You are The Auditor — an independent scientific arbiter.\n\n"
-            "You have received:\n"
-            "1. The AFFIRMATIVE CASE (arguing FOR the intervention)\n"
-            "2. The FALSIFICATION CASE (arguing AGAINST the intervention)\n"
-            "3. DETERMINISTIC MATH (Python-calculated ARR, RRR, NNT — these numbers are EXACT, not LLM-generated)\n\n"
-            f"PICO Framework: {pico_str}\n\n"
-            "Your task: Issue a GRADE-framework synthesis.\n\n"
-            "Structure:\n"
-            "1. Executive Summary (3-4 sentences)\n"
-            "2. Evidence Profile\n"
-            "   - Study designs: [list study types included]\n"
-            "   - Total participants across key studies: N = X\n"
-            "   - Risk of bias assessment: [summary]\n"
-            "   - Consistency: [do studies agree?]\n"
-            "   - Directness: [do studies directly measure the outcome of interest?]\n"
-            "   - Precision: [are confidence intervals narrow?]\n"
-            "   - Publication bias: [any evidence of selective reporting?]\n\n"
-            "3. GRADE Assessment\n"
-            "   Start at HIGH for RCTs, LOW for observational. Then apply modifiers:\n"
-            "   DOWNGRADE for: Risk of bias, Inconsistency, Indirectness, Imprecision, Publication bias\n"
-            "   UPGRADE for: Large effect, Dose-response, Plausible confounders would reduce effect\n"
-            "   FINAL GRADE: HIGH | MODERATE | LOW | VERY LOW\n\n"
-            "4. Clinical Impact (from deterministic math)\n"
-            "   - Include the NNT table directly (do NOT recalculate — use the exact numbers provided)\n"
-            "   - Interpret the NNT in clinical context\n\n"
-            "5. Balanced Verdict\n"
-            "   - What does the weight of evidence actually say?\n"
-            "   - What are the key caveats?\n"
-            "   - What would change the conclusion?\n\n"
-            "6. Recommendations for Further Research\n\n"
-            "7. PRISMA Flow Diagram (text-based)\n"
-            f"   Records identified: {total_wide}\n"
-            f"   Screened (top studies): {total_screened}\n"
-            f"   Full-text retrieved: {total_ft_ok}\n"
-            f"   Full-text errors: {total_ft_err}\n"
-            f"   Included in synthesis: {total_screened}\n\n"
-            "8. Consolidated Evidence Table\n"
-            "   | Study | Design | N | Effect | CER | EER | ARR | NNT | Bias Risk | GRADE Impact |\n\n"
-            "9. Full Reference List\n\n"
-            "CRITICAL RULES:\n"
-            "- NEVER recalculate ARR or NNT — use the Python-provided numbers exactly\n"
-            "- Be heavily caveated — acknowledge uncertainty\n"
-            "- Flag any potential conflicts of interest\n"
-            "- Distinguish between statistical significance and clinical significance\n"
-            "- Note that absence of evidence is not evidence of absence"
-        )
+        if self.domain == "social_science":
+            audit_system = (
+                "You are The Auditor — an independent scientific arbiter.\n\n"
+                "You have received:\n"
+                "1. The AFFIRMATIVE CASE (arguing FOR the exposure/factor)\n"
+                "2. The FALSIFICATION CASE (arguing AGAINST the exposure/factor)\n"
+                "3. DETERMINISTIC MATH (Python-calculated effect sizes — these numbers are EXACT, not LLM-generated)\n\n"
+                f"PECO Framework: {pico_str}\n\n"
+                "Your task: Issue an Evidence Quality synthesis.\n\n"
+                "Evidence Quality Levels:\n"
+                "- STRONG: Systematic reviews/meta-analyses of controlled studies\n"
+                "- MODERATE_STRONG: RCTs (rare in social science)\n"
+                "- MODERATE: Quasi-experimental (DiD, regression discontinuity)\n"
+                "- MODERATE_WEAK: Cohort/longitudinal studies\n"
+                "- WEAK: Cross-sectional/correlational\n"
+                "- VERY_WEAK: Case studies/qualitative/expert opinion\n\n"
+                "Structure:\n"
+                "1. Evidence Quality Assessment\n"
+                "2. Strength of Evidence\n"
+                "3. Consistency Across Studies\n"
+                "4. Effect Size Summary\n"
+                "   - Include the effect size table directly (do NOT recalculate — use the exact numbers provided)\n"
+                "5. Methodological Limitations\n"
+                "6. Recommendations\n\n"
+                "7. PRISMA Flow Diagram (text-based)\n"
+                f"   Records identified: {total_wide}\n"
+                f"   Screened (top studies): {total_screened}\n"
+                f"   Full-text retrieved: {total_ft_ok}\n"
+                f"   Full-text errors: {total_ft_err}\n"
+                f"   Included in synthesis: {total_screened}\n\n"
+                "8. Executive Summary\n"
+                "9. Final Evidence Quality: [STRONG/MODERATE/WEAK/VERY_WEAK]\n\n"
+                "CRITICAL RULES:\n"
+                "- NEVER recalculate effect sizes — use the Python-provided numbers exactly\n"
+                "- Be heavily caveated — acknowledge uncertainty\n"
+                "- Flag any potential conflicts of interest\n"
+                "- Distinguish between statistical significance and practical significance\n"
+                "- Note that absence of evidence is not evidence of absence"
+            )
+        else:
+            audit_system = (
+                "You are The Auditor — an independent scientific arbiter.\n\n"
+                "You have received:\n"
+                "1. The AFFIRMATIVE CASE (arguing FOR the intervention)\n"
+                "2. The FALSIFICATION CASE (arguing AGAINST the intervention)\n"
+                "3. DETERMINISTIC MATH (Python-calculated ARR, RRR, NNT — these numbers are EXACT, not LLM-generated)\n\n"
+                f"PICO Framework: {pico_str}\n\n"
+                "Your task: Issue a GRADE-framework synthesis.\n\n"
+                "Structure:\n"
+                "1. Executive Summary (3-4 sentences)\n"
+                "2. Evidence Profile\n"
+                "   - Study designs: [list study types included]\n"
+                "   - Total participants across key studies: N = X\n"
+                "   - Risk of bias assessment: [summary]\n"
+                "   - Consistency: [do studies agree?]\n"
+                "   - Directness: [do studies directly measure the outcome of interest?]\n"
+                "   - Precision: [are confidence intervals narrow?]\n"
+                "   - Publication bias: [any evidence of selective reporting?]\n\n"
+                "3. GRADE Assessment\n"
+                "   Start at HIGH for RCTs, LOW for observational. Then apply modifiers:\n"
+                "   DOWNGRADE for: Risk of bias, Inconsistency, Indirectness, Imprecision, Publication bias\n"
+                "   UPGRADE for: Large effect, Dose-response, Plausible confounders would reduce effect\n"
+                "   FINAL GRADE: HIGH | MODERATE | LOW | VERY LOW\n\n"
+                "4. Clinical Impact (from deterministic math)\n"
+                "   - Include the NNT table directly (do NOT recalculate — use the exact numbers provided)\n"
+                "   - Interpret the NNT in clinical context\n\n"
+                "5. Balanced Verdict\n"
+                "   - What does the weight of evidence actually say?\n"
+                "   - What are the key caveats?\n"
+                "   - What would change the conclusion?\n\n"
+                "6. Recommendations for Further Research\n\n"
+                "7. PRISMA Flow Diagram (text-based)\n"
+                f"   Records identified: {total_wide}\n"
+                f"   Screened (top studies): {total_screened}\n"
+                f"   Full-text retrieved: {total_ft_ok}\n"
+                f"   Full-text errors: {total_ft_err}\n"
+                f"   Included in synthesis: {total_screened}\n\n"
+                "8. Consolidated Evidence Table\n"
+                "   | Study | Design | N | Effect | CER | EER | ARR | NNT | Bias Risk | GRADE Impact |\n\n"
+                "9. Full Reference List\n\n"
+                "CRITICAL RULES:\n"
+                "- NEVER recalculate ARR or NNT — use the Python-provided numbers exactly\n"
+                "- Be heavily caveated — acknowledge uncertainty\n"
+                "- Flag any potential conflicts of interest\n"
+                "- Distinguish between statistical significance and clinical significance\n"
+                "- Note that absence of evidence is not evidence of absence"
+            )
 
+        db_names = "OpenAlex, ERIC, Google Scholar" if self.domain == "social_science" else "PubMed (MeSH Boolean), Google Scholar"
         combined_input = (
             f"TOPIC: {topic}\n\n"
             f"=== SEARCH METHODOLOGY ===\n"
             f"Search date: {search_date}\n"
-            f"Databases: PubMed (MeSH Boolean), Google Scholar\n"
+            f"Databases: {db_names}\n"
             f"Records identified: {total_wide}\n"
             f"Screened to top studies: {total_screened}\n"
             f"Full-text retrieved: {total_ft_ok} (errors: {total_ft_err})\n\n"
@@ -2972,14 +3275,16 @@ async def run_deep_research(
     max_iterations: int = MAX_RESEARCH_ITERATIONS,
     fast_model_available: bool = True,
     framing_context: str = "",
-    output_dir: str = None
+    output_dir: str = None,
+    domain: str = "clinical"
 ) -> "DeepResearchResult":
     from dr2_podcast.pipeline_types import DeepResearchResult  # noqa: F811 — local import to avoid circular
     orchestrator = Orchestrator(
         brave_api_key=brave_api_key,
         results_per_query=results_per_query,
         max_iterations=max_iterations,
-        fast_model_available=fast_model_available
+        fast_model_available=fast_model_available,
+        domain=domain
     )
     return await orchestrator.run(topic, framing_context=framing_context, output_dir=output_dir)
 
