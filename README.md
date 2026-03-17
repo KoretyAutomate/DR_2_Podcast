@@ -71,7 +71,7 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
 A FastAPI-based web interface (`web_ui.py`) for managing podcast production:
 
 - One-click topic submission with language, accessibility level, host selection, and channel branding (intro text, target audience, mission)
-- **Live progress tracking**: phase name, progress bar, ETA, artifact count, source favicon grid
+- **Live progress tracking**: phase name, progress bar, ETA, artifact count, studies scanned
 - **Task queue**: submit multiple requests — confirmation dialog shows queue position, running task progress stays visible
 - **Production History**: collapsible list of past runs with download links
 - **Upload integration**: optional Buzzsprout (draft) and YouTube (private) publishing
@@ -109,7 +109,7 @@ The system uses three local LLMs working in tandem:
 
 Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `MID_MODEL_NAME`, `MID_LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
 
-The mid-tier model handles Phase 3 translation via a **pipelined architecture**: TranslateGemma 12B (a purpose-built translation model by Google) translates each SOT section on GPU, while the smart model audits completed translations concurrently — so translation and auditing overlap instead of running sequentially. If the mid-tier model is unavailable, the pipeline falls back to smart-model-only mode (sequential translate then audit).
+The mid-tier model (TranslateGemma 12B, a purpose-built translation model by Google) translates each SOT section on GPU. If the mid-tier model is unavailable, the pipeline falls back to smart-model-only mode for translation.
 
 If the fast model is unavailable, the smart model handles all summarization (slower but functional).
 
@@ -222,7 +222,7 @@ Dispatches to the appropriate 7-step pipeline based on the Phase 0 domain result
 Batch HEAD requests validate all cited URLs. The Source-of-Truth is then assembled in **IMRaD format** (Introduction, Methods, Results, and Discussion) — a structured scientific paper format derived deterministically from the pipeline's raw outputs. See [Source of Truth (IMRaD Format)](#source-of-truth-imrad-format) below.
 
 ### Phase 3 — Report Translation (conditional)
-For non-English output, the Source-of-Truth is translated using a **pipelined architecture**: TranslateGemma 12B (`translategemma:12b`) translates each IMRaD section on GPU while the smart model (`Qwen3-32B`) audits completed translations concurrently — fixing garbled text and terminology errors. Sections larger than 8K characters are translated directly by the smart model to avoid truncation. Skipped entirely for English runs.
+For non-English output, the Source-of-Truth is translated using TranslateGemma 12B (`translategemma:12b`) on GPU. If mid-tier unavailable, the smart model (`Qwen3-32B`) handles translation. Sections larger than 8K characters are translated by the smart model to avoid truncation. Skipped entirely for English runs.
 
 ### Phase 4 — Episode Blueprint (Crew 3)
 The Producer generates a 7-section Episode Blueprint: episode thesis, listener value proposition, hook question, content framework (PPP or QEI), 4-act narrative arc, GRADE-informed evidence framing, and citation plan. The Source-of-Truth summary is injected directly into task descriptions.
@@ -453,7 +453,7 @@ dr2_podcast/                          # Main package
 ├── pipeline_crew.py                  # CrewAI agent/task definitions
 ├── pipeline_script.py                # Script validation and trimming
 ├── pipeline_sot.py                   # Source-of-Truth (IMRaD) builder
-├── pipeline_translation.py           # Translation pipeline (pipelined translate + audit)
+├── pipeline_translation.py           # Translation pipeline (translate only, no audit)
 ├── pipeline_types.py                 # TypedDicts for data contracts
 ├── config.py                         # Centralized configuration and model settings
 ├── utils.py                          # Shared utility functions
@@ -467,7 +467,7 @@ dr2_podcast/                          # Main package
 │   ├── search_service.py             # SearXNG client, page scraping, content extraction
 │   ├── fulltext_fetcher.py           # 4-tier full-text fetcher (PMC/Unpaywall/scrape)
 │   ├── metadata_clients.py           # OpenAlex, Semantic Scholar, Crossref, ERIC clients
-│   ├── social_science.py             # 7-step social science pipeline (PECO/effect sizes)
+│   ├── social_science.py             # DEPRECATED — moved into clinical.py Orchestrator
 │   └── wwc_database.py               # What Works Clearinghouse SQLite database
 ├── audio/
 │   └── engine.py                     # Kokoro TTS + BGM mixing (dual-voice, 24kHz WAV)
