@@ -436,6 +436,249 @@ CONDENSE_PROMPTS: dict[str, dict[str, str]] = {
 
 
 # ---------------------------------------------------------------------------
+# SECTION GENERATION PROMPTS — Per-section system/user prompts for sectional
+# script drafting (replaces the monolithic single-call script prompt).
+# ---------------------------------------------------------------------------
+
+SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
+
+    # Speakability rules vary by language:
+    # EN: ~25 words/sentence ≈ 10s at 150 wpm
+    # JA: ~60 chars/sentence ≈ 7s at 500 chars/min
+    "speakability_rule": {
+        "en": "Max 25 words per sentence (for speakability — hosts must read this aloud without running out of breath)",
+        "ja": "1文あたり最大60文字（句点「。」まで）（読みやすさ — ホストが息切れせずに読めるように）",
+    },
+
+    "system": {
+        "en": (
+            "You are writing one section of a two-host science podcast about \"{topic}\".\n\n"
+            "CHARACTER ROLES:\n"
+            "  - {presenter} (Presenter): {presenter_personality}\n"
+            "  - {questioner} (Questioner): {questioner_personality}\n\n"
+            "WRITING RULES:\n"
+            "- Write conversationally — contractions, everyday vocabulary, natural fillers\n"
+            "- {speakability_rule}\n"
+            "- One idea per sentence — if a sentence covers two ideas, split it\n"
+            "- Every claim needs: explanation -> real-world analogy -> host reaction -> nuance\n"
+            "- Vary energy: surprising findings get excitement, nuances get thoughtful pauses\n"
+            "- Include natural fillers: 'Hm, that's interesting', 'Right, right', 'Oh wow'\n"
+            "- Brief banter between hosts — a shared laugh, a relatable admission\n"
+            "- Maintain consistent roles — {presenter} explains, {questioner} asks and reacts\n\n"
+            "FORMAT: Dialogue only. No markdown headers, no stage directions, no commentary.\n"
+            "{presenter}: [dialogue]\n"
+            "{questioner}: [dialogue]\n"
+        ),
+        "ja": (
+            "「{topic}」についての2人のホストによる科学ポッドキャストの1セクションを書いてください。\n\n"
+            "キャラクター設定:\n"
+            "  - {presenter}（プレゼンター）: {presenter_personality}\n"
+            "  - {questioner}（質問者）: {questioner_personality}\n\n"
+            "執筆ルール:\n"
+            "- 会話調で書く — 口語表現、日常的な語彙、自然なフィラー\n"
+            "- {speakability_rule}\n"
+            "- 1文1アイデア — 2つのアイデアが含まれる場合は文を分割する\n"
+            "- 各主張には: 説明 -> 現実世界の例え -> ホストの反応 -> ニュアンス\n"
+            "- エネルギーを変化させる: 驚きの発見には興奮、ニュアンスには落ち着いた間\n"
+            "- 自然なフィラーを含む: 「へー、面白いですね」「確かに」「えっ、本当に？」\n"
+            "- ホスト間の軽いやり取り — 共感の笑い、親しみやすいエピソード\n"
+            "- 一貫した役割を維持 — {presenter}が説明し、{questioner}が質問・反応する\n\n"
+            "形式: 対話のみ。マークダウンヘッダー、ト書き、コメントなし。\n"
+            "{presenter}: [対話]\n"
+            "{questioner}: [対話]\n"
+        ),
+    },
+
+    "user_opening": {
+        "en": (
+            "SECTION: Opening (Channel Intro + Hook + Act 1 — The Claim)\n"
+            "WORD BUDGET: Write approximately {word_budget} {length_unit} for this section.\n"
+            "This is {budget_pct}% of a {target_min}-minute episode.\n\n"
+            "1. CHANNEL INTRO (~25 words):\n"
+            "   {channel_intro_directive}\n\n"
+            "2. HOOK (~40 words):\n"
+            "   {presenter}: [Provocative question that makes listeners care personally]\n"
+            "   {questioner}: [Engaged reaction: 'Oh wow' / 'Hmm, I had no idea']\n\n"
+            "3. ACT 1 — THE CLAIM:\n"
+            "   What people believe. The folk wisdom. Why this matters personally.\n"
+            "   - {presenter} sets up the common belief\n"
+            "   - {questioner} validates: 'Right, I've heard that too'\n"
+            "   - Establish emotional stakes: why should the listener care?\n\n"
+            "PACING: {pacing}\n\n"
+            "COVERAGE CHECKLIST — address EACH of these in Act 1:\n"
+            "{checklist_block}\n\n"
+            "Write this section now. Target {word_budget} {length_unit}.\n"
+            "Writing more is fine. Writing less will cause production to FAIL."
+        ),
+        "ja": (
+            "セクション: オープニング（チャンネルイントロ + フック + Act 1 — The Claim）\n"
+            "文字数目標: このセクションは約{word_budget} {length_unit}で書いてください。\n"
+            "{target_min}分エピソードの{budget_pct}%です。\n\n"
+            "1. チャンネルイントロ（約50文字）:\n"
+            "   {channel_intro_directive}\n\n"
+            "2. フック（約80文字）:\n"
+            "   {presenter}: [リスナーが個人的に気になる挑発的な質問]\n"
+            "   {questioner}: [興味を引かれた反応: 「えっ、本当に？」「それは知らなかった」]\n\n"
+            "3. ACT 1 — THE CLAIM:\n"
+            "   人々が信じていること。常識。なぜ個人的に重要なのか。\n"
+            "   - {presenter}が一般的な信念を提示\n"
+            "   - {questioner}が共感: 「確かに、私もそう聞いていました」\n"
+            "   - 感情的なステークスを確立: なぜリスナーが気にすべきか？\n\n"
+            "ペーシング: {pacing}\n\n"
+            "カバレッジチェックリスト — Act 1で以下のそれぞれに対応してください:\n"
+            "{checklist_block}\n\n"
+            "このセクションを書いてください。目標{word_budget} {length_unit}。\n"
+            "多めに書いても問題ありません。少なすぎると制作が失敗します。"
+        ),
+    },
+
+    "user_evidence": {
+        "en": (
+            "SECTION: Act 2 — Evidence & Nuance (the core of the episode)\n"
+            "WORD BUDGET: Write approximately {word_budget} {length_unit} for this section.\n"
+            "This is {budget_pct}% of a {target_min}-minute episode — the longest section.\n\n"
+            "STRUCTURE:\n"
+            "- Start by stating the episode's conclusion upfront\n"
+            "- Walk through EACH study individually:\n"
+            "  Study -> finding -> {questioner} asks a study-specific question -> {presenter} answers with nuance/limitations\n"
+            "- Include specific numbers (NNT, ARR, sample sizes) where available\n"
+            "- Do NOT lump all evidence then all nuance — interleave them per study\n"
+            "- End with: 'So across all these studies, here's what we see...'\n\n"
+            "PACING: {pacing}\n\n"
+            "COVERAGE CHECKLIST — address EACH of these:\n"
+            "{checklist_block}\n\n"
+            "CONTINUITY — The previous section ended with:\n---\n{lead_in}\n---\n"
+            "Continue naturally. Do not repeat what was already said.\n\n"
+            "Write this section now. Target {word_budget} {length_unit}.\n"
+            "Writing more is fine. Writing less will cause production to FAIL."
+        ),
+        "ja": (
+            "セクション: Act 2 — Evidence & Nuance（エピソードの核心）\n"
+            "文字数目標: このセクションは約{word_budget} {length_unit}で書いてください。\n"
+            "{target_min}分エピソードの{budget_pct}% — 最も長いセクションです。\n\n"
+            "構成:\n"
+            "- まずエピソードの結論を先に述べる\n"
+            "- 各研究を個別に取り上げる:\n"
+            "  研究 -> 知見 -> {questioner}が研究固有の質問 -> {presenter}がニュアンス/限界を含めて回答\n"
+            "- 利用可能な場合、具体的な数値（NNT, ARR, サンプルサイズ）を含める\n"
+            "- エビデンスとニュアンスを交互に — まとめて述べない\n"
+            "- 最後に:「これらすべての研究を通して、見えてくることは...」\n\n"
+            "ペーシング: {pacing}\n\n"
+            "カバレッジチェックリスト — 以下のそれぞれに対応してください:\n"
+            "{checklist_block}\n\n"
+            "前のセクションの終わり:\n---\n{lead_in}\n---\n"
+            "自然に続けてください。すでに述べたことを繰り返さないでください。\n\n"
+            "このセクションを書いてください。目標{word_budget} {length_unit}。\n"
+            "多めに書いても問題ありません。少なすぎると制作が失敗します。"
+        ),
+    },
+
+    "user_synthesis": {
+        "en": (
+            "SECTION: Act 3 — Holistic Conclusion\n"
+            "WORD BUDGET: Write approximately {word_budget} {length_unit} for this section.\n"
+            "This is {budget_pct}% of a {target_min}-minute episode.\n\n"
+            "STRUCTURE:\n"
+            "- Synthesize ALL evidence into a unified takeaway — this is NOT new evidence\n"
+            "- Restate the conclusion — the listener now has the evidence\n"
+            "- What does the totality of evidence mean practically?\n"
+            "- GRADE confidence level in plain language\n"
+            "- {questioner}: 'So if I had to summarize everything we just discussed...'\n"
+            "- {presenter} ties it all together\n\n"
+            "PACING: {pacing}\n\n"
+            "COVERAGE CHECKLIST — address EACH of these:\n"
+            "{checklist_block}\n\n"
+            "CONTINUITY — The previous section ended with:\n---\n{lead_in}\n---\n"
+            "Continue naturally. Do not repeat what was already said.\n\n"
+            "Write this section now. Target {word_budget} {length_unit}.\n"
+            "Writing more is fine. Writing less will cause production to FAIL."
+        ),
+        "ja": (
+            "セクション: Act 3 — Holistic Conclusion\n"
+            "文字数目標: このセクションは約{word_budget} {length_unit}で書いてください。\n"
+            "{target_min}分エピソードの{budget_pct}%です。\n\n"
+            "構成:\n"
+            "- すべてのエビデンスを統一的なテイクアウェイに統合 — 新しいエビデンスではない\n"
+            "- 結論を再度述べる — リスナーはエビデンスを理解した\n"
+            "- エビデンス全体が実際に何を意味するか\n"
+            "- GRADEの確信度を平易な言葉で\n"
+            "- {questioner}: 「では、今まで話したことをまとめると...」\n"
+            "- {presenter}がすべてをまとめる\n\n"
+            "ペーシング: {pacing}\n\n"
+            "カバレッジチェックリスト — 以下のそれぞれに対応してください:\n"
+            "{checklist_block}\n\n"
+            "前のセクションの終わり:\n---\n{lead_in}\n---\n"
+            "自然に続けてください。すでに述べたことを繰り返さないでください。\n\n"
+            "このセクションを書いてください。目標{word_budget} {length_unit}。\n"
+            "多めに書いても問題ありません。少なすぎると制作が失敗します。"
+        ),
+    },
+
+    "user_closing": {
+        "en": (
+            "SECTION: Closing (Act 4 — The Protocol + Wrap-up + One Action)\n"
+            "WORD BUDGET: Write approximately {word_budget} {length_unit} for this section.\n"
+            "This is {budget_pct}% of a {target_min}-minute episode.\n\n"
+            "1. ACT 4 — THE PROTOCOL:\n"
+            "   Translate science into daily life, focusing on real-world barriers.\n"
+            "   - {questioner} voices listener challenges: 'I get the science, but...'\n"
+            "   - {presenter} addresses each barrier with practical solutions\n"
+            "   - Each barrier gets its own mini-conversation (challenge -> solution -> encouragement)\n\n"
+            "2. WRAP-UP (~60 words):\n"
+            "   Three-sentence summary of the most important takeaways.\n\n"
+            "3. ONE ACTION ENDING (~40 words):\n"
+            "   {presenter}: 'If you take ONE thing from today — [specific, doable action].'\n"
+            "   {questioner}: [Brief agreement + sign-off]\n\n"
+            "PACING: {pacing}\n\n"
+            "COVERAGE CHECKLIST — address EACH of these in Act 4:\n"
+            "{checklist_block}\n\n"
+            "CONTINUITY — The previous section ended with:\n---\n{lead_in}\n---\n"
+            "Continue naturally. Do not repeat what was already said.\n\n"
+            "Write this section now. Target {word_budget} {length_unit}.\n"
+            "Writing more is fine. Writing less will cause production to FAIL."
+        ),
+        "ja": (
+            "セクション: クロージング（Act 4 — The Protocol + まとめ + One Action）\n"
+            "文字数目標: このセクションは約{word_budget} {length_unit}で書いてください。\n"
+            "{target_min}分エピソードの{budget_pct}%です。\n\n"
+            "1. ACT 4 — THE PROTOCOL:\n"
+            "   科学を日常生活に変換し、現実の障壁に焦点を当てる。\n"
+            "   - {questioner}がリスナーの課題を代弁: 「科学は分かりましたが...」\n"
+            "   - {presenter}が各障壁に実践的な解決策で対応\n"
+            "   - 各障壁ごとにミニ会話（課題 -> 解決策 -> 励まし）\n\n"
+            "2. まとめ（約120文字）:\n"
+            "   最も重要なポイントを3文でまとめる。\n\n"
+            "3. ONE ACTIONエンディング（約80文字）:\n"
+            "   {presenter}: 「今日のエピソードから一つだけ覚えて帰るなら — [具体的なアクション]」\n"
+            "   {questioner}: [短い同意 + サインオフ]\n\n"
+            "ペーシング: {pacing}\n\n"
+            "カバレッジチェックリスト — Act 4で以下のそれぞれに対応してください:\n"
+            "{checklist_block}\n\n"
+            "前のセクションの終わり:\n---\n{lead_in}\n---\n"
+            "自然に続けてください。すでに述べたことを繰り返さないでください。\n\n"
+            "このセクションを書いてください。目標{word_budget} {length_unit}。\n"
+            "多めに書いても問題ありません。少なすぎると制作が失敗します。"
+        ),
+    },
+
+    "retry_feedback": {
+        "en": (
+            "Your previous attempt was only {actual_count} {length_unit} — "
+            "need at least {floor_count} {length_unit}. "
+            "Expand the conversation: add deeper explanations, real-world analogies, "
+            "and more host back-and-forth for EACH checklist item."
+        ),
+        "ja": (
+            "前回の試みは{actual_count} {length_unit}のみでした — "
+            "少なくとも{floor_count} {length_unit}が必要です。"
+            "会話を拡張してください: 各チェックリスト項目について、より深い説明、"
+            "現実世界の例え、ホスト間のやり取りを追加してください。"
+        ),
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Lookup helper
 # ---------------------------------------------------------------------------
 
@@ -444,6 +687,7 @@ _SECTION_MAP = {
     "script": SCRIPT_PROMPTS,
     "polish": POLISH_PROMPTS,
     "condense": CONDENSE_PROMPTS,
+    "section_gen": SECTION_GEN_PROMPTS,
 }
 
 

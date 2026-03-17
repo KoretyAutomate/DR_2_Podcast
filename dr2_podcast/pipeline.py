@@ -1594,6 +1594,90 @@ def _run_script_draft(producer_agent, script_task, target_length_int, language_c
     return draft_text, draft_count
 
 
+def _run_sectional_draft(inventory, target_length_int, language_config,
+                         sot_content, session_roles, topic_name,
+                         target_instruction, channel_intro,
+                         *, _call_smart_model, target_min=30):
+    """Phase 5: Generate script draft via 4 sequential section calls.
+
+    Each section has its own word budget, coverage checklist items, and
+    pacing annotation. Sections are validated individually, with deficit
+    redistribution to subsequent sections if a section runs short.
+
+    Returns (assembled_draft, total_count).
+    """
+    from dr2_podcast.pipeline_script import (
+        _allocate_section_budgets, _generate_section, _count_words,
+        _validate_script, SCRIPT_TOLERANCE)
+
+    sections = _allocate_section_budgets(target_length_int, language_config, inventory)
+    length_unit = language_config['length_unit']
+
+    logger.info("  Sectional draft: %d sections, total budget %d %s",
+                len(sections), target_length_int, length_unit)
+    for s in sections:
+        logger.info("    %s: budget=%d %s, checklist=%d items",
+                     s['section_id'], s['word_budget'], length_unit,
+                     len(s.get('checklist_items', [])))
+
+    generated = []
+    previous_lines = []
+    accumulated_deficit = 0
+
+    for i, section_cfg in enumerate(sections):
+        # Redistribute deficit from prior sections
+        if accumulated_deficit > 0:
+            original_budget = section_cfg['word_budget']
+            section_cfg['word_budget'] += accumulated_deficit
+            logger.info("    %s: budget adjusted %d -> %d %s (absorbing %d deficit)",
+                         section_cfg['section_id'], original_budget,
+                         section_cfg['word_budget'], length_unit, accumulated_deficit)
+            accumulated_deficit = 0
+
+        section_text, word_count, deficit = _generate_section(
+            section_cfg, previous_lines,
+            _call_smart_model=_call_smart_model,
+            language_config=language_config,
+            session_roles=session_roles,
+            topic_name=topic_name,
+            channel_intro=channel_intro,
+            target_min=target_min,
+        )
+
+        status = 'OK'
+        if word_count < int(section_cfg['word_budget'] * 0.75):
+            status = 'SHORT'
+        elif word_count > int(section_cfg['word_budget'] * 1.25):
+            status = 'OVER'
+        logger.info("  Section %s: %d/%d %s — %s",
+                     section_cfg['section_id'], word_count,
+                     section_cfg['word_budget'], length_unit, status)
+
+        if deficit > 0:
+            accumulated_deficit += deficit
+            logger.warning("    Deficit %d %s carried forward", deficit, length_unit)
+
+        generated.append(section_text)
+
+        # Update lead-in for next section
+        non_empty = [ln for ln in section_text.split('\n') if ln.strip()]
+        previous_lines = non_empty[-5:] if non_empty else []
+
+    # Assemble with [TRANSITION] markers between sections
+    assembled = '\n\n[TRANSITION]\n\n'.join(generated)
+
+    total_count = _count_words(assembled, language_config)
+    val = _validate_script(assembled, target_length_int, SCRIPT_TOLERANCE,
+                           language_config, sot_content, stage='draft')
+    logger.info("  Assembled draft: %d %s — %s",
+                 total_count, length_unit, 'PASS' if val['pass'] else 'NEEDS WORK')
+    if not val['pass']:
+        for issue in val['issues']:
+            logger.warning("    %s", issue)
+
+    return assembled, total_count
+
+
 def _run_polish_loop(draft_text, draft_count, inventory, target_length_int,
                      language_config, sot_content, script_task, polish_task,
                      editor_agent, translation_task, polish_base_desc,
@@ -2012,14 +2096,21 @@ if __name__ == "__main__":
                 "", language_config, "Phase 4 Blueprint"
             )
 
-            # Inject blueprint inventory into script task
-            _r_inventory, _reuse_script_base_desc = _inject_blueprint_checklist(
-                blueprint_task, script_task, _reuse_script_base_desc)
+            # Parse blueprint inventory for sectional draft
+            _r_bp_raw = strip_think_blocks(blueprint_task.output.raw)
+            _r_inventory = _parse_blueprint_inventory(_r_bp_raw)
 
-            # Phase 5: Script Draft
-            logger.info(f"\n  PHASE 5: SCRIPT DRAFT")
-            _r_draft_text, _r_draft_count = _run_script_draft(
-                producer_agent, script_task, target_length_int, language_config, sot_content)
+            # Phase 5: Script Draft (Sectional)
+            logger.info(f"\n  PHASE 5: SCRIPT DRAFT (SECTIONAL)")
+            _r_draft_text, _r_draft_count = _run_sectional_draft(
+                _r_inventory, target_length_int, language_config, sot_content,
+                SESSION_ROLES, topic_name, target_instruction, channel_intro,
+                _call_smart_model=_call_smart_model, target_min=_target_min)
+            # Set script_task.output for polish loop
+            class _FakeOutput:
+                def __init__(self, raw):
+                    self.raw = raw
+            script_task.output = _FakeOutput(_r_draft_text)
 
             # Phase 6: Script Polish
             logger.info(f"\n  PHASE 6: SCRIPT POLISH (audit loop)")
@@ -2225,14 +2316,21 @@ if __name__ == "__main__":
                     "", language_config, "Phase 4 Blueprint"
                 )
 
-                # Inject blueprint inventory into script task
-                _s_inventory, _supp_script_base_desc = _inject_blueprint_checklist(
-                    blueprint_task, script_task, _supp_script_base_desc)
+                # Parse blueprint inventory for sectional draft
+                _s_bp_raw = strip_think_blocks(blueprint_task.output.raw)
+                _s_inventory = _parse_blueprint_inventory(_s_bp_raw)
 
-                # Phase 5: Script Draft
-                logger.info(f"\n  PHASE 5: SCRIPT DRAFT")
-                _s_draft_text, _s_draft_count = _run_script_draft(
-                    producer_agent, script_task, target_length_int, language_config, sot_content)
+                # Phase 5: Script Draft (Sectional)
+                logger.info(f"\n  PHASE 5: SCRIPT DRAFT (SECTIONAL)")
+                _s_draft_text, _s_draft_count = _run_sectional_draft(
+                    _s_inventory, target_length_int, language_config, sot_content,
+                    SESSION_ROLES, topic_name, target_instruction, channel_intro,
+                    _call_smart_model=_call_smart_model, target_min=_target_min)
+                # Set script_task.output for polish loop
+                class _FakeOutput:
+                    def __init__(self, raw):
+                        self.raw = raw
+                script_task.output = _FakeOutput(_s_draft_text)
 
                 # Phase 6: Script Polish
                 logger.info(f"\n  PHASE 6: SCRIPT POLISH (audit loop)")
@@ -2975,9 +3073,9 @@ if __name__ == "__main__":
                     def __init__(self, raw):
                         self.raw = raw
                 blueprint_task.output = _FakeOutput(_bp_text)
-            # Re-inject blueprint inventory into script task
-            _bp_inventory, script_task_base_description = _inject_blueprint_checklist(
-                blueprint_task, script_task, script_task_base_description)
+            # Parse blueprint inventory for sectional draft
+            _bp_raw = strip_think_blocks(blueprint_task.output.raw)
+            _bp_inventory = _parse_blueprint_inventory(_bp_raw)
         else:
             logger.info(f"\n{'='*60}")
             logger.info("PHASE 4: EPISODE BLUEPRINT")
@@ -2991,14 +3089,14 @@ if __name__ == "__main__":
             )
             logger.info("  ✓ Blueprint complete")
 
-            # Inject blueprint inventory into script task
-            _bp_inventory, script_task_base_description = _inject_blueprint_checklist(
-                blueprint_task, script_task, script_task_base_description)
+            # Parse blueprint inventory for sectional draft
+            _bp_raw = strip_think_blocks(blueprint_task.output.raw)
+            _bp_inventory = _parse_blueprint_inventory(_bp_raw)
 
             # Save Phase 4 checkpoint
             _save_phase(4)
 
-        # === PHASE 5: SCRIPT DRAFT ===
+        # === PHASE 5: SCRIPT DRAFT (SECTIONAL) ===
         if _phase_done(5):
             logger.info(f"\n{'='*60}")
             logger.info("PHASE 5: SCRIPT DRAFT — already complete, skipping")
@@ -3011,21 +3109,31 @@ if __name__ == "__main__":
                 logger.info(f"  Restored: {_draft_count} {language_config['length_unit']}")
             else:
                 logger.warning("  WARNING: script_draft.md not found — re-running Phase 5")
-                script_draft_text, _draft_count = _run_script_draft(
-                    producer_agent, script_task, target_length_int, language_config, sot_content)
+                script_draft_text, _draft_count = _run_sectional_draft(
+                    _bp_inventory, target_length_int, language_config, sot_content,
+                    SESSION_ROLES, topic_name, target_instruction, channel_intro,
+                    _call_smart_model=_call_smart_model, target_min=_target_min)
                 _save_phase(5)
         else:
             logger.info(f"\n{'='*60}")
-            logger.info("PHASE 5: SCRIPT DRAFT")
+            logger.info("PHASE 5: SCRIPT DRAFT (SECTIONAL)")
             logger.info(f"{'='*60}")
-            script_draft_text, _draft_count = _run_script_draft(
-                producer_agent, script_task, target_length_int, language_config, sot_content)
+            script_draft_text, _draft_count = _run_sectional_draft(
+                _bp_inventory, target_length_int, language_config, sot_content,
+                SESSION_ROLES, topic_name, target_instruction, channel_intro,
+                _call_smart_model=_call_smart_model, target_min=_target_min)
 
             # Save Phase 5 checkpoint (also save draft to disk for resume)
             _sd_path = output_path(output_dir, "script_draft.md")
             with open(_sd_path, 'w', encoding='utf-8') as _f:
                 _f.write(script_draft_text)
             _save_phase(5)
+
+        # Set script_task.output so polish loop and downstream code can read it
+        class _FakeDraftOutput:
+            def __init__(self, raw):
+                self.raw = raw
+        script_task.output = _FakeDraftOutput(script_draft_text)
 
         # === PHASE 6: POLISH + SHRINKAGE GUARD ===
         if _phase_done(6):

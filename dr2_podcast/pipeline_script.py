@@ -343,8 +343,9 @@ def _parse_blueprint_inventory(blueprint_text: str) -> dict:
         items = []
 
         # Try new format first: - Q: ... \n  A: ... (no tier prefix)
+        # Handles both plain (- Q:) and bold markdown (- **Q:**) variants
         item_matches = list(re.finditer(
-            r'-\s*Q:\s*([^\n]+)\n\s*A:\s*([^\n]+(?:\n(?!\s*-|\n)[^\n]+)*)',
+            r'-\s*\*{0,2}Q:\*{0,2}\s*([^\n]+)\n\s*\*{0,2}A:\*{0,2}\s*([^\n]+(?:\n(?!\s*-|\n)[^\n]+)*)',
             block
         ))
 
@@ -355,8 +356,9 @@ def _parse_blueprint_inventory(blueprint_text: str) -> dict:
                 items.append({'question': question, 'answer': answer})
         else:
             # Fall back to legacy format: - [Tier] Q: ... \n  A: ...
+            # Also handles bold markdown: - [Tier] **Q:** ...
             legacy_matches = re.finditer(
-                r'-\s*\[(Basic|Context|Deep-dive|Unknown)\]\s*Q:\s*([^\n]+)\n\s*A:\s*([^\n]+(?:\n(?!\s*-|\n)[^\n]+)*)',
+                r'-\s*\[(Basic|Context|Deep-dive|Unknown)\]\s*\*{0,2}Q:\*{0,2}\s*([^\n]+)\n\s*\*{0,2}A:\*{0,2}\s*([^\n]+(?:\n(?!\s*-|\n)[^\n]+)*)',
                 block, re.IGNORECASE
             )
             for m in legacy_matches:
@@ -372,6 +374,220 @@ def _parse_blueprint_inventory(blueprint_text: str) -> dict:
         return {}
 
     return inventory
+
+
+# --- SECTION BUDGET ALLOCATION ---
+
+# Percentages only — absolute budgets derived at runtime from target_length_int.
+_SECTION_BUDGET_PCT = {
+    'opening':   0.18,   # Channel Intro + Hook + Act 1
+    'evidence':  0.50,   # Act 2
+    'synthesis': 0.14,   # Act 3
+    'closing':   0.18,   # Act 4 + Wrap-up + One Action
+}
+
+# Map inventory act labels to section IDs.
+# Blueprint acts may have varied suffixes ("Act 1 — The Claim", "Act 1", etc.)
+# so we match on the act number.
+_ACT_NUM_TO_SECTION = {1: 'opening', 2: 'evidence', 3: 'synthesis', 4: 'closing'}
+
+_SECTION_PACING = {
+    'opening':   'High energy opening that hooks the listener, then shift to genuine curiosity as Act 1 establishes emotional stakes.',
+    'evidence':  'Alternate between surprise/excitement for new findings and reflective pauses for nuance and limitations. Each study gets its own mini-arc.',
+    'synthesis': 'Measured and thoughtful — connect the dots across all studies. Build toward a clear, grounded takeaway.',
+    'closing':   'Practical urgency — translate science into action. Build momentum toward the One Action ending, then resolve with confidence.',
+}
+
+_SECTION_ACTS = {
+    'opening':   ['intro', 'hook', 'act1'],
+    'evidence':  ['act2'],
+    'synthesis': ['act3'],
+    'closing':   ['act4', 'wrapup', 'one_action'],
+}
+
+
+def _allocate_section_budgets(target_length: int, language_config: dict,
+                              inventory: dict) -> list[dict]:
+    """Divide total word/char budget across 4 sections and assign checklist items.
+
+    All budgets are derived from percentages × target_length — no hard-coded counts.
+    Returns a list of 4 section config dicts.
+    """
+    from dr2_podcast.prompt_strings import get_prompt
+
+    length_unit = language_config['length_unit']
+    language = 'ja' if length_unit == 'chars' else 'en'
+
+    # Build section configs with budgets
+    sections = []
+    for section_id in ('opening', 'evidence', 'synthesis', 'closing'):
+        budget = int(_SECTION_BUDGET_PCT[section_id] * target_length)
+
+        # Gather checklist items for this section from the inventory
+        checklist_items = []
+        for act_label, items in inventory.items():
+            # Extract act number from label like "Act 1 — The Claim" or "Act 2"
+            act_num_match = re.search(r'Act\s+(\d+)', act_label, re.IGNORECASE)
+            if act_num_match:
+                act_num = int(act_num_match.group(1))
+                if _ACT_NUM_TO_SECTION.get(act_num) == section_id:
+                    checklist_items.extend(items)
+
+        # Build act instructions from existing SCRIPT_PROMPTS
+        act_instructions_parts = []
+        for act in _SECTION_ACTS[section_id]:
+            if act in ('intro', 'hook', 'wrapup', 'one_action'):
+                continue  # These are handled in the user prompt directly
+            try:
+                act_key = act.replace('act', 'act')  # act1→act1, act2→act2, etc.
+                instr = get_prompt("script", act_key, language,
+                                   act2_min=f"{int(target_length * 0.45):,}",
+                                   target_unit_plural=length_unit,
+                                   core_target_or_default="the listener")
+                act_instructions_parts.append(instr)
+            except (KeyError, TypeError):
+                pass
+
+        sections.append({
+            'section_id': section_id,
+            'acts': _SECTION_ACTS[section_id],
+            'word_budget': budget,
+            'length_unit': length_unit,
+            'checklist_items': checklist_items,
+            'pacing': _SECTION_PACING[section_id],
+            'act_instructions': '\n'.join(act_instructions_parts),
+        })
+
+    return sections
+
+
+# --- SECTION GENERATION ---
+
+# Map section_id to user prompt key in SECTION_GEN_PROMPTS
+_SECTION_USER_PROMPT_KEY = {
+    'opening':   'user_opening',
+    'evidence':  'user_evidence',
+    'synthesis': 'user_synthesis',
+    'closing':   'user_closing',
+}
+
+
+def _generate_section(section_config: dict, previous_lines: list,
+                      *, _call_smart_model, language_config: dict,
+                      session_roles: dict, topic_name: str,
+                      channel_intro: str = '',
+                      target_min: int = 30) -> tuple:
+    """Generate one section of the podcast script via a single LLM call.
+
+    Args:
+        section_config: dict from _allocate_section_budgets()
+        previous_lines: last lines of the previous section (for continuity)
+        _call_smart_model: callable for the Smart Model
+        language_config: language settings dict
+        session_roles: presenter/questioner role defs
+        channel_intro: channel intro text (only used for opening section)
+        target_min: total episode target in minutes
+
+    Returns:
+        (section_text, word_count, deficit) where deficit is the shortfall
+        from the budget (0 if at or over budget).
+    """
+    from dr2_podcast.prompt_strings import get_prompt
+
+    section_id = section_config['section_id']
+    budget = section_config['word_budget']
+    length_unit = section_config['length_unit']
+    language = 'ja' if length_unit == 'chars' else 'en'
+
+    presenter = session_roles['presenter']['label']
+    questioner = session_roles['questioner']['label']
+
+    # Build speakability rule for this language
+    speakability_rule = get_prompt('section_gen', 'speakability_rule', language)
+
+    # Build system prompt
+    system = get_prompt('section_gen', 'system', language,
+                        topic=topic_name,
+                        presenter=presenter,
+                        questioner=questioner,
+                        presenter_personality=session_roles['presenter']['personality'],
+                        questioner_personality=session_roles['questioner']['personality'],
+                        speakability_rule=speakability_rule)
+
+    # Build checklist block
+    checklist_lines = []
+    for item in section_config.get('checklist_items', []):
+        checklist_lines.append(f"  Q: {item['question']}")
+        checklist_lines.append(f"    -> {item['answer'][:120]}...")
+    checklist_block = '\n'.join(checklist_lines) if checklist_lines else '(No checklist items for this section)'
+
+    # Build lead-in from previous section
+    lead_in = '\n'.join(previous_lines[-5:]) if previous_lines else '(This is the first section — no prior context)'
+
+    # Channel intro directive for opening section
+    if section_id == 'opening' and channel_intro:
+        channel_intro_directive = f"Start with this EXACT text: \"{channel_intro}\""
+    else:
+        channel_intro_directive = f"{presenter}: [Brief show intro — who you are and what the show is about]"
+
+    # Budget percentage
+    budget_pct = str(round(budget / (target_min * language_config['speech_rate']) * 100))
+
+    # Build user prompt
+    user_key = _SECTION_USER_PROMPT_KEY[section_id]
+    user_kwargs = dict(
+        word_budget=str(budget),
+        length_unit=length_unit,
+        budget_pct=budget_pct,
+        target_min=str(target_min),
+        presenter=presenter,
+        questioner=questioner,
+        pacing=section_config['pacing'],
+        checklist_block=checklist_block,
+        lead_in=lead_in,
+    )
+    if section_id == 'opening':
+        user_kwargs['channel_intro_directive'] = channel_intro_directive
+    user = get_prompt('section_gen', user_key, language, **user_kwargs)
+
+    # Calculate max_tokens: ~2 tokens/word for EN, ~1.5 tokens/char for JA, with buffer
+    if length_unit == 'chars':
+        max_tokens = int(budget * 1.5) + 500
+    else:
+        max_tokens = int(budget * 2) + 500
+
+    # Attempt generation (up to 2 tries)
+    floor = int(budget * 0.75)  # 25% under budget = retry threshold
+    section_text = ''
+    word_count = 0
+
+    for attempt in range(1, 3):
+        if attempt == 2:
+            # Append retry feedback
+            retry_feedback = get_prompt('section_gen', 'retry_feedback', language,
+                                        actual_count=str(word_count),
+                                        length_unit=length_unit,
+                                        floor_count=str(floor))
+            user = user + '\n\n' + retry_feedback
+
+        result = _call_smart_model(
+            system=system,
+            user=user,
+            max_tokens=max_tokens,
+            temperature=0.5,
+            frequency_penalty=0.15,
+        )
+        section_text = strip_think_blocks(result)
+        word_count = _count_words(section_text, language_config)
+
+        if word_count >= floor:
+            break
+        logger.warning("  Section %s attempt %d: %d %s (need >=%d) — retrying",
+                        section_id, attempt, word_count, length_unit, floor)
+
+    # Calculate deficit for redistribution
+    deficit = max(0, budget - word_count)
+    return section_text, word_count, deficit
 
 
 def _run_condense_pass(script_text: str, inventory: dict, target_length: int,
