@@ -11,6 +11,7 @@ import argparse
 import logging
 import asyncio
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -1156,6 +1157,44 @@ def _translate_prompt(prompt_text, language, language_config):
     )
 
 
+# Structural format constraint appended to blueprint prompt AFTER translation.
+# Keeps structural markers in English so _parse_blueprint_inventory() works for
+# any target language without parser changes.
+_BLUEPRINT_STRUCTURE_CONSTRAINT = (
+    "\n\n"
+    "STRUCTURAL FORMAT (do not translate these markers — use them exactly as shown):\n"
+    "- Use exactly these section headers: ### Act 1, ### Act 2, ### Act 3, ### Act 4\n"
+    "- Use exactly this discussion-point format:\n"
+    "  - Q: [question]\n"
+    "    A: [answer]\n"
+    "- Write all content within these markers in the episode's target language.\n"
+)
+
+
+def _translate_tasks_parallel(tasks_and_names, language, language_config,
+                              blueprint_task_ref=None):
+    """Translate multiple task descriptions in parallel using ThreadPoolExecutor.
+
+    If *blueprint_task_ref* is provided, appends the structural format
+    constraint to its description after translation completes.
+    """
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(
+                _translate_prompt, task.description, language, language_config
+            ): (task, name)
+            for task, name in tasks_and_names
+        }
+        for future in as_completed(futures):
+            task, name = futures[future]
+            task.description = future.result()
+            logger.info(f"  \u2713 {name} task prompt translated")
+
+    # Append structural constraint to blueprint prompt (post-translation)
+    if blueprint_task_ref is not None:
+        blueprint_task_ref.description += _BLUEPRINT_STRUCTURE_CONSTRAINT
+
+
 def _audit_script_language(script_text, language, language_config):
     """Wrapper — delegates to pipeline_translation with _call_smart_model."""
     return _audit_script_language_impl(
@@ -1625,14 +1664,20 @@ def _run_sectional_draft(inventory, target_length_int, language_config,
     accumulated_deficit = 0
 
     for i, section_cfg in enumerate(sections):
-        # Redistribute deficit from prior sections
+        # Redistribute deficit from prior sections (capped at 50% of original budget)
         if accumulated_deficit > 0:
             original_budget = section_cfg['word_budget']
-            section_cfg['word_budget'] += accumulated_deficit
-            logger.info("    %s: budget adjusted %d -> %d %s (absorbing %d deficit)",
+            max_absorb = int(original_budget * 0.50)
+            absorbed = min(accumulated_deficit, max_absorb)
+            section_cfg['word_budget'] += absorbed
+            accumulated_deficit -= absorbed
+            logger.info("    %s: budget adjusted %d -> %d %s (absorbed %d of %d deficit)",
                          section_cfg['section_id'], original_budget,
-                         section_cfg['word_budget'], length_unit, accumulated_deficit)
-            accumulated_deficit = 0
+                         section_cfg['word_budget'], length_unit, absorbed,
+                         absorbed + accumulated_deficit)
+            if accumulated_deficit > 0:
+                logger.warning("    %d %s deficit could not be absorbed (cap: 50%% of original budget)",
+                               accumulated_deficit, length_unit)
 
         section_text, word_count, deficit = _generate_section(
             section_cfg, previous_lines,
@@ -1662,6 +1707,10 @@ def _run_sectional_draft(inventory, target_length_int, language_config,
         # Update lead-in for next section
         non_empty = [ln for ln in section_text.split('\n') if ln.strip()]
         previous_lines = non_empty[-5:] if non_empty else []
+
+    if accumulated_deficit > 0:
+        logger.warning("  Unabsorbed deficit: %d %s (sections could not absorb full shortfall)",
+                        accumulated_deficit, length_unit)
 
     # Assemble with [TRANSITION] markers between sections
     assembled = '\n\n[TRANSITION]\n\n'.join(generated)
@@ -2074,15 +2123,9 @@ if __name__ == "__main__":
             _reuse_polish_base_desc = polish_task.description
             _reuse_polish_expected = polish_task.expected_output
 
-            # Translate Crew 3 task prompts for non-English runs
+            # Fix 10: runtime prompt translation removed — templates are pre-translated
             if language != 'en':
-                for _task, _name in [
-                    (blueprint_task, "blueprint"), (script_task, "script"),
-                    (polish_task, "polish"), (audit_task, "audit"),
-                ]:
-                    _task.description = _translate_prompt(_task.description, language, language_config)
-                _reuse_script_base_desc = script_task.description
-                _reuse_polish_base_desc = polish_task.description
+                logger.info(f"\n  Crew 3 task prompts: using pre-translated {language_config['name']} templates (no runtime translation)")
 
             _REUSE_MAX_ATTEMPTS = 3
 
@@ -2294,15 +2337,9 @@ if __name__ == "__main__":
                 _supp_polish_base_desc = polish_task.description
                 _supp_polish_expected = polish_task.expected_output
 
-                # Translate Crew 3 task prompts for non-English runs
+                # Fix 10: runtime prompt translation removed — templates are pre-translated
                 if language != 'en':
-                    for _task, _name in [
-                        (blueprint_task, "blueprint"), (script_task, "script"),
-                        (polish_task, "polish"), (audit_task, "audit"),
-                    ]:
-                        _task.description = _translate_prompt(_task.description, language, language_config)
-                    _supp_script_base_desc = script_task.description
-                    _supp_polish_base_desc = polish_task.description
+                    logger.info(f"\n  Crew 3 task prompts: using pre-translated {language_config['name']} templates (no runtime translation)")
 
                 _SUPP_MAX_ATTEMPTS = 3
 
@@ -2692,8 +2729,12 @@ if __name__ == "__main__":
             for role_name in ("lead", "counter"):
                 report = deep_reports[role_name]
                 role_sources = []
+                _empty_url_count = 0
                 for idx, src in enumerate(report.sources):
                     if src.error or not src.summary or src.summary.strip().upper() == "NO RELEVANT DATA":
+                        continue
+                    if not src.url:
+                        _empty_url_count += 1
                         continue
                     role_sources.append({
                         "index": idx,
@@ -2704,6 +2745,8 @@ if __name__ == "__main__":
                         "summary": src.summary,
                         "metadata": src.metadata.to_dict() if src.metadata else None,
                     })
+                if _empty_url_count:
+                    logger.info(f"  Filtered {_empty_url_count} {role_name} sources with empty URLs")
                 sources_json[role_name] = role_sources
             sources_file = output_path(output_dir, "research_sources.json")
             with open(sources_file, 'w') as f:
@@ -3030,21 +3073,9 @@ if __name__ == "__main__":
     polish_task_base_description = polish_task.description
     polish_task_expected_output = polish_task.expected_output
 
-    # Bug 5: Translate task descriptions for non-English runs
+    # Fix 10: runtime prompt translation removed — templates are pre-translated
     if language != 'en':
-        logger.info(f"\nTranslating Crew 3 task prompts to {language_config['name']}...")
-        for _task, _name in [
-            (blueprint_task, "blueprint"),
-            (script_task, "script"),
-            (polish_task, "polish"),
-            (audit_task, "audit"),
-        ]:
-            _task.description = _translate_prompt(_task.description, language, language_config)
-            logger.info(f"  ✓ {_name} task prompt translated")
-        # Keep expected_output in English (CrewAI internals)
-        # Update base descriptions with translated versions
-        script_task_base_description = script_task.description
-        polish_task_base_description = polish_task.description
+        logger.info(f"\n  Crew 3 task prompts: using pre-translated {language_config['name']} templates (no runtime translation)")
 
     # Start background monitor for crew 3
     monitor = CrewMonitor(all_task_list, progress_tracker)
@@ -3240,44 +3271,158 @@ if __name__ == "__main__":
         # Use polished_text which may be expanded draft if shrinkage guard fired
         polished_script_raw = polished_text if polished_text else (
             polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else "")
-        correction_task = Task(
-            description=(
-                f"The accuracy audit found HIGH-severity scientific drift in the podcast script.\n\n"
-                f"AUDIT REPORT:\n{audit_output}\n\n"
-                f"POLISHED SCRIPT:\n{polished_script_raw}\n\n"
-                f"Fix ONLY the specific lines cited in the audit's 'Drift Instances Found' section.\n"
-                f"For each HIGH-severity issue:\n"
-                f"  - Find the exact quote from 'Script says'\n"
-                f"  - Replace it with language consistent with 'Source-of-truth says'\n"
-                f"Do NOT rewrite the entire script. Only fix cited drift instances.\n"
-                f"Preserve all [TRANSITION] markers, speaker labels, and overall structure.\n"
-                f"{target_instruction}"
-            ),
-            expected_output="Corrected podcast script with HIGH-severity drift fixed.",
-            agent=editor_agent,
-        )
-        try:
-            correction_crew = Crew(agents=[editor_agent], tasks=[correction_task], verbose=False)
-            correction_result = correction_crew.kickoff()
-            corrected = correction_result.raw if hasattr(correction_result, 'raw') else str(correction_result)
-            orig_transitions = polished_script_raw.count('[TRANSITION]')
-            corrected_transitions = corrected.count('[TRANSITION]')
-            if len(corrected) < len(polished_script_raw) * 0.5:
-                logger.warning("⚠ Correction output too short — using original polished script")
-                _corrected_script_text = None
-            elif orig_transitions > 0 and corrected_transitions < orig_transitions:
-                logger.warning(f"⚠ Correction lost [TRANSITION] markers ({orig_transitions}→{corrected_transitions}) — using original polished script")
+        orig_transitions = polished_script_raw.count('[TRANSITION]')
+
+        # --- Retry loop: up to 2 LLM correction attempts ---
+        _corrected_script_text = None
+        _max_correction_attempts = 2
+        _last_rejection_reason = ""
+
+        for _attempt in range(1, _max_correction_attempts + 1):
+            logger.info(f"  Correction attempt {_attempt}/{_max_correction_attempts}")
+
+            # Build correction prompt — include rejection feedback on retry
+            _retry_feedback = ""
+            if _last_rejection_reason:
+                _retry_feedback = (
+                    f"\n\nIMPORTANT — YOUR PREVIOUS CORRECTION WAS REJECTED:\n"
+                    f"Reason: {_last_rejection_reason}\n"
+                    f"This time, make ONLY the minimum changes needed to fix the HIGH-severity items. "
+                    f"Do NOT rewrite or restructure the script. Output the COMPLETE script with "
+                    f"only the drifted passages changed.\n\n"
+                )
+
+            correction_task = Task(
+                description=(
+                    f"The accuracy audit found HIGH-severity scientific drift in the podcast script.\n\n"
+                    f"AUDIT REPORT:\n{audit_output}\n\n"
+                    f"POLISHED SCRIPT:\n{polished_script_raw}\n\n"
+                    f"Fix ONLY the specific lines cited in the audit's 'Drift Instances Found' section.\n"
+                    f"For each HIGH-severity issue:\n"
+                    f"  - Find the exact quote from 'Script says'\n"
+                    f"  - Replace it with language consistent with 'Source-of-truth says'\n"
+                    f"Do NOT rewrite the entire script. Only fix cited drift instances.\n"
+                    f"Preserve all [TRANSITION] markers, speaker labels, and overall structure.\n"
+                    f"{_retry_feedback}"
+                    f"{target_instruction}"
+                ),
+                expected_output="Corrected podcast script with HIGH-severity drift fixed.",
+                agent=editor_agent,
+            )
+            try:
+                correction_crew = Crew(agents=[editor_agent], tasks=[correction_task], verbose=False)
+                correction_result = correction_crew.kickoff()
+                corrected = correction_result.raw if hasattr(correction_result, 'raw') else str(correction_result)
+                corrected_transitions = corrected.count('[TRANSITION]')
+
+                if len(corrected) < len(polished_script_raw) * 0.5:
+                    _last_rejection_reason = (
+                        f"Output was too short ({len(corrected)} chars vs "
+                        f"{len(polished_script_raw)} original). You must output the COMPLETE script."
+                    )
+                    logger.warning(
+                        f"  Attempt {_attempt}: Correction output too short "
+                        f"({len(corrected)}/{len(polished_script_raw)} chars)"
+                    )
+                    continue
+                elif orig_transitions > 0 and corrected_transitions < orig_transitions:
+                    _last_rejection_reason = (
+                        f"Lost [TRANSITION] markers ({orig_transitions} original -> "
+                        f"{corrected_transitions} in your output). "
+                        f"You must preserve ALL [TRANSITION] markers."
+                    )
+                    logger.warning(
+                        f"  Attempt {_attempt}: Lost [TRANSITION] markers "
+                        f"({orig_transitions}->{corrected_transitions})"
+                    )
+                    continue
+                else:
+                    # Correction passed validation
+                    with open(output_path(output_dir, "ACCURACY_CORRECTIONS.md"), 'w') as f:
+                        f.write("# Script Corrections Applied\n\n")
+                        f.write("HIGH-severity drift instances were corrected before audio generation.\n\n")
+                        f.write(f"Correction succeeded on attempt {_attempt}.\n\n")
+                        f.write(f"## Original Audit\n{audit_output}\n")
+                    logger.info(f"✓ Script correction applied (attempt {_attempt}) — using corrected script for audio")
+                    _corrected_script_text = corrected
+                    break
+            except Exception as e:
+                logger.warning(f"  Attempt {_attempt}: Script correction crew failed: {e}")
+                _last_rejection_reason = f"LLM correction raised an exception: {e}"
+                continue
+
+        # --- Surgical fallback: if LLM correction failed after all retries ---
+        if _corrected_script_text is None:
+            logger.warning(
+                f"LLM correction failed after {_max_correction_attempts} attempts — "
+                f"attempting surgical string replacement"
+            )
+            # Parse HIGH-severity items from audit output.
+            # Format per pipeline_crew.py:
+            #   - **Script says**: [exact quote]
+            #   - **Source-of-truth says**: [corrected text]
+            #   - **Severity**: HIGH
+            _high_items = []
+            _drift_blocks = re.split(r'(?=- \*\*Script says\*\*)', audit_output)
+            for _block in _drift_blocks:
+                if not re.search(r'\*\*Severity\*\*:\s*HIGH', _block, re.IGNORECASE):
+                    continue
+                _script_match = re.search(
+                    r'\*\*Script says\*\*:\s*(.+?)(?:\n|$)', _block
+                )
+                _sot_match = re.search(
+                    r'\*\*Source-of-truth says\*\*:\s*(.+?)(?:\n|$)', _block
+                )
+                if _script_match and _sot_match:
+                    _script_quote = _script_match.group(1).strip().strip('"').strip("'")
+                    _sot_quote = _sot_match.group(1).strip().strip('"').strip("'")
+                    if _script_quote and _sot_quote:
+                        _high_items.append((_script_quote, _sot_quote))
+
+            _surgical_script = polished_script_raw
+            _fixes_applied = 0
+            _fixes_missed = 0
+            for _drifted, _correct in _high_items:
+                if _drifted in _surgical_script:
+                    _surgical_script = _surgical_script.replace(_drifted, _correct, 1)
+                    _fixes_applied += 1
+                    logger.info(f"  Surgical fix applied: replaced drifted passage ({len(_drifted)} chars)")
+                else:
+                    _fixes_missed += 1
+                    logger.warning(
+                        f"  Surgical fix missed: could not find drifted passage in script "
+                        f"(first 80 chars: {_drifted[:80]!r})"
+                    )
+
+            if _fixes_applied > 0:
+                _corrected_script_text = _surgical_script
+                with open(output_path(output_dir, "ACCURACY_CORRECTIONS.md"), 'w') as f:
+                    f.write("# Script Corrections Applied (Surgical Replacement)\n\n")
+                    f.write(
+                        f"LLM correction failed validation after {_max_correction_attempts} attempts.\n"
+                        f"Applied deterministic string replacement for {_fixes_applied} HIGH-severity items.\n"
+                    )
+                    if _fixes_missed > 0:
+                        f.write(f"{_fixes_missed} items could not be matched in the script text.\n")
+                    f.write(f"\n## Original Audit\n{audit_output}\n")
+                logger.warning(
+                    f"AUDIT OVERRIDE: {_fixes_applied} HIGH-severity item(s) fixed by surgical replacement"
+                    + (f" ({_fixes_missed} missed)" if _fixes_missed else "")
+                )
+            elif _high_items:
+                # Had parsed items but none matched — edge case, log warning and proceed
+                logger.warning(
+                    f"Surgical fix could not match any of {len(_high_items)} HIGH-severity "
+                    f"item(s) in the script — proceeding with original script (drift remains)"
+                )
                 _corrected_script_text = None
             else:
-                with open(output_path(output_dir, "ACCURACY_CORRECTIONS.md"), 'w') as f:
-                    f.write("# Script Corrections Applied\n\n")
-                    f.write("HIGH-severity drift instances were corrected before audio generation.\n\n")
-                    f.write(f"## Original Audit\n{audit_output}\n")
-                logger.info("✓ Script correction applied — using corrected script for audio")
-                _corrected_script_text = corrected
-        except Exception as e:
-            logger.warning(f"⚠ Script correction failed: {e} — using original polished script")
-            _corrected_script_text = None
+                # Could not parse any HIGH-severity items from audit output
+                logger.warning(
+                    "Could not parse HIGH-severity drift items from audit output for surgical fix — "
+                    "proceeding with original script (drift remains)"
+                )
+                _corrected_script_text = None
     else:
         _corrected_script_text = None
         if audit_output:
@@ -3405,3 +3550,19 @@ if __name__ == "__main__":
             logger.warning("  WARNING: No audio file found — re-running audio generation")
             _run_audio_pipeline(script_text, output_dir, language_config)
             _save_phase(8)
+
+    # --- Self-evaluation loop (non-blocking) ---
+    try:
+        from dr2_podcast.evaluation.scorecard import generate_scorecard
+        from dr2_podcast.evaluation.lesson_generator import generate_lessons
+        from dr2_podcast.evaluation.telegram_report import send_run_report
+        from dr2_podcast.evaluation.lesson_reviewer import check_threshold, run_review
+
+        _scorecard = generate_scorecard(str(output_dir))
+        _lessons = generate_lessons(_scorecard, str(output_dir))
+        send_run_report(_scorecard, _lessons)
+
+        if check_threshold():
+            run_review()
+    except Exception as _eval_err:
+        logger.warning("Self-evaluation error (non-blocking): %s", _eval_err)

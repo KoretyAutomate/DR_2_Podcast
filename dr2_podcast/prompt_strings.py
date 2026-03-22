@@ -336,11 +336,121 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "  ポリッシュフェーズで必要に応じてリバランスします。\n\n"
         ),
     },
+
+    "hook": {
+        "en": (
+            "  2. THE HOOK (~40 {target_unit_plural}, ~15 seconds):\n"
+            "     Based on the hook question from the Episode Blueprint.\n"
+            "     {presenter}: [Provocative question from Blueprint --- must be a question, NOT a statement]\n"
+            "     {questioner}: [Engaged reaction: 'Oh, that's a great question!' or 'Hmm, I actually have no idea...']\n\n"
+        ),
+        "ja": (
+            "  2. THE HOOK (~40 {target_unit_plural}, ~15秒):\n"
+            "     エピソードブループリントのフック質問に基づく。\n"
+            "     {presenter}: [ブループリントからの挑発的な質問 --- 文ではなく質問であること]\n"
+            "     {questioner}: [興味津々の反応: 「えっ、それ本当ですか？」や「うーん、全然知らなかった...」]\n\n"
+        ),
+    },
+
+    "wrapup": {
+        "en": (
+            "  7. WRAP-UP (~60 {target_unit_plural}, ~25 seconds):\n"
+            "     Three-sentence summary of the most important takeaways.\n\n"
+        ),
+        "ja": (
+            "  7. まとめ (~60 {target_unit_plural}, ~25秒):\n"
+            "     最も重要なポイントを3文で要約。\n\n"
+        ),
+    },
+
+    "one_action": {
+        "en": (
+            "  8. THE 'ONE ACTION' ENDING (~40 {target_unit_plural}, ~15 seconds):\n"
+            "     {presenter}: 'If you take ONE thing from today --- [action {one_action_tail}].'\n"
+            "     {questioner}: [Brief agreement + sign-off]\n\n"
+        ),
+        "ja": (
+            "  8. 「ワンアクション」エンディング (~40 {target_unit_plural}, ~15秒):\n"
+            "     {presenter}: 「今日の放送から一つだけ持ち帰るなら --- [{one_action_tail}]」\n"
+            "     {questioner}: [短い同意 + サインオフ]\n\n"
+        ),
+    },
+
+    "personality": {
+        "en": (
+            "PERSONALITY DIRECTIVES:\n"
+            "- ENERGY: Vary vocal energy --- excited for surprising findings, thoughtful pauses for nuance, urgency for practical advice\n"
+            "- REACTIONS: Questioner reacts authentically --- genuine surprise ('Wait, seriously?!'), skepticism ('Hmm, that sounds too good to be true...'), humor ('Okay, so basically I've been doing this all wrong')\n"
+            "- BANTER: Include brief moments of friendly banter between hosts --- a shared laugh, a playful jab, a relatable personal admission\n"
+            "- FILLERS: Natural conversational fillers: 'Hm, that's interesting', 'Right, right', 'Oh wow', 'Okay so let me get this straight...'\n"
+            "- EMPHASIS: Dramatic pauses via ellipses: 'And here's where it gets interesting...'\n"
+            "- STORYTELLING: After each key finding, paint a picture: 'Imagine you're...' or 'Think about your morning routine...'\n"
+            "- PERSONAL: Brief personal connections: 'I actually tried this myself and...' or 'My partner always says...'\n"
+            "- MOMENTUM: Each act builds energy --- start curious, peak at the most surprising finding, resolve with practical clarity\n\n"
+        ),
+        "ja": (
+            "パーソナリティ指示:\n"
+            "- エネルギー: 声のエネルギーを変化させる --- 驚きの発見には興奮、ニュアンスには考え深い間、実践的アドバイスには緊迫感\n"
+            "- リアクション: 質問者は本物のリアクションをする --- 本当の驚き（「えっ、マジですか？！」）、懐疑（「うーん、出来すぎた話に聞こえるけど...」）、ユーモア（「あー、つまり私ずっと間違ってたってこと？」）\n"
+            "- 掛け合い: ホスト間の気軽な掛け合いを含める --- 共有する笑い、軽いツッコミ、共感できる個人的な告白\n"
+            "- フィラー: 自然な会話のフィラー: 「へー、面白いですね」「そうそう」「えー！」「ちょっと待って、整理させて...」\n"
+            "- 強調: 省略記号で劇的な間: 「で、ここからが面白いんですけど...」\n"
+            "- ストーリーテリング: 重要な発見の後に情景を描く: 「想像してみてください...」「あなたの朝のルーティンを思い浮かべて...」\n"
+            "- 個人的つながり: 短い個人的エピソード: 「実は私も試してみたんですけど...」「うちのパートナーがいつも言うんですけど...」\n"
+            "- モメンタム: 各Actでエネルギーを高める --- 好奇心から始まり、最も驚きの発見でピーク、実践的な明確さで解決\n\n"
+        ),
+    },
+
+    "character_roles": {
+        "en": (
+            "CHARACTER ROLES:\n"
+            "  - {presenter} (Presenter): presents evidence and explains the topic, {presenter_personality}\n"
+            "  - {questioner} (Questioner): asks questions the audience would ask, bridges gaps, {questioner_personality}\n\n"
+        ),
+        "ja": (
+            "キャラクター役割:\n"
+            "  - {presenter} (プレゼンター): エビデンスを提示しトピックを解説、{presenter_personality}\n"
+            "  - {questioner} (質問者): リスナーが聞きたい質問を代弁し、理解のギャップを埋める、{questioner_personality}\n\n"
+        ),
+    },
+
+    "target_length": {
+        "en": (
+            "TARGET LENGTH: AT LEAST {target_script} {target_unit_plural} (= {target_min} minutes). "
+            "Aim for {aim_target} {target_unit_plural}. "
+            "Writing more than the target is fine --- it will be condensed during polish. "
+            "Writing less will cause the production to FAIL. Cover ALL items in the Coverage Checklist above.\n"
+            "ACT CHECKLIST: You must write all 4 acts plus Hook, Channel Intro, Wrap-up, and One Action. Count them as you write.\n"
+            "TO REACH THIS LENGTH: You must be extremely detailed and conversational. For every single claim or mechanism, you MUST provide:\n"
+            "  1. A deep-dive explanation of the specific scientific mechanism\n"
+            "  2. A real-world analogy or metaphor that lasts several lines\n"
+            "  3. A practical, relatable example or case study\n"
+            "  4. A counter-argument or nuance followed by a rebuttal\n"
+            "  5. Interactive host dialogue (e.g., 'Wait, let me make sure I've got this right...', 'That's fascinating, tell me more about...')\n"
+            "Expand the conversation. Do not just list facts. Have the hosts explore the 'So what?' and 'What now?' for the audience.\n"
+            "Maintain consistent roles throughout. NO role switching mid-conversation. "
+        ),
+        "ja": (
+            "目標長さ: 最低 {target_script} {target_unit_plural} (= {target_min}分). "
+            "{aim_target} {target_unit_plural}を目指してください。 "
+            "目標より長くても構いません --- ポリッシュ段階で調整します。 "
+            "目標より短いと制作が失敗します。上記のCoverage Checklistのすべての項目をカバーしてください。\n"
+            "ACTチェックリスト: 4つのAct + Hook、Channel Intro、まとめ、ワンアクションをすべて書いてください。書きながら数えてください。\n"
+            "この長さに到達するために: 非常に詳細かつ会話的に書いてください。すべての主張やメカニズムについて、以下を必ず含めてください:\n"
+            "  1. 具体的な科学的メカニズムの深掘り説明\n"
+            "  2. 数行にわたる現実世界のアナロジーや比喩\n"
+            "  3. 実践的で共感できる具体例やケーススタディ\n"
+            "  4. 反論やニュアンス、それに対する反駁\n"
+            "  5. ホスト間のインタラクティブな対話（例: 「ちょっと待って、ここまでの理解が合っているか確認させて...」「それ面白い、もっと詳しく教えて...」）\n"
+            "会話を拡張してください。事実を列挙するだけでなく、ホストがリスナーのために「だから何？」「次はどうする？」を探ってください。\n"
+            "一貫した役割を維持してください。会話の途中で役割を入れ替えないでください。"
+        ),
+    },
 }
 
 
 # ---------------------------------------------------------------------------
-# POLISH PROMPTS — Act names for the 8-part structure verification
+# POLISH PROMPTS — Masters-level polish & length control
 # ---------------------------------------------------------------------------
 
 POLISH_PROMPTS: dict[str, dict[str, str]] = {
@@ -370,6 +480,54 @@ POLISH_PROMPTS: dict[str, dict[str, str]] = {
             "8-part structure with [TRANSITION] markers between acts. "
             "Acts: Claim, Evidence & Nuance, Holistic Conclusion, Protocol. "
             "One Action ending present."
+        ),
+    },
+
+    "masters_level": {
+        "en": (
+            "MASTERS-LEVEL REQUIREMENTS:\n"
+            "- Remove ALL definitions of basic scientific concepts (DNA, peer review, RCT, meta-analysis)\n"
+            "- Ensure the questioner's questions feel natural and audience-aligned\n"
+            "- Keep technical language intact - NO dumbing down\n"
+        ),
+        "ja": (
+            "修士レベル要件:\n"
+            "- 基本的な科学概念の定義をすべて削除（DNA、ピアレビュー、RCT、メタアナリシス）\n"
+            "- 質問者の質問が自然でリスナー目線であることを確認\n"
+            "- 専門用語はそのまま維持 — 平易化しない\n"
+        ),
+    },
+
+    "length_section": {
+        "en": (
+            "- LENGTH: Target {target_script} {target_unit_plural} "
+            "(acceptable range: {range_low}–{range_high} {target_unit_plural}).\n"
+            "  First, estimate how many {target_unit_plural} the input draft contains.\n"
+            "  - If input is MORE THAN 20% over target: trim repetition, redundant examples, "
+            "and filler to bring it toward target --- preserve all factual claims and the 8-part structure.\n"
+            "  - If input is 20% or less over target: focus on improving quality, flow, and verbal "
+            "clarity --- do NOT aggressively cut content. Minor trimming of true filler is fine.\n"
+            "  - If input is AT or UNDER target: do NOT shorten. Expand thin sections, add depth, "
+            "improve transitions.\n"
+            "  ABSOLUTE FLOOR: Your output MUST contain at least "
+            "{range_low} {target_unit_plural}. "
+            "Cutting below this floor is a critical failure. If the input is already near or "
+            "below target, focus on improving flow, transitions, and verbal clarity --- do NOT shorten it.\n"
+        ),
+        "ja": (
+            "- 長さ: 目標 {target_script} {target_unit_plural} "
+            "(許容範囲: {range_low}–{range_high} {target_unit_plural}).\n"
+            "  まず、入力ドラフトの{target_unit_plural}数を推定してください。\n"
+            "  - 目標より20%以上長い場合: 繰り返し、冗長な例、フィラーを削って目標に近づける "
+            "--- 事実に基づく主張と8部構成は必ず保持。\n"
+            "  - 目標より20%以下の超過の場合: 品質、流れ、口語的な明瞭さの改善に集中 "
+            "--- 積極的にカットしない。本当のフィラーの軽微なトリミングは可。\n"
+            "  - 目標以下の場合: 短くしない。薄いセクションを拡張し、深みを加え、"
+            "トランジションを改善。\n"
+            "  絶対最低ライン: 出力は最低 "
+            "{range_low} {target_unit_plural}を含むこと。 "
+            "この最低ラインを下回ることは致命的な失敗です。入力が目標付近または目標以下の場合は、"
+            "流れ、トランジション、口語的明瞭さの改善に集中してください --- 短くしないでください。\n"
         ),
     },
 }
@@ -512,8 +670,8 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
         ),
         "ja": (
             "セクション: オープニング（チャンネルイントロ + フック + Act 1 — The Claim）\n"
-            "文字数目標: このセクションは約{word_budget} {length_unit}で書いてください。\n"
-            "{target_min}分エピソードの{budget_pct}%です。\n\n"
+            "■ 文字数ノルマ: 最低{word_budget}文字（{target_min}分エピソードの{budget_pct}%）。\n"
+            "  これは約{turn_count}回の発言に相当します。必ずこの分量を書いてください。\n\n"
             "1. チャンネルイントロ（約50文字）:\n"
             "   {channel_intro_directive}\n\n"
             "2. フック（約80文字）:\n"
@@ -527,8 +685,8 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
             "ペーシング: {pacing}\n\n"
             "カバレッジチェックリスト — Act 1で以下のそれぞれに対応してください:\n"
             "{checklist_block}\n\n"
-            "このセクションを書いてください。目標{word_budget} {length_unit}。\n"
-            "多めに書いても問題ありません。少なすぎると制作が失敗します。"
+            "【重要】このセクションは最低{word_budget}文字です。{word_budget}文字未満の出力は自動的に不合格になります。\n"
+            "各チェックリスト項目について十分に深く掘り下げ、具体例・ホスト間のやり取りを豊富に含めてください。"
         ),
     },
 
@@ -554,8 +712,8 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
         ),
         "ja": (
             "セクション: Act 2 — Evidence & Nuance（エピソードの核心）\n"
-            "文字数目標: このセクションは約{word_budget} {length_unit}で書いてください。\n"
-            "{target_min}分エピソードの{budget_pct}% — 最も長いセクションです。\n\n"
+            "■ 文字数ノルマ: 最低{word_budget}文字（{target_min}分エピソードの{budget_pct}% — 最も長いセクション）。\n"
+            "  これは約{turn_count}回の発言に相当します。必ずこの分量を書いてください。\n\n"
             "構成:\n"
             "- まずエピソードの結論を先に述べる\n"
             "- 各研究を個別に取り上げる:\n"
@@ -568,8 +726,8 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
             "{checklist_block}\n\n"
             "前のセクションの終わり:\n---\n{lead_in}\n---\n"
             "自然に続けてください。すでに述べたことを繰り返さないでください。\n\n"
-            "このセクションを書いてください。目標{word_budget} {length_unit}。\n"
-            "多めに書いても問題ありません。少なすぎると制作が失敗します。"
+            "【重要】このセクションは最低{word_budget}文字です。{word_budget}文字未満の出力は自動的に不合格になります。\n"
+            "各チェックリスト項目について十分に深く掘り下げ、具体例・ホスト間のやり取りを豊富に含めてください。"
         ),
     },
 
@@ -595,8 +753,8 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
         ),
         "ja": (
             "セクション: Act 3 — Holistic Conclusion\n"
-            "文字数目標: このセクションは約{word_budget} {length_unit}で書いてください。\n"
-            "{target_min}分エピソードの{budget_pct}%です。\n\n"
+            "■ 文字数ノルマ: 最低{word_budget}文字（{target_min}分エピソードの{budget_pct}%）。\n"
+            "  これは約{turn_count}回の発言に相当します。必ずこの分量を書いてください。\n\n"
             "構成:\n"
             "- すべてのエビデンスを統一的なテイクアウェイに統合 — 新しいエビデンスではない\n"
             "- 結論を再度述べる — リスナーはエビデンスを理解した\n"
@@ -609,8 +767,8 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
             "{checklist_block}\n\n"
             "前のセクションの終わり:\n---\n{lead_in}\n---\n"
             "自然に続けてください。すでに述べたことを繰り返さないでください。\n\n"
-            "このセクションを書いてください。目標{word_budget} {length_unit}。\n"
-            "多めに書いても問題ありません。少なすぎると制作が失敗します。"
+            "【重要】このセクションは最低{word_budget}文字です。{word_budget}文字未満の出力は自動的に不合格になります。\n"
+            "各チェックリスト項目について十分に深く掘り下げ、具体例・ホスト間のやり取りを豊富に含めてください。"
         ),
     },
 
@@ -639,8 +797,8 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
         ),
         "ja": (
             "セクション: クロージング（Act 4 — The Protocol + まとめ + One Action）\n"
-            "文字数目標: このセクションは約{word_budget} {length_unit}で書いてください。\n"
-            "{target_min}分エピソードの{budget_pct}%です。\n\n"
+            "■ 文字数ノルマ: 最低{word_budget}文字（{target_min}分エピソードの{budget_pct}%）。\n"
+            "  これは約{turn_count}回の発言に相当します。必ずこの分量を書いてください。\n\n"
             "1. ACT 4 — THE PROTOCOL:\n"
             "   科学を日常生活に変換し、現実の障壁に焦点を当てる。\n"
             "   - {questioner}がリスナーの課題を代弁: 「科学は分かりましたが...」\n"
@@ -656,8 +814,8 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
             "{checklist_block}\n\n"
             "前のセクションの終わり:\n---\n{lead_in}\n---\n"
             "自然に続けてください。すでに述べたことを繰り返さないでください。\n\n"
-            "このセクションを書いてください。目標{word_budget} {length_unit}。\n"
-            "多めに書いても問題ありません。少なすぎると制作が失敗します。"
+            "【重要】このセクションは最低{word_budget}文字です。{word_budget}文字未満の出力は自動的に不合格になります。\n"
+            "各チェックリスト項目について十分に深く掘り下げ、具体例・ホスト間のやり取りを豊富に含めてください。"
         ),
     },
 
@@ -669,10 +827,13 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
             "and more host back-and-forth for EACH checklist item."
         ),
         "ja": (
-            "前回の試みは{actual_count} {length_unit}のみでした — "
-            "少なくとも{floor_count} {length_unit}が必要です。"
-            "会話を拡張してください: 各チェックリスト項目について、より深い説明、"
-            "現実世界の例え、ホスト間のやり取りを追加してください。"
+            "【不合格】前回の出力は{actual_count}文字でした。最低{floor_count}文字が必要です。\n"
+            "この基準を満たさない出力は使用できません。以下を実行して文字数を増やしてください:\n"
+            "- 各チェックリスト項目について2〜3往復の会話を追加\n"
+            "- 研究結果に対する具体的な日常生活の例えを追加\n"
+            "- {questioner}の「なぜ？」「どういうこと？」のフォローアップ質問を追加\n"
+            "- {presenter}の回答をより詳細に展開\n"
+            "最初から書き直してください。{floor_count}文字以上を必ず書いてください。"
         ),
     },
 }

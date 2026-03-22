@@ -345,11 +345,11 @@ def create_agents_and_tasks(
             f"Using the Episode Blueprint, write a comprehensive {target_script}-{target_unit_singular} podcast dialogue about \"{topic_name}\" "
             f"featuring {SESSION_ROLES['presenter']['label']} (presenter) and {SESSION_ROLES['questioner']['label']} (questioner).\n\n"
             f"SCRIPT STRUCTURE (follow this EXACTLY):\n\n"
-            + _channel_intro_directive +
-            f"  2. THE HOOK (~40 {target_unit_plural}, ~15 seconds):\n"
-            f"     Based on the hook question from the Episode Blueprint.\n"
-            f"     {SESSION_ROLES['presenter']['label']}: [Provocative question from Blueprint --- must be a question, NOT a statement]\n"
-            f"     {SESSION_ROLES['questioner']['label']}: [Engaged reaction: 'Oh, that's a great question!' or 'Hmm, I actually have no idea...']\n\n"
+            + _channel_intro_directive
+            + get_prompt("script", "hook", language,
+                         target_unit_plural=target_unit_plural,
+                         presenter=SESSION_ROLES['presenter']['label'],
+                         questioner=SESSION_ROLES['questioner']['label'])
             + get_prompt("script", "act1", language)
             + get_prompt("script", "act2", language,
                          act2_min=f"{_act2_min:,}",
@@ -361,41 +361,27 @@ def create_agents_and_tasks(
             + get_prompt("script", "length_note", language,
                          target_script=target_script,
                          target_unit_plural=target_unit_plural)
-            + f"  7. WRAP-UP (~60 {target_unit_plural}, ~25 seconds):\n"
-            f"     Three-sentence summary of the most important takeaways.\n\n"
-            f"  8. THE 'ONE ACTION' ENDING (~40 {target_unit_plural}, ~15 seconds):\n"
-            f"     {SESSION_ROLES['presenter']['label']}: 'If you take ONE thing from today --- [action {_one_action_tail}].'\n"
-            f"     {SESSION_ROLES['questioner']['label']}: [Brief agreement + sign-off]\n\n"
-            f"PERSONALITY DIRECTIVES:\n"
-            f"- ENERGY: Vary vocal energy --- excited for surprising findings, thoughtful pauses for nuance, urgency for practical advice\n"
-            f"- REACTIONS: Questioner reacts authentically --- genuine surprise ('Wait, seriously?!'), skepticism ('Hmm, that sounds too good to be true...'), humor ('Okay, so basically I've been doing this all wrong')\n"
-            f"- BANTER: Include brief moments of friendly banter between hosts --- a shared laugh, a playful jab, a relatable personal admission\n"
-            f"- FILLERS: Natural conversational fillers: 'Hm, that's interesting', 'Right, right', 'Oh wow', 'Okay so let me get this straight...'\n"
-            f"- EMPHASIS: Dramatic pauses via ellipses: 'And here's where it gets interesting...'\n"
-            f"- STORYTELLING: After each key finding, paint a picture: 'Imagine you're...' or 'Think about your morning routine...'\n"
-            f"- PERSONAL: Brief personal connections: 'I actually tried this myself and...' or 'My partner always says...'\n"
-            f"- MOMENTUM: Each act builds energy --- start curious, peak at the most surprising finding, resolve with practical clarity\n\n"
-            f"CHARACTER ROLES:\n"
-            f"  - {SESSION_ROLES['presenter']['label']} (Presenter): presents evidence and explains the topic, "
-            f"{SESSION_ROLES['presenter']['personality']}\n"
-            f"  - {SESSION_ROLES['questioner']['label']} (Questioner): asks questions the audience would ask, bridges gaps, "
-            f"{SESSION_ROLES['questioner']['personality']}\n\n"
+            + get_prompt("script", "wrapup", language,
+                         target_unit_plural=target_unit_plural)
+            + get_prompt("script", "one_action", language,
+                         target_unit_plural=target_unit_plural,
+                         presenter=SESSION_ROLES['presenter']['label'],
+                         questioner=SESSION_ROLES['questioner']['label'],
+                         one_action_tail=_one_action_tail)
+            + get_prompt("script", "personality", language)
+            + get_prompt("script", "character_roles", language,
+                         presenter=SESSION_ROLES['presenter']['label'],
+                         questioner=SESSION_ROLES['questioner']['label'],
+                         presenter_personality=SESSION_ROLES['presenter']['personality'],
+                         questioner_personality=SESSION_ROLES['questioner']['personality']) +
             f"Format STRICTLY as:\n"
             f"{SESSION_ROLES['presenter']['label']}: [dialogue]\n"
             f"{SESSION_ROLES['questioner']['label']}: [dialogue]\n\n"
-            f"TARGET LENGTH: AT LEAST {target_script} {target_unit_plural} (= {_target_min} minutes). "
-            f"Aim for {int(target_length_int * 1.2):,} {target_unit_plural}. "
-            f"Writing more than the target is fine --- it will be condensed during polish. "
-            f"Writing less will cause the production to FAIL. Cover ALL items in the Coverage Checklist above.\n"
-            f"ACT CHECKLIST: You must write all 4 acts plus Hook, Channel Intro, Wrap-up, and One Action. Count them as you write.\n"
-            f"TO REACH THIS LENGTH: You must be extremely detailed and conversational. For every single claim or mechanism, you MUST provide:\n"
-            f"  1. A deep-dive explanation of the specific scientific mechanism\n"
-            f"  2. A real-world analogy or metaphor that lasts several lines\n"
-            f"  3. A practical, relatable example or case study\n"
-            f"  4. A counter-argument or nuance followed by a rebuttal\n"
-            f"  5. Interactive host dialogue (e.g., 'Wait, let me make sure I've got this right...', 'That's fascinating, tell me more about...')\n"
-            f"Expand the conversation. Do not just list facts. Have the hosts explore the 'So what?' and 'What now?' for the audience.\n"
-            f"Maintain consistent roles throughout. NO role switching mid-conversation. "
+            + get_prompt("script", "target_length", language,
+                         target_script=target_script,
+                         target_unit_plural=target_unit_plural,
+                         target_min=str(_target_min),
+                         aim_target=f"{int(target_length_int * 1.2):,}")
             + (f"\nCRITICAL LANGUAGE RULE: You are writing in Japanese. "
                f"Do NOT use Chinese at any point. Every sentence must be in Japanese. "
                f"Use standard Japanese kanji only (\u6c17 not \u6c14, \u697d not \u4e50).\n"
@@ -444,11 +430,9 @@ def create_agents_and_tasks(
     polish_task = Task(
         description=(
             f"Polish the \"{topic_name}\" dialogue for natural spoken delivery at Masters-level.\n\n"
-            f"MASTERS-LEVEL REQUIREMENTS:\n"
-            f"- Remove ALL definitions of basic scientific concepts (DNA, peer review, RCT, meta-analysis)\n"
-            f"- Ensure the questioner's questions feel natural and audience-aligned\n"
-            f"- Keep technical language intact - NO dumbing down\n"
-            f"- Target exactly {target_script} {target_unit_plural}\n\n"
+            + get_prompt("polish", "masters_level", language)
+            + f"- Target length: {target_script} {target_unit_plural} (acceptable range: "
+            f"{int(target_length_int * (1 - SCRIPT_TOLERANCE)):,}–{int(target_length_int * (1 + SCRIPT_TOLERANCE)):,})\n\n"
             f"MAINTAIN ROLES:\n"
             f"  - {SESSION_ROLES['presenter']['label']} (Presenter): explains and teaches the topic\n"
             f"  - {SESSION_ROLES['questioner']['label']} (Questioner): asks bridging questions, occasionally pushes back\n\n"
@@ -480,11 +464,11 @@ def create_agents_and_tasks(
             f"Format:\n{SESSION_ROLES['presenter']['label']}: [dialogue]\n"
             f"{SESSION_ROLES['questioner']['label']}: [dialogue]\n\n"
             f"Remove meta-tags, markdown, stage directions. Dialogue only (plus [TRANSITION] markers).\n"
-            f"- LENGTH: Target exactly {target_script} {target_unit_plural}.\n"
-            f"  - If input is OVER target: trim by cutting repetition, redundant examples, and filler --- "
-            f"preserve all factual claims and the 8-part structure.\n"
-            f"  - If input is AT or SLIGHTLY UNDER target: do NOT shorten further. Add minor depth where natural.\n"
-            f"  - Do NOT trim below {int(target_length_int * (1 - SCRIPT_TOLERANCE)):,} {target_unit_plural}.\n"
+            + get_prompt("polish", "length_section", language,
+                         target_script=target_script,
+                         target_unit_plural=target_unit_plural,
+                         range_low=f"{int(target_length_int * (1 - SCRIPT_TOLERANCE)):,}",
+                         range_high=f"{int(target_length_int * (1 + SCRIPT_TOLERANCE)):,}")
             + (f"\nCRITICAL: Output MUST be in Japanese only. Do NOT switch to Chinese. "
                f"Keep speaker labels exactly as 'Host 1:' and 'Host 2:' --- do NOT replace them with Japanese names. "
                f"Avoid Kanji that is only used in Chinese (e.g., use \u6c17 instead of \u6c14, \u697d instead of \u4e50). "
@@ -492,7 +476,8 @@ def create_agents_and_tasks(
             + f"{target_instruction}"
         ),
         expected_output=(
-            f"Final Masters-level dialogue about {topic_name}, exactly {target_script} {target_unit_plural}. "
+            f"Final Masters-level dialogue about {topic_name}, approximately {target_script} {target_unit_plural} "
+            f"(at least {int(target_length_int * (1 - SCRIPT_TOLERANCE)):,}). "
             f"8-part structure with [TRANSITION] markers between acts. One Action ending present. "
             f"{target_instruction}"
         ),

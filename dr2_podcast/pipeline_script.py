@@ -472,11 +472,128 @@ _SECTION_USER_PROMPT_KEY = {
 }
 
 
+_JA_SUBSECTION_THRESHOLD = 3500  # chars — split JA sections above this into sub-calls
+_JA_SUBSECTION_MAX = 3000        # chars — max budget per sub-call
+
+
 def _generate_section(section_config: dict, previous_lines: list,
                       *, _call_smart_model, language_config: dict,
                       session_roles: dict, topic_name: str,
                       channel_intro: str = '',
                       target_min: int = 30) -> tuple:
+    """Generate one section of the podcast script via LLM call(s).
+
+    For JA sections with budget > _JA_SUBSECTION_THRESHOLD, the section is
+    split into multiple sub-calls to keep each within the model's natural
+    output range.
+
+    Args:
+        section_config: dict from _allocate_section_budgets()
+        previous_lines: last lines of the previous section (for continuity)
+        _call_smart_model: callable for the Smart Model
+        language_config: language settings dict
+        session_roles: presenter/questioner role defs
+        channel_intro: channel intro text (only used for opening section)
+        target_min: total episode target in minutes
+
+    Returns:
+        (section_text, word_count, deficit) where deficit is the shortfall
+        from the budget (0 if at or over budget).
+    """
+    section_id = section_config['section_id']
+    budget = section_config['word_budget']
+    length_unit = section_config['length_unit']
+    language = 'ja' if length_unit == 'chars' else 'en'
+
+    # Sub-section large JA sections into smaller calls
+    if length_unit == 'chars' and budget > _JA_SUBSECTION_THRESHOLD:
+        return _generate_section_subsplit(
+            section_config, previous_lines,
+            _call_smart_model=_call_smart_model,
+            language_config=language_config,
+            session_roles=session_roles,
+            topic_name=topic_name,
+            channel_intro=channel_intro,
+            target_min=target_min,
+        )
+
+    return _generate_section_single(
+        section_config, previous_lines,
+        _call_smart_model=_call_smart_model,
+        language_config=language_config,
+        session_roles=session_roles,
+        topic_name=topic_name,
+        channel_intro=channel_intro,
+        target_min=target_min,
+    )
+
+
+def _generate_section_subsplit(section_config: dict, previous_lines: list,
+                               *, _call_smart_model, language_config: dict,
+                               session_roles: dict, topic_name: str,
+                               channel_intro: str = '',
+                               target_min: int = 30) -> tuple:
+    """Split a large JA section into sub-calls and concatenate results."""
+    import math
+
+    section_id = section_config['section_id']
+    budget = section_config['word_budget']
+    checklist_items = section_config.get('checklist_items', [])
+
+    # Determine sub-call count and per-call budget
+    n_parts = max(2, math.ceil(budget / _JA_SUBSECTION_MAX))
+    per_part_budget = budget // n_parts
+
+    # Distribute checklist items across parts
+    checklist_parts = [[] for _ in range(n_parts)]
+    for i, item in enumerate(checklist_items):
+        checklist_parts[i % n_parts].append(item)
+
+    logger.info("    Sub-sectioning %s: %d chars → %d parts × %d chars",
+                section_id, budget, n_parts, per_part_budget)
+
+    all_texts = []
+    running_lines = list(previous_lines)
+    total_count = 0
+
+    for part_idx in range(n_parts):
+        part_budget = per_part_budget
+        # Give remainder to last part
+        if part_idx == n_parts - 1:
+            part_budget = budget - (per_part_budget * (n_parts - 1))
+
+        sub_config = dict(section_config)
+        sub_config['word_budget'] = part_budget
+        sub_config['checklist_items'] = checklist_parts[part_idx]
+
+        sub_text, sub_count, _ = _generate_section_single(
+            sub_config, running_lines,
+            _call_smart_model=_call_smart_model,
+            language_config=language_config,
+            session_roles=session_roles,
+            topic_name=topic_name,
+            channel_intro=channel_intro if part_idx == 0 else '',
+            target_min=target_min,
+        )
+
+        logger.info("    Sub-part %d/%d: %d chars (budget %d)",
+                     part_idx + 1, n_parts, sub_count, part_budget)
+
+        all_texts.append(sub_text)
+        total_count += sub_count
+        # Update continuity for next sub-call
+        running_lines = sub_text.strip().split('\n')
+
+    combined = '\n\n'.join(all_texts)
+    deficit = max(0, budget - total_count)
+    return combined, total_count, deficit
+
+
+def _generate_section_single(section_config: dict, previous_lines: list,
+                             *, _call_smart_model, language_config: dict,
+                             session_roles: dict, topic_name: str,
+                             channel_intro: str = '',
+                             target_min: int = 30) -> tuple:
     """Generate one section of the podcast script via a single LLM call.
 
     Args:
@@ -533,6 +650,12 @@ def _generate_section(section_config: dict, previous_lines: list,
     # Budget percentage
     budget_pct = str(round(budget / (target_min * language_config['speech_rate']) * 100))
 
+    # Estimate dialogue turn count (~25 content chars/turn for JA, ~15 words/turn for EN)
+    if length_unit == 'chars':
+        turn_count = str(max(10, budget // 25))
+    else:
+        turn_count = str(max(10, budget // 15))
+
     # Build user prompt
     user_key = _SECTION_USER_PROMPT_KEY[section_id]
     user_kwargs = dict(
@@ -540,6 +663,7 @@ def _generate_section(section_config: dict, previous_lines: list,
         length_unit=length_unit,
         budget_pct=budget_pct,
         target_min=str(target_min),
+        turn_count=turn_count,
         presenter=presenter,
         questioner=questioner,
         pacing=section_config['pacing'],
@@ -550,9 +674,9 @@ def _generate_section(section_config: dict, previous_lines: list,
         user_kwargs['channel_intro_directive'] = channel_intro_directive
     user = get_prompt('section_gen', user_key, language, **user_kwargs)
 
-    # Calculate max_tokens: ~2 tokens/word for EN, ~1.5 tokens/char for JA, with buffer
+    # Calculate max_tokens: ~2 tokens/word for EN, ~2.5 tokens/char for JA, with buffer
     if length_unit == 'chars':
-        max_tokens = int(budget * 1.5) + 500
+        max_tokens = int(budget * 2.5) + 500
     else:
         max_tokens = int(budget * 2) + 500
 
@@ -567,7 +691,9 @@ def _generate_section(section_config: dict, previous_lines: list,
             retry_feedback = get_prompt('section_gen', 'retry_feedback', language,
                                         actual_count=str(word_count),
                                         length_unit=length_unit,
-                                        floor_count=str(floor))
+                                        floor_count=str(floor),
+                                        presenter=presenter,
+                                        questioner=questioner)
             user = user + '\n\n' + retry_feedback
 
         result = _call_smart_model(

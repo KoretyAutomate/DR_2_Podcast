@@ -2051,11 +2051,22 @@ class ResearchAgent:
             log(f"    [Step 3] Selected {len(result)} from {len(records)} records")
             return result
         except (json.JSONDecodeError, KeyError, TypeError) as e:
-            logger.warning(f"Screening parse failed: {e}, returning top records by study type")
-            # Fallback: prioritize by study type
+            logger.warning(f"Screening parse failed: {e}, applying fallback with keyword filter")
+            # Fallback: keyword relevance filter + study type priority
+            _kw_words = set(
+                w.lower() for w in re.findall(r'\w{3,}', intervention_text)
+            ) - {'the', 'and', 'for', 'with', 'from', 'pico', 'intervention'}
+            def _fallback_relevant(r):
+                if not _kw_words:
+                    return True
+                text = f"{(r.title or '').lower()} {(r.abstract or '')[:500].lower()}"
+                return any(w in text for w in _kw_words)
+            relevant = [r for r in records if _fallback_relevant(r)]
+            if len(relevant) < 5:
+                relevant = records  # filter too aggressive, use all
             priority = {"meta-analysis": 0, "systematic-review": 1, "RCT": 2,
                         "clinical-trial": 3, "cohort": 4, "observational": 5}
-            sorted_records = sorted(records, key=lambda r: priority.get(r.study_type, 99))
+            sorted_records = sorted(relevant, key=lambda r: priority.get(r.study_type, 99))
             return sorted_records[:max_select]
 
     @staticmethod
@@ -2150,7 +2161,7 @@ class ResearchAgent:
         """Step 4: Extract clinical variables from full-text articles using fast model.
         Uses PMID-keyed cache to ensure identical NNT across runs for the same paper."""
         log(f"    [Step 4] Deep extraction from {len(articles)} articles (Smart Model)...")
-        semaphore = asyncio.Semaphore(4)  # Lower concurrency for Smart Model (vLLM)
+        semaphore = asyncio.Semaphore(3)  # Reduced from 6 to avoid overloading model server
         is_social = getattr(self, '_domain', 'clinical') == "social_science"
 
         # Load extraction cache
@@ -2252,7 +2263,7 @@ class ResearchAgent:
                     try:
                         resp = await self.smart_client.chat.completions.create(
                             model=self.smart_model, messages=messages,
-                            max_tokens=2048, temperature=0.1, timeout=300
+                            max_tokens=2048, temperature=0.1, timeout=180
                         )
                     except openai.BadRequestError as ctx_err:
                         if "context length" not in str(ctx_err).lower():
@@ -2263,7 +2274,7 @@ class ResearchAgent:
                         messages[1]["content"] = f"Title: {record.title}\n\nContent:\n{content}"
                         resp = await self.smart_client.chat.completions.create(
                             model=self.smart_model, messages=messages,
-                            max_tokens=2048, temperature=0.1, timeout=300
+                            max_tokens=2048, temperature=0.1, timeout=180
                         )
 
                     raw = resp.choices[0].message.content.strip()
@@ -2914,6 +2925,7 @@ class Orchestrator:
 
         if self.domain == "social_science":
             audit_system = (
+                "/no_think\n"
                 "You are The Auditor — an independent scientific arbiter.\n\n"
                 "You have received:\n"
                 "1. The AFFIRMATIVE CASE (arguing FOR the exposure/factor)\n"
@@ -2953,6 +2965,7 @@ class Orchestrator:
             )
         else:
             audit_system = (
+                "/no_think\n"
                 "You are The Auditor — an independent scientific arbiter.\n\n"
                 "You have received:\n"
                 "1. The AFFIRMATIVE CASE (arguing FOR the intervention)\n"
@@ -3037,6 +3050,7 @@ class Orchestrator:
                 max_tokens=8000, temperature=0.2, timeout=300
             )
             audit_text = resp.choices[0].message.content.strip()
+            audit_text = strip_think_blocks(audit_text)
             log(f"    [Step 7] GRADE synthesis complete ({len(audit_text)} chars)")
             return audit_text
         except Exception as e:
@@ -3051,7 +3065,11 @@ class Orchestrator:
     def _extractions_to_sources(extractions: List[DeepExtraction], role: str) -> List[SummarizedSource]:
         """Convert DeepExtraction list to SummarizedSource for backward compatibility."""
         sources = []
+        original_count = len(extractions)
         for ex in extractions:
+            # Filter out extractions with empty/missing URLs
+            if not ex.url:
+                continue
             metadata = StudyMetadata(
                 study_type=ex.study_design,
                 sample_size=str(ex.sample_size_total) if ex.sample_size_total else None,
@@ -3072,6 +3090,8 @@ class Orchestrator:
                 goal=role,
                 metadata=metadata,
             ))
+        if filtered_count := original_count - len(sources):
+            logger.info(f"Filtered {filtered_count} {role} sources with empty URLs")
         return sources
 
     @staticmethod
