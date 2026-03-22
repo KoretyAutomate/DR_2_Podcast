@@ -2279,6 +2279,24 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
                 podcast_length=podcast_length, podcast_hosts=podcast_hosts,
             )
 
+        # --- Self-evaluation loop (non-blocking) ---
+        _eval_dir = tasks_db[task_id].get("output_dir")
+        if _eval_dir:
+            try:
+                from dr2_podcast.evaluation.scorecard import generate_scorecard
+                from dr2_podcast.evaluation.lesson_generator import generate_lessons
+                from dr2_podcast.evaluation.telegram_report import send_run_report
+                from dr2_podcast.evaluation.lesson_reviewer import check_threshold, run_review
+
+                _scorecard = generate_scorecard(_eval_dir)
+                _lessons = generate_lessons(_scorecard, _eval_dir)
+                send_run_report(_scorecard, _lessons)
+
+                if check_threshold():
+                    run_review()
+            except Exception as _eval_err:
+                print(f"Self-evaluation error (non-blocking): {_eval_err}")
+
     except Exception as e:
         tasks_db[task_id]["status"] = "failed"
         tasks_db[task_id]["error"] = str(e)
@@ -2381,6 +2399,24 @@ def run_podcast_reuse(task_data: dict):
                 podcast_length=task_data.get("podcast_length", "long"),
                 podcast_hosts=podcast_hosts,
             )
+
+        # --- Self-evaluation loop (non-blocking) ---
+        _eval_dir = tasks_db[task_id].get("output_dir")
+        if _eval_dir:
+            try:
+                from dr2_podcast.evaluation.scorecard import generate_scorecard
+                from dr2_podcast.evaluation.lesson_generator import generate_lessons
+                from dr2_podcast.evaluation.telegram_report import send_run_report
+                from dr2_podcast.evaluation.lesson_reviewer import check_threshold, run_review
+
+                _scorecard = generate_scorecard(_eval_dir)
+                _lessons = generate_lessons(_scorecard, _eval_dir)
+                send_run_report(_scorecard, _lessons)
+
+                if check_threshold():
+                    run_review()
+            except Exception as _eval_err:
+                print(f"Self-evaluation error (non-blocking): {_eval_err}")
 
     except Exception as e:
         tasks_db[task_id]["status"] = "failed"

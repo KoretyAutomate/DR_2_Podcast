@@ -13,7 +13,7 @@ articles for the top-20 screened studies.
 import asyncio
 import logging
 import os
-from urllib.parse import quote as _url_quote
+from urllib.parse import quote as _url_quote, urlparse
 import re
 import defusedxml.ElementTree as ET
 from dataclasses import dataclass
@@ -27,6 +27,13 @@ from dr2_podcast.utils import extract_content_from_html, is_safe_url
 
 logger = logging.getLogger(__name__)
 MAX_TEXT_CHARS = 128_000  # ~32K tokens
+
+# Domains that always return 403 / paywall — skip scrape to avoid wasting time
+_SCRAPE_BLOCKED_DOMAINS = frozenset({
+    "researchgate.net",
+    "sciencedirect.com",
+    "academia.edu",
+})
 
 
 @dataclass
@@ -227,6 +234,11 @@ class FullTextFetcher:
             return None
         if not is_safe_url(url):
             logger.warning(f"Blocked SSRF-unsafe URL: {url}")
+            return None
+        # Skip domains that always block scraping (403 / paywall)
+        domain = urlparse(url).netloc.lower()
+        if any(blocked in domain for blocked in _SCRAPE_BLOCKED_DOMAINS):
+            logger.debug(f"Skipping scrape for blocked domain: {domain}")
             return None
         try:
             # Check cache first
