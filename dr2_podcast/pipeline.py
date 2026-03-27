@@ -905,7 +905,7 @@ SUPPORTED_LANGUAGES = {
         'name': '日本語 (Japanese)',
         'tts_code': 'j',            # Kokoro Japanese / Qwen3-TTS
         'instruction': 'すべてのコンテンツを日本語で書いてください。(Write all content in Japanese.)',
-        'speech_rate': 500,         # ~500 chars/min conversational pace
+        'speech_rate': 350,         # ~350 chars/min (calibrated from Qwen3-TTS actual output)
         'length_unit': 'chars',
         'prompt_unit': 'character',
     }
@@ -1663,23 +1663,35 @@ def _run_sectional_draft(inventory, target_length_int, language_config,
 
     generated = []
     previous_lines = []
-    accumulated_deficit = 0
+    accumulated_deficit = 0   # positive = under-budget (later sections get more)
+    accumulated_surplus = 0   # positive = over-budget (later sections get less)
 
     for i, section_cfg in enumerate(sections):
+        original_budget = section_cfg['word_budget']
+
         # Redistribute deficit from prior sections (capped at 50% of original budget)
         if accumulated_deficit > 0:
-            original_budget = section_cfg['word_budget']
             max_absorb = int(original_budget * 0.50)
             absorbed = min(accumulated_deficit, max_absorb)
             section_cfg['word_budget'] += absorbed
             accumulated_deficit -= absorbed
-            logger.info("    %s: budget adjusted %d -> %d %s (absorbed %d of %d deficit)",
+            logger.info("    %s: budget adjusted %d -> %d %s (absorbed %d deficit)",
                          section_cfg['section_id'], original_budget,
-                         section_cfg['word_budget'], length_unit, absorbed,
-                         absorbed + accumulated_deficit)
+                         section_cfg['word_budget'], length_unit, absorbed)
             if accumulated_deficit > 0:
                 logger.warning("    %d %s deficit could not be absorbed (cap: 50%% of original budget)",
                                accumulated_deficit, length_unit)
+
+        # Compensate for surplus from prior over-budget sections
+        if accumulated_surplus > 0:
+            pre_adjust = section_cfg['word_budget']
+            max_reduce = int(original_budget * 0.30)  # don't shrink more than 30%
+            reduction = min(accumulated_surplus, max_reduce)
+            section_cfg['word_budget'] -= reduction
+            accumulated_surplus -= reduction
+            logger.info("    %s: budget reduced %d -> %d %s (compensating %d surplus)",
+                         section_cfg['section_id'], pre_adjust,
+                         section_cfg['word_budget'], length_unit, reduction)
 
         section_text, word_count, deficit = _generate_section(
             section_cfg, previous_lines,
@@ -1694,7 +1706,7 @@ def _run_sectional_draft(inventory, target_length_int, language_config,
         status = 'OK'
         if word_count < int(section_cfg['word_budget'] * 0.75):
             status = 'SHORT'
-        elif word_count > int(section_cfg['word_budget'] * 1.25):
+        elif word_count > int(section_cfg['word_budget'] * 1.15):
             status = 'OVER'
         logger.info("  Section %s: %d/%d %s — %s",
                      section_cfg['section_id'], word_count,
@@ -1703,6 +1715,13 @@ def _run_sectional_draft(inventory, target_length_int, language_config,
         if deficit > 0:
             accumulated_deficit += deficit
             logger.warning("    Deficit %d %s carried forward", deficit, length_unit)
+
+        # Track surplus from over-budget sections
+        surplus = max(0, word_count - section_cfg['word_budget'])
+        if surplus > 0:
+            accumulated_surplus += surplus
+            logger.info("    Surplus %d %s carried forward (will reduce later budgets)",
+                         surplus, length_unit)
 
         generated.append(section_text)
 

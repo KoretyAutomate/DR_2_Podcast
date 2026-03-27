@@ -643,7 +643,7 @@ def _generate_section_single(section_config: dict, previous_lines: list,
 
     # Channel intro directive for opening section
     if section_id == 'opening' and channel_intro:
-        channel_intro_directive = f"Start with this EXACT text: \"{channel_intro}\""
+        channel_intro_directive = f"Start with this EXACT first line (including the speaker label):\n   {presenter}: {channel_intro}"
     else:
         channel_intro_directive = f"{presenter}: [Brief show intro — who you are and what the show is about]"
 

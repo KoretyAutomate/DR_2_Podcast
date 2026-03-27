@@ -6,7 +6,7 @@ Generates high-quality, multi-speaker podcast audio with automatic TTS engine se
 
   - English:  Kokoro TTS (local, CPU, proven quality)
   - Japanese: Qwen3-TTS CustomVoice (GPU via Docker, built-in preset voices)
-              Voices: Host1 → Aiden (male), Host2 → Ono_Anna (native Japanese female)
+              Voices: Host1 → Aiden (male), Host2 → Vivian (native Japanese female)
 
 Features:
 - Dual-voice system with speaker detection
@@ -210,7 +210,7 @@ def _chunk_japanese_text(text: str, max_chars: int = 80) -> list:
 
 
 def _call_qwen3_tts_segment(text: str, speaker: int) -> tuple:
-    """Call Qwen3-TTS API. speaker: 1=Host1(Aiden), 2=Host2(Ono_Anna). Returns (audio, sr) or (None, None)."""
+    """Call Qwen3-TTS API. speaker: 1=Host1(Aiden), 2=Host2(Vivian). Returns (audio, sr) or (None, None)."""
     try:
         import requests
         import io as _io
@@ -259,7 +259,7 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
     logger.info("=" * 60)
     qwen3_tts_url = _get_qwen3_tts_url()
     logger.info(f"API endpoint: {qwen3_tts_url}")
-    logger.info("Voices: Host1 → Aiden (male), Host2 → Ono_Anna (Japanese female)")
+    logger.info("Voices: Host1 → Aiden (male), Host2 → Vivian (Japanese female)")
 
     # Health check
     try:
