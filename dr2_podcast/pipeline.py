@@ -637,9 +637,11 @@ ROLE_PERSONALITIES = {
         "mechanisms feel like detective stories"
     ),
     "questioner": (
-        "Curious and sharp interviewer who reacts with genuine surprise, playful skepticism, "
-        "and humor — calls out when something sounds too good to be true, shares personal "
-        "anecdotes, and advocates for the listener"
+        "Well-educated science generalist with strong analytical training (statistics, "
+        "experimental design, causal reasoning) who has researched today's topic beforehand. "
+        "Asks informed, probing questions to draw out specifics for the listener. Connects "
+        "findings to adjacent domains, notices methodological gaps, and pushes back with "
+        "reasoned skepticism when evidence is weak."
     ),
 }
 
@@ -663,12 +665,12 @@ def assign_roles() -> dict:
     role_assignment = {
         "presenter": {
             "label": presenter_label,
-            "stance": "teaching",
+            "stance": "expert",
             "personality": ROLE_PERSONALITIES["presenter"],
         },
         "questioner": {
             "label": questioner_label,
-            "stance": "curious",
+            "stance": "informed",
             "personality": ROLE_PERSONALITIES["questioner"],
         },
     }
@@ -759,7 +761,7 @@ def _find_artifact(src_dir: Path, name: str) -> Path:
         legacy_flat = src_dir / legacy
         if legacy_flat.exists():
             return legacy_flat
-    return Path("")  # non-existent sentinel
+    return None  # not found
 
 
 def _copy_research_artifacts(src_dir: Path, dst_dir: Path):
@@ -774,7 +776,7 @@ def _copy_research_artifacts(src_dir: Path, dst_dir: Path):
     copied = 0
     for name in RESEARCH_ARTIFACTS:
         src = _find_artifact(src_dir, name)
-        if src.exists():
+        if src is not None and src.is_file():
             dst = output_path(dst_dir, name)
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
@@ -816,9 +818,9 @@ def _copy_all_artifacts(src_dir: Path, dst_dir: Path):
 def check_supplemental_needed(topic: str, reuse_dir: Path) -> dict:
     """Ask the LLM if the previous source_of_truth.md adequately covers the new topic."""
     sot_path = _find_artifact(reuse_dir, "source_of_truth.md")
-    if not sot_path.exists():
+    if sot_path is None or not sot_path.exists():
         sot_path = _find_artifact(reuse_dir, "SOURCE_OF_TRUTH.md")
-    if not sot_path.exists():
+    if sot_path is None or not sot_path.exists():
         return {"needs_supplement": True, "reason": "No source_of_truth.md found", "queries": []}
 
     sot_content = _truncate_at_boundary(sot_path.read_text(), 8000)
@@ -1712,8 +1714,9 @@ def _run_sectional_draft(inventory, target_length_int, language_config,
         logger.warning("  Unabsorbed deficit: %d %s (sections could not absorb full shortfall)",
                         accumulated_deficit, length_unit)
 
-    # Assemble with [TRANSITION] markers between sections
+    # Assemble with [TRANSITION] markers between sections, [INTRO_END] after channel intro
     assembled = '\n\n[TRANSITION]\n\n'.join(generated)
+    assembled = assembled.replace('[TRANSITION]', '[INTRO_END]', 1)  # first boundary = after channel intro
 
     total_count = _count_words(assembled, language_config)
     val = _validate_script(assembled, target_length_int, SCRIPT_TOLERANCE,
@@ -1783,7 +1786,7 @@ def _run_polish_loop(draft_text, draft_count, inventory, target_length_int,
     min_acceptable = int(target_length_int * (1 - SCRIPT_TOLERANCE))
     if polished_count < min_acceptable:
         logger.warning(f"    \u26a0 Polish shrunk script below minimum ({polished_count} < {min_acceptable}) — using draft")
-        if draft_text.count('[TRANSITION]') < 3:
+        if draft_text.count('[TRANSITION]') + draft_text.count('[INTRO_END]') < 3:
             draft_text = re.sub(r'(---\s*\n###\s*\*?\*?ACT)', r'[TRANSITION]\n\n\1', draft_text)
         polished = draft_text
 
@@ -3271,7 +3274,7 @@ if __name__ == "__main__":
         # Use polished_text which may be expanded draft if shrinkage guard fired
         polished_script_raw = polished_text if polished_text else (
             polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else "")
-        orig_transitions = polished_script_raw.count('[TRANSITION]')
+        orig_transitions = polished_script_raw.count('[TRANSITION]') + polished_script_raw.count('[INTRO_END]')
 
         # --- Retry loop: up to 2 LLM correction attempts ---
         _corrected_script_text = None
@@ -3302,7 +3305,7 @@ if __name__ == "__main__":
                     f"  - Find the exact quote from 'Script says'\n"
                     f"  - Replace it with language consistent with 'Source-of-truth says'\n"
                     f"Do NOT rewrite the entire script. Only fix cited drift instances.\n"
-                    f"Preserve all [TRANSITION] markers, speaker labels, and overall structure.\n"
+                    f"Preserve all audio markers ([TRANSITION], [INTRO_END]), speaker labels, and overall structure.\n"
                     f"{_retry_feedback}"
                     f"{target_instruction}"
                 ),
@@ -3313,7 +3316,7 @@ if __name__ == "__main__":
                 correction_crew = Crew(agents=[editor_agent], tasks=[correction_task], verbose=False)
                 correction_result = correction_crew.kickoff()
                 corrected = correction_result.raw if hasattr(correction_result, 'raw') else str(correction_result)
-                corrected_transitions = corrected.count('[TRANSITION]')
+                corrected_transitions = corrected.count('[TRANSITION]') + corrected.count('[INTRO_END]')
 
                 if len(corrected) < len(polished_script_raw) * 0.5:
                     _last_rejection_reason = (
@@ -3327,12 +3330,12 @@ if __name__ == "__main__":
                     continue
                 elif orig_transitions > 0 and corrected_transitions < orig_transitions:
                     _last_rejection_reason = (
-                        f"Lost [TRANSITION] markers ({orig_transitions} original -> "
+                        f"Lost audio markers ({orig_transitions} original -> "
                         f"{corrected_transitions} in your output). "
-                        f"You must preserve ALL [TRANSITION] markers."
+                        f"You must preserve ALL audio markers ([TRANSITION], [INTRO_END])."
                     )
                     logger.warning(
-                        f"  Attempt {_attempt}: Lost [TRANSITION] markers "
+                        f"  Attempt {_attempt}: Lost audio markers "
                         f"({orig_transitions}->{corrected_transitions})"
                     )
                     continue

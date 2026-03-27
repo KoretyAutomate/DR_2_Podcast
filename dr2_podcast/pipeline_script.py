@@ -201,9 +201,9 @@ def _validate_script(script_text: str, target_length: int, tolerance: float,
 
     # 3. Structure check (for polish stage)
     if stage == 'polish':
-        transition_count = script_text.count('[TRANSITION]')
+        transition_count = script_text.count('[TRANSITION]') + script_text.count('[INTRO_END]')
         if transition_count < 3:
-            issues.append(f"MISSING TRANSITIONS: only {transition_count} [TRANSITION] markers (need \u22653)")
+            issues.append(f"MISSING TRANSITIONS: only {transition_count} audio markers (need \u22653)")
 
     # 4. LLM content audit (only if Python checks pass -- saves tokens)
     if not issues and sot_content and _call_smart_model and _truncate_at_boundary:
@@ -255,7 +255,7 @@ def _deduplicate_script(script_text: str, language_config: dict) -> str:
     for start in range(len(non_empty) - WINDOW_SIZE + 1):
         block = tuple(non_empty[start + j][1] for j in range(WINDOW_SIZE))
         # Skip blocks that are only markers/annotations
-        if all(l.startswith('[TRANSITION]') or l.startswith('## [') for l in block):
+        if all(l.startswith('[TRANSITION]') or l.startswith('[INTRO_END]') or l.startswith('## [') for l in block):
             continue
         if block in seen_blocks:
             first_pos = seen_blocks[block]

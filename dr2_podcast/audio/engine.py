@@ -672,11 +672,12 @@ def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav",
 
 
 # Audio markers recognized by TTS engine — inserted by editor in Phase 6
-AUDIO_MARKERS = {'[TRANSITION]': '___TRANSITION___', '[PAUSE]': '___PAUSE___', '[BEAT]': '___BEAT___'}
+AUDIO_MARKERS = {'[TRANSITION]': '___TRANSITION___', '[INTRO_END]': '___INTRO_END___', '[PAUSE]': '___PAUSE___', '[BEAT]': '___BEAT___'}
 
 # Silence duration (seconds) for each marker type
 MARKER_SILENCE = {
     '[TRANSITION]': 1.5,
+    '[INTRO_END]': 2.5,
     '[PAUSE]': 0.8,
     '[BEAT]': 0.3,
 }
@@ -685,7 +686,7 @@ MARKER_SILENCE = {
 def clean_script_for_tts(script_text: str) -> str:
     """
     Clean script text for TTS processing by removing markdown and LLM artifacts.
-    Preserves [TRANSITION], [PAUSE], and [BEAT] audio markers.
+    Preserves [TRANSITION], [INTRO_END], [PAUSE], and [BEAT] audio markers.
 
     Args:
         script_text: Raw script text with potential markdown and tags

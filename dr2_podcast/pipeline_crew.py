@@ -218,15 +218,21 @@ def create_agents_and_tasks(
             f'Aim for {int(target_length_int * 1.2):,} {target_unit_plural} --- more content is better than less.\n'
             f'  3. FORMAT: Script MUST use "{SESSION_ROLES["presenter"]["label"]}:" (Presenter) '
             f'     and "{SESSION_ROLES["questioner"]["label"]}:" (Questioner).\n'
-            f'  4. TEACHING STYLE: The Presenter explains the topic systematically. '
-            f'     The Questioner asks bridging questions on behalf of the audience:\n'
-            f'     - Clarify jargon or uncommon terms\n'
-            f'     - Request real-world examples and analogies\n'
-            f'     - Occasionally push back on weak or debated evidence\n'
+            f'  4. DIALOGUE DYNAMIC: The Presenter is a domain expert who explains systematically.\n'
+            f'     The Questioner is a well-read generalist who has prepared for this episode:\n'
+            f'     - Asks methodologically informed questions (sample size, control groups, effect sizes)\n'
+            f'     - Connects findings to related fields or common knowledge\n'
+            f'     - Pushes back with reasoned skepticism, not just surprise\n'
+            f'     - Occasionally tosses out a hypothesis for the Presenter to confirm, refine, or correct\n'
+            f'     - Does NOT simply react with emotions --- every response adds intellectual substance\n'
+            f'     BALANCE: The Questioner contributes ~20-30%% of substantive content per exchange.\n'
+            f'     They open doors; the Presenter walks through them.\n'
             f'  5. DEPTH: Cover 3-4 main aspects of the topic thoroughly with mechanisms, evidence, and implications.\n'
+            f'  6. NO QUIZ-SHOW: The Presenter must NEVER validate the Questioner with grading phrases '
+            f'like "Exactly!", "Correct!", "That\'s right!". Every response must advance the conversation '
+            f'with new information, a new angle, or a qualification.\n'
             f'\n'
             f'Your dialogue should dive into nuance, trade-offs, and practical implications. '
-            f'The questioner keeps it accessible without dumbing it down. '
             f'{english_instruction}\n\n'
             f'DIALOGUE RULE: Hosts must NEVER address each other by name inside dialogue --- '
             f'no personal names, no "Host 1", no "Host 2" spoken aloud. '
@@ -257,7 +263,7 @@ def create_agents_and_tasks(
             f'  - Keep technical language intact (no dumbing down)\n'
             f'  - Target exactly {target_script} {target_unit_plural} for {_target_min}-minute runtime.\n'
             f'  - Ensure the opening follows the 3-part structure: welcome -> hook question -> topic shift\n'
-            f'  - Teaching flow: presenter explains, questioner bridges gaps for listeners\n'
+            f'  - Dialogue flow: presenter provides expert depth, questioner contributes informed perspective and probing questions\n'
             f'\n'
             f'If script is at or near target: refine for natural delivery without changing length significantly.\n'
             f'If script is over target: trim repetition and redundant examples to hit target. DO NOT trim factual content.\n'
@@ -447,14 +453,14 @@ def create_agents_and_tasks(
                f"Do NOT rephrase, modify, or remove it.\n\n"
                if channel_intro else '')
             + f"TRANSITION MARKERS:\n"
-            f"Insert [TRANSITION] on its own line between major sections:\n"
-            f"  - After Channel Intro, before Act 1\n"
-            f"  - Between Act 1 and Act 2\n"
+            f"Insert audio markers on their own line between major sections:\n"
+            f"  - After Channel Intro, before Act 1: use [INTRO_END] (not [TRANSITION])\n"
+            f"  - Between Act 1 and Act 2: use [TRANSITION]\n"
             f"  - Between Act 2 and Act 3\n"
             f"  - Between Act 3 and Act 4\n"
             f"  - After Act 4, before Wrap-up\n"
             f"These markers create musical transition moments in the final audio. Do NOT speak them.\n"
-            f"Format: place [TRANSITION] on a line by itself between the last line of one act and the first line of the next.\n\n"
+            f"Format: place the marker on a line by itself between the last line of one section and the first line of the next.\n\n"
             f"ONE ACTION ENDING CHECK:\n"
             f"Verify the script ends with a single, specific, actionable recommendation.\n"
             f"If missing, add one based on the Protocol section (Act 4).\n\n"
@@ -463,7 +469,7 @@ def create_agents_and_tasks(
             f"Do NOT present LOW-confidence claims as settled fact.\n\n"
             f"Format:\n{SESSION_ROLES['presenter']['label']}: [dialogue]\n"
             f"{SESSION_ROLES['questioner']['label']}: [dialogue]\n\n"
-            f"Remove meta-tags, markdown, stage directions. Dialogue only (plus [TRANSITION] markers).\n"
+            f"Remove meta-tags, markdown, stage directions. Dialogue only (plus [TRANSITION] and [INTRO_END] markers).\n"
             + get_prompt("polish", "length_section", language,
                          target_script=target_script,
                          target_unit_plural=target_unit_plural,
@@ -478,7 +484,7 @@ def create_agents_and_tasks(
         expected_output=(
             f"Final Masters-level dialogue about {topic_name}, approximately {target_script} {target_unit_plural} "
             f"(at least {int(target_length_int * (1 - SCRIPT_TOLERANCE)):,}). "
-            f"8-part structure with [TRANSITION] markers between acts. One Action ending present. "
+            f"8-part structure with [INTRO_END] after Channel Intro and [TRANSITION] markers between acts. One Action ending present. "
             f"{target_instruction}"
         ),
         agent=editor_agent,

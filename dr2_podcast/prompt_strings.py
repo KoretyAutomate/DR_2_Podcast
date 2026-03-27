@@ -241,14 +241,14 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "  3. ACT 1 --- THE CLAIM:\n"
             "     What people believe. The folk wisdom. Why this matters personally.\n"
             "     - Presenter sets up the common belief or question\n"
-            "     - Questioner validates: 'Right, I've heard that too' / 'That's what everyone says'\n"
+            "     - Questioner connects the claim to something they encountered in preparation: 'I read that this traces back to...' or 'The common argument seems to be...'\n"
             "     - Establish emotional stakes: why should the listener care?\n\n"
         ),
         "ja": (
             "  3. ACT 1 --- THE CLAIM:\n"
             "     人々が信じていること。常識。なぜ個人的に重要なのか。\n"
             "     - プレゼンターが一般的な信念や疑問を提示\n"
-            "     - 質問者が共感: 「確かに、私もそう聞いていました」\n"
+            "     - 質問者が準備で調べた内容と関連づける: 「調べてみたところ、これは〜に由来するらしいですね」\n"
             "     - 感情的なステークスを確立: なぜリスナーが気にすべきか？\n\n"
         ),
     },
@@ -259,7 +259,7 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "     Start by stating the episode's conclusion upfront.\n"
             "     Then walk through EACH study individually:\n"
             "     - Present the study's finding with GRADE-informed framing from the Blueprint\n"
-            "     - Questioner asks a study-specific question (from Coverage Checklist)\n"
+            "     - Questioner asks a study-specific question (from Coverage Checklist) --- focus on methodology: sample size, study design, confounders, effect sizes\n"
             "     - Presenter answers, including the study's limitations and nuances\n"
             "     - Include specific numbers (NNT, ARR, sample sizes) where available\n"
             "     For EACH study, the conversation should be: finding -> question -> answer with nuance.\n"
@@ -271,7 +271,7 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "     まずエピソードの結論を先に述べてください。\n"
             "     次に各研究を個別に取り上げます:\n"
             "     - Blueprintからの GRADE に基づくフレーミングで研究の知見を提示\n"
-            "     - 質問者が研究固有の質問をする（Coverage Checklistから）\n"
+            "     - 質問者が研究固有の質問をする（Coverage Checklistから）--- 方法論に焦点: サンプルサイズ、研究デザイン、交絡因子、効果量\n"
             "     - プレゼンターがその研究の限界やニュアンスを含めて回答\n"
             "     - 利用可能な場合、具体的な数値（NNT, ARR, サンプルサイズ）を含める\n"
             "     各研究ごとに: 知見 -> 質問 -> ニュアンスを含む回答 の流れにしてください。\n"
@@ -287,7 +287,7 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "     - Restate the conclusion --- the listener is now equipped with the evidence\n"
             "     - What does the totality of evidence mean for {core_target_or_default}?\n"
             "     - GRADE confidence level in plain language\n"
-            "     - Questioner: 'So if I had to summarize everything we just discussed...'\n"
+            "     - Questioner offers their own synthesis attempt for the Presenter to refine: 'So if I had to pull this together, it seems like...'\n"
             "     - Presenter ties it all together, building confidence in the conclusion\n\n"
         ),
         "ja": (
@@ -296,7 +296,7 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "     - 結論を再度述べる --- リスナーはエビデンスを理解した上で\n"
             "     - エビデンス全体が{core_target_or_default}にとって何を意味するか\n"
             "     - GRADEの確信度を平易な言葉で\n"
-            "     - 質問者: 「では、今まで話したことをまとめると...」\n"
+            "     - 質問者が自分なりの統合を試み、プレゼンターに洗練を求める: 「ここまでの話をまとめると、つまり…ということでしょうか？」\n"
             "     - プレゼンターがすべてをまとめ、結論への信頼を構築\n\n"
         ),
     },
@@ -380,20 +380,44 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
         "en": (
             "PERSONALITY DIRECTIVES:\n"
             "- ENERGY: Vary vocal energy --- excited for surprising findings, thoughtful pauses for nuance, urgency for practical advice\n"
-            "- REACTIONS: Questioner reacts authentically --- genuine surprise ('Wait, seriously?!'), skepticism ('Hmm, that sounds too good to be true...'), humor ('Okay, so basically I've been doing this all wrong')\n"
+            "- REACTIONS: Questioner reacts authentically per their character role --- with informed curiosity, reasoned skepticism, and occasional humor\n"
+            "- RESPONSE STYLE: When the Questioner makes a point, the Presenter always ADVANCES the conversation. "
+            "Every Presenter response after a Questioner contribution must introduce new information, a new angle, or a qualification. "
+            "Pure agreement ('Exactly!', 'Correct!', 'Spot on!', 'That\\'s right!') adds nothing --- replace with: "
+            "'And building on that...', 'That\\'s an interesting angle --- actually...', 'Let me add to that...', "
+            "'That makes me think of another angle entirely...', 'There\\'s actually a deeper layer to that...', "
+            "'Mostly, yes --- though there\\'s one important caveat...'\n"
+            "- QUESTION DEPTH: Questioner asks research-informed questions, not surface reactions.\n"
+            "  For science/medical topics --- GOOD: 'What was the sample size?', 'Did they control for socioeconomic status?', 'What\\'s the effect size --- is that clinically meaningful?'\n"
+            "  For social science/policy topics --- GOOD: 'Has that effect been replicated in other countries?', 'How was the comparison group set up?', 'What\\'s the cost-benefit ratio of that intervention?'\n"
+            "  BAD (always): 'Wow, really?', 'That\\'s amazing!', 'Tell me more about that'\n"
             "- BANTER: Include brief moments of friendly banter between hosts --- a shared laugh, a playful jab, a relatable personal admission\n"
-            "- FILLERS: Natural conversational fillers: 'Hm, that's interesting', 'Right, right', 'Oh wow', 'Okay so let me get this straight...'\n"
-            "- EMPHASIS: Dramatic pauses via ellipses: 'And here's where it gets interesting...'\n"
-            "- STORYTELLING: After each key finding, paint a picture: 'Imagine you're...' or 'Think about your morning routine...'\n"
+            "- FILLERS: Natural conversational fillers: 'Hm, that\\'s interesting', 'Right, right', 'Oh wow', 'Okay so let me get this straight...'\n"
+            "- EMPHASIS: Dramatic pauses via ellipses: 'And here\\'s where it gets interesting...'\n"
+            "- STORYTELLING: After each key finding, paint a picture: 'Imagine you\\'re...' or 'Think about your morning routine...'\n"
             "- PERSONAL: Brief personal connections: 'I actually tried this myself and...' or 'My partner always says...'\n"
             "- MOMENTUM: Each act builds energy --- start curious, peak at the most surprising finding, resolve with practical clarity\n\n"
         ),
         "ja": (
             "パーソナリティ指示:\n"
+            "- 語調ガイド: 基本はです・ます調の知的な会話体。\n"
+            "  許可: 「なるほど」「確かに」「面白い」「ちょっと意外」「そうなんですよ」「〜ですよね」「〜かもしれないですね」\n"
+            "  禁止: 「やばい」「マジ」「ウケる」「やだ」「すげー」「めっちゃ」「ヤバくない？」\n"
+            "  知的で落ち着いた語調を保ちつつ、二人の友人が話しているような温かさを維持する。\n"
             "- エネルギー: 声のエネルギーを変化させる --- 驚きの発見には興奮、ニュアンスには考え深い間、実践的アドバイスには緊迫感\n"
-            "- リアクション: 質問者は本物のリアクションをする --- 本当の驚き（「えっ、マジですか？！」）、懐疑（「うーん、出来すぎた話に聞こえるけど...」）、ユーモア（「あー、つまり私ずっと間違ってたってこと？」）\n"
+            "- リアクション: 質問者はキャラクター設定に沿った本物のリアクションをする --- 知的な好奇心（「え、そうなんですか？」）、根拠のある懐疑（「うーん、出来すぎた話に聞こえるけど...」）、ユーモア（「あー、つまり私ずっと間違ってたってこと？」）\n"
+            "- 応答スタイル: 質問者が意見を述べた後、プレゼンターは必ず対話を前進させる。"
+            "新しい情報、別の角度、または補足を加えること。"
+            "単純な同意（「正解です」「完全にその通り」「その通り！」「まさにそれ」）は禁止。代わりに: "
+            "「それに加えて…」「面白い視点ですね、実は…」「そこをもう少し掘ると…」"
+            "「その観点から言うと、もう一つ重要なのが…」「実はそこにはもう一層深い話があって…」"
+            "「概ねそうなんですが、一つ注意点があって…」\n"
+            "- 質問の深さ: 質問者は表面的なリアクション（「へー」「すごい」）ではなく、研究の核心に迫る質問をする。\n"
+            "  科学・医学トピックの場合 --- 良い例: 「そのメタ分析のサンプルサイズはどれくらいですか？」「交絡因子はコントロールされていましたか？」「効果量はどの程度ですか？」\n"
+            "  社会科学・政策トピックの場合 --- 良い例: 「その知見は日本の文脈にも当てはまりますか？」「先行研究との整合性はどうでしょう？」「そのデータの解釈には別の可能性もありませんか？」\n"
+            "  悪い例（常に）: 「へー、それってどんな研究だったんですか？」「すごいですね」\n"
             "- 掛け合い: ホスト間の気軽な掛け合いを含める --- 共有する笑い、軽いツッコミ、共感できる個人的な告白\n"
-            "- フィラー: 自然な会話のフィラー: 「へー、面白いですね」「そうそう」「えー！」「ちょっと待って、整理させて...」\n"
+            "- フィラー: 自然な会話のフィラー: 「へー、面白いですね」「確かに」「え、そうなんですか？」「ちょっと待って、整理させて...」\n"
             "- 強調: 省略記号で劇的な間: 「で、ここからが面白いんですけど...」\n"
             "- ストーリーテリング: 重要な発見の後に情景を描く: 「想像してみてください...」「あなたの朝のルーティンを思い浮かべて...」\n"
             "- 個人的つながり: 短い個人的エピソード: 「実は私も試してみたんですけど...」「うちのパートナーがいつも言うんですけど...」\n"
@@ -405,12 +429,12 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
         "en": (
             "CHARACTER ROLES:\n"
             "  - {presenter} (Presenter): presents evidence and explains the topic, {presenter_personality}\n"
-            "  - {questioner} (Questioner): asks questions the audience would ask, bridges gaps, {questioner_personality}\n\n"
+            "  - {questioner} (Questioner): asks informed, probing questions based on preparation; offers hypotheses for the presenter to refine; draws out specifics for the listener, {questioner_personality}\n\n"
         ),
         "ja": (
             "キャラクター役割:\n"
             "  - {presenter} (プレゼンター): エビデンスを提示しトピックを解説、{presenter_personality}\n"
-            "  - {questioner} (質問者): リスナーが聞きたい質問を代弁し、理解のギャップを埋める、{questioner_personality}\n\n"
+            "  - {questioner} (質問者): 事前リサーチに基づく的確な質問で専門家の知見を深掘りし、仮説を投げかけながらリスナーの理解を導く、{questioner_personality}\n\n"
         ),
     },
 
@@ -472,12 +496,12 @@ POLISH_PROMPTS: dict[str, dict[str, str]] = {
 
     "expected_output_structure": {
         "en": (
-            "8-part structure with [TRANSITION] markers between acts. "
+            "8-part structure with [INTRO_END] after Channel Intro and [TRANSITION] markers between acts. "
             "Acts: Claim, Evidence & Nuance, Holistic Conclusion, Protocol. "
             "One Action ending present."
         ),
         "ja": (
-            "8-part structure with [TRANSITION] markers between acts. "
+            "8-part structure with [INTRO_END] after Channel Intro and [TRANSITION] markers between acts. "
             "Acts: Claim, Evidence & Nuance, Holistic Conclusion, Protocol. "
             "One Action ending present."
         ),
@@ -551,7 +575,7 @@ CONDENSE_PROMPTS: dict[str, dict[str, str]] = {
             "- Do NOT delete entire discussion topics --- condense them\n"
             "- Within each act, condense later items first (earlier items set up context)\n"
             "- Prefer shortening analogies/examples before mechanism explanations\n"
-            "- Preserve ALL [TRANSITION] markers exactly as-is\n"
+            "- Preserve ALL audio markers ([TRANSITION], [INTRO_END], [PAUSE], [BEAT]) exactly as-is\n"
             "- Preserve the One Action ending\n"
             "- Preserve speaker labels: {presenter}: and {questioner}:\n"
             "- Do NOT condense below {floor_count} {length_unit}\n"
@@ -569,7 +593,7 @@ CONDENSE_PROMPTS: dict[str, dict[str, str]] = {
             "- ディスカッショントピック全体を削除しない --- 凝縮する\n"
             "- 各アクト内で、後半の項目から先に凝縮する（前半の項目は文脈を設定する）\n"
             "- メカニズムの説明よりも比喩/例を先に短縮する\n"
-            "- すべての[TRANSITION]マーカーをそのまま保持する\n"
+            "- すべてのオーディオマーカー（[TRANSITION]、[INTRO_END]、[PAUSE]、[BEAT]）をそのまま保持する\n"
             "- One Actionエンディングを保持する\n"
             "- スピーカーラベルを保持: {presenter}: と {questioner}:\n"
             "- {floor_count} {length_unit}未満に凝縮しない\n"
@@ -622,7 +646,8 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
             "- Vary energy: surprising findings get excitement, nuances get thoughtful pauses\n"
             "- Include natural fillers: 'Hm, that's interesting', 'Right, right', 'Oh wow'\n"
             "- Brief banter between hosts — a shared laugh, a relatable admission\n"
-            "- Maintain consistent roles — {presenter} explains, {questioner} asks and reacts\n\n"
+            "- Maintain consistent roles — {presenter} provides expert depth, {questioner} asks informed questions and offers hypotheses\n"
+            "- Despite these intellectual standards, the conversation must feel like two friends talking — not a panel discussion. Include genuine laughter, moments of wonder, and personal vulnerability. Intelligence and warmth are not opposites.\n\n"
             "FORMAT: Dialogue only. No markdown headers, no stage directions, no commentary.\n"
             "{presenter}: [dialogue]\n"
             "{questioner}: [dialogue]\n"
@@ -640,7 +665,9 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
             "- エネルギーを変化させる: 驚きの発見には興奮、ニュアンスには落ち着いた間\n"
             "- 自然なフィラーを含む: 「へー、面白いですね」「確かに」「えっ、本当に？」\n"
             "- ホスト間の軽いやり取り — 共感の笑い、親しみやすいエピソード\n"
-            "- 一貫した役割を維持 — {presenter}が説明し、{questioner}が質問・反応する\n\n"
+            "- 一貫した役割を維持 — {presenter}が専門知識を提供し、{questioner}が準備に基づく質問と仮説で対話を深める\n"
+            "- 知的で落ち着いた語調を保つ。スラング（やばい、マジ等）禁止。\n"
+            "- 知的水準を保ちつつも、二人の友人が話しているような温かさを維持する。笑い、驚き、個人的な共感を忘れない。\n\n"
             "形式: 対話のみ。マークダウンヘッダー、ト書き、コメントなし。\n"
             "{presenter}: [対話]\n"
             "{questioner}: [対話]\n"
