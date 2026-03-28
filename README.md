@@ -242,7 +242,7 @@ Audio is rendered with two voices at 24kHz WAV, followed by BGM mixing. TTS engi
 | Language | TTS Engine | Host 1 (Male) | Host 2 (Female) |
 |----------|------------|---------------|-----------------|
 | English  | Kokoro TTS (local, CPU) | `am_fenrir` (American male) | `af_heart` (American female) |
-| Japanese | Qwen3-TTS (GPU via FastAPI server) | Aiden (male) | Vivian (native Japanese female) |
+| Japanese | Qwen3-TTS (GPU via FastAPI server) | Aiden (male) | Ono_anna (native Japanese female) |
 
 ## Multi-Language Support
 
@@ -259,7 +259,7 @@ After Crew 3 completes, the pipeline measures script length against the target (
 | Host | Voice | Role |
 |------|-------|------|
 | **Host 1** | Male (Kokoro: `am_fenrir` / Qwen3: Aiden) | Randomly assigned as presenter or questioner each session |
-| **Host 2** | Female (Kokoro: `af_heart` / Qwen3: Vivian) | Randomly assigned as presenter or questioner each session |
+| **Host 2** | Female (Kokoro: `af_heart` / Qwen3: Ono_anna) | Randomly assigned as presenter or questioner each session |
 
 Personality is determined by role, not host: the **presenter** is an enthusiastic science communicator; the **questioner** is a curious, skeptical interviewer. Override with `PODCAST_HOSTS` env var (`host1_leads`, `host2_leads`, or `random`).
 

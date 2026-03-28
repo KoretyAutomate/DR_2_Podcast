@@ -2,7 +2,7 @@
 Qwen3-TTS FastAPI Server
 POST /tts  {"text": "...", "speaker": "Host1"}  -> WAV bytes
 GET  /health -> {"status": "ok"}
-Speaker map: Host1 -> Aiden (male), Host2 -> Vivian (Japanese female)
+Speaker map: Host1 -> Aiden (male), Host2 -> Ono_anna (Japanese female)
 """
 import io, os, logging
 from fastapi import FastAPI, HTTPException
@@ -18,7 +18,7 @@ app = FastAPI(title="Qwen3-TTS Server")
 
 SPEAKER_VOICE_MAP = {
     "Host1": "Aiden", "host1": "Aiden",
-    "Host2": "Vivian", "host2": "Vivian",
+    "Host2": "Ono_anna", "host2": "Ono_anna",
 }
 CHECKPOINTS_PATH = os.getenv("CHECKPOINTS_PATH", os.path.join(os.path.dirname(__file__), "checkpoints"))
 _model = None
