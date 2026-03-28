@@ -2,9 +2,10 @@
 
 import pytest
 import re
+import numpy as np
 from unittest.mock import patch, MagicMock
 
-from dr2_podcast.audio.engine import clean_script_for_tts, _chunk_japanese_text, MARKER_SILENCE
+from dr2_podcast.audio.engine import clean_script_for_tts, _chunk_japanese_text, MARKER_SILENCE, _TARGET_RMS
 
 
 # ---------------------------------------------------------------------------
@@ -122,3 +123,46 @@ class TestAudioMixer:
             result = mixer.mix_podcast("voice.wav", "music.wav", "out.wav")
 
         assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Per-speaker RMS normalization logic
+# ---------------------------------------------------------------------------
+
+class TestRMSNormalization:
+    """Test the RMS normalization math used in both TTS _flush_buffer paths."""
+
+    @staticmethod
+    def _normalize(audio: np.ndarray) -> np.ndarray:
+        """Replicate the normalization logic from engine.py."""
+        rms = np.sqrt(np.mean(audio ** 2))
+        if rms > 1e-6:
+            audio = audio * (_TARGET_RMS / rms)
+            audio = np.clip(audio, -1.0, 1.0)
+        return audio
+
+    def test_known_rms_normalized_to_target(self):
+        # Create array with known RMS of 0.02
+        audio = np.full(1000, 0.02, dtype=np.float32)
+        result = self._normalize(audio)
+        result_rms = np.sqrt(np.mean(result ** 2))
+        assert abs(result_rms - _TARGET_RMS) < 0.001
+
+    def test_zero_array_skipped(self):
+        audio = np.zeros(1000, dtype=np.float32)
+        result = self._normalize(audio)
+        assert np.all(result == 0.0)
+
+    def test_very_quiet_array_clipped(self):
+        # RMS=0.001 needs 80x boost — peaks will clip to [-1.0, 1.0]
+        rng = np.random.default_rng(42)
+        audio = rng.normal(0, 0.001, 10000).astype(np.float32)
+        result = self._normalize(audio)
+        assert np.all(result >= -1.0)
+        assert np.all(result <= 1.0)
+
+    def test_already_at_target_unchanged(self):
+        audio = np.full(1000, _TARGET_RMS, dtype=np.float32)
+        result = self._normalize(audio)
+        result_rms = np.sqrt(np.mean(result ** 2))
+        assert abs(result_rms - _TARGET_RMS) < 0.001

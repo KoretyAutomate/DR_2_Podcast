@@ -26,6 +26,12 @@ PUBMED_TIMEOUT = 15.0
 VALIDATION_TIMEOUT = 10.0
 UPLOAD_TIMEOUT = 120.0
 
+# --- Audio Mixing ---
+try:
+    VOICE_DUCKING_DB = int(os.environ.get("VOICE_DUCKING_DB", "-20"))
+except ValueError:
+    VOICE_DUCKING_DB = -20
+
 # --- HTTP ---
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 

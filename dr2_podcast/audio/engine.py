@@ -6,7 +6,7 @@ Generates high-quality, multi-speaker podcast audio with automatic TTS engine se
 
   - English:  Kokoro TTS (local, CPU, proven quality)
   - Japanese: Qwen3-TTS CustomVoice (GPU via Docker, built-in preset voices)
-              Voices: Host1 → Aiden (male), Host2 → Vivian (native Japanese female)
+              Voices: Host1 → Aiden (male), Host2 → Ono_anna (native Japanese female)
 
 Features:
 - Dual-voice system with speaker detection
@@ -65,7 +65,7 @@ class AudioMixer:
             music = effects.normalize(music)
 
             # Reduce music volume significantly
-            music = music - 18  # Reduce by 18dB
+            music = music - 20  # Reduce by 20dB
 
             # 3. Overlay
             final_mix = music.overlay(voice, position=0)
@@ -85,7 +85,7 @@ class AudioMixer:
     def mix_podcast_pro(self, voice_path: str, music_path: str, output_path: str,
                         pre_roll_ms: int = 4000, post_roll_ms: int = 6000,
                         transition_positions_ms: list = None,
-                        voice_ducking_db: int = -18, transition_bump_db: int = -10,
+                        voice_ducking_db: int = -20, transition_bump_db: int = -10,
                         transition_duration_ms: int = 1500) -> bool:
         """
         Pro-grade podcast mixing with BGM-only intro/outro and transition bumps.
@@ -182,6 +182,10 @@ VOICE_HOST_1 = 'am_fenrir'  # American Male (The Expert) - default English
 VOICE_HOST_2 = 'af_heart'   # American Female (The Skeptic) - default English
 LANG_CODE = 'a'  # American English (default)
 
+# Per-speaker RMS normalization target (~-22dBFS)
+# Controls inter-speaker volume balance; downstream pydub normalize handles absolute level
+_TARGET_RMS = 0.08
+
 # Per-language voice mapping for Kokoro TTS
 VOICE_MAP = {
     'a': {'host1': 'am_fenrir', 'host2': 'af_heart'},     # English
@@ -210,7 +214,7 @@ def _chunk_japanese_text(text: str, max_chars: int = 80) -> list:
 
 
 def _call_qwen3_tts_segment(text: str, speaker: int) -> tuple:
-    """Call Qwen3-TTS API. speaker: 1=Host1(Aiden), 2=Host2(Vivian). Returns (audio, sr) or (None, None)."""
+    """Call Qwen3-TTS API. speaker: 1=Host1(Aiden), 2=Host2(Ono_anna). Returns (audio, sr) or (None, None)."""
     try:
         import requests
         import io as _io
@@ -259,7 +263,7 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
     logger.info("=" * 60)
     qwen3_tts_url = _get_qwen3_tts_url()
     logger.info(f"API endpoint: {qwen3_tts_url}")
-    logger.info("Voices: Host1 → Aiden (male), Host2 → Vivian (Japanese female)")
+    logger.info("Voices: Host1 → Aiden (male), Host2 → Ono_anna (Japanese female)")
 
     # Health check
     try:
@@ -310,6 +314,11 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
                     sample_rate = sr_chunk if sr_chunk is not None else 24000
                     logger.info(f"  Sample rate: {sample_rate} Hz")
                 segment_audio = np.concatenate(chunk_audios)
+                # Per-speaker RMS normalization
+                rms = np.sqrt(np.mean(segment_audio ** 2))
+                if rms > 1e-6:
+                    segment_audio = segment_audio * (_TARGET_RMS / rms)
+                    segment_audio = np.clip(segment_audio, -1.0, 1.0)
                 audio_segments.append(segment_audio)
                 cumulative_samples += len(segment_audio)
                 segment_count += 1
@@ -497,10 +506,19 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             voice = voice_host_1 if current_speaker == 1 else voice_host_2
             try:
                 generator = pipeline(buffer_text, voice=voice, speed=1.0, split_pattern=r'\n+')
+                chunk_list = []
                 for _, _, audio in generator:
-                    audio_segments.append(audio)
-                    cumulative_samples += len(audio)
+                    chunk_list.append(audio)
                     segment_count += 1
+                if chunk_list:
+                    segment_audio = np.concatenate(chunk_list)
+                    # Per-speaker RMS normalization
+                    rms = np.sqrt(np.mean(segment_audio ** 2))
+                    if rms > 1e-6:
+                        segment_audio = segment_audio * (_TARGET_RMS / rms)
+                        segment_audio = np.clip(segment_audio, -1.0, 1.0)
+                    audio_segments.append(segment_audio)
+                    cumulative_samples += len(segment_audio)
             except Exception as e:
                 logger.warning(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
         buffer_text = ""
@@ -655,9 +673,11 @@ def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav",
         mixed_path = wav_path.replace(".wav", "_mixed.wav")
 
         # Try pro mixing with pre/post roll and transition bumps
+        from dr2_podcast.config import VOICE_DUCKING_DB
         success = mixer.mix_podcast_pro(
             wav_path, music_path, mixed_path,
-            transition_positions_ms=transition_positions_ms or []
+            transition_positions_ms=transition_positions_ms or [],
+            voice_ducking_db=VOICE_DUCKING_DB,
         )
 
         if success:
