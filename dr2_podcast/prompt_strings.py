@@ -474,7 +474,7 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
 
 
 # ---------------------------------------------------------------------------
-# POLISH PROMPTS — Masters-level polish & length control
+# POLISH PROMPTS — Audience-level polish & length control
 # ---------------------------------------------------------------------------
 
 POLISH_PROMPTS: dict[str, dict[str, str]] = {
@@ -507,18 +507,16 @@ POLISH_PROMPTS: dict[str, dict[str, str]] = {
         ),
     },
 
-    "masters_level": {
+    "audience_level": {
         "en": (
-            "MASTERS-LEVEL REQUIREMENTS:\n"
-            "- Remove ALL definitions of basic scientific concepts (DNA, peer review, RCT, meta-analysis)\n"
+            "AUDIENCE-LEVEL REQUIREMENTS:\n"
+            "- {terminology_rule}\n"
             "- Ensure the questioner's questions feel natural and audience-aligned\n"
-            "- Keep technical language intact - NO dumbing down\n"
         ),
         "ja": (
-            "修士レベル要件:\n"
-            "- 基本的な科学概念の定義をすべて削除（DNA、ピアレビュー、RCT、メタアナリシス）\n"
+            "対象リスナーレベル要件:\n"
+            "- {terminology_rule}\n"
             "- 質問者の質問が自然でリスナー目線であることを確認\n"
-            "- 専門用語はそのまま維持 — 平易化しない\n"
         ),
     },
 

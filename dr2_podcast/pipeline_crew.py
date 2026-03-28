@@ -157,6 +157,8 @@ def create_agents_and_tasks(
     channel_intro,
     core_target,
     channel_mission,
+    accessibility_instruction,
+    accessibility_level,
     dgx_llm_strict,
     dgx_llm_creative,
     SCRIPT_TOLERANCE,
@@ -174,6 +176,43 @@ def create_agents_and_tasks(
 
     Parameters are keyword-only to make call sites self-documenting.
     """
+    # --- Tonal calibration by audience level ---
+    _TONE_BY_LEVEL = {
+        "simple": {
+            "identity": (
+                "Science communicator for a general audience. "
+                'Tone: Think "Radiolab" or "Science Vs" - warm, story-driven, accessible.'
+            ),
+            "exemplar": "Radiolab, Science Vs",
+            "editor_depth": (
+                "Your audience is curious but not specialist. "
+                "Ensure all terms are defined on first use."
+            ),
+        },
+        "moderate": {
+            "identity": (
+                "Science communicator for educated, curious adults. "
+                'Tone: Think "Freakonomics" or "Hidden Brain" - analytical, engaging, assumes basic literacy.'
+            ),
+            "exemplar": "Freakonomics, Hidden Brain",
+            "editor_depth": (
+                "Your audience follows science news and has some background. "
+                "Define domain jargon on first use; skip common terms."
+            ),
+        },
+        "technical": {
+            "identity": (
+                "Science Communicator targeting Post-Graduate Professionals (Masters/PhD level). "
+                'Tone: Think "Huberman Lab" or "Lex Fridman" - intellectual, curious, deep-diving.'
+            ),
+            "exemplar": "Huberman Lab, Lex Fridman",
+            "editor_depth": (
+                "Your audience has advanced degrees - they want depth, not hand-holding."
+            ),
+        },
+    }
+    _tone = _TONE_BY_LEVEL[accessibility_level]
+
     auditor_agent = Agent(
         role='Scientific Auditor',
         goal=f'Grade the research quality with a Reliability Scorecard. Do NOT write content - GRADE it. {english_instruction}',
@@ -206,14 +245,12 @@ def create_agents_and_tasks(
         role='Podcast Producer',
         goal=(
             f'Transform research into an engaging, in-depth teaching conversation on "{topic_name}". '
-            f'Target: Intellectual, curious professionals who want to learn. {english_instruction}'
+            f'Audience approach: {accessibility_instruction} {english_instruction}'
         ),
         backstory=(
-            f'Science Communicator targeting Post-Graduate Professionals (Masters/PhD level). '
-            f'Tone: Think "Huberman Lab" or "Lex Fridman" - intellectual, curious, deep-diving.\n\n'
+            f'{_tone["identity"]}\n\n'
             f'CRITICAL RULES:\n'
-            f'  1. NO BASICS: Do NOT define basic terms like "DNA", "inflation", "supply chain", '
-            f'     "peer review", "RCT", or "meta-analysis". Assume the listener knows them.\n'
+            f'  1. TERMINOLOGY: {accessibility_instruction}\n'
             f'  2. LENGTH: Generate AT LEAST {target_script} {target_unit_plural} (approx {_target_min} min). '
             f'Aim for {int(target_length_int * 1.2):,} {target_unit_plural} --- more content is better than less.\n'
             f'  3. FORMAT: Script MUST use "{SESSION_ROLES["presenter"]["label"]}:" (Presenter) '
@@ -250,17 +287,16 @@ def create_agents_and_tasks(
     editor_agent = Agent(
         role='Podcast Editor',
         goal=(
-            f'Polish the "{topic_name}" script for natural verbal delivery at Masters-level. '
+            f'Polish the "{topic_name}" script for natural verbal delivery for the target audience. '
             f'Target: Exactly {target_script} {target_unit_plural} ({_target_min} minutes). '
             f'{target_instruction}'
         ),
         backstory=(
-            f'Editor for high-end intellectual podcasts (Huberman Lab, Lex Fridman). '
-            f'Your audience has advanced degrees - they want depth, not hand-holding.\n\n'
+            f'Editor for quality podcasts ({_tone["exemplar"]}). '
+            f'{_tone["editor_depth"]}\n\n'
             f'EDITING RULES:\n'
-            f'  - Remove any definitions of basic scientific concepts\n'
+            f'  - TERMINOLOGY: {accessibility_instruction}\n'
             f'  - Ensure the questioner\'s questions feel natural and audience-aligned\n'
-            f'  - Keep technical language intact (no dumbing down)\n'
             f'  - Target exactly {target_script} {target_unit_plural} for {_target_min}-minute runtime.\n'
             f'  - Ensure the opening follows the 3-part structure: welcome -> hook question -> topic shift\n'
             f'  - Dialogue flow: presenter provides expert depth, questioner contributes informed perspective and probing questions\n'
@@ -435,8 +471,8 @@ def create_agents_and_tasks(
 
     polish_task = Task(
         description=(
-            f"Polish the \"{topic_name}\" dialogue for natural spoken delivery at Masters-level.\n\n"
-            + get_prompt("polish", "masters_level", language)
+            f"Polish the \"{topic_name}\" dialogue for natural spoken delivery for the target audience.\n\n"
+            + get_prompt("polish", "audience_level", language, terminology_rule=accessibility_instruction)
             + f"- Target length: {target_script} {target_unit_plural} (acceptable range: "
             f"{int(target_length_int * (1 - SCRIPT_TOLERANCE)):,}–{int(target_length_int * (1 + SCRIPT_TOLERANCE)):,})\n\n"
             f"MAINTAIN ROLES:\n"
@@ -482,7 +518,7 @@ def create_agents_and_tasks(
             + f"{target_instruction}"
         ),
         expected_output=(
-            f"Final Masters-level dialogue about {topic_name}, approximately {target_script} {target_unit_plural} "
+            f"Final polished dialogue about {topic_name}, approximately {target_script} {target_unit_plural} "
             f"(at least {int(target_length_int * (1 - SCRIPT_TOLERANCE)):,}). "
             f"8-part structure with [INTRO_END] after Channel Intro and [TRANSITION] markers between acts. One Action ending present. "
             f"{target_instruction}"

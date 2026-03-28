@@ -932,26 +932,47 @@ duration_label = ""  # initialized in __main__
 channel_intro = ""  # initialized in __main__
 core_target = ""  # initialized in __main__
 channel_mission = ""  # initialized in __main__
-ACCESSIBILITY_LEVEL = "simple"  # initialized in __main__
+ACCESSIBILITY_LEVEL = "technical"  # initialized in __main__; CLI default = technical for backward compat
 
 ACCESSIBILITY_INSTRUCTIONS = {
-    "simple": (
-        "Explain every scientific term the first time it appears using a one-line plain-English definition. "
-        "Use everyday analogies (e.g. 'blood sugar is like fuel in a car'). "
-        "After defining a term once, you may use it freely."
-    ),
-    "moderate": (
-        "Define key domain terms once when first introduced, then use them normally. "
-        "Assume the listener can follow a simple cause-and-effect explanation. "
-        "Use analogies sparingly — only for the most abstract concepts."
-    ),
-    "technical": (
-        "Use standard scientific terminology without extensive definitions. "
-        "Assume the listener has basic biology knowledge (high school AP level). "
-        "Focus on depth and nuance rather than simplification."
-    ),
+    "simple": {
+        "en": (
+            "Explain every scientific term the first time it appears using a one-line plain-English definition. "
+            "Use everyday analogies (e.g. 'blood sugar is like fuel in a car'). "
+            "After defining a term once, you may use it freely."
+        ),
+        "ja": (
+            "科学用語が初めて登場するたびに、一行の平易な日本語で定義してください。"
+            "日常的な例えを使ってください（例：「血糖値は車のガソリンのようなもの」）。"
+            "一度定義した用語はそのまま使って構いません。"
+        ),
+    },
+    "moderate": {
+        "en": (
+            "Define key domain terms once when first introduced, then use them normally. "
+            "Assume the listener can follow a simple cause-and-effect explanation. "
+            "Use analogies sparingly — only for the most abstract concepts."
+        ),
+        "ja": (
+            "主要な専門用語は初出時に一度定義し、以降は通常通り使用してください。"
+            "リスナーは簡単な因果関係の説明を理解できると想定してください。"
+            "例えは控えめに — 最も抽象的な概念にのみ使用。"
+        ),
+    },
+    "technical": {
+        "en": (
+            "Use standard scientific terminology without extensive definitions. "
+            "Assume the listener has basic biology knowledge (high school AP level). "
+            "Focus on depth and nuance rather than simplification."
+        ),
+        "ja": (
+            "標準的な科学用語を詳しい定義なしで使用してください。"
+            "リスナーは基礎的な科学知識があると想定してください。"
+            "簡略化よりも深さとニュアンスを重視。"
+        ),
+    },
 }
-accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL]
+accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL]["en"]
 
 # --- MODEL DETECTION & CONFIG ---
 # All model config comes from .env — initialized in __main__ block
@@ -1488,7 +1509,7 @@ def create_pdf(title, content, filename):
     logger.info(f"PDF Generated: {file_path}")
     return file_path
 
-# --- AGENTS (Masters-Degree Level) ---
+# --- AGENTS ---
 # Initialize Link Validator Tool
 link_validator = LinkValidatorTool()
 
@@ -1546,6 +1567,8 @@ def _create_agents_and_tasks():
         channel_intro=channel_intro,
         core_target=core_target,
         channel_mission=channel_mission,
+        accessibility_instruction=accessibility_instruction,
+        accessibility_level=ACCESSIBILITY_LEVEL,
         dgx_llm_strict=dgx_llm_strict,
         dgx_llm_creative=dgx_llm_creative,
         SCRIPT_TOLERANCE=SCRIPT_TOLERANCE,
@@ -2023,12 +2046,12 @@ if __name__ == "__main__":
     core_target = os.getenv("PODCAST_CORE_TARGET", "").strip()
     channel_mission = os.getenv("PODCAST_CHANNEL_MISSION", "").strip()
 
-    ACCESSIBILITY_LEVEL = os.getenv("ACCESSIBILITY_LEVEL", "simple").lower()
+    ACCESSIBILITY_LEVEL = os.getenv("ACCESSIBILITY_LEVEL", "technical").lower()
     if ACCESSIBILITY_LEVEL not in ("simple", "moderate", "technical"):
-        logger.warning(f"Warning: Unknown ACCESSIBILITY_LEVEL '{ACCESSIBILITY_LEVEL}', falling back to 'simple'")
-        ACCESSIBILITY_LEVEL = "simple"
+        logger.warning(f"Warning: Unknown ACCESSIBILITY_LEVEL '{ACCESSIBILITY_LEVEL}', falling back to 'technical'")
+        ACCESSIBILITY_LEVEL = "technical"
     logger.info(f"Accessibility level: {ACCESSIBILITY_LEVEL}")
-    accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL]
+    accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL][language]
 
     SMART_MODEL = os.environ["MODEL_NAME"]
     SMART_BASE_URL = os.environ["LLM_BASE_URL"]
