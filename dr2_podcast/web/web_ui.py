@@ -1757,9 +1757,9 @@ async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify
             od = Path(entry["output_dir"])
             if not od.exists():
                 continue
-            sot = od / "source_of_truth.md"
+            sot = od / "research" / "source_of_truth.md"
             if not sot.exists():
-                sot = od / "SOURCE_OF_TRUTH.md"
+                sot = od / "research" / "SOURCE_OF_TRUTH.md"
             if not sot.exists():
                 continue
             candidates.append(entry)
