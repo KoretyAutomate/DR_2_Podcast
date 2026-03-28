@@ -163,7 +163,10 @@ def save_tasks():
 def _sot_exists(output_dir: str) -> bool:
     """Return True if source_of_truth.md exists in the given output directory."""
     d = Path(output_dir)
-    return (d / "source_of_truth.md").exists() or (d / "SOURCE_OF_TRUTH.md").exists()
+    for sub in ("research", "."):
+        if (d / sub / "source_of_truth.md").exists() or (d / sub / "SOURCE_OF_TRUTH.md").exists():
+            return True
+    return False
 
 def load_topic_index() -> list:
     """Load the topic index from disk."""
@@ -1837,8 +1840,12 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
     if not reuse_dir or not reuse_dir.exists():
         raise HTTPException(status_code=400, detail="Previous output directory not found or no longer exists")
 
-    # Check it has source_of_truth.md
-    sot = reuse_dir / "source_of_truth.md"
+    # Check it has source_of_truth.md (new layout: research/, old: root)
+    sot = reuse_dir / "research" / "source_of_truth.md"
+    if not sot.exists():
+        sot = reuse_dir / "research" / "SOURCE_OF_TRUTH.md"
+    if not sot.exists():
+        sot = reuse_dir / "source_of_truth.md"
     if not sot.exists():
         sot = reuse_dir / "SOURCE_OF_TRUTH.md"
     if not sot.exists():
@@ -2303,10 +2310,7 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
         # Still register if research completed (source_of_truth.md exists)
         od = tasks_db[task_id].get("output_dir")
         if od:
-            sot = Path(od) / "source_of_truth.md"
-            if not sot.exists():
-                sot = Path(od) / "SOURCE_OF_TRUTH.md"
-            if sot.exists():
+            if _sot_exists(od):
                 register_topic(
                     topic=topic, output_dir=od,
                     language=language, accessibility_level=accessibility_level,
