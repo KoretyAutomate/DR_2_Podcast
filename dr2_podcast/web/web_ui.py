@@ -5,6 +5,7 @@ Provides a user-friendly interface for generating research-driven debate podcast
 """
 import os
 import sys
+import signal
 import subprocess
 import threading
 import json
@@ -119,6 +120,8 @@ def count_artifacts(directory: Optional[str], language: str = "en") -> tuple[int
     return found, len(all_artifacts)
 
 current_task_id = None
+# Maps task_id → subprocess PID for running tasks (used by /api/stop)
+_running_pids: Dict[str, int] = {}
 
 def load_tasks():
     """Load tasks from file and clean up interrupted runs."""
@@ -345,11 +348,13 @@ def worker_thread():
             
         except Exception as e:
             print(f"Worker thread error: {e}")
-            if current_task_id:
+            if current_task_id and tasks_db.get(current_task_id, {}).get("status") != "stopped":
                 tasks_db[current_task_id]["status"] = "failed"
                 tasks_db[current_task_id]["error"] = f"Worker error: {str(e)}"
                 save_tasks()
         finally:
+            if current_task_id:
+                _running_pids.pop(current_task_id, None)
             current_task_id = None
             task_queue.task_done()
 
@@ -1032,6 +1037,7 @@ def home(username: str = Depends(verify_credentials)):
                     </div>
 
                     <div id="statusDetails" style="color: var(--text-secondary); font-size: 0.9rem; font-family: monospace; margin-top: 15px;"></div>
+                    <button id="stopBtn" onclick="stopTask()" style="display:none; margin-top:15px; padding:10px 24px; background:#dc2626; color:white; border:none; border-radius:8px; font-size:0.95rem; font-weight:600; cursor:pointer; transition:background 0.2s;">Stop</button>
                     <div id="downloads" class="downloads"></div>
                     <div id="error" class="error" style="display: none;"></div>
                 </div>
@@ -1444,8 +1450,13 @@ def home(username: str = Depends(verify_credentials)):
                 statusText.textContent = displayStatus;
                 statusText.className = `status-${{data.status}}`;
 
+                const stopBtn = document.getElementById('stopBtn');
+
                 if (data.status === 'running' || data.status === 'queued') {{
                     statusBox.style.display = 'block';
+                    stopBtn.style.display = 'inline-block';
+                    stopBtn.disabled = false;
+                    stopBtn.textContent = 'Stop';
 
                     if (data.status === 'queued') {{
                         statusText.textContent = 'Queued for Production...';
@@ -1565,6 +1576,7 @@ def home(username: str = Depends(verify_credentials)):
                     statusDetails.textContent = 'Uploading to external platforms...';
                     statusIcon.textContent = '☁️';
                 }} else if (data.status === 'completed') {{
+                    stopBtn.style.display = 'none';
                     progressBar.style.width = '100%';
                     statusDetails.textContent = 'Production Cycle Complete.';
                     statusIcon.textContent = '✅';
@@ -1599,7 +1611,14 @@ def home(username: str = Depends(verify_credentials)):
                         ${{uploadsHtml}}
                         </div>
                     `;
+                }} else if (data.status === 'stopped') {{
+                    stopBtn.style.display = 'none';
+                    progressBar.style.width = '100%';
+                    progressBar.style.background = '#f59e0b';
+                    statusIcon.textContent = '🛑';
+                    statusDetails.textContent = 'Stopped by user.';
                 }} else if (data.status === 'failed') {{
+                    stopBtn.style.display = 'none';
                     progressBar.style.width = '100%';
                     progressBar.style.background = '#ef4444';
                     statusIcon.textContent = '❌';
@@ -1616,6 +1635,18 @@ def home(username: str = Depends(verify_credentials)):
                 const error = document.getElementById('error');
                 error.textContent = 'SYSTEM ERROR: ' + message;
                 error.style.display = 'block';
+            }}
+
+            async function stopTask() {{
+                if (!currentTaskId) return;
+                const btn = document.getElementById('stopBtn');
+                btn.disabled = true;
+                btn.textContent = 'Stopping...';
+                try {{
+                    await fetch(`/api/stop/${{currentTaskId}}`, {{ method: 'POST' }});
+                }} catch (err) {{
+                    console.warn('Stop request failed:', err);
+                }}
             }}
 
             function showQueuedToast(taskId, position) {{
@@ -2192,10 +2223,15 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
             text=True,
             env=env,
         )
+        _running_pids[task_id] = proc.pid
 
         output_lines = _stream_process_output(proc, task_id)
 
         proc.wait()
+        _running_pids.pop(task_id, None)
+
+        if tasks_db[task_id].get("status") == "stopped":
+            return
 
         if proc.returncode != 0:
             tasks_db[task_id]["status"] = "failed"
@@ -2338,6 +2374,9 @@ def run_podcast_reuse(task_data: dict):
             _run_subprocess_reuse(task_id, task_data, reuse_dir)
         else:
             raise ValueError(f"Unknown reuse_mode: {reuse_mode}")
+
+        if tasks_db[task_id].get("status") == "stopped":
+            return
 
         # Handle uploads
         resolved_dir = Path(tasks_db[task_id].get("output_dir") or str(OUTPUT_DIR))
@@ -2500,10 +2539,15 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
         cmd, cwd=SCRIPT_DIR,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
     )
+    _running_pids[task_id] = proc.pid
 
     output_lines = _stream_process_output(proc, task_id)
 
     proc.wait()
+    _running_pids.pop(task_id, None)
+
+    if tasks_db[task_id].get("status") == "stopped":
+        return
 
     if proc.returncode != 0:
         raw_lines = output_lines[-100:]
@@ -2551,6 +2595,34 @@ async def get_status(task_id: str, username: str = Depends(verify_credentials)):
         response["current_step_duration_seconds"] = current_step_duration
 
     return response
+
+
+@app.post("/api/stop/{task_id}")
+async def stop_task(task_id: str, username: str = Depends(verify_credentials)):
+    """Stop a running task by killing its subprocess."""
+    with tasks_lock:
+        if task_id not in tasks_db:
+            raise HTTPException(status_code=404, detail="Task not found")
+        task = tasks_db[task_id]
+        if task["status"] not in ("running", "queued"):
+            raise HTTPException(status_code=400, detail=f"Task is {task['status']}, cannot stop")
+
+    pid = _running_pids.get(task_id)
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass  # already exited
+
+    with tasks_lock:
+        tasks_db[task_id]["status"] = "stopped"
+        tasks_db[task_id]["error"] = "Stopped by user"
+        tasks_db[task_id]["phase"] = "Stopped"
+        save_tasks()
+    _running_pids.pop(task_id, None)
+
+    return {"status": "stopped", "task_id": task_id}
+
 
 @app.get("/api/history")
 async def get_history(username: str = Depends(verify_credentials)):
