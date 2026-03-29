@@ -385,6 +385,9 @@ class ReuseGenerateRequest(BaseModel):
     accessibility_level: str = "simple"
     podcast_length: str = "long"
     podcast_hosts: str = "random"
+    channel_intro: str = ""
+    core_target: str = ""
+    channel_mission: str = ""
     upload_to_buzzsprout: bool = False
     upload_to_youtube: bool = False
     buzzsprout_api_key: SecretStr = SecretStr("")
@@ -1851,42 +1854,8 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
     if not sot.exists():
         raise HTTPException(status_code=400, detail="Previous output directory has no source_of_truth.md")
 
-    # Determine old params: try tasks_db first, then session_metadata.txt
-    old_lang = "en"
-    old_access = "simple"
-    old_length = "long"
-    old_hosts = "random"
-
-    # Check tasks_db
-    for tid, task in tasks_db.items():
-        if task.get("output_dir") == str(reuse_dir):
-            old_lang = task.get("language", "en")
-            old_access = task.get("accessibility_level", "simple")
-            old_length = task.get("podcast_length", "long")
-            old_hosts = task.get("podcast_hosts", "random")
-            break
-    else:
-        # Fallback: parse session_metadata.txt for language
-        meta_path = reuse_dir / "session_metadata.txt"
-        if meta_path.exists():
-            meta_text = meta_path.read_text()
-            lang_match = re.search(r'^Language:\s*\S+\s*\((\w+)\)', meta_text, re.MULTILINE)
-            if lang_match:
-                old_lang = lang_match.group(1).strip()
-
-    params_match = (
-        old_lang == request.language
-        and old_access == request.accessibility_level
-        and old_length == request.podcast_length
-    )
-    hosts_match = old_hosts == request.podcast_hosts
-
-    if params_match and hosts_match:
-        reuse_mode = "check_supplemental"  # LLM decides full_reuse vs supplemental
-    elif params_match and not hosts_match:
-        reuse_mode = "tts_only"
-    else:
-        reuse_mode = "crew3_reuse"
+    # Always reuse research through SOT, then run full Crew 3 with current WebUI params
+    reuse_mode = "crew3_reuse"
 
     task_id = secrets.token_hex(8)
     task = {
@@ -1911,6 +1880,9 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
         "reuse_from": request.reuse_task_id,
         "reuse_dir": str(reuse_dir),
         "reuse_mode": reuse_mode,
+        "channel_intro": request.channel_intro,
+        "core_target": request.core_target,
+        "channel_mission": request.channel_mission,
     }
 
     with tasks_lock:
@@ -2506,6 +2478,12 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     env["ACCESSIBILITY_LEVEL"] = task_data.get("accessibility_level", "simple")
     env["PODCAST_LENGTH"] = task_data.get("podcast_length", "long")
     env["PODCAST_HOSTS"] = task_data.get("podcast_hosts", "random")
+    if task_data.get("channel_intro"):
+        env["PODCAST_CHANNEL_INTRO"] = task_data["channel_intro"]
+    if task_data.get("core_target"):
+        env["PODCAST_CORE_TARGET"] = task_data["core_target"]
+    if task_data.get("channel_mission"):
+        env["PODCAST_CHANNEL_MISSION"] = task_data["channel_mission"]
 
     cmd = [
         str(PODCAST_ENV_PYTHON), "-m", "dr2_podcast.pipeline",
