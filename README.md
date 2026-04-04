@@ -105,7 +105,7 @@ The system uses three local LLMs working in tandem:
 |------|---------------|-----------|---------|
 | **Smart model** | `Qwen/Qwen3-32B-AWQ` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing |
 | **Mid-tier model** | `translategemma:12b` | Ollama (port 11434) | Pipelined report translation (Phase 3) |
-| **Fast model** | `llama3.2:1b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
+| **Fast model** | `llama3.1:8b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
 
 Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `MID_MODEL_NAME`, `MID_LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
 
@@ -293,11 +293,8 @@ docker run --runtime nvidia --gpus all -p 8000:8000 \
 **Ollama** — Required for the fast model and mid-tier model:
 ```bash
 ollama serve
-ollama pull llama3.2:1b             # Fast model (default)
+ollama pull llama3.1:8b             # Fast model (default)
 ollama pull translategemma:12b      # Mid-tier model (pipelined translation)
-# Optional fast model upgrade:
-ollama pull phi4-mini
-# Then set: export FAST_MODEL_NAME="phi4-mini"
 ```
 
 **SearXNG** — Self-hosted search (optional, improves source diversity):
@@ -345,7 +342,7 @@ export PODCAST_CHANNEL_MISSION="turning complex science into actionable protocol
 # Model config (defaults shown)
 export MODEL_NAME="Qwen/Qwen3-32B-AWQ"
 export LLM_BASE_URL="http://localhost:8000/v1"
-export FAST_MODEL_NAME="llama3.2:1b"
+export FAST_MODEL_NAME="llama3.1:8b"
 export FAST_LLM_BASE_URL="http://localhost:11434/v1"
 export MID_MODEL_NAME="translategemma:12b"
 export MID_LLM_BASE_URL="http://localhost:11434/v1"
@@ -411,11 +408,11 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 │   └── accuracy_audit.md             Phase 7 — drift detection
 ├── scripts/
 │   ├── script_draft.md               Phase 5 — draft script
-│   ├── script_polished.md            Phase 6 — polished script
-│   ├── script_final.md               Phase 7 — final script (post-audit corrections if needed)
+│   ├── script_final.md               Phase 6/7 — final script (post-audit corrections if needed)
 │   └── script.txt                    Final script for TTS
 ├── audio/
-│   └── audio.wav                     Phase 8 — TTS podcast audio (24kHz WAV) with BGM mixing
+│   ├── audio.wav                     Phase 8 — raw TTS audio (24kHz WAV, no BGM)
+│   └── audio_mixed.wav               Phase 8 — BGM-mixed final audio (24kHz WAV)
 ├── meta/
 │   ├── session_metadata.txt          Topic, language, character assignments
 │   ├── podcast_generation.log        Execution log
@@ -427,6 +424,7 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 └── extraction_cache.json             Step 4 — PMID-keyed extraction cache
 
 research_outputs/
+├── run_scorecard.json                Run quality scorecard (evaluation module)
 └── extraction_cache.json             Step 4 — persistent PMID-keyed extraction cache (shared across all runs)
 ```
 
@@ -471,6 +469,11 @@ dr2_podcast/                          # Main package
 │   └── wwc_database.py               # What Works Clearinghouse SQLite database
 ├── audio/
 │   └── engine.py                     # Kokoro TTS + BGM mixing (dual-voice, 24kHz WAV)
+├── evaluation/
+│   ├── scorecard.py                  # Run quality scorecard generation
+│   ├── lesson_generator.py           # LLM-assisted observation extraction from scorecards
+│   ├── lesson_reviewer.py            # Lesson review and validation
+│   └── telegram_report.py           # Telegram delivery of evaluation reports
 ├── web/
 │   └── web_ui.py                     # FastAPI web UI (progress tracking, queue, uploads)
 └── tools/
