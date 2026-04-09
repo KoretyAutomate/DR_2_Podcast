@@ -1121,14 +1121,14 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000,
 
 
 def _call_mid_model(system: str, user: str, max_tokens: int = 4000, temperature: float = 0.1, timeout: int = 0) -> str:
-    """Call the Mid-Tier Model (TranslateGemma via Ollama) for translation.
-    TranslateGemma uses a single user message (no system message) — the system
-    prompt is prepended to the user content automatically.
-    Falls back to Smart Model if mid-tier is unavailable.
+    """Call the mid-tier model for translation, falling back to Smart Model if unavailable.
+    If MID_MODEL is empty (default), routes directly to Smart Model without an HTTP round-trip.
     timeout: seconds to wait. 0 = auto-scale based on max_tokens (~40 tok/s + 60s buffer).
     """
     if not SMART_MODEL or not SMART_BASE_URL:
         raise RuntimeError("Pipeline not configured — SMART_MODEL/SMART_BASE_URL not set. Run via __main__ or set env vars.")
+    if not MID_MODEL:
+        return _call_smart_model(system, user, max_tokens=max_tokens, temperature=temperature, timeout=0)
     from openai import OpenAI
     if timeout <= 0:
         # Auto-scale: ~40 tok/s generation speed + 60s buffer
@@ -1138,7 +1138,6 @@ def _call_mid_model(system: str, user: str, max_tokens: int = 4000, temperature:
             base_url=MID_BASE_URL,
             api_key=os.getenv("LLM_API_KEY", "NA"),
         )
-        # TranslateGemma expects a single user message with instruction + text
         combined_content = system + "\n\n" + user if system else user
         resp = client.chat.completions.create(
             model=MID_MODEL,
@@ -1986,6 +1985,70 @@ def _translate_and_inject_sot(sot_content, language, language_config, topic_name
     return translated_sot, sot_translated_file, translated_summary
 
 
+# ================================================================
+# PREFECT FLOW HELPERS
+# Called by pipeline_flow.py tasks that need module-level context.
+# ================================================================
+
+def _save_session_metadata(output_dir, topic_name, language, language_config, session_roles):
+    """Write session_metadata.txt to the run directory."""
+    session_metadata = (
+        f"PODCAST SESSION METADATA\n{'='*60}\n\n"
+        f"Topic: {topic_name}\n\n"
+        f"Language: {language_config['name']} ({language})\n\n"
+        f"Role Assignments:\n"
+        f"  {session_roles['presenter']['label']}: Presenter ({session_roles['presenter']['personality']})\n"
+        f"  {session_roles['questioner']['label']}: Questioner ({session_roles['questioner']['personality']})\n"
+    )
+    metadata_file = output_path(output_dir, "session_metadata.txt")
+    with open(metadata_file, 'w') as f:
+        f.write(session_metadata)
+    logger.info("Session metadata: %s", metadata_file)
+
+
+def _build_grade_injection(output_dir_path, research_domain, deep_reports_dict):
+    """Build the GRADE/evidence-level injection string for the blueprint task.
+
+    Extracted from the __main__ block so it can be called from pipeline_flow.py.
+    Returns an empty string if the audit report is unavailable.
+    """
+    if not deep_reports_dict:
+        return ""
+
+    grade_file = output_path(output_dir_path, "grade_synthesis.md")
+    if not grade_file.exists():
+        return ""
+
+    try:
+        _audit_text = grade_file.read_text()
+    except Exception:
+        return ""
+
+    _grade_injection = ""
+    if research_domain == "social_science":
+        _eq_m = re.search(
+            r'Final\s+Evidence\s+Quality[:\s]*\*{0,2}(STRONG|MODERATE_STRONG|MODERATE_WEAK|MODERATE|WEAK|VERY_WEAK)\*{0,2}',
+            _audit_text, re.IGNORECASE,
+        )
+        _eq_level = _eq_m.group(1).strip().upper() if _eq_m else "Not Determined"
+        _grade_injection = f"\n\nEVIDENCE QUALITY LEVEL: {_eq_level}\n"
+        _grade_injection += "Use this to calibrate your framing language:\n"
+        _grade_injection += "- STRONG → 'Rigorous research clearly demonstrates...'\n"
+        _grade_injection += "- MODERATE → 'Evidence suggests...'\n"
+        _grade_injection += "- WEAK → 'Preliminary findings indicate...'\n"
+        _grade_injection += "- VERY_WEAK → 'Limited evidence hints at...'\n"
+    else:
+        _grade_m = re.search(
+            r'Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}',
+            _audit_text, re.IGNORECASE,
+        )
+        _grade_level = _grade_m.group(1).strip() if _grade_m else "Not Determined"
+        _grade_injection = f"\n\nGRADE EVIDENCE LEVEL: {_grade_level}\n"
+        _grade_injection += "Use this to calibrate your framing language in Section 6 (GRADE-Informed Framing Guide).\n"
+
+    return _grade_injection
+
+
 if __name__ == "__main__":
     # --- Runtime initialization (only when running as main script) ---
     load_dotenv()
@@ -2055,8 +2118,8 @@ if __name__ == "__main__":
 
     SMART_MODEL = os.environ["MODEL_NAME"]
     SMART_BASE_URL = os.environ["LLM_BASE_URL"]
-    MID_MODEL = os.environ.get("MID_MODEL_NAME", "translategemma:12b")
-    MID_BASE_URL = os.environ.get("MID_LLM_BASE_URL", os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1"))
+    MID_MODEL = os.environ.get("MID_MODEL_NAME", "")
+    MID_BASE_URL = os.environ.get("MID_LLM_BASE_URL", "")
 
     final_model_string = get_final_model_string()
 
@@ -2459,1142 +2522,59 @@ if __name__ == "__main__":
                 sys.exit(0)
 
     # ================================================================
-    # NORMAL PIPELINE (no --reuse-dir)
+    # NORMAL PIPELINE — Prefect flow orchestration
     # ================================================================
+    # Phase resume is handled by Prefect task result caching (persist_result=True,
+    # cache_key_fn keyed on output_dir + task name). The manual checkpoint.json
+    # system is preserved for reading legacy checkpoints but is no longer written.
 
-    # --- Checkpoint/Resume state ---
-    _completed_phases = set()
-    _pipeline_state = {}
-    if _resume_checkpoint:
-        _completed_phases = set(_resume_checkpoint.get("completed_phases", []))
-        _pipeline_state = _resume_checkpoint.get("pipeline_state", {})
+    from dr2_podcast.pipeline_flow import run_pipeline_flow
 
-    def _phase_done(phase_num):
-        """Check if a phase was already completed (for resume)."""
-        return phase_num in _completed_phases
-
-    def _save_phase(phase_num, extra_state=None):
-        """Save checkpoint after a phase completes."""
-        if extra_state:
-            _pipeline_state.update(extra_state)
-        save_checkpoint(output_dir, phase_num, topic_name, language, _pipeline_state)
-
-    # --- EXECUTION (Streamlined Pipeline) ---
-    # Display workflow plan before execution
+    # Display workflow plan before handing off to Prefect
     display_workflow_plan(topic_name, language_config, output_dir)
 
-    # Initialize progress tracker
+    # Initialize progress tracker (used by display_workflow_plan above)
     progress_tracker = ProgressTracker(TASK_METADATA)
     progress_tracker.start_workflow()
 
-    # Combined task list for tracking
-    all_task_list = [
-        framing_task,
-        blueprint_task,
-        script_task,
-        polish_task,
-        audit_task,
-    ]
-
-    logger.info(f"\n--- Initiating Scientific Research Pipeline on DGX Spark ---")
-    logger.info(f"Topic: {topic_name}")
-    logger.info(f"Language: {language_config['name']} ({language})")
-    if _completed_phases:
-        logger.info(f"Resuming: phases {sorted(_completed_phases)} already complete")
-    logger.info("---\n")
-
-    # Start progress monitoring in background thread
-    import threading
-
-    class CrewMonitor(threading.Thread):
-        """Background thread that monitors crew execution progress"""
-        def __init__(self, task_list, progress_tracker):
-            super().__init__(daemon=True)
-            self.task_list = task_list
-            self.progress_tracker = progress_tracker
-            self.running = True
-            self.last_completed = -1
-
-        def run(self):
-            """Monitor crew tasks in background"""
-            while self.running:
-                try:
-                    completed_count = 0
-                    for task in self.task_list:
-                        if hasattr(task, 'output') and task.output is not None:
-                            completed_count += 1
-                        else:
-                            break
-                    if completed_count > self.last_completed:
-                        if self.last_completed >= 0:
-                            self.progress_tracker.task_completed(self.last_completed)
-                        if completed_count < len(self.task_list):
-                            self.progress_tracker.task_started(completed_count)
-                        self.last_completed = completed_count
-                    time.sleep(3)
-                except Exception:
-                    pass
-
-        def stop(self):
-            """Stop monitoring"""
-            self.running = False
-
-    # ================================================================
-    # PHASE 0: RESEARCH FRAMING (includes domain classification)
-    # ================================================================
-    from dr2_podcast.research.domain_classifier import classify_topic, ResearchDomain
-
-    if _phase_done(0):
-        logger.info(f"\n{'='*70}")
-        logger.info(f"PHASE 0: RESEARCH FRAMING — already complete, skipping")
-        logger.info(f"{'='*70}")
-        # Restore framing_output from disk or checkpoint
-        _framing_path = output_path(output_dir, "research_framing.md")
-        framing_output = _pipeline_state.get("framing_output", "")
-        if not framing_output and _framing_path.exists():
-            framing_output = _framing_path.read_text()
-        # Restore domain_classification from disk
-        _dc_path = output_path(output_dir, "domain_classification.json")
-        if _dc_path.exists():
-            _dc_data = json.loads(_dc_path.read_text())
-            _dc_domain_val = _dc_data.get("domain", "clinical")
-            # Build a simple namespace to carry domain info
-            class _DCProxy:
-                pass
-            domain_classification = _DCProxy()
-            domain_classification.domain = ResearchDomain(_dc_domain_val)
-            domain_classification.confidence = _dc_data.get("confidence", 0.0)
-            domain_classification.reasoning = _dc_data.get("reasoning", "")
-            domain_classification.suggested_framework = _dc_data.get("framework", "")
-            domain_classification.primary_databases = _dc_data.get("databases", [])
-        else:
-            # Fallback: re-run classification (fast, deterministic)
-            _smart_base = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
-            _smart_model = os.environ.get("MODEL_NAME", "")
-            try:
-                from openai import AsyncOpenAI as _AOAIClassify
-                _classify_client = _AOAIClassify(base_url=_smart_base, api_key="not-needed")
-            except Exception:
-                _classify_client = None
-            domain_classification = asyncio.run(classify_topic(
-                topic=topic_name, smart_client=_classify_client, smart_model=_smart_model,
-            ))
-        logger.info(f"  Restored: framing_output={len(framing_output)} chars, "
-              f"domain={domain_classification.domain.value}")
-    else:
-        logger.info(f"\n{'='*70}")
-        logger.info(f"PHASE 0: RESEARCH FRAMING")
-        logger.info(f"{'='*70}")
-
-        # Step 0a: classify domain first (fast, mostly deterministic) so framing is domain-aware
-        _smart_base = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
-        _smart_model = os.environ.get("MODEL_NAME", "")
-        try:
-            from openai import AsyncOpenAI as _AOAIClassify
-            _classify_client = _AOAIClassify(base_url=_smart_base, api_key="not-needed")
-        except Exception:
-            _classify_client = None
-        domain_classification = asyncio.run(classify_topic(
-            topic=topic_name,
-            smart_client=_classify_client,
-            smart_model=_smart_model,
-        ))
-        logger.info(f"  Domain: {domain_classification.domain.value} "
-              f"(confidence={domain_classification.confidence:.2f}, framework={domain_classification.suggested_framework})")
-        _dc_path = output_path(output_dir, "domain_classification.json")
-        _dc_path.write_text(json.dumps({
-            "domain": domain_classification.domain.value,
-            "confidence": domain_classification.confidence,
-            "reasoning": domain_classification.reasoning,
-            "framework": domain_classification.suggested_framework,
-            "databases": domain_classification.primary_databases,
-        }, indent=2))
-
-        # Step 0b: run framing agent with domain context injected
-        if domain_classification.domain == ResearchDomain.SOCIAL_SCIENCE:
-            _domain_framing_note = (
-                f"\n\nDOMAIN CONTEXT: This is a SOCIAL SCIENCE topic. "
-                f"Use PECO framework (Population, Exposure, Comparison, Outcome). "
-                f"Prioritise effect sizes (Cohen's d, Hedges' g), quasi-experimental designs, "
-                f"and databases such as {', '.join(domain_classification.primary_databases)}. "
-                f"Do NOT use clinical terminology (NNT, ARR, GRADE, MeSH terms)."
-            )
-        else:
-            _domain_framing_note = (
-                f"\n\nDOMAIN CONTEXT: This is a CLINICAL/HEALTH topic. "
-                f"Use PICO framework (Population, Intervention, Comparison, Outcome). "
-                f"Prioritise RCTs, systematic reviews, GRADE evidence levels, NNT/ARR statistics, "
-                f"and databases such as {', '.join(domain_classification.primary_databases)}."
-            )
-        framing_task.description += _domain_framing_note
-
-        crew_1 = Crew(
-            agents=[framing_agent],
-            tasks=[framing_task],
-            verbose=True,
-            process='sequential'
-        )
-
-        try:
-            crew_1_result = crew_1.kickoff()
-            framing_output = framing_task.output.raw if hasattr(framing_task, 'output') and framing_task.output else ""
-            logger.info(f"✓ Phase 0 complete: Research framing generated ({len(framing_output)} chars)")
-        except Exception as e:
-            logger.warning(f"⚠ Phase 0 (Research Framing) failed: {e}")
-            logger.info("Continuing without framing context...")
-            framing_output = ""
-
-        # Save Phase 0 checkpoint
-        _save_phase(0, {"framing_output": framing_output})
-
-    # ================================================================
-    # PHASE 1: RESEARCH PIPELINE (domain-routed)
-    # ================================================================
-    _research_domain = domain_classification.domain.value  # "clinical" | "social_science" | "general"
-
-    sot_content = ""  # Will hold the synthesized Source-of-Truth
-    sot_content_ja = None  # Pre-translated SoT for non-English languages (built from templates)
-    sot_file = None   # Path to source_of_truth.md (set after deep research completes)
-    sot_summary = ""  # Fast-model summary of sot_content (set after deep research completes)
-    aff_candidates = 0
-    neg_candidates = 0
-    evidence_quality = "sufficient"
-    deep_reports = None
-
-    if _phase_done(1):
-        logger.info(f"\n{'='*70}")
-        logger.info(f"PHASE 1: RESEARCH PIPELINE — already complete, skipping")
-        logger.info(f"{'='*70}")
-        # Restore key variables from checkpoint state
-        evidence_quality = _pipeline_state.get("evidence_quality", "sufficient")
-        aff_candidates = _pipeline_state.get("aff_candidates", 0)
-        neg_candidates = _pipeline_state.get("neg_candidates", 0)
-        _research_domain = _pipeline_state.get("_research_domain", _research_domain)
-        # Restore deep_reports from checkpoint (with deserialized pipeline_data)
-        _ckpt_dr = _pipeline_state.get("deep_reports")
-        if _ckpt_dr and isinstance(_ckpt_dr, dict):
-            deep_reports = _ckpt_dr
-        # Restore sot_content from disk
-        _sot_path = output_path(output_dir, "source_of_truth.md")
-        if _sot_path.exists():
-            sot_content = _sot_path.read_text()
-            sot_file = _sot_path
-        # Restore pre-translated SoT from disk if it exists
-        _sot_ja_path = output_path(output_dir, f"source_of_truth_{language}.md")
-        if language != 'en' and _sot_ja_path.exists():
-            sot_content_ja = _sot_ja_path.read_text()
-        # Restore sot_summary from checkpoint or re-generate
-        sot_summary = _pipeline_state.get("sot_summary", "")
-        if not sot_summary and sot_content:
-            logger.info("  Re-summarizing Source-of-Truth with fast model...")
-            sot_summary = summarize_report_with_fast_model(sot_content, "sot", topic_name)
-        logger.info(f"  Restored: sot={len(sot_content)} chars, evidence={evidence_quality}, "
-              f"aff={aff_candidates}, neg={neg_candidates}")
-    else:
-        # Determine domain for unified pipeline
-        _effective_domain = _research_domain if _research_domain in ("clinical", "social_science") else "clinical"
-
-        if _effective_domain == "social_science":
-            logger.info(f"\n{'='*70}")
-            logger.info(f"PHASE 1: SOCIAL SCIENCE RESEARCH (PECO Pipeline)")
-            logger.info(f"{'='*70}")
-        else:
-            logger.info(f"\n{'='*70}")
-            logger.info(f"PHASE 1: CLINICAL RESEARCH")
-            logger.info(f"{'='*70}")
-
-        brave_key = os.getenv("BRAVE_API_KEY", "")
-
-        # Check if the configured fast model (FAST_MODEL_NAME from .env) is available
-        _fast_model_name = os.environ.get("FAST_MODEL_NAME", "")
-        _fast_base_url = os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1")
-        fast_model_available = False
-        try:
-            _resp = httpx.get(f"{_fast_base_url}/models", timeout=3)
-            if _resp.status_code == 200:
-                _models = [m.get("id", "") for m in _resp.json().get("data", [])]
-                fast_model_available = _fast_model_name in _models
-                if fast_model_available:
-                    logger.info(f"✓ Fast model ready: {_fast_model_name}")
-                else:
-                    logger.warning(f"⚠ Fast model '{_fast_model_name}' not found in Ollama. Available: {_models}")
-                    logger.warning(f"  Falling back to smart-only mode. Run: ollama pull {_fast_model_name}")
-        except Exception:
-            logger.warning(f"⚠ Fast model not available (Ollama unreachable at {_fast_base_url}). Running in smart-only mode.")
-
-        try:
-            deep_reports = asyncio.run(run_deep_research(
-                topic=topic_name,
-                brave_api_key=brave_key,
-                results_per_query=15,
-                fast_model_available=fast_model_available,
-                framing_context=framing_output,
-                output_dir=str(output_dir),
-                domain=_effective_domain
-            ))
-
-            # C5: Gate — abort if affirmative track found zero candidates
-            for fname, varname in [("screening_results_aff.json", "aff"), ("screening_results_neg.json", "neg")]:
-                p = output_path(output_dir, fname)
-                if p.exists():
-                    try:
-                        val = json.loads(p.read_text()).get("total_candidates", 0)
-                        if varname == "aff":
-                            aff_candidates = val
-                        else:
-                            neg_candidates = val
-                    except Exception:
-                        pass
-            if aff_candidates == 0:
-                _write_insufficient_evidence_report(topic_name, 0, neg_candidates, output_dir)
-                raise InsufficientEvidenceError(
-                    f"Affirmative track: 0 candidates for '{topic_name}'. "
-                    f"Adversarial found {neg_candidates}. "
-                    "See insufficient_evidence_report.md for suggested rephrasing."
-                )
-
-            # C6: Evidence quality flag
-            if 0 < aff_candidates < EVIDENCE_LIMITED_THRESHOLD:
-                evidence_quality = "limited"
-
-            # Save all reports (lead, counter, audit)
-            REPORT_FILENAMES = {"lead": "affirmative_case.md", "counter": "falsification_case.md", "audit": "grade_synthesis.md"}
-            for role_name, filename in REPORT_FILENAMES.items():
-                report = deep_reports.get(role_name)
-                if not report:
-                    logger.warning(f"  ⚠ {role_name.capitalize()} report missing — skipping save")
-                    continue
-                report_file = output_path(output_dir, filename)
-                with open(report_file, 'w') as f:
-                    f.write(report.report)
-                logger.info(f"✓ {role_name.capitalize()} report saved: {report_file} ({report.total_summaries} sources)")
-
-            # Save source-level data to JSON for the research library tools
-            sources_json = {}
-            for role_name in ("lead", "counter"):
-                report = deep_reports[role_name]
-                role_sources = []
-                _empty_url_count = 0
-                for idx, src in enumerate(report.sources):
-                    if src.error or not src.summary or src.summary.strip().upper() == "NO RELEVANT DATA":
-                        continue
-                    if not src.url:
-                        _empty_url_count += 1
-                        continue
-                    role_sources.append({
-                        "index": idx,
-                        "url": src.url,
-                        "title": src.title,
-                        "query": src.query,
-                        "goal": src.goal,
-                        "summary": src.summary,
-                        "metadata": src.metadata.to_dict() if src.metadata else None,
-                    })
-                if _empty_url_count:
-                    logger.info(f"  Filtered {_empty_url_count} {role_name} sources with empty URLs")
-                sources_json[role_name] = role_sources
-            sources_file = output_path(output_dir, "research_sources.json")
-            with open(sources_file, 'w') as f:
-                json.dump(sources_json, f, indent=2, ensure_ascii=False)
-            logger.info(f"✓ Research library saved: {sources_file} "
-                  f"(lead={len(sources_json['lead'])}, counter={len(sources_json['counter'])} sources)")
-
-            deep_audit_report = deep_reports.get("audit")
-            lead_report = deep_reports.get("lead")
-            counter_report = deep_reports.get("counter")
-
-
-            sot_content = build_imrad_sot(
-                topic=topic_name,
-                reports=deep_reports,
-                ev_quality=evidence_quality,
-                aff_cand=aff_candidates,
-                domain=_research_domain,
-            )
-
-            # C6: Prepend evidence quality banner if limited
-            if evidence_quality == "limited":
-                sot_content = (
-                    "## ⚠ Evidence Quality Notice\n\n"
-                    f"The affirmative research track retrieved only **{aff_candidates} candidate studies** "
-                    f"(threshold: {EVIDENCE_LIMITED_THRESHOLD}). "
-                    "The following synthesis is based on limited direct evidence. "
-                    "Claims should be interpreted cautiously.\n\n"
-                ) + sot_content
-
-            # Save as source_of_truth.md
-            sot_file = output_path(output_dir, "source_of_truth.md")
-            with open(sot_file, 'w') as f:
-                f.write(sot_content)
-            logger.info(f"✓ Source of Truth (IMRaD) generated from deep research ({len(sot_content)} chars)")
-
-            # Do not pre-build a template JA SOT — templates only cover boilerplate
-            # headers, not the actual research content (cases, GRADE, framing), which
-            # stays in English. Phase 3 will translate the English SOT using mid-model.
-            sot_content_ja = None
-
-            # Summarize for injection into Crew 3 task descriptions
-            logger.info("Summarizing Source-of-Truth with fast model...")
-            sot_summary = summarize_report_with_fast_model(sot_content, "sot", topic_name)
-
-        except InsufficientEvidenceError:
-            raise
-        except Exception as e:
-            logger.warning(f"⚠ Deep research pre-scan failed: {e}")
-            logger.info("Continuing without deep research...")
-            deep_reports = None
-            sot_summary = ""
-
-        # Save Phase 1 checkpoint
-        _save_phase(1, {
-            "deep_reports": deep_reports,
-            "sot_summary": sot_summary,
-            "evidence_quality": evidence_quality,
-            "aff_candidates": aff_candidates,
-            "neg_candidates": neg_candidates,
-            "_research_domain": _research_domain,
-        })
-
-    # ================================================================
-    # PHASE 2: SOURCE VALIDATION (batch, parallel)
-    # ================================================================
-    if _phase_done(2):
-        logger.info(f"\n{'='*70}")
-        logger.info(f"PHASE 2: SOURCE VALIDATION — already complete, skipping")
-        logger.info(f"{'='*70}")
-    else:
-        logger.info(f"\n{'='*70}")
-        logger.info(f"PHASE 2: SOURCE VALIDATION")
-        logger.info(f"{'='*70}")
-
-        from dr2_podcast.tools.link_validator import validate_multiple_urls_parallel
-
-        all_urls = set()
-        url_pattern = re.compile(r'https?://[^\s\)\]\"\'<>]+')
-
-        # Collect URLs from source library
-        sources_file = output_path(output_dir, "research_sources.json")
-        if sources_file.exists():
-            try:
-                src_data = json.loads(sources_file.read_text())
-                for role_sources in src_data.values():
-                    if isinstance(role_sources, list):
-                        for src in role_sources:
-                            if src.get("url"):
-                                all_urls.add(src["url"])
-            except Exception:
-                pass
-
-        logger.info(f"  Found {len(all_urls)} unique URLs to validate")
-
-        if all_urls:
-            validation_results = validate_multiple_urls_parallel(list(all_urls), max_workers=15)
-            valid_count = sum(1 for v in validation_results.values() if "Valid" in v)
-            broken_count = sum(1 for v in validation_results.values() if "Broken" in v or "Invalid" in v)
-            logger.info(f"  Results: {valid_count} valid, {broken_count} broken, "
-                  f"{len(validation_results) - valid_count - broken_count} other")
-
-            validation_file = output_path(output_dir, "url_validation_results.json")
-            with open(validation_file, 'w') as f:
-                json.dump(validation_results, f, indent=2, ensure_ascii=False)
-            logger.info(f"  Saved to {validation_file}")
-
-            # Filter broken/invalid sources from the research library
-            broken_urls = {url for url, status in validation_results.items()
-                           if "Broken" in status or "Invalid" in status or status.startswith("ERROR")}
-            if broken_urls and sources_file.exists():
-                try:
-                    src_data = json.loads(sources_file.read_text())
-                    for role in src_data:
-                        if isinstance(src_data[role], list):
-                            before = len(src_data[role])
-                            src_data[role] = [s for s in src_data[role] if s.get("url") not in broken_urls]
-                            removed = before - len(src_data[role])
-                            if removed:
-                                logger.info(f"  Filtered {removed} broken source(s) from '{role}'")
-                    sources_file.write_text(json.dumps(src_data, indent=2, ensure_ascii=False))
-                    logger.info(f"  Removed {len(broken_urls)} broken/invalid URL(s) from research library")
-                except Exception as e:
-                    logger.warning(f"  Failed to filter broken sources: {e}")
-        else:
-            logger.warning("  No URLs found to validate")
-
-        # Save Phase 2 checkpoint
-        _save_phase(2)
-
-    # ================================================================
-    # Inject SOT into Crew 3 task descriptions
-    # ================================================================
-    if sot_summary:
-        sot_injection = (
-            f"\n\nSOURCE OF TRUTH (from deep research pipeline):\n"
-            f"Use this as your authoritative reference for all evidence and claims.\n\n"
-            f"{sot_summary}\n\n"
-            f"For detailed sources, use ListResearchSources('lead') and ListResearchSources('counter').\n"
-            f"--- END SOURCE OF TRUTH ---\n"
-        )
-        script_task.description += sot_injection
-        audit_task.description += sot_injection
-
-        # Blueprint task gets a pointer only — the producer reads the full SOT via tools
-        blueprint_sot_injection = (
-            f"\n\nSOURCE OF TRUTH: Use ReadFullReport('sot') to read the full "
-            f"research document in the target language. Follow the two-pass workflow "
-            f"described above.\n"
-        )
-        blueprint_task.description += blueprint_sot_injection
-
-    # Inject evidence level and key numbers into blueprint for informed framing
-    _grade_injection = ""  # may be populated below; referenced by _crew_kickoff_guarded
-    if deep_reports and deep_reports.get("audit"):
-        _audit_obj = deep_reports.get("audit")
-        _audit_text = _audit_obj.report if hasattr(_audit_obj, 'report') else str(_audit_obj)
-        _pd = deep_reports.get("pipeline_data", {}) if isinstance(deep_reports, dict) else {}
-        _impacts = _pd.get("impacts", [])
-
-        if _research_domain == "social_science":
-            # Social science: Evidence Quality levels + effect sizes
-            _eq_m = re.search(r'Final\s+Evidence\s+Quality[:\s]*\*{0,2}(STRONG|MODERATE_STRONG|MODERATE_WEAK|MODERATE|WEAK|VERY_WEAK)\*{0,2}', _audit_text, re.IGNORECASE)
-            _eq_level = _eq_m.group(1).strip().upper() if _eq_m else "Not Determined"
-            _grade_injection = f"\n\nEVIDENCE QUALITY LEVEL: {_eq_level}\n"
-            _grade_injection += "Use this to calibrate your framing language:\n"
-            _grade_injection += "- STRONG → 'Rigorous research clearly demonstrates...'\n"
-            _grade_injection += "- MODERATE → 'Evidence suggests...'\n"
-            _grade_injection += "- WEAK → 'Preliminary findings indicate...'\n"
-            _grade_injection += "- VERY_WEAK → 'Limited evidence hints at...'\n"
-            if _impacts:
-                _grade_injection += "\nKEY EFFECT SIZE NUMBERS:\n"
-                for _imp in _impacts[:5]:
-                    _label = getattr(_imp, 'study_id', 'Study')
-                    _d = getattr(_imp, 'cohens_d', None)
-                    _g = getattr(_imp, 'hedges_g', None)
-                    _mag = getattr(_imp, 'magnitude', 'unknown')
-                    if _d is not None:
-                        _g_str = f", g={_g:.3f}" if _g is not None else ""
-                        _grade_injection += f"- {_label}: d={_d:.3f}{_g_str} ({_mag})\n"
-        else:
-            # Clinical: GRADE levels + NNT/ARR
-            _grade_m = re.search(r'Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}', _audit_text, re.IGNORECASE)
-            _grade_level = _grade_m.group(1).strip() if _grade_m else "Not Determined"
-            _grade_injection = f"\n\nGRADE EVIDENCE LEVEL: {_grade_level}\n"
-            _grade_injection += "Use this to calibrate your framing language in Section 6 (GRADE-Informed Framing Guide).\n"
-            if _impacts:
-                _grade_injection += "\nKEY CLINICAL IMPACT NUMBERS:\n"
-                for _imp in _impacts[:5]:
-                    _label = getattr(_imp, 'study_id', 'Study')
-                    _nnt = getattr(_imp, 'nnt', None)
-                    _arr = getattr(_imp, 'arr', None)
-                    _dir = getattr(_imp, 'direction', 'unknown')
-                    if _nnt is not None:
-                        _grade_injection += f"- {_label}: NNT={_nnt:.0f} (ARR={_arr:.3f}, direction: {_dir})\n"
-        blueprint_task.description += _grade_injection
-
-    # For translation: inject full SOT (not summary) since translation needs complete text
-    if translation_task is not None and sot_content:
-        translation_task.description += f"\n\nSOURCE OF TRUTH TO TRANSLATE:\n{sot_content}\n--- END ---\n"
-
-    # C6: Check GRADE file for LOW quality (may upgrade evidence_quality even if aff_candidates >= threshold)
-    grade_file = output_path(output_dir, "grade_synthesis.md")
-    if grade_file.exists():
-        try:
-            if "GRADE: LOW" in grade_file.read_text():
-                evidence_quality = "limited"
-        except Exception:
-            pass
-
-    # C6: Inject evidence disclosure into tasks if limited
-    if evidence_quality == "limited":
-        script_task.description += (
-            "\n\nEVIDENCE QUALITY NOTE — READ CAREFULLY:\n"
-            "The systematic review found limited direct scientific evidence for this question.\n"
-            "Your script MUST:\n"
-            "1. Acknowledge this in the HOOK or Act 1: "
-            "   'While direct studies on this are limited, related research gives us clues...'\n"
-            "2. In Act 2 (Evidence) and Act 3 (Nuance), distinguish: "
-            "(a) what limited direct evidence shows, "
-            "(b) what related evidence suggests, "
-            "(c) what remains unknown.\n"
-            "3. In Act 4 (Protocol), frame recommendations as 'based on current evidence' — not 'proven'.\n"
-            "4. Do NOT invent citations. If few studies exist, say so in the dialogue.\n"
-            "Example dialogue:\n"
-            "  Presenter: 'Direct studies on this exact pattern are surprisingly rare. "
-            "But here's what the broader science on meal timing tells us...'\n"
-            "  Questioner: 'So we're working with partial evidence here. "
-            "What do we actually know for certain?'\n"
-        )
-        blueprint_task.description += (
-            "\n\nEVIDENCE NOTE: Research was limited. "
-            "Mark citations with [LIMITED EVIDENCE] where the research base is sparse. "
-            "In the Narrative Arc, ensure Act 3 (Nuance) heavily emphasizes what is NOT known. "
-            "The Hook should acknowledge the evidence gap (e.g., 'Despite X million people doing Y, "
-            "we have surprisingly few studies on...')."
-        )
-
-    # Domain-aware terminology injection for Crew 3 tasks
-    if _research_domain == "social_science":
-        _domain_note = (
-            "\n\nDOMAIN NOTE: This is a SOCIAL SCIENCE topic (not clinical/health).\n"
-            "Use effect sizes (Cohen's d, Hedges' g) instead of NNT/ARR.\n"
-            "Use Evidence Quality levels (STRONG/MODERATE/WEAK/VERY_WEAK) instead of GRADE.\n"
-            "Cite study designs as: systematic review, quasi-experimental, cohort, cross-sectional.\n"
-            "Do NOT use clinical terminology (NNT, ARR, CER, EER, RCT) unless the study is actually clinical.\n"
-        )
-        script_task.description += _domain_note
-        blueprint_task.description += _domain_note
-        audit_task.description += _domain_note
-
-    # ================================================================
-    # CREW 3: Podcast Production
-    # ================================================================
-    logger.info(f"\n{'='*70}")
-    logger.info(f"CREW 3: PODCAST PRODUCTION")
-    logger.info(f"{'='*70}")
-
-    translated_sot = None  # set below if translation runs
-    translated_sot_summary = ""
-    sot_translated_file = None
-    if _phase_done(3):
-        logger.info(f"  Phase 3 (Translation) — already complete, skipping LLM translation")
-        # Restore translated SOT from disk if it exists
-        _tl_path = output_path(output_dir, f"source_of_truth_{language}.md")
-        if _tl_path.exists():
-            translated_sot = _tl_path.read_text()
-            sot_translated_file = _tl_path
-            translated_sot_summary = _pipeline_state.get("translated_sot_summary", "")
-            if not translated_sot_summary and translated_sot:
-                translated_sot_summary = summarize_report_with_fast_model(translated_sot, "sot_tl", topic_name)
-            # Re-inject into tasks (needed since task objects are fresh)
-            if sot_translated_file and translation_task is not None:
-                _tl_injection = (
-                    f"\n\nTRANSLATED SOURCE OF TRUTH:\n"
-                    f"{translated_sot_summary if translated_sot_summary else translated_sot[:8000]}\n"
-                    f"--- END TRANSLATED SOT ---\n"
-                )
-                script_task.description += _tl_injection
-                blueprint_task.description += _tl_injection
-                audit_task.description += _tl_injection
-    elif translation_task is not None and sot_content:
-        if sot_content_ja is not None:
-            # JA SoT already built from pre-translated templates — skip LLM translation
-            logger.info(f"\nPHASE 3: REPORT TRANSLATION (skipped — using template-built SoT)")
-            translated_sot = sot_content_ja
-            sot_translated_file = output_path(output_dir, f"source_of_truth_{language}.md")
-            translated_sot_summary = summarize_report_with_fast_model(
-                translated_sot, "sot_translated", topic_name)
-            if translated_sot_summary:
-                tl_injection = _build_sot_injection_for_stage(
-                    1, sot_file, sot_translated_file,
-                    sot_summary, translated_sot_summary, _grade_injection, language_config
-                )
-                blueprint_task.description += tl_injection
-                script_task.description += tl_injection
-                audit_task.description += tl_injection
-            from types import SimpleNamespace
-            translation_task.output = SimpleNamespace(raw=(
-                f"[Translation complete — {len(translated_sot):,} chars (template-built)]\n"
-                f"Translated SOT saved: {sot_translated_file}\n"
-                f"Key research summary injected into task descriptions."
-            ))
-            logger.info("\u2713 Template-built %s SoT injected into Crew 3 (%d chars)", language.upper(), len(translated_sot))
-            _save_phase(3, {"translated_sot_summary": translated_sot_summary})
-        else:
-            # Fallback: full LLM translation
-            translated_sot, sot_translated_file, translated_sot_summary = _translate_and_inject_sot(
-                sot_content, language, language_config, topic_name,
-                output_dir, sot_file,
-                sot_summary, _grade_injection,
-                blueprint_task, script_task, audit_task, translation_task
-            )
-            # Save Phase 3 checkpoint
-            _save_phase(3, {"translated_sot_summary": translated_sot_summary})
-    else:
-        # No translation needed (English) — mark Phase 3 done
-        if not _phase_done(3):
-            _save_phase(3)
-
-    # --- Extract base task descriptions for audit-loop feedback injection ---
-    script_task_base_description = script_task.description
-    script_task_expected_output = script_task.expected_output
-    polish_task_base_description = polish_task.description
-    polish_task_expected_output = polish_task.expected_output
-
-    # Fix 10: runtime prompt translation removed — templates are pre-translated
-    if language != 'en':
-        logger.info(f"\n  Crew 3 task prompts: using pre-translated {language_config['name']} templates (no runtime translation)")
-
-    # Start background monitor for crew 3
-    monitor = CrewMonitor(all_task_list, progress_tracker)
-    monitor.start()
-
-    MAX_SCRIPT_ATTEMPTS = 3
-
-    # Variables that may be restored from checkpoint for later phases
-    script_draft_text = ""
-    _draft_count = 0
-    polished_text = ""
-    _bp_inventory = {}
+    # --- Invoke Prefect flow ---
+    logger.info("\n--- Launching Prefect pipeline flow ---")
+    logger.info("Topic: %s | Language: %s", topic_name, language)
+    if _resume_checkpoint:
+        logger.info("Resume mode: Prefect task caching will skip completed phases automatically.")
 
     try:
-        # === PHASE 4: BLUEPRINT (single task, no loop) ===
-        if _phase_done(4):
-            logger.info(f"\n{'='*60}")
-            logger.info("PHASE 4: EPISODE BLUEPRINT — already complete, skipping")
-            logger.info(f"{'='*60}")
-            # Restore blueprint output from disk to inject into script task
-            _bp_path = output_path(output_dir, "EPISODE_BLUEPRINT.md")
-            if _bp_path.exists():
-                _bp_text = _bp_path.read_text()
-                # Simulate blueprint_task.output for downstream code
-                class _FakeOutput:
-                    def __init__(self, raw):
-                        self.raw = raw
-                blueprint_task.output = _FakeOutput(_bp_text)
-            # Parse blueprint inventory for sectional draft
-            _bp_raw = strip_think_blocks(blueprint_task.output.raw)
-            _bp_inventory = _parse_blueprint_inventory(_bp_raw)
-        else:
-            logger.info(f"\n{'='*60}")
-            logger.info("PHASE 4: EPISODE BLUEPRINT")
-            logger.info(f"{'='*60}")
-            _crew_kickoff_guarded(
-                lambda: Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True),
-                blueprint_task, translation_task, language,
-                sot_file, sot_translated_file,
-                sot_summary, translated_sot_summary,
-                _grade_injection, language_config, "Phase 4 Blueprint"
-            )
-            logger.info("  ✓ Blueprint complete")
-
-            # Parse blueprint inventory for sectional draft
-            _bp_raw = strip_think_blocks(blueprint_task.output.raw)
-            _bp_inventory = _parse_blueprint_inventory(_bp_raw)
-
-            # Save Phase 4 checkpoint
-            _save_phase(4)
-
-        # === PHASE 5: SCRIPT DRAFT (SECTIONAL) ===
-        if _phase_done(5):
-            logger.info(f"\n{'='*60}")
-            logger.info("PHASE 5: SCRIPT DRAFT — already complete, skipping")
-            logger.info(f"{'='*60}")
-            # Restore script draft from disk
-            _sd_path = output_path(output_dir, "script_draft.md")
-            if _sd_path.exists():
-                script_draft_text = _sd_path.read_text()
-                _draft_count = _count_words(script_draft_text, language_config)
-                logger.info(f"  Restored: {_draft_count} {language_config['length_unit']}")
-            else:
-                logger.warning("  WARNING: script_draft.md not found — re-running Phase 5")
-                script_draft_text, _draft_count = _run_sectional_draft(
-                    _bp_inventory, target_length_int, language_config, sot_content,
-                    SESSION_ROLES, topic_name, target_instruction, channel_intro,
-                    _call_smart_model=_call_smart_model, target_min=_target_min)
-                _save_phase(5)
-        else:
-            logger.info(f"\n{'='*60}")
-            logger.info("PHASE 5: SCRIPT DRAFT (SECTIONAL)")
-            logger.info(f"{'='*60}")
-            script_draft_text, _draft_count = _run_sectional_draft(
-                _bp_inventory, target_length_int, language_config, sot_content,
-                SESSION_ROLES, topic_name, target_instruction, channel_intro,
-                _call_smart_model=_call_smart_model, target_min=_target_min)
-
-            # Save Phase 5 checkpoint (also save draft to disk for resume)
-            _sd_path = output_path(output_dir, "script_draft.md")
-            with open(_sd_path, 'w', encoding='utf-8') as _f:
-                _f.write(script_draft_text)
-            _save_phase(5)
-
-        # Set script_task.output so polish loop and downstream code can read it
-        class _FakeDraftOutput:
-            def __init__(self, raw):
-                self.raw = raw
-        script_task.output = _FakeDraftOutput(script_draft_text)
-
-        # === PHASE 6: POLISH + SHRINKAGE GUARD ===
-        if _phase_done(6):
-            logger.info(f"\n{'='*60}")
-            logger.info("PHASE 6: SCRIPT POLISH — already complete, skipping")
-            logger.info(f"{'='*60}")
-            # Restore polished script from disk
-            _pol_path = output_path(output_dir, "script_polished.md")
-            if not _pol_path.exists():
-                _pol_path = output_path(output_dir, "script_final.md")
-            if _pol_path.exists():
-                polished_text = _pol_path.read_text()
-                _pol_count = _count_words(polished_text, language_config)
-                logger.info(f"  Restored: {_pol_count} {language_config['length_unit']}")
-                # Simulate polish_task.output for downstream code
-                class _FakeOutput:
-                    def __init__(self, raw):
-                        self.raw = raw
-                polish_task.output = _FakeOutput(polished_text)
-            else:
-                logger.warning("  WARNING: polished script not found — re-running Phase 6")
-                polished_text, polish_task = _run_polish_loop(
-                    script_draft_text, _draft_count, _bp_inventory, target_length_int,
-                    language_config, sot_content, script_task, polish_task,
-                    editor_agent, translation_task, polish_task_base_description,
-                    polish_task_expected_output, MAX_SCRIPT_ATTEMPTS,
-                    session_roles=SESSION_ROLES, topic_name=topic_name,
-                    target_instruction=target_instruction)
-                _save_phase(6)
-        else:
-            logger.info(f"\n{'='*60}")
-            logger.info("PHASE 6: SCRIPT POLISH (audit loop, max {0} attempts)".format(MAX_SCRIPT_ATTEMPTS))
-            logger.info(f"{'='*60}")
-            polished_text, polish_task = _run_polish_loop(
-                script_draft_text, _draft_count, _bp_inventory, target_length_int,
-                language_config, sot_content, script_task, polish_task,
-                editor_agent, translation_task, polish_task_base_description,
-                polish_task_expected_output, MAX_SCRIPT_ATTEMPTS,
-                session_roles=SESSION_ROLES, topic_name=topic_name,
-                target_instruction=target_instruction)
-
-            # Save polished script to disk for resume
-            _pol_path = output_path(output_dir, "script_polished.md")
-            with open(_pol_path, 'w', encoding='utf-8') as _f:
-                _f.write(polished_text)
-            _save_phase(6)
-
-        # === PHASE 7: ACCURACY AUDIT (advisory, existing logic) ===
-        if _phase_done(7):
-            logger.info(f"\n{'='*60}")
-            logger.info("PHASE 7: ACCURACY AUDIT — already complete, skipping")
-            logger.info(f"{'='*60}")
-            # Restore audit output from disk
-            _aud_path = output_path(output_dir, "accuracy_audit.md")
-            if _aud_path.exists():
-                _aud_text = _aud_path.read_text()
-                class _FakeOutput:
-                    def __init__(self, raw):
-                        self.raw = raw
-                audit_task.output = _FakeOutput(_aud_text)
-        else:
-            logger.info(f"\n{'='*60}")
-            logger.info("PHASE 7: ACCURACY AUDIT")
-            logger.info(f"{'='*60}")
-            _run_accuracy_audit(audit_task, polish_task, auditor_agent, translation_task)
-
-            # Save Phase 7 checkpoint
-            _save_phase(7)
-
-    except Exception as e:
-        logger.error(f"\n{'='*70}")
-        logger.error("CREW 3 FAILED — saving partial outputs")
-        logger.error(f"{'='*70}")
-        logger.error(f"Error: {e}")
-        _partial_tasks = [
-            ("blueprint_partial.md", blueprint_task),
-            ("script_draft_partial.md", script_task),
-            ("script_polished_partial.md", polish_task),
-            ("audit_partial.md", audit_task),
-        ]
-        for _fname, _task in _partial_tasks:
-            try:
-                if hasattr(_task, 'output') and _task.output and hasattr(_task.output, 'raw') and _task.output.raw:
-                    with open(output_path(output_dir, _fname), 'w', encoding='utf-8') as _f:
-                        _f.write(_task.output.raw)
-                    logger.info(f"  ✓ Partial output saved: {_fname}")
-            except Exception:
-                pass
-        monitor.stop()
+        run_pipeline_flow(
+            topic_name=topic_name,
+            language=language,
+            language_config=language_config,
+            output_dir=output_dir,
+            target_length_int=target_length_int,
+            target_instruction=target_instruction,
+            channel_intro=channel_intro,
+            target_min=_target_min,
+            session_roles=SESSION_ROLES,
+            smart_model=SMART_MODEL,
+            smart_base_url=SMART_BASE_URL,
+            accessibility_level=ACCESSIBILITY_LEVEL,
+            framing_task_ref=framing_task,
+            blueprint_task_ref=blueprint_task,
+            script_task_ref=script_task,
+            polish_task_ref=polish_task,
+            audit_task_ref=audit_task,
+            translation_task_ref=translation_task,
+            framing_agent_ref=framing_agent,
+            producer_agent_ref=producer_agent,
+            editor_agent_ref=editor_agent,
+            auditor_agent_ref=auditor_agent,
+            polish_task_base_description=polish_task.description,
+            polish_task_expected_output=polish_task.expected_output,
+            evidence_limited_threshold=EVIDENCE_LIMITED_THRESHOLD,
+            max_script_attempts=3,
+        )
+    except Exception as _flow_err:
+        logger.error("Pipeline flow failed: %s", _flow_err)
         raise
-    finally:
-        monitor.stop()
-        monitor.join(timeout=2)
-        progress_tracker.workflow_completed()
-
-    # --- CONDITIONAL SCRIPT CORRECTION (Phase 7 blocking on HIGH-severity drift) ---
-    audit_output = audit_task.output.raw if hasattr(audit_task, 'output') and audit_task.output else ""
-    high_severity_found = bool(re.search(r'\*\*Severity\*\*:\s*HIGH', audit_output, re.IGNORECASE))
-
-    if high_severity_found and audit_output:
-        logger.info(f"\n{'='*60}")
-        logger.info("HIGH-SEVERITY DRIFT DETECTED — RUNNING SCRIPT CORRECTION")
-        logger.info(f"{'='*60}")
-        # Use polished_text which may be expanded draft if shrinkage guard fired
-        polished_script_raw = polished_text if polished_text else (
-            polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else "")
-        orig_transitions = polished_script_raw.count('[TRANSITION]') + polished_script_raw.count('[INTRO_END]')
-
-        # --- Retry loop: up to 2 LLM correction attempts ---
-        _corrected_script_text = None
-        _max_correction_attempts = 2
-        _last_rejection_reason = ""
-
-        for _attempt in range(1, _max_correction_attempts + 1):
-            logger.info(f"  Correction attempt {_attempt}/{_max_correction_attempts}")
-
-            # Build correction prompt — include rejection feedback on retry
-            _retry_feedback = ""
-            if _last_rejection_reason:
-                _retry_feedback = (
-                    f"\n\nIMPORTANT — YOUR PREVIOUS CORRECTION WAS REJECTED:\n"
-                    f"Reason: {_last_rejection_reason}\n"
-                    f"This time, make ONLY the minimum changes needed to fix the HIGH-severity items. "
-                    f"Do NOT rewrite or restructure the script. Output the COMPLETE script with "
-                    f"only the drifted passages changed.\n\n"
-                )
-
-            correction_task = Task(
-                description=(
-                    f"The accuracy audit found HIGH-severity scientific drift in the podcast script.\n\n"
-                    f"AUDIT REPORT:\n{audit_output}\n\n"
-                    f"POLISHED SCRIPT:\n{polished_script_raw}\n\n"
-                    f"Fix ONLY the specific lines cited in the audit's 'Drift Instances Found' section.\n"
-                    f"For each HIGH-severity issue:\n"
-                    f"  - Find the exact quote from 'Script says'\n"
-                    f"  - Replace it with language consistent with 'Source-of-truth says'\n"
-                    f"Do NOT rewrite the entire script. Only fix cited drift instances.\n"
-                    f"Preserve all audio markers ([TRANSITION], [INTRO_END]), speaker labels, and overall structure.\n"
-                    f"{_retry_feedback}"
-                    f"{target_instruction}"
-                ),
-                expected_output="Corrected podcast script with HIGH-severity drift fixed.",
-                agent=editor_agent,
-            )
-            try:
-                correction_crew = Crew(agents=[editor_agent], tasks=[correction_task], verbose=False)
-                correction_result = correction_crew.kickoff()
-                corrected = correction_result.raw if hasattr(correction_result, 'raw') else str(correction_result)
-                corrected_transitions = corrected.count('[TRANSITION]') + corrected.count('[INTRO_END]')
-
-                if len(corrected) < len(polished_script_raw) * 0.5:
-                    _last_rejection_reason = (
-                        f"Output was too short ({len(corrected)} chars vs "
-                        f"{len(polished_script_raw)} original). You must output the COMPLETE script."
-                    )
-                    logger.warning(
-                        f"  Attempt {_attempt}: Correction output too short "
-                        f"({len(corrected)}/{len(polished_script_raw)} chars)"
-                    )
-                    continue
-                elif orig_transitions > 0 and corrected_transitions < orig_transitions:
-                    _last_rejection_reason = (
-                        f"Lost audio markers ({orig_transitions} original -> "
-                        f"{corrected_transitions} in your output). "
-                        f"You must preserve ALL audio markers ([TRANSITION], [INTRO_END])."
-                    )
-                    logger.warning(
-                        f"  Attempt {_attempt}: Lost audio markers "
-                        f"({orig_transitions}->{corrected_transitions})"
-                    )
-                    continue
-                else:
-                    # Correction passed validation
-                    with open(output_path(output_dir, "ACCURACY_CORRECTIONS.md"), 'w') as f:
-                        f.write("# Script Corrections Applied\n\n")
-                        f.write("HIGH-severity drift instances were corrected before audio generation.\n\n")
-                        f.write(f"Correction succeeded on attempt {_attempt}.\n\n")
-                        f.write(f"## Original Audit\n{audit_output}\n")
-                    logger.info(f"✓ Script correction applied (attempt {_attempt}) — using corrected script for audio")
-                    _corrected_script_text = corrected
-                    break
-            except Exception as e:
-                logger.warning(f"  Attempt {_attempt}: Script correction crew failed: {e}")
-                _last_rejection_reason = f"LLM correction raised an exception: {e}"
-                continue
-
-        # --- Surgical fallback: if LLM correction failed after all retries ---
-        if _corrected_script_text is None:
-            logger.warning(
-                f"LLM correction failed after {_max_correction_attempts} attempts — "
-                f"attempting surgical string replacement"
-            )
-            # Parse HIGH-severity items from audit output.
-            # Format per pipeline_crew.py:
-            #   - **Script says**: [exact quote]
-            #   - **Source-of-truth says**: [corrected text]
-            #   - **Severity**: HIGH
-            _high_items = []
-            _drift_blocks = re.split(r'(?=- \*\*Script says\*\*)', audit_output)
-            for _block in _drift_blocks:
-                if not re.search(r'\*\*Severity\*\*:\s*HIGH', _block, re.IGNORECASE):
-                    continue
-                _script_match = re.search(
-                    r'\*\*Script says\*\*:\s*(.+?)(?:\n|$)', _block
-                )
-                _sot_match = re.search(
-                    r'\*\*Source-of-truth says\*\*:\s*(.+?)(?:\n|$)', _block
-                )
-                if _script_match and _sot_match:
-                    _script_quote = _script_match.group(1).strip().strip('"').strip("'")
-                    _sot_quote = _sot_match.group(1).strip().strip('"').strip("'")
-                    if _script_quote and _sot_quote:
-                        _high_items.append((_script_quote, _sot_quote))
-
-            _surgical_script = polished_script_raw
-            _fixes_applied = 0
-            _fixes_missed = 0
-            for _drifted, _correct in _high_items:
-                if _drifted in _surgical_script:
-                    _surgical_script = _surgical_script.replace(_drifted, _correct, 1)
-                    _fixes_applied += 1
-                    logger.info(f"  Surgical fix applied: replaced drifted passage ({len(_drifted)} chars)")
-                else:
-                    _fixes_missed += 1
-                    logger.warning(
-                        f"  Surgical fix missed: could not find drifted passage in script "
-                        f"(first 80 chars: {_drifted[:80]!r})"
-                    )
-
-            if _fixes_applied > 0:
-                _corrected_script_text = _surgical_script
-                with open(output_path(output_dir, "ACCURACY_CORRECTIONS.md"), 'w') as f:
-                    f.write("# Script Corrections Applied (Surgical Replacement)\n\n")
-                    f.write(
-                        f"LLM correction failed validation after {_max_correction_attempts} attempts.\n"
-                        f"Applied deterministic string replacement for {_fixes_applied} HIGH-severity items.\n"
-                    )
-                    if _fixes_missed > 0:
-                        f.write(f"{_fixes_missed} items could not be matched in the script text.\n")
-                    f.write(f"\n## Original Audit\n{audit_output}\n")
-                logger.warning(
-                    f"AUDIT OVERRIDE: {_fixes_applied} HIGH-severity item(s) fixed by surgical replacement"
-                    + (f" ({_fixes_missed} missed)" if _fixes_missed else "")
-                )
-            elif _high_items:
-                # Had parsed items but none matched — edge case, log warning and proceed
-                logger.warning(
-                    f"Surgical fix could not match any of {len(_high_items)} HIGH-severity "
-                    f"item(s) in the script — proceeding with original script (drift remains)"
-                )
-                _corrected_script_text = None
-            else:
-                # Could not parse any HIGH-severity items from audit output
-                logger.warning(
-                    "Could not parse HIGH-severity drift items from audit output for surgical fix — "
-                    "proceeding with original script (drift remains)"
-                )
-                _corrected_script_text = None
-    else:
-        _corrected_script_text = None
-        if audit_output:
-            logger.info("✓ Accuracy audit: No HIGH-severity drift — proceeding to audio")
-
-    # --- PDF GENERATION STEP ---
-    logger.info("\n--- Generating Documentation PDFs ---")
-    pdf_tasks = [
-        ("Research Framing", framing_output, "research_framing.pdf"),
-        ("Source of Truth", sot_content, "source_of_truth.pdf"),
-        ("Accuracy Audit", audit_task, "accuracy_audit.pdf"),
-        # Translated SOT PDF — only generated when translation ran and produced output
-        *([(f"Source of Truth ({language_config['name']})",
-            translated_sot,
-            f"source_of_truth_{language}.pdf")]
-          if translation_task is not None and translated_sot else []),
-    ]
-    for title, source, filename in pdf_tasks:
-        try:
-            if isinstance(source, str):
-                content = source
-            elif hasattr(source, 'output') and source.output and hasattr(source.output, 'raw'):
-                content = source.output.raw
-            else:
-                logger.warning(f"  Skipping {filename}: no output available")
-                continue
-            create_pdf(title, content, filename)
-        except Exception as e:
-            logger.warning(f"  Warning: Failed to create {filename}: {e}")
-
-    logger.info("\n--- Saving Research Outputs (Markdown) ---")
-    _save_task_outputs(output_dir, [
-        ("Research Framing", framing_output, "research_framing.md"),
-        # source_of_truth.md already saved from deep research outputs
-        ("Accuracy Audit", audit_task, "accuracy_audit.md"),
-        ("Episode Blueprint", blueprint_task, "EPISODE_BLUEPRINT.md"),
-        ("Script Draft", script_task, "script_draft.md"),
-        # script_final.md saved in Phase 8 (from polished/corrected script before TTS)
-    ])
-
-    # --- RESEARCH SUMMARY ---
-    if deep_reports is not None:
-        deep_audit = deep_reports.get("audit")
-        if deep_audit:
-            logger.info(f"\n--- Deep Research Summary ---")
-            _lead = deep_reports.get("lead")
-            _counter = deep_reports.get("counter")
-            if _lead:
-                logger.info(f"  Lead sources: {_lead.total_summaries}")
-            if _counter:
-                logger.info(f"  Counter sources: {_counter.total_summaries}")
-            logger.info(f"  Total sources: {deep_audit.total_summaries}")
-            logger.info(f"  Total URLs fetched: {deep_audit.total_urls_fetched}")
-            logger.info(f"  Duration: {deep_audit.duration_seconds:.0f}s")
-
-    # --- SESSION METADATA ---
-    logger.info("\n--- Documenting Session Metadata ---")
-    session_metadata = (
-        f"PODCAST SESSION METADATA\n{'='*60}\n\n"
-        f"Topic: {topic_name}\n\n"
-        f"Language: {language_config['name']} ({language})\n\n"
-        f"Role Assignments:\n"
-        f"  {SESSION_ROLES['presenter']['label']}: Presenter ({SESSION_ROLES['presenter']['personality']})\n"
-        f"  {SESSION_ROLES['questioner']['label']}: Questioner ({SESSION_ROLES['questioner']['personality']})\n"
-    )
-    metadata_file = output_path(output_dir, "session_metadata.txt")
-    with open(metadata_file, 'w') as f:
-        f.write(session_metadata)
-    logger.info(f"Session metadata: {metadata_file}")
-
-    # --- PHASE 8: AUDIO GENERATION ---
-    # Finalize script (corrections, language audit, reaction guidance, save script_final.md)
-    script_text = _finalize_script(
-        polished_text, polish_task, language, language_config, output_dir,
-        corrected_text=_corrected_script_text)
-
-    # Language-aware script length measurement
-    speech_rate  = language_config['speech_rate']
-    length_unit  = language_config['length_unit']
-    if length_unit == 'chars':
-        script_length = len(re.sub(r'[\s\n\r\t\u3000\uff1a:\u300c\u300d\u3001\u3002\u30fb\uff08\uff09\-\u2014*#]', '', script_text))
-    else:
-        content_only = re.sub(r'^[A-Za-z0-9_ ]+:\s*', '', script_text, flags=re.MULTILINE)
-        script_length = len(content_only.split())
-        length_unit = "words (net)"
-    estimated_duration_min = script_length / speech_rate
-    target_length = target_length_int
-    target_low    = int(target_length * (1 - SCRIPT_TOLERANCE))
-    target_high   = int(target_length * (1 + SCRIPT_TOLERANCE))
-
-    logger.info(f"\n{'='*60}")
-    logger.info(f"DURATION CHECK")
-    logger.info(f"{'='*60}")
-    logger.info(f"Script length: {script_length} {length_unit}")
-    logger.info(f"Estimated duration: {estimated_duration_min:.1f} minutes")
-    logger.info(f"Target: {_target_min} minutes ({target_length} {length_unit})")
-
-    if script_length < target_low:
-        logger.warning(f"\u26a0 WARNING: Script is SHORT ({script_length} {length_unit} < {target_length} target)")
-        logger.info(f"  Estimated {estimated_duration_min:.1f} min")
-    elif script_length > target_high:
-        logger.warning(f"\u26a0 WARNING: Script is LONG ({script_length} {length_unit} > {target_length} target)")
-        logger.info(f"  Estimated {estimated_duration_min:.1f} min")
-    else:
-        logger.info(f"\u2713 Script length GOOD ({script_length} {length_unit})")
-        logger.info(f"  Estimated {estimated_duration_min:.1f} min")
-    logger.info(f"{'='*60}\n")
-
-    # TTS + BGM
-    if not _phase_done(8):
-        _run_audio_pipeline(script_text, output_dir, language_config)
-        # Save final checkpoint — pipeline complete
-        _save_phase(8)
-    else:
-        logger.info("PHASE 8: AUDIO — already complete, skipping")
-        # Check if audio file exists
-        _audio_dir = output_dir / "audio"
-        if _audio_dir.is_dir():
-            _audio_files = list(_audio_dir.glob("podcast_*.wav")) + list(_audio_dir.glob("podcast_*.mp3"))
-        else:
-            _audio_files = list(output_dir.glob("podcast_*.wav")) + list(output_dir.glob("podcast_*.mp3"))
-        if _audio_files:
-            logger.info(f"  Audio file: {_audio_files[0].name}")
-        else:
-            logger.warning("  WARNING: No audio file found — re-running audio generation")
-            _run_audio_pipeline(script_text, output_dir, language_config)
-            _save_phase(8)
 
     # --- Self-evaluation loop (non-blocking) ---
     try:
