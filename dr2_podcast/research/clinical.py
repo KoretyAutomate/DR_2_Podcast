@@ -2,8 +2,8 @@
 Deep Research Agent - Evidence-Based Clinical Research Pipeline
 
 Optimized for Nvidia DGX Spark (128GB Unified Memory):
-- SMART MODEL (Qwen3-32B-AWQ) on port 8000: Reasoning, planning, evaluation
-- FAST MODEL (Phi-4 Mini via Ollama) on port 11434: Parallel content summarization
+- SMART MODEL (Qwen3.5-122B-A10B-NVFP4) on port 8000: Reasoning, planning, evaluation
+- FAST MODEL (qwen3:8b via Ollama) on port 11434: Parallel content summarization
 
 Architecture (7-Step Clinical Pipeline — parallel a/b tracks):
   Pre-step: Concept Decomposition — Fast Model extracts canonical scientific terms from folk topic

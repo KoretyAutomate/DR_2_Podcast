@@ -115,7 +115,7 @@ SOT_TEMPLATES = {
             ),
             "screening_header": "\n### 2.3 Screening & Selection\n",
             "screening_body": (
-                "Title and abstract screening was performed by the Smart Model (Qwen3-32B-AWQ) "
+                "Title and abstract screening was performed by the Smart Model (Qwen3.5-122B-A10B) "
                 "using structured inclusion/exclusion criteria:\n\n"
                 "**Inclusion criteria:** Human clinical studies (RCTs, meta-analyses, systematic reviews, "
                 "large cohort studies); sample size \u2265 30 participants; published in peer-reviewed journals; "
@@ -139,7 +139,7 @@ SOT_TEMPLATES = {
                 "(errors: {fal_ft_err})\n"
                 "- **Total full texts successfully retrieved:** {total_ft_ok}\n\n"
                 "Clinical variables were extracted from each full text by the Fast Model "
-                "(llama3.2:1b) using a structured extraction template capturing: "
+                "(qwen3:8b) using a structured extraction template capturing: "
                 "study design, sample sizes, demographics, follow-up period, "
                 "Control Event Rate (CER), Experimental Event Rate (EER), "
                 "effect size with confidence intervals, blinding, randomization method, "
@@ -198,7 +198,7 @@ SOT_TEMPLATES = {
             "limitations_header": "\n### 4.5 Limitations\n",
             "limitations_body": (
                 "The following pipeline-specific limitations apply to this synthesis:\n\n"
-                "- The Fast Model (llama3.2:1b) may have misclassified study designs or "
+                "- The Fast Model (qwen3:8b) may have misclassified study designs or "
                 "misextracted clinical variables from complex full-text articles.\n"
                 "- Articles not available via PMC, Europe PMC, or Unpaywall were reduced to "
                 "abstract-level data, limiting extraction depth for paywalled literature.\n"
@@ -364,7 +364,7 @@ SOT_TEMPLATES = {
             ),
             "screening_header": "\n### 2.3 スクリーニングと選択\n",
             "screening_body": (
-                "タイトルおよび抄録のスクリーニングは、Smart Model (Qwen3-32B-AWQ)により"
+                "タイトルおよび抄録のスクリーニングは、Smart Model (Qwen3.5-122B-A10B)により"
                 "構造化された組み入れ/除外基準を用いて実施された:\n\n"
                 "**組み入れ基準:** ヒト臨床研究（無作為化比較試験、メタアナリシス、系統的レビュー、"
                 "大規模コホート研究）；サンプルサイズ≧30人；査読付きジャーナルに掲載；"
@@ -387,7 +387,7 @@ SOT_TEMPLATES = {
                 "- **反証トラック全文取得数:** {fal_ft_ok} "
                 "(エラー: {fal_ft_err})\n"
                 "- **全文取得成功総数:** {total_ft_ok}\n\n"
-                "臨床変数は、Fast Model (llama3.2:1b)により構造化された抽出テンプレートを用いて"
+                "臨床変数は、Fast Model (qwen3:8b)により構造化された抽出テンプレートを用いて"
                 "各全文から抽出された。抽出項目: 研究デザイン、サンプルサイズ、人口統計学的特性、"
                 "追跡期間、対照群イベント率（CER）、実験群イベント率（EER）、"
                 "効果量と信頼区間、盲検化、無作為化方法、"
@@ -446,7 +446,7 @@ SOT_TEMPLATES = {
             "limitations_header": "\n### 4.5 限界\n",
             "limitations_body": (
                 "本統合には以下のパイプライン固有の限界が適用される:\n\n"
-                "- Fast Model (llama3.2:1b)が複雑な全文論文から研究デザインを"
+                "- Fast Model (qwen3:8b)が複雑な全文論文から研究デザインを"
                 "誤分類または臨床変数を誤抽出した可能性がある。\n"
                 "- PMC、Europe PMC、またはUnpaywallで利用できない論文は"
                 "抄録レベルのデータに限定され、有料壁文献の抽出深度が制限された。\n"
