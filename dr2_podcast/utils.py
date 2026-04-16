@@ -31,6 +31,45 @@ def strip_think_blocks(text: str) -> str:
     return text.strip()
 
 
+# vLLM extra_body for Qwen3: disables thinking mode at the chat template
+# level so the model does not emit <think>...</think> blocks. Pair this with
+# safe_message_text() for full defense-in-depth against reasoning_content
+# leaking when the reasoning parser is enabled.
+QWEN3_NO_THINK_EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def safe_message_text(resp) -> str:
+    """Extract message text from an OpenAI ChatCompletion response.
+
+    Defense against vLLM's Qwen3 reasoning parser: when started with
+    ``--reasoning-parser qwen3``, any <think>...</think> block is routed to
+    ``message.reasoning_content`` and ``message.content`` becomes None.
+    Calling ``.strip()`` on that None crashes the whole pipeline.
+
+    This helper:
+      1. Prefers ``message.content`` when present.
+      2. Falls back to ``message.reasoning_content`` when content is None/empty.
+      3. Returns "" if neither field holds text.
+      4. Always runs the result through ``strip_think_blocks()``.
+    """
+    try:
+        msg = resp.choices[0].message
+    except (AttributeError, IndexError):
+        return ""
+    raw = getattr(msg, "content", None)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raw = getattr(msg, "reasoning_content", None) or ""
+        if raw:
+            _utils_logger.warning(
+                "safe_message_text(): message.content empty; recovered %d chars "
+                "from reasoning_content (check vLLM --reasoning-parser / enable_thinking)",
+                len(raw),
+            )
+    if not isinstance(raw, str):
+        raw = str(raw) if raw is not None else ""
+    return strip_think_blocks(raw.strip())
+
+
 def extract_content_from_html(soup: BeautifulSoup, max_chars: int = 8000) -> str:
     """Extract meaningful text content from parsed HTML.
 
@@ -134,30 +173,30 @@ async def async_call_smart(client, model, system, user, max_tokens=2048,
 
     - Non-transient fast-fail (BadRequestError, AuthenticationError)
     - Exponential backoff + jitter (5s, 10s, 20s) for transient errors
-    - strip_think_blocks() on output
-    - /no_think prefix when no_think=True
+    - Disables Qwen3 thinking at the chat-template level (enable_thinking=False)
+      via extra_body so reasoning_content never steals message.content.
+    - safe_message_text() defends against reasoning_content leakage anyway.
     """
     import openai
 
+    create_kwargs = dict(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        max_tokens=max_tokens,
+        temperature=temperature,
+        timeout=timeout,
+    )
     if no_think:
-        system = "/no_think\n" + system
+        create_kwargs["extra_body"] = QWEN3_NO_THINK_EXTRA_BODY
 
     max_retries = 3
     for attempt in range(max_retries + 1):
         try:
-            resp = await client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-                timeout=timeout,
-            )
-            text = resp.choices[0].message.content.strip()
-            text = strip_think_blocks(text)
-            return text
+            resp = await client.chat.completions.create(**create_kwargs)
+            return safe_message_text(resp)
         except (openai.BadRequestError, openai.AuthenticationError):
             raise
         except (ConnectionError, TimeoutError, OSError,

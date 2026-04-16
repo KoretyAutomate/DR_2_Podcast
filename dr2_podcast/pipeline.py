@@ -975,11 +975,13 @@ ACCESSIBILITY_INSTRUCTIONS = {
 accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL]["en"]
 
 # --- MODEL DETECTION & CONFIG ---
-# All model config comes from .env — initialized in __main__ block
-SMART_MODEL = None  # initialized in __main__
-SMART_BASE_URL = None  # initialized in __main__
-MID_MODEL = None  # initialized in __main__
-MID_BASE_URL = None  # initialized in __main__
+# All model config comes from .env. Read at import so callers that don't go
+# through the __main__ block (e.g. pipeline_flow under Prefect, web UI) still
+# get configured. The __main__ block reassigns these from os.environ as well,
+# which is harmless. The guard in _call_smart_model still raises a clear error
+# if the env vars are missing entirely.
+SMART_MODEL = os.environ.get("MODEL_NAME") or None
+SMART_BASE_URL = os.environ.get("LLM_BASE_URL") or None
 
 def get_final_model_string():
     model = SMART_MODEL
@@ -1041,7 +1043,8 @@ def summarize_report_with_fast_model(report_text: str, role: str, topic: str) ->
             max_tokens=4000,
             timeout=180,
         )
-        summary = response.choices[0].message.content.strip()
+        from dr2_podcast.utils import safe_message_text
+        summary = safe_message_text(response)
         if len(summary) > 200:
             logger.info(f"  ✓ {role} report summarized: {len(report_text)} → {len(summary)} chars")
             return summary
@@ -1071,8 +1074,11 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000,
         raise RuntimeError("Pipeline not configured — SMART_MODEL/SMART_BASE_URL not set. Run via __main__ or set env vars.")
     import openai
     from openai import OpenAI
-    # Disable Qwen3 thinking mode to avoid wasting tokens on <think> blocks
-    system = "/no_think\n" + system
+    # Disable Qwen3 thinking mode at the chat template level. This is the
+    # proper way — a `/no_think` prefix is a soft hint the model can ignore,
+    # and when vLLM runs with `--reasoning-parser qwen3` any stray <think>
+    # block lands in message.reasoning_content, leaving message.content=None
+    # and crashing .strip() downstream.
     if timeout <= 0:
         # Auto-scale: ~10 tok/s generation speed + 60s buffer for prompt processing
         timeout = max(300, int(max_tokens / 10) + 60)
@@ -1089,6 +1095,7 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000,
         max_tokens=max_tokens,
         temperature=temperature,
         timeout=timeout,
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
     if frequency_penalty > 0:
         create_kwargs["frequency_penalty"] = frequency_penalty
@@ -1096,7 +1103,20 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000,
     for attempt in range(max_retries + 1):
         try:
             resp = client.chat.completions.create(**create_kwargs)
-            text = resp.choices[0].message.content.strip()
+            msg = resp.choices[0].message
+            # Defensive: if content is None (model only emitted reasoning
+            # despite enable_thinking=False), fall back to reasoning_content
+            # so we at least have a string to work with. strip_think_blocks
+            # will clean any residual <think> markers.
+            raw = msg.content
+            if raw is None:
+                raw = getattr(msg, "reasoning_content", None) or ""
+                if raw:
+                    logger.warning(
+                        "  WARNING: _call_smart_model() got content=None; "
+                        "recovered %d chars from reasoning_content", len(raw)
+                    )
+            text = raw.strip()
             # Strip <think>...</think> blocks (Qwen3 thinking mode safety net)
             text = strip_think_blocks(text)
             return text
@@ -1120,54 +1140,16 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000,
                 raise
 
 
-def _call_mid_model(system: str, user: str, max_tokens: int = 4000, temperature: float = 0.1, timeout: int = 0) -> str:
-    """Call the mid-tier model for translation, falling back to Smart Model if unavailable.
-    If MID_MODEL is empty (default), routes directly to Smart Model without an HTTP round-trip.
-    timeout: seconds to wait. 0 = auto-scale based on max_tokens (~40 tok/s + 60s buffer).
-    """
-    if not SMART_MODEL or not SMART_BASE_URL:
-        raise RuntimeError("Pipeline not configured — SMART_MODEL/SMART_BASE_URL not set. Run via __main__ or set env vars.")
-    if not MID_MODEL:
-        return _call_smart_model(system, user, max_tokens=max_tokens, temperature=temperature, timeout=0)
-    from openai import OpenAI
-    if timeout <= 0:
-        # Auto-scale: ~40 tok/s generation speed + 60s buffer
-        timeout = max(180, int(max_tokens / 40) + 60)
-    try:
-        client = OpenAI(
-            base_url=MID_BASE_URL,
-            api_key=os.getenv("LLM_API_KEY", "NA"),
-        )
-        combined_content = system + "\n\n" + user if system else user
-        resp = client.chat.completions.create(
-            model=MID_MODEL,
-            messages=[
-                {"role": "user", "content": combined_content},
-            ],
-            max_tokens=max_tokens,
-            temperature=temperature,
-            timeout=timeout,
-        )
-        text = resp.choices[0].message.content.strip()
-        return text
-    except Exception as e:
-        logger.warning(f"  ⚠ Mid-tier model ({MID_MODEL}) unavailable: {e} — falling back to Smart Model")
-        return _call_smart_model(system, user, max_tokens=max_tokens, temperature=temperature, timeout=0)
-
-
 # --- Translation functions (extracted to pipeline_translation.py) ---
 # Thin wrappers that inject module-level globals into the extracted implementations.
 
 
 
 def _translate_sot_pipelined(sot_content, language, language_config):
-    """Wrapper — delegates to pipeline_translation with module-level model config."""
+    """Wrapper — delegates to pipeline_translation with _call_smart_model."""
     return _translate_sot_pipelined_impl(
         sot_content, language, language_config,
         _call_smart_model=_call_smart_model,
-        _call_mid_model=_call_mid_model,
-        SMART_BASE_URL=SMART_BASE_URL, SMART_MODEL=SMART_MODEL,
-        MID_BASE_URL=MID_BASE_URL, MID_MODEL=MID_MODEL,
     )
 
 
@@ -1831,6 +1813,19 @@ def _run_polish_loop(draft_text, draft_count, inventory, target_length_int,
             draft_text = re.sub(r'(---\s*\n###\s*\*?\*?ACT)', r'[TRANSITION]\n\n\1', draft_text)
         polished = draft_text
 
+    # Speaker-label guard: if polish stripped Host 1:/Host 2: labels, TTS collapses
+    # to a single voice (audio/engine.py:381-389 routes unlabeled lines to Speaker 2).
+    # Fall back to the draft when the polished output has lost the dialogue structure.
+    _label_re = re.compile(r'(?m)^\s*Host\s*[12]\s*[:：]')
+    polished_labels = len(_label_re.findall(polished))
+    draft_labels = len(_label_re.findall(draft_text))
+    if draft_labels >= 6 and polished_labels < draft_labels * 0.5:
+        logger.warning(
+            f"    \u26a0 Polish stripped speaker labels ({draft_labels}\u2192{polished_labels}) "
+            f"— using draft to preserve dialogue structure"
+        )
+        polished = draft_text
+
     return polished, current_polish
 
 
@@ -2118,8 +2113,6 @@ if __name__ == "__main__":
 
     SMART_MODEL = os.environ["MODEL_NAME"]
     SMART_BASE_URL = os.environ["LLM_BASE_URL"]
-    MID_MODEL = os.environ.get("MID_MODEL_NAME", "")
-    MID_BASE_URL = os.environ.get("MID_LLM_BASE_URL", "")
 
     final_model_string = get_final_model_string()
 

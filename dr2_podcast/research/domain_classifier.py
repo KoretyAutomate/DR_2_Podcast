@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
+from dr2_podcast.utils import safe_message_text, QWEN3_NO_THINK_EXTRA_BODY
+
 logger = logging.getLogger(__name__)
 
 
@@ -200,14 +202,15 @@ async def _classify_with_llm(
     resp = await smart_client.chat.completions.create(
         model=smart_model,
         messages=[
-            {"role": "system", "content": "/no_think You are a research methodology classifier. Respond only with JSON."},
+            {"role": "system", "content": "You are a research methodology classifier. Respond only with JSON."},
             {"role": "user", "content": prompt},
         ],
         max_tokens=200,
         temperature=0.1,
         timeout=30,
+        extra_body=QWEN3_NO_THINK_EXTRA_BODY,
     )
-    raw = resp.choices[0].message.content.strip()
+    raw = safe_message_text(resp)
 
     # Parse JSON from response (handle markdown code blocks)
     json_match = re.search(r'\{[^}]+\}', raw)

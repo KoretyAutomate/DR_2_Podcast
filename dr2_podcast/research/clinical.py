@@ -29,7 +29,9 @@ import re
 import sqlite3
 import time
 import datetime
-from dr2_podcast.utils import strip_think_blocks, is_safe_url, safe_float, safe_int, safe_str, async_call_smart
+from dr2_podcast.utils import (strip_think_blocks, is_safe_url, safe_float, safe_int,
+                                safe_str, async_call_smart, safe_message_text,
+                                QWEN3_NO_THINK_EXTRA_BODY)
 from dr2_podcast.config import (SMART_MODEL, SMART_BASE_URL, FAST_MODEL, FAST_BASE_URL,
                     SCRAPING_TIMEOUT, USER_AGENT, TIER_CASCADE_THRESHOLD,
                     MIN_TIER3_STUDIES, MAX_TIER3_RATIO)
@@ -757,7 +759,7 @@ class FastWorker:
                     ],
                     max_tokens=1536, temperature=0.1, timeout=180
                 )
-                raw_text = resp.choices[0].message.content.strip()
+                raw_text = safe_message_text(resp)
                 facts_text, metadata = self._parse_metadata_from_response(raw_text)
                 return SummarizedSource(
                     url=page.url, title=page.title, summary=facts_text,
@@ -1183,7 +1185,7 @@ class ResearchAgent:
                     messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
                     max_tokens=512, temperature=0.2, timeout=60
                 )
-                raw = resp.choices[0].message.content.strip()
+                raw = safe_message_text(resp)
             else:
                 raw = await self._call_smart(system, user, max_tokens=512, temperature=0.2)
             data = self._parse_json_response(raw)
@@ -1898,7 +1900,7 @@ class ResearchAgent:
                         ],
                         max_tokens=256, temperature=0.1, timeout=60
                     )
-                    raw = resp.choices[0].message.content.strip()
+                    raw = safe_message_text(resp)
                     # Parse JSON from response
                     if "```" in raw:
                         match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
@@ -2263,7 +2265,8 @@ class ResearchAgent:
                     try:
                         resp = await self.smart_client.chat.completions.create(
                             model=self.smart_model, messages=messages,
-                            max_tokens=2048, temperature=0.1, timeout=180
+                            max_tokens=2048, temperature=0.1, timeout=180,
+                            extra_body=QWEN3_NO_THINK_EXTRA_BODY,
                         )
                     except openai.BadRequestError as ctx_err:
                         if "context length" not in str(ctx_err).lower():
@@ -2274,10 +2277,11 @@ class ResearchAgent:
                         messages[1]["content"] = f"Title: {record.title}\n\nContent:\n{content}"
                         resp = await self.smart_client.chat.completions.create(
                             model=self.smart_model, messages=messages,
-                            max_tokens=2048, temperature=0.1, timeout=180
+                            max_tokens=2048, temperature=0.1, timeout=180,
+                            extra_body=QWEN3_NO_THINK_EXTRA_BODY,
                         )
 
-                    raw = resp.choices[0].message.content.strip()
+                    raw = safe_message_text(resp)
                     data = self._parse_json_response(raw)
 
                     def safe_bool(v):
@@ -3047,10 +3051,10 @@ class Orchestrator:
                     {"role": "system", "content": audit_system},
                     {"role": "user", "content": combined_input}
                 ],
-                max_tokens=8000, temperature=0.2, timeout=300
+                max_tokens=8000, temperature=0.2, timeout=300,
+                extra_body=QWEN3_NO_THINK_EXTRA_BODY,
             )
-            audit_text = resp.choices[0].message.content.strip()
-            audit_text = strip_think_blocks(audit_text)
+            audit_text = safe_message_text(resp)
             log(f"    [Step 7] GRADE synthesis complete ({len(audit_text)} chars)")
             return audit_text
         except Exception as e:

@@ -9,7 +9,6 @@ prompt translation, and script language audit.
 import logging
 import os
 import re
-import asyncio
 from dr2_podcast.utils import strip_think_blocks
 
 logger = logging.getLogger(__name__)
@@ -92,11 +91,11 @@ def _split_at_subheaders(body: str) -> list:
 
 
 def _translate_sot_pipelined(sot_content: str, language: str, language_config: dict,
-                              *, _call_smart_model, _call_mid_model,
-                              SMART_BASE_URL, SMART_MODEL,
-                              MID_BASE_URL, MID_MODEL) -> str:
-    """Translate SOT on mid-tier model (no audit — translation quality is sufficient).
-    Falls back to sequential smart-model-only if mid-tier is unavailable.
+                              *, _call_smart_model) -> str:
+    """Translate SOT on the Smart Model (sequential, no audit).
+
+    The Smart Model (Qwen3.5-122B-A10B) is multilingual and translates IMRaD
+    sections directly.
     """
     # Strip leftover <think> blocks from Qwen3 thinking mode that may be embedded in the SOT
     sot_content = strip_think_blocks(sot_content)
@@ -167,132 +166,29 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
         logger.info("  No translatable sections found")
         return sot_content
 
-    # --- Results storage (indexed by chunk index) ---
-    results = {}
-
-    # --- Probe mid-tier model with first chunk ---
-    mid_tier_available = True
-    first_chunk_idx, first_header, first_body = translatable[0]
-    first_label = first_header if first_header else "preamble"
-    max_tok = _estimate_translation_tokens(len(first_body))
-    use_smart_first = len(first_body) > 8000
+    # --- Sequential smart-model translation ---
+    logger.info("  Running sequential translate on Smart Model (no audit)")
     translate_user = "Please translate the following English text into {}:\n\n".format(lang_name)
-    try:
-        if use_smart_first:
+    results = {}
+    translate_count = 0
+    for chunk_idx, header, body in translatable:
+        label = header if header else "preamble"
+        max_tok = _estimate_translation_tokens(len(body))
+        try:
             translated = _call_smart_model(
                 system=translate_system,
-                user=translate_user + first_body,
+                user=translate_user + body,
                 max_tokens=max_tok, temperature=0.1,
             )
-        else:
-            translated = _call_mid_model(
-                system=translate_system,
-                user=translate_user + first_body,
-                max_tokens=max_tok, temperature=0.1,
-            )
-        results[first_chunk_idx] = translated
-        model_tag = "smart" if use_smart_first else "mid"
-        logger.info("  Translated %s (%d -> %d chars) [%s, 1/%d]",
-            first_label, len(first_body), len(translated), model_tag, total_translatable)
-    except Exception as e:
-        if not use_smart_first:
-            logger.warning("  Mid-tier model (%s) unavailable: %s -- falling back to smart-model-only", MID_MODEL, e)
-            mid_tier_available = False
-            try:
-                translated = _call_smart_model(
-                    system=translate_system,
-                    user=translate_user + first_body,
-                    max_tokens=max_tok, temperature=0.1,
-                )
-                results[first_chunk_idx] = translated
-                logger.info("  Translated %s (%d -> %d chars) [smart fallback, 1/%d]",
-                    first_label, len(first_body), len(translated), total_translatable)
-            except Exception as e2:
-                logger.warning("  Translation failed for %s: %s -- keeping original", first_label, e2)
-                results[first_chunk_idx] = first_body
-        else:
-            logger.warning("  Translation failed for %s: %s -- keeping original", first_label, e)
-            results[first_chunk_idx] = first_body
+            translate_count += 1
+            results[chunk_idx] = translated
+            logger.info("  Translated %s (%d -> %d chars) [smart, %d/%d]",
+                label, len(body), len(translated), translate_count, total_translatable)
+        except Exception as e:
+            logger.warning("  Translation failed for %s: %s -- keeping original", label, e)
+            results[chunk_idx] = body
 
-    remaining = translatable[1:]
-
-    if not mid_tier_available:
-        # --- FALLBACK: Sequential smart-model-only (old behavior) ---
-        logger.info("  Running sequential translate+audit on Smart Model (no pipeline)")
-        translate_count = 1
-        for chunk_idx, header, body in remaining:
-            label = header if header else "preamble"
-            max_tok = _estimate_translation_tokens(len(body))
-            try:
-                translated = _call_smart_model(
-                    system=translate_system,
-                    user=translate_user + body,
-                    max_tokens=max_tok, temperature=0.1,
-                )
-                translate_count += 1
-                results[chunk_idx] = translated
-                logger.info("  Translated %s (%d -> %d chars) [smart, %d/%d]",
-                    label, len(body), len(translated), translate_count, total_translatable)
-            except Exception as e:
-                logger.warning("  Translation failed for %s: %s -- keeping original", label, e)
-                results[chunk_idx] = body
-
-        logger.info("  Translation complete: %d translate calls (sequential, no audit)",
-            translate_count)
-    else:
-        # --- PIPELINED: Mid-tier translates (no audit) ---
-        logger.info("  Running pipelined translate (mid-tier) [%s, no audit]", MID_MODEL)
-
-        async def _run_pipeline():
-            translate_count = 1  # first chunk already done
-
-            async def producer():
-                nonlocal translate_count
-                for chunk_idx, header, body in remaining:
-                    label = header if header else "preamble"
-                    max_tok = _estimate_translation_tokens(len(body))
-                    use_smart_for_chunk = len(body) > 8000
-                    try:
-                        if use_smart_for_chunk:
-                            translated = await asyncio.to_thread(
-                                lambda: _call_smart_model(
-                                    system=translate_system,
-                                    user=translate_user + body,
-                                    max_tokens=max_tok, temperature=0.1,
-                                )
-                            )
-                        else:
-                            translated = await asyncio.to_thread(
-                                lambda: _call_mid_model(
-                                    system=translate_system,
-                                    user=translate_user + body,
-                                    max_tokens=max_tok, temperature=0.1,
-                                )
-                            )
-                        translate_count += 1
-                        results[chunk_idx] = translated
-                        model_tag = "smart" if use_smart_for_chunk else "mid"
-                        logger.info("  Translated %s (%d -> %d chars) [%s, %d/%d]",
-                            label, len(body), len(translated), model_tag, translate_count, total_translatable)
-                    except Exception as e:
-                        logger.warning("  Translation failed for %s: %s -- keeping original", label, e)
-                        results[chunk_idx] = body
-
-            await producer()
-            return translate_count
-
-        # Run the async pipeline
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop and loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                t_count = pool.submit(lambda: asyncio.run(_run_pipeline())).result()
-        else:
-            t_count = asyncio.run(_run_pipeline())
-        logger.info("  Pipelined translation complete: %d translate calls (no audit)", t_count)
+    logger.info("  Translation complete: %d translate calls (no audit)", translate_count)
 
     # --- Reassemble output in original section order ---
     assembled_parts = []
