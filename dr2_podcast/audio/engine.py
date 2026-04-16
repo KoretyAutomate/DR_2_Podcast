@@ -379,8 +379,16 @@ def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
         else:
             # Continuation of current speaker's dialogue
             if current_speaker is None:
-                # Skip lines before the first Host label (preamble, metadata)
-                logger.debug(f"  Skipping unlabeled line before first speaker: {line[:60]}...")
+                # Channel intro line (before any Speaker label) — synthesize as
+                # Speaker 2 (the presenter/narrator role) instead of skipping.
+                if line and not line.startswith('['):
+                    logger.info(f"  Channel intro (Speaker 2): {line[:60]}...")
+                    current_speaker = 2
+                    buffer_text = line
+                    _flush_buffer()
+                    current_speaker = None  # reset so next Speaker N: triggers normally
+                else:
+                    logger.debug(f"  Skipping unlabeled line before first speaker: {line[:60]}...")
                 continue
             buffer_text = f"{buffer_text} {line}".strip()
 
@@ -576,8 +584,16 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         else:
             # Continuation of current speaker's dialogue
             if current_speaker is None:
-                # Skip lines before the first Host label (preamble, metadata)
-                logger.debug(f"  Skipping unlabeled line before first speaker: {line[:60]}...")
+                # Channel intro line (before any Speaker label) — synthesize as
+                # Speaker 2 (the presenter/narrator role) instead of skipping.
+                if line and not line.startswith('['):
+                    logger.info(f"  Channel intro (Speaker 2): {line[:60]}...")
+                    current_speaker = 2
+                    buffer_text = line
+                    _flush_buffer()
+                    current_speaker = None  # reset so next Speaker N: triggers normally
+                else:
+                    logger.debug(f"  Skipping unlabeled line before first speaker: {line[:60]}...")
                 continue
             buffer_text = f"{buffer_text} {line}".strip()
 
