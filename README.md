@@ -97,21 +97,18 @@ The pipeline uses **4 CrewAI agents** (down from 7 — the clinical pipeline rep
 | **Podcast Producer** | `producer_agent` | Transforms research into a debate script targeting Masters/PhD-level depth | — |
 | **Podcast Editor** | `editor_agent` | Polishes script for natural verbal delivery, enforces word count and depth | — |
 
-## Tri-Model Architecture
+## Two-Model Architecture
 
-The system uses three local LLMs working in tandem:
+The system uses two local LLMs working in tandem:
 
 | Role | Default Model | Hosted On | Purpose |
 |------|---------------|-----------|---------|
-| **Smart model** | `Qwen/Qwen3-32B-AWQ` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing |
-| **Mid-tier model** | `translategemma:12b` | Ollama (port 11434) | Pipelined report translation (Phase 3) |
-| **Fast model** | `llama3.1:8b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
+| **Smart model** | `RedHatAI/Qwen3.5-122B-A10B-NVFP4` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing, SOT translation |
+| **Fast model** | `qwen3:8b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
 
-Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `MID_MODEL_NAME`, `MID_LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
+Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
 
-The mid-tier model (TranslateGemma 12B, a purpose-built translation model by Google) translates each SOT section on GPU. If the mid-tier model is unavailable, the pipeline falls back to smart-model-only mode for translation.
-
-If the fast model is unavailable, the smart model handles all summarization (slower but functional).
+SOT translation is handled directly by the Smart Model (Qwen3.5-122B-A10B is multilingual, including Japanese). If the fast model is unavailable, the smart model handles all summarization and extraction (slower but functional).
 
 ## Evidence-Based Research Pipeline
 
@@ -222,7 +219,7 @@ Dispatches to the appropriate 7-step pipeline based on the Phase 0 domain result
 Batch HEAD requests validate all cited URLs. The Source-of-Truth is then assembled in **IMRaD format** (Introduction, Methods, Results, and Discussion) — a structured scientific paper format derived deterministically from the pipeline's raw outputs. See [Source of Truth (IMRaD Format)](#source-of-truth-imrad-format) below.
 
 ### Phase 3 — Report Translation (conditional)
-For non-English output, the Source-of-Truth is translated using TranslateGemma 12B (`translategemma:12b`) on GPU. If mid-tier unavailable, the smart model (`Qwen3-32B`) handles translation. Sections larger than 8K characters are translated by the smart model to avoid truncation. Skipped entirely for English runs.
+For non-English output, the Source-of-Truth is translated by the Smart Model (`Qwen3.5-122B-A10B-NVFP4`), which is multilingual and handles all IMRaD sections directly. Skipped entirely for English runs.
 
 ### Phase 4 — Episode Blueprint (Crew 3)
 The Producer generates a 7-section Episode Blueprint: episode thesis, listener value proposition, hook question, content framework (PPP or QEI), 4-act narrative arc, GRADE-informed evidence framing, and citation plan. The Source-of-Truth summary is injected directly into task descriptions.
@@ -290,11 +287,10 @@ docker run --runtime nvidia --gpus all -p 8000:8000 \
   --dtype auto --trust-remote-code --enforce-eager --enable-prefix-caching
 ```
 
-**Ollama** — Required for the fast model and mid-tier model:
+**Ollama** — Required for the fast model:
 ```bash
 ollama serve
-ollama pull llama3.1:8b             # Fast model (default)
-ollama pull translategemma:12b      # Mid-tier model (pipelined translation)
+ollama pull qwen3:8b                # Fast model (default)
 ```
 
 **SearXNG** — Self-hosted search (optional, improves source diversity):
@@ -340,12 +336,10 @@ export PODCAST_CORE_TARGET="busy professionals aged 30-50"
 export PODCAST_CHANNEL_MISSION="turning complex science into actionable protocols"
 
 # Model config (defaults shown)
-export MODEL_NAME="Qwen/Qwen3-32B-AWQ"
+export MODEL_NAME="RedHatAI/Qwen3.5-122B-A10B-NVFP4"
 export LLM_BASE_URL="http://localhost:8000/v1"
-export FAST_MODEL_NAME="llama3.1:8b"
+export FAST_MODEL_NAME="qwen3:8b"
 export FAST_LLM_BASE_URL="http://localhost:11434/v1"
-export MID_MODEL_NAME="translategemma:12b"
-export MID_LLM_BASE_URL="http://localhost:11434/v1"
 
 # Web UI authentication (auto-generated if not set)
 export PODCAST_WEB_USER="admin"
