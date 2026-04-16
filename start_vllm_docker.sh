@@ -67,7 +67,7 @@ docker run --runtime nvidia --gpus all \
   -e MAX_NUM_SEQS="${MAX_NUM_SEQS}" \
   -e GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTIL}" \
   -e MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS}" \
-  -e VLLM_EXTRA_ARGS="--enable-chunked-prefill --reasoning-parser qwen3" \
+  -e VLLM_EXTRA_ARGS="--enable-chunked-prefill --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser hermes" \
   -e VLLM_MARLIN_USE_ATOMIC_ADD=0 \
   -e VLLM_USE_FLASHINFER_MOE_FP4=0 \
   -e VLLM_NVFP4_MOE_FORCE_MARLIN=0 \

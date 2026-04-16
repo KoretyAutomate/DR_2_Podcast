@@ -47,3 +47,10 @@ docker/qwen3-tts/logs/
 docker/qwen3-tts/.env
 docker/qwen3-tts/build.log
 PLAN.md
+
+# Presentation — contains large .pptx binary
+presentation/
+
+# Evaluation runtime state (lesson JSON queues)
+dr2_podcast/evaluation/lessons_pending.json
+dr2_podcast/evaluation/lessons_promoted.json
