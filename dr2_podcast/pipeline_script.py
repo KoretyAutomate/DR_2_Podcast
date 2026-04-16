@@ -205,6 +205,47 @@ def _validate_script(script_text: str, target_length: int, tolerance: float,
         if transition_count < 3:
             issues.append(f"MISSING TRANSITIONS: only {transition_count} audio markers (need \u22653)")
 
+    # 3b. Monologue detection — flag any single Host segment that is too long.
+    # Long monologues break conversational flow, reduce reaction-guide coverage,
+    # and produce monotone TTS audio.
+    max_segment = 400 if length_unit == 'chars' else 150  # chars for ja, words for en
+    host_re = re.compile(r'^(?:\*{0,2}(?:Host|ホスト)\s*\d\s*\*{0,2}|Speaker\s*\d)\s*[:：]', re.IGNORECASE)
+    current_seg_text = ""
+    current_seg_host = ""
+    for sline in script_text.split('\n'):
+        sline_stripped = sline.strip()
+        hm = host_re.match(sline_stripped)
+        if hm:
+            # Measure previous segment
+            if current_seg_text:
+                seg_len = (len(re.sub(r'\s', '', current_seg_text))
+                           if length_unit == 'chars'
+                           else len(current_seg_text.split()))
+                if seg_len > max_segment:
+                    issues.append(
+                        f"MONOLOGUE: {current_seg_host} has a {seg_len}-{length_unit} "
+                        f"segment (max {max_segment}). Break into dialogue exchanges."
+                    )
+                    break  # one warning is enough to trigger a retry
+            current_seg_host = hm.group(0).rstrip(':：').strip()
+            current_seg_text = sline_stripped[hm.end():].strip()
+        elif current_seg_text is not None and sline_stripped and not sline_stripped.startswith(('#', '[', '---')):
+            current_seg_text = f"{current_seg_text} {sline_stripped}".strip()
+        else:
+            # Marker, blank line, or section break — measure and reset
+            if current_seg_text:
+                seg_len = (len(re.sub(r'\s', '', current_seg_text))
+                           if length_unit == 'chars'
+                           else len(current_seg_text.split()))
+                if seg_len > max_segment:
+                    issues.append(
+                        f"MONOLOGUE: {current_seg_host} has a {seg_len}-{length_unit} "
+                        f"segment (max {max_segment}). Break into dialogue exchanges."
+                    )
+                    break
+            current_seg_text = ""
+            current_seg_host = ""
+
     # 4. LLM content audit (only if Python checks pass -- saves tokens)
     if not issues and sot_content and _call_smart_model and _truncate_at_boundary:
         content_audit = _quick_content_audit(
