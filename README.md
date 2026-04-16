@@ -76,6 +76,7 @@ A FastAPI-based web interface (`web_ui.py`) for managing podcast production:
 - **Production History**: collapsible list of past runs with download links
 - **Upload integration**: optional Buzzsprout (draft) and YouTube (private) publishing
 - **Research reuse**: reuse previous research artifacts with optional LLM-assessed supplemental research
+- **Stop button**: cancel a running task mid-pipeline
 - **System status**: checks vLLM and Ollama availability before submission
 - Basic authentication support (auto-generated credentials or via env vars)
 
@@ -93,8 +94,8 @@ The pipeline uses **4 CrewAI agents** (down from 7 — the clinical pipeline rep
 | Agent | Variable | Role | Tools |
 |-------|----------|------|-------|
 | **Research Framing Specialist** | `framing_agent` | Defines scope, core questions, evidence criteria before any searching begins | — |
-| **Scientific Auditor** | `auditor_agent` | Checks polished script for scientific drift against the Source-of-Truth | LinkValidator, ListResearchSources, ReadResearchSource, ReadFullReport |
-| **Podcast Producer** | `producer_agent` | Transforms research into a debate script targeting Masters/PhD-level depth | — |
+| **Scientific Auditor** | `auditor_agent` | Checks polished script for scientific drift against the Source-of-Truth | LinkValidator, ListResearchSources, ReadResearchSource, ReadFullReport, ReadValidationResults |
+| **Podcast Producer** | `producer_agent` | Transforms research into a debate script targeting Masters/PhD-level depth | ReadFullReport |
 | **Podcast Editor** | `editor_agent` | Polishes script for natural verbal delivery, enforces word count and depth | — |
 
 ## Two-Model Architecture
@@ -274,18 +275,8 @@ Personality is determined by role, not host: the **presenter** is an enthusiasti
 **vLLM** — Default backend for the smart model:
 ```bash
 ./start_vllm_docker.sh
-# or manually:
-docker run --runtime nvidia --gpus all -p 8000:8000 \
-  --name vllm-server \
-  -v ~/.cache/huggingface:/root/.cache/huggingface \
-  --ipc=host \
-  -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
-  vllm/vllm-openai:v0.13.0 \
-  --model Qwen/Qwen3-32B-AWQ \
-  --max-model-len 32768 \
-  --gpu-memory-utilization 0.65 \
-  --dtype auto --trust-remote-code --enforce-eager --enable-prefix-caching
 ```
+The launcher script pulls `RedHatAI/Qwen3.5-122B-A10B-NVFP4` with `--reasoning-parser qwen3` and `--enable-auto-tool-choice --tool-call-parser hermes`. GPU memory utilization defaults to 82%. See `start_vllm_docker.sh` for all tunables.
 
 **Ollama** — Required for the fast model:
 ```bash
@@ -328,7 +319,7 @@ export PODCAST_TOPIC="effects of intermittent fasting on cognitive performance"
 export PODCAST_LANGUAGE="en"          # en or ja
 export ACCESSIBILITY_LEVEL="simple"   # simple | moderate | technical
 export PODCAST_LENGTH="long"          # short | medium | long
-export PODCAST_HOSTS="random"         # random | kaz_erika | erika_kaz
+export PODCAST_HOSTS="random"         # random | host1_leads | host2_leads
 
 # Optional — channel branding
 export PODCAST_CHANNEL_INTRO="Welcome to Deep Research Podcast. Today we're..."
@@ -340,6 +331,13 @@ export MODEL_NAME="RedHatAI/Qwen3.5-122B-A10B-NVFP4"
 export LLM_BASE_URL="http://localhost:8000/v1"
 export FAST_MODEL_NAME="qwen3:8b"
 export FAST_LLM_BASE_URL="http://localhost:11434/v1"
+
+# Service endpoints (defaults shown)
+export SEARXNG_URL="http://localhost:8080"
+export QWEN3_TTS_API_URL="http://localhost:8082/tts"
+
+# Audio
+export VOICE_DUCKING_DB="-20"         # BGM ducking in dB during speech
 
 # Web UI authentication (auto-generated if not set)
 export PODCAST_WEB_USER="admin"
@@ -365,6 +363,9 @@ python -m dr2_podcast.pipeline --reuse-dir research_outputs/2025-01-15_10-30-00 
 
 # Reuse with LLM-assessed supplemental research if needed
 python -m dr2_podcast.pipeline --reuse-dir research_outputs/2025-01-15_10-30-00 --check-supplemental
+
+# Resume an interrupted run from the last completed phase
+python -m dr2_podcast.pipeline --resume research_outputs/2025-01-15_10-30-00
 ```
 
 ## Accessibility Levels
@@ -376,6 +377,27 @@ Control how aggressively scientific terminology is simplified:
 | `simple` | General educated (college-level) | Define every scientific term inline with plain-English analogies |
 | `moderate` | Science enthusiasts | Define key terms once, assume basic cause-and-effect literacy |
 | `technical` | Professionals in related fields | Standard terminology, no simplification, focus on depth |
+
+## Prefect Orchestration
+
+The pipeline is orchestrated by [Prefect](https://www.prefect.io/) (`pipeline_flow.py`). Each of the 9 phases (0–8) is a `@task` with `persist_result=True` — completed phases are cached and skipped on resume, so an interrupted run can pick up where it left off via `--resume`.
+
+Key behaviors:
+- **Cache key**: per-run directory basename + phase name (collision-safe hash)
+- **Sequential execution**: phases run one at a time (single GPU constraint)
+- **Retry policy**: configurable retries and delay per phase (e.g., Phase 1 research allows retries with 60s delay)
+- **Timeouts**: per-phase timeouts (e.g., Phase 1 = 2 hours, Phase 8 audio = 1 hour)
+
+The Prefect layer is transparent — CLI and Web UI both call `run_pipeline_flow()`, which delegates to the same underlying phase functions.
+
+## Evaluation System
+
+An optional post-run evaluation system (`dr2_podcast/evaluation/`) tracks pipeline quality over time:
+
+- **Scorecard** (`scorecard.py`): Deterministic metric collection (no LLM) — parses logs and artifacts to compute screening tier counts, extraction timeouts, section budget adherence, script length, and audio duration. Outputs `run_scorecard.json`. Flags regressions when metrics drift >10% from a rolling 5-run average.
+- **Lesson Generator** (`lesson_generator.py`): One Smart Model call per run to extract 1–3 actionable observations from the scorecard, tagged by phase group (`research`, `content`, `audio`). Appended to `lessons_pending.json`.
+- **Lesson Reviewer** (`lesson_reviewer.py`): Threshold-triggered promotion — when pending lessons reach 10 entries, deduplicates via Smart Model, expires entries >90 days old, and promotes survivors to `lessons_promoted.json`.
+- **Telegram Report** (`telegram_report.py`): Optional pipeline completion summary delivered via Telegram.
 
 ## Output Files
 
@@ -402,8 +424,10 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 │   └── accuracy_audit.md             Phase 7 — drift detection
 ├── scripts/
 │   ├── script_draft.md               Phase 5 — draft script
-│   ├── script_final.md               Phase 6/7 — final script (post-audit corrections if needed)
-│   └── script.txt                    Final script for TTS
+│   ├── script_polished.md            Phase 6 — polished script
+│   ├── script_final.md               Phase 7/8 — final script (post-audit corrections if needed)
+│   ├── script.txt                    Final script for TTS
+│   └── ACCURACY_CORRECTIONS.md       Phase 7 — correction log (if HIGH-severity drift found)
 ├── audio/
 │   ├── audio.wav                     Phase 8 — raw TTS audio (24kHz WAV, no BGM)
 │   └── audio_mixed.wav               Phase 8 — BGM-mixed final audio (24kHz WAV)
@@ -442,6 +466,7 @@ The evidence quality banner (`⚠ Evidence Quality Notice`) is prepended when th
 ```
 dr2_podcast/                          # Main package
 ├── pipeline.py                       # Main orchestrator (~3,200 lines)
+├── pipeline_flow.py                  # Prefect @flow/@task orchestration (phases 0–8)
 ├── pipeline_crew.py                  # CrewAI agent/task definitions
 ├── pipeline_script.py                # Script validation and trimming
 ├── pipeline_sot.py                   # Source-of-Truth (IMRaD) builder
