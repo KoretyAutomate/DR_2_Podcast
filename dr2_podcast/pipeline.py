@@ -903,9 +903,9 @@ SUPPORTED_LANGUAGES = {
     },
     'ja': {
         'name': '日本語 (Japanese)',
-        'tts_code': 'j',            # Kokoro Japanese / Qwen3-TTS
+        'tts_code': 'j',            # VOICEVOX
         'instruction': 'すべてのコンテンツを日本語で書いてください。(Write all content in Japanese.)',
-        'speech_rate': 350,         # ~350 chars/min (calibrated from Qwen3-TTS actual output)
+        'speech_rate': 350,         # ~350 chars/min (calibrated from VOICEVOX actual output)
         'length_unit': 'chars',
         'prompt_unit': 'character',
     }

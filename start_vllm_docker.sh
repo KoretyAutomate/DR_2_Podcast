@@ -11,19 +11,17 @@ MODEL_HOST_PATH="$HOME/.cache/huggingface/hub/models--RedHatAI--Qwen3.5-122B-A10
 MODEL_CONTAINER_BASE="/models/RedHatAI_Qwen3.5-122B-A10B-NVFP4"
 MODEL_CONTAINER_PATH="${MODEL_CONTAINER_BASE}/snapshots/49d19c108259a21450c40b8af38828b0a97390d8"
 SERVED_MODEL_NAME="RedHatAI/Qwen3.5-122B-A10B-NVFP4"
-ENTRYPOINT_DIR="/tmp/spark-vllm-docker2"   # cloned from spark_vllm_docker
+ENTRYPOINT_DIR="/home/korety/opt/spark_vllm_docker"   # cloned from spark_vllm_docker (persistent; /tmp is wiped on reboot)
 
 PORT=8000
 MAX_MODEL_LEN=32768       # 32k context; model supports up to 262k
 MAX_NUM_SEQS=4
 MAX_NUM_BATCHED_TOKENS=32768
 GPU_MEMORY_UTIL=0.82      # 82% of 119.7GiB (~98.1GiB): 72GiB weights + ~26GiB KV cache
-                          # IMPORTANT: Stop Qwen3-TTS BEFORE running this script.
                           # GB10 has no GDS support (nogds_force.patch), so weight loading
                           # uses CPU-intermediate copies: peak = 72GB weights + CPU buffer.
-                          # With Qwen3-TTS running (~6GiB), peak hits ~115GiB > 119GiB → OOM.
-                          # Restart Qwen3-TTS after vLLM is serving (steady-state is ~102GiB OK).
                           # First-run compile: ~30 min total. Subsequent starts: ~5 min (cached).
+                          # VOICEVOX runs on CPU (Docker) — no GPU memory conflict.
 
 echo "=========================================="
 echo "Starting vLLM Server (Docker)"

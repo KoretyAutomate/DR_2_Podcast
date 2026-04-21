@@ -5,12 +5,11 @@ TTS Audio Engine for Deep Research Podcast
 Generates high-quality, multi-speaker podcast audio with automatic TTS engine selection:
 
   - English:  Kokoro TTS (local, CPU, proven quality)
-  - Japanese: Qwen3-TTS CustomVoice (GPU via Docker, built-in preset voices)
-              Voices: Host1 → Aiden (male), Host2 → Ono_anna (native Japanese female)
+  - Japanese: VOICEVOX (Docker container, accurate kanji reading)
 
 Features:
 - Dual-voice system with speaker detection
-- Automatic language routing (lang_code='a' → Kokoro, 'j' → Qwen3-TTS)
+- Automatic language routing (lang_code='a' → Kokoro, 'j' → VOICEVOX)
 - Script parsing and audio stitching
 - WAV export with BGM support
 """
@@ -192,10 +191,225 @@ VOICE_MAP = {
     'j': {'host1': 'jm_kumo',   'host2': 'jf_alpha'},    # Japanese
 }
 
-# Qwen3-TTS Configuration (for Japanese only — English uses Kokoro)
-# Read at use time via _get_qwen3_tts_url() — .env may not be loaded at import time
-def _get_qwen3_tts_url():
-    return os.getenv("QWEN3_TTS_API_URL")
+# ---------------------------------------------------------------------------
+# VOICEVOX Configuration (Japanese TTS)
+# ---------------------------------------------------------------------------
+_VOICEVOX_API_URL = "http://localhost:50021"
+
+# Speaker IDs — set via env or default.  Override with VOICEVOX_HOST1_ID / VOICEVOX_HOST2_ID.
+def _get_voicevox_speaker_ids():
+    host1 = int(os.getenv("VOICEVOX_HOST1_ID", "51"))   # †聖騎士 紅桜† ノーマル
+    host2 = int(os.getenv("VOICEVOX_HOST2_ID", "2"))    # 四国めたん ノーマル
+    return host1, host2
+
+def _voicevox_available():
+    """Check if VOICEVOX engine is reachable."""
+    try:
+        import requests
+        resp = requests.get(f"{_VOICEVOX_API_URL}/version", timeout=3)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _call_voicevox_segment(text: str, speaker_id: int) -> tuple:
+    """Call VOICEVOX API (two-step: audio_query → synthesis). Returns (audio_np, sample_rate) or (None, None)."""
+    try:
+        import requests
+        import io as _io
+    except ImportError as e:
+        logger.error(f"Missing dependency for VOICEVOX: {e}")
+        return None, None
+
+    try:
+        # Step 1: Create audio query
+        q_resp = requests.post(
+            f"{_VOICEVOX_API_URL}/audio_query",
+            params={"text": text, "speaker": speaker_id},
+            timeout=30,
+        )
+        q_resp.raise_for_status()
+        query_data = q_resp.json()
+
+        # Step 2: Synthesize audio
+        synth_resp = requests.post(
+            f"{_VOICEVOX_API_URL}/synthesis",
+            params={"speaker": speaker_id},
+            json=query_data,
+            timeout=60,
+        )
+        synth_resp.raise_for_status()
+
+        audio, sr = sf.read(_io.BytesIO(synth_resp.content))
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        return audio.astype(np.float32), sr
+    except requests.exceptions.ConnectionError:
+        logger.error(
+            f"VOICEVOX API unreachable at {_VOICEVOX_API_URL}. "
+            f"Start it: docker run -d --name voicevox -p 50021:50021 voicevox/voicevox_engine:cpu-latest"
+        )
+        return None, None
+    except Exception as e:
+        logger.error(f"VOICEVOX API error: {e}")
+        return None, None
+
+
+def _generate_audio_voicevox(script_text: str, output_filename: str) -> str:
+    """
+    Japanese TTS via VOICEVOX API.
+
+    Parses multi-speaker script and calls VOICEVOX REST API for synthesis.
+    VOICEVOX provides accurate Japanese kanji reading.
+    """
+    host1_id, host2_id = _get_voicevox_speaker_ids()
+
+    logger.info("=" * 60)
+    logger.info("VOICEVOX — JAPANESE AUDIO GENERATION")
+    logger.info("=" * 60)
+    logger.info(f"API endpoint: {_VOICEVOX_API_URL}")
+    logger.info(f"Voices: Host1 → speaker_id={host1_id}, Host2 → speaker_id={host2_id}")
+
+    # Health check
+    if not _voicevox_available():
+        logger.error(
+            f"✗ VOICEVOX API not reachable at {_VOICEVOX_API_URL}\n"
+            f"  Start it: docker run -d --name voicevox -p 50021:50021 voicevox/voicevox_engine:cpu-latest"
+        )
+        return None
+
+    logger.info("✓ VOICEVOX API is healthy")
+
+    # Parse script — strict Speaker N: pattern only
+    speaker_pattern = re.compile(r'^(Speaker\s*(\d+))\s*[:：]\s*(.*)', re.IGNORECASE)
+    speaker_map = {}
+
+    lines = script_text.split('\n')
+    audio_segments = []
+    sample_rate = None
+    transition_positions_ms = []
+    cumulative_samples = 0
+
+    current_speaker = None
+    buffer_text = ""
+    segment_count = 0
+
+    def _flush_buffer():
+        nonlocal buffer_text, segment_count, sample_rate, cumulative_samples
+        if buffer_text and current_speaker:
+            logger.info(f"  Segment {segment_count + 1} (Speaker {current_speaker}): {buffer_text[:50]}...")
+            chunks = _chunk_japanese_text(buffer_text)
+            chunk_audios = []
+            spk_id = host1_id if current_speaker == 1 else host2_id
+            for chunk in chunks:
+                a, sr_chunk = _call_voicevox_segment(chunk, spk_id)
+                if a is not None:
+                    chunk_audios.append(a)
+                else:
+                    sr_fallback = sample_rate or 24000
+                    silence_secs = max(0.5, len(chunk) / 8.0)
+                    chunk_audios.append(np.zeros(int(silence_secs * sr_fallback), dtype=np.float32))
+                    logger.warning(f"  Chunk failed — inserted {silence_secs:.1f}s silence")
+            if chunk_audios:
+                if sample_rate is None:
+                    sample_rate = sr_chunk if sr_chunk is not None else 24000
+                    logger.info(f"  Sample rate: {sample_rate} Hz")
+                segment_audio = np.concatenate(chunk_audios)
+                rms = np.sqrt(np.mean(segment_audio ** 2))
+                if rms > 1e-6:
+                    segment_audio = segment_audio * (_TARGET_RMS / rms)
+                    segment_audio = np.clip(segment_audio, -1.0, 1.0)
+                audio_segments.append(segment_audio)
+                cumulative_samples += len(segment_audio)
+                segment_count += 1
+            else:
+                logger.warning(f"  ⚠ Segment {segment_count + 1} failed — skipping")
+        buffer_text = ""
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith('##'):
+            continue
+        if re.match(r'^-{3,}$', line):
+            continue
+
+        if line in MARKER_SILENCE:
+            _flush_buffer()
+            _sr = sample_rate or 24000
+            silence_sec = MARKER_SILENCE[line]
+            silence_samples = int(silence_sec * _sr)
+            audio_segments.append(np.zeros(silence_samples, dtype=np.float32))
+            if line == '[TRANSITION]':
+                position_ms = int((cumulative_samples / _sr) * 1000)
+                transition_positions_ms.append(position_ms)
+                logger.info(f"  [TRANSITION] marker at {position_ms}ms")
+            cumulative_samples += silence_samples
+            continue
+
+        match = speaker_pattern.match(line)
+        if match:
+            name = match.group(1).strip()
+            slot = int(match.group(2))
+            text_after = match.group(3).strip()
+
+            if name not in speaker_map:
+                speaker_map[name] = slot
+                logger.info(f"  Speaker detected: '{name}' → Host {slot}")
+
+            new_speaker = speaker_map[name]
+            _flush_buffer()
+
+            if current_speaker is not None and current_speaker != new_speaker and sample_rate:
+                silence = np.zeros(int(0.3 * sample_rate), dtype=np.float32)
+                audio_segments.append(silence)
+                cumulative_samples += len(silence)
+
+            current_speaker = new_speaker
+            buffer_text = text_after
+        else:
+            if current_speaker is None:
+                if line and not line.startswith('['):
+                    logger.info(f"  Channel intro (Speaker 2): {line[:60]}...")
+                    current_speaker = 2
+                    buffer_text = line
+                    _flush_buffer()
+                    current_speaker = None
+                else:
+                    logger.debug(f"  Skipping unlabeled line: {line[:60]}...")
+                continue
+            buffer_text = f"{buffer_text} {line}".strip()
+
+    _flush_buffer()
+
+    logger.info(f"Generated {segment_count} audio segments")
+    if transition_positions_ms:
+        logger.info(f"Transition positions: {transition_positions_ms}")
+
+    if audio_segments and sample_rate:
+        try:
+            final_audio = np.concatenate(audio_segments)
+            sf.write(output_filename, final_audio, sample_rate)
+
+            file_size = Path(output_filename).stat().st_size
+            duration_sec = len(final_audio) / sample_rate
+            duration_min = duration_sec / 60
+
+            logger.info(f"\n✓ Audio generated successfully (VOICEVOX):")
+            logger.info(f"  File: {output_filename}")
+            logger.info(f"  Size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
+            logger.info(f"  Duration: {duration_min:.2f} minutes ({duration_sec:.1f} seconds)")
+            logger.info(f"  Sample rate: {sample_rate} Hz")
+            logger.info("=" * 60 + "\n")
+
+            return (output_filename, transition_positions_ms)
+        except Exception as e:
+            logger.error(f"✗ ERROR: Failed to save audio: {e}")
+            return None
+    else:
+        logger.error("✗ ERROR: No audio segments generated")
+        return None
 
 
 def _chunk_japanese_text(text: str, max_chars: int = 80) -> list:
@@ -213,218 +427,6 @@ def _chunk_japanese_text(text: str, max_chars: int = 80) -> list:
     return [c for c in chunks if c]
 
 
-def _call_qwen3_tts_segment(text: str, speaker: int) -> tuple:
-    """Call Qwen3-TTS API. speaker: 1=Host1(Aiden), 2=Host2(Ono_anna). Returns (audio, sr) or (None, None)."""
-    try:
-        import requests
-        import io as _io
-    except ImportError as e:
-        logger.error(f"Missing dependency for Qwen3-TTS: {e}")
-        return None, None
-
-    speaker_name = "Host1" if speaker == 1 else "Host2"
-    try:
-        resp = requests.post(
-            f"{_get_qwen3_tts_url()}/tts",
-            json={"text": text, "speaker": speaker_name, "language": "Japanese"},
-        )
-        resp.raise_for_status()
-        audio, sr = sf.read(_io.BytesIO(resp.content))
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
-        return audio.astype(np.float32), sr
-    except requests.exceptions.ConnectionError:
-        logger.error(
-            f"Qwen3-TTS API unreachable at {_get_qwen3_tts_url()}. "
-            f"Start it: docker compose -f docker/qwen3-tts/docker-compose.yml up -d"
-        )
-        return None, None
-    except Exception as e:
-        logger.error(f"Qwen3-TTS API error: {e}")
-        return None, None
-
-
-def _generate_audio_qwen3_tts(script_text: str, output_filename: str) -> str:
-    """
-    Japanese TTS via Qwen3-TTS API.
-
-    Handles multi-speaker script parsing identically to the Kokoro path,
-    but calls Qwen3-TTS REST API instead of the local Kokoro pipeline.
-
-    Args:
-        script_text: Full podcast script with speaker labels
-        output_filename: Output WAV file path
-
-    Returns:
-        Path to generated audio file, or None if generation failed
-    """
-    logger.info("=" * 60)
-    logger.info("QWEN3-TTS — JAPANESE AUDIO GENERATION")
-    logger.info("=" * 60)
-    qwen3_tts_url = _get_qwen3_tts_url()
-    logger.info(f"API endpoint: {qwen3_tts_url}")
-    logger.info("Voices: Host1 → Aiden (male), Host2 → Ono_anna (Japanese female)")
-
-    # Health check
-    try:
-        import requests
-        health = requests.get(f"{qwen3_tts_url}/health", timeout=5)
-        if health.status_code == 200:
-            logger.info("✓ Qwen3-TTS API is healthy")
-        else:
-            logger.warning(f"  Qwen3-TTS API health check returned {health.status_code}")
-    except Exception:
-        logger.error(
-            f"✗ Qwen3-TTS API not reachable at {qwen3_tts_url}\n"
-            f"  Start it: docker compose -f docker/qwen3-tts/docker-compose.yml up -d"
-        )
-        return None
-
-    # Parse script — strict Speaker N: pattern only (no greedy name matching)
-    speaker_pattern = re.compile(r'^(Speaker\s*(\d+))\s*[:：]\s*(.*)', re.IGNORECASE)
-    speaker_map = {}  # "Speaker 1" → 1, "Speaker 2" → 2
-
-    lines = script_text.split('\n')
-    audio_segments = []
-    sample_rate = None  # determined from first API response
-    transition_positions_ms = []  # Track [TRANSITION] positions for pro mixer
-    cumulative_samples = 0
-
-    current_speaker = None
-    buffer_text = ""
-    segment_count = 0
-
-    def _flush_buffer():
-        nonlocal buffer_text, segment_count, sample_rate, cumulative_samples
-        if buffer_text and current_speaker:
-            logger.info(f"  Segment {segment_count + 1} (Speaker {current_speaker}): {buffer_text[:50]}...")
-            chunks = _chunk_japanese_text(buffer_text)
-            chunk_audios = []
-            for chunk in chunks:
-                a, sr_chunk = _call_qwen3_tts_segment(chunk, current_speaker)
-                if a is not None:
-                    chunk_audios.append(a)
-                else:
-                    sr_fallback = sample_rate or 24000
-                    silence_secs = max(0.5, len(chunk) / 8.0)
-                    chunk_audios.append(np.zeros(int(silence_secs * sr_fallback), dtype=np.float32))
-                    logger.warning(f"  Chunk failed — inserted {silence_secs:.1f}s silence")
-            if chunk_audios:
-                if sample_rate is None:
-                    sample_rate = sr_chunk if sr_chunk is not None else 24000
-                    logger.info(f"  Sample rate: {sample_rate} Hz")
-                segment_audio = np.concatenate(chunk_audios)
-                # Per-speaker RMS normalization
-                rms = np.sqrt(np.mean(segment_audio ** 2))
-                if rms > 1e-6:
-                    segment_audio = segment_audio * (_TARGET_RMS / rms)
-                    segment_audio = np.clip(segment_audio, -1.0, 1.0)
-                audio_segments.append(segment_audio)
-                cumulative_samples += len(segment_audio)
-                segment_count += 1
-            else:
-                logger.warning(f"  ⚠ Segment {segment_count + 1} failed — skipping")
-        buffer_text = ""
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        # Skip ## comment lines (guidance, metadata)
-        if line.startswith('##'):
-            continue
-
-        # Skip section separators
-        if re.match(r'^-{3,}$', line):
-            continue
-
-        # Check for audio markers ([TRANSITION], [PAUSE], [BEAT])
-        if line in MARKER_SILENCE:
-            _flush_buffer()
-            # Use 24000 as fallback sample rate if not yet determined
-            _sr = sample_rate or 24000
-            silence_sec = MARKER_SILENCE[line]
-            silence_samples = int(silence_sec * _sr)
-            audio_segments.append(np.zeros(silence_samples, dtype=np.float32))
-            if line == '[TRANSITION]':
-                position_ms = int((cumulative_samples / _sr) * 1000)
-                transition_positions_ms.append(position_ms)
-                logger.info(f"  [TRANSITION] marker at {position_ms}ms")
-            cumulative_samples += silence_samples
-            continue
-
-        # Check for speaker switch — strict "Host N:" pattern only
-        match = speaker_pattern.match(line)
-        if match:
-            name = match.group(1).strip()    # "Speaker 1" or "Speaker 2"
-            slot = int(match.group(2))        # 1 or 2
-            text_after = match.group(3).strip()
-
-            if name not in speaker_map:
-                speaker_map[name] = slot
-                logger.info(f"  Speaker detected: '{name}' → Host {slot}")
-
-            new_speaker = speaker_map[name]
-            _flush_buffer()
-
-            # Insert silence gap on speaker change
-            if current_speaker is not None and current_speaker != new_speaker and sample_rate:
-                silence = np.zeros(int(0.3 * sample_rate), dtype=np.float32)
-                audio_segments.append(silence)
-                cumulative_samples += len(silence)
-
-            current_speaker = new_speaker
-            buffer_text = text_after
-        else:
-            # Continuation of current speaker's dialogue
-            if current_speaker is None:
-                # Channel intro line (before any Speaker label) — synthesize as
-                # Speaker 2 (the presenter/narrator role) instead of skipping.
-                if line and not line.startswith('['):
-                    logger.info(f"  Channel intro (Speaker 2): {line[:60]}...")
-                    current_speaker = 2
-                    buffer_text = line
-                    _flush_buffer()
-                    current_speaker = None  # reset so next Speaker N: triggers normally
-                else:
-                    logger.debug(f"  Skipping unlabeled line before first speaker: {line[:60]}...")
-                continue
-            buffer_text = f"{buffer_text} {line}".strip()
-
-    # Process final buffer
-    _flush_buffer()
-
-    logger.info(f"Generated {segment_count} audio segments")
-    if transition_positions_ms:
-        logger.info(f"Transition positions: {transition_positions_ms}")
-
-    # Stitch and save
-    if audio_segments and sample_rate:
-        try:
-            final_audio = np.concatenate(audio_segments)
-            sf.write(output_filename, final_audio, sample_rate)
-
-            file_size = Path(output_filename).stat().st_size
-            duration_sec = len(final_audio) / sample_rate
-            duration_min = duration_sec / 60
-
-            logger.info(f"\n✓ Audio generated successfully (Qwen3-TTS):")
-            logger.info(f"  File: {output_filename}")
-            logger.info(f"  Size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
-            logger.info(f"  Duration: {duration_min:.2f} minutes ({duration_sec:.1f} seconds)")
-            logger.info(f"  Sample rate: {sample_rate} Hz")
-            logger.info("=" * 60 + "\n")
-
-            return (output_filename, transition_positions_ms)
-        except Exception as e:
-            logger.error(f"✗ ERROR: Failed to save audio: {e}")
-            return None
-    else:
-        logger.error("✗ ERROR: No audio segments generated")
-        return None
-
-
 def generate_audio_from_script(script_text: str, output_filename: str = "final_podcast.wav", lang_code: str = 'a'):
     """
     Parses a script looking for 'Speaker 1:' and 'Speaker 2:' lines,
@@ -432,7 +434,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
 
     TTS Engine selection:
       - English (lang_code='a'): Kokoro TTS (local, CPU, proven)
-      - Japanese (lang_code='j'): Qwen3-TTS API (GPU via Docker, distinct preset voices)
+      - Japanese (lang_code='j'): VOICEVOX API (Docker container)
 
     Args:
         script_text: Full podcast script with "Host 1:" / "Host 2:" labels (renamed to "Speaker N:" before parsing)
@@ -450,9 +452,10 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         [TRANSITION]
         Host 1: Studies show that moderate coffee intake...
     """
-    # Route to Qwen3-TTS for Japanese (GPU-accelerated, distinct preset voices)
+    # Route Japanese to VOICEVOX
     if lang_code == 'j':
-        return _generate_audio_qwen3_tts(script_text, output_filename)
+        logger.info("Using VOICEVOX for Japanese TTS")
+        return _generate_audio_voicevox(script_text, output_filename)
 
     # English and all other languages use Kokoro TTS
     logger.info("=" * 60)
@@ -766,6 +769,13 @@ def clean_script_for_tts(script_text: str) -> str:
     # Normalize whitespace within lines, but preserve line breaks
     clean = re.sub(r'[^\S\n]+', ' ', clean)  # collapse spaces/tabs but keep \n
     clean = re.sub(r'\n{3,}', '\n\n', clean)  # collapse excessive blank lines
+
+    # Strip spaces at Latin↔Japanese boundaries (VOICEVOX otherwise inserts an
+    # audible pause between e.g. "AI ラボ員達" or "DHA 配合").
+    _JP = r'\u3005\u3040-\u309F\u30A0-\u30FF\u3400-\u4DBF\u4E00-\u9FFF'
+    clean = re.sub(rf'(?<=[A-Za-z0-9])[ \t]+(?=[{_JP}])', '', clean)
+    clean = re.sub(rf'(?<=[{_JP}])[ \t]+(?=[A-Za-z0-9])', '', clean)
+
     clean = clean.strip()
 
     # Restore audio markers

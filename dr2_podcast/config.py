@@ -15,7 +15,7 @@ OUTPUT_DIR_OVERRIDE = os.environ.get("OUTPUT_DIR")
 
 # --- Service URLs ---
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:8080")
-QWEN3_TTS_URL = os.environ.get("QWEN3_TTS_API_URL", "http://localhost:8082/tts")
+VOICEVOX_URL = os.environ.get("VOICEVOX_API_URL", "http://localhost:50021")
 
 # --- Timeouts (seconds) ---
 LLM_TIMEOUT = 300

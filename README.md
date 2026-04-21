@@ -1,6 +1,6 @@
 # Deep-Research Podcast Crew
 
-An AI-powered pipeline that deeply researches any scientific topic using a clinical systematic-review methodology (PICO/GRADE), synthesizes evidence from both affirmative and adversarial perspectives, and produces a broadcast-ready podcast with local TTS audio (Kokoro for English, Qwen3-TTS for Japanese) — all running on local models. Includes a FastAPI web UI for one-click production with live progress tracking.
+An AI-powered pipeline that deeply researches any scientific topic using a clinical systematic-review methodology (PICO/GRADE), synthesizes evidence from both affirmative and adversarial perspectives, and produces a broadcast-ready podcast with local TTS audio (Kokoro for English, VOICEVOX for Japanese) — all running on local models. Includes a FastAPI web UI for one-click production with live progress tracking.
 
 ## System Overview
 
@@ -61,7 +61,7 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
                                        ▼
                 ┌─────────────────────────────────────────────┐
                 │  Phase 8 — Audio Production                 │
-                │  Kokoro TTS (EN), Qwen3-TTS (JA),           │
+                │  Kokoro TTS (EN), VOICEVOX (JA),             │
                 │  two voices, 24kHz WAV + BGM                │
                 └─────────────────────────────────────────────┘
 ```
@@ -240,13 +240,13 @@ Audio is rendered with two voices at 24kHz WAV, followed by BGM mixing. TTS engi
 | Language | TTS Engine | Host 1 (Male) | Host 2 (Female) |
 |----------|------------|---------------|-----------------|
 | English  | Kokoro TTS (local, CPU) | `am_fenrir` (American male) | `af_heart` (American female) |
-| Japanese | Qwen3-TTS (GPU via FastAPI server) | Aiden (male) | Ono_anna (native Japanese female) |
+| Japanese | VOICEVOX (Docker, port 50021) | †聖騎士 紅桜† ノーマル (id=51) | 四国めたん ノーマル (id=2) |
 
 ## Multi-Language Support
 
 The pipeline supports English and Japanese output:
 - **English**: Default. All research, scripts, and audio in English.
-- **Japanese**: A translation task runs in Crew 2 before Crew 3. Audio is rendered by **Qwen3-TTS** (GPU, FastAPI server at port 8082) — Kokoro is not used for Japanese. A post-Crew 3 language auditor detects Chinese contamination (CJK text without hiragana/katakana) and automatically runs a correction pass to translate any Chinese passages into natural Japanese.
+- **Japanese**: A translation task runs in Crew 2 before Crew 3. Audio is rendered by **VOICEVOX** (Docker container at port 50021) — Kokoro is not used for Japanese. A post-Crew 3 language auditor detects Chinese contamination (CJK text without hiragana/katakana) and automatically runs a correction pass to translate any Chinese passages into natural Japanese.
 
 ### Script Length Enforcement
 
@@ -256,8 +256,8 @@ After Crew 3 completes, the pipeline measures script length against the target (
 
 | Host | Voice | Role |
 |------|-------|------|
-| **Host 1** | Male (Kokoro: `am_fenrir` / Qwen3: Aiden) | Randomly assigned as presenter or questioner each session |
-| **Host 2** | Female (Kokoro: `af_heart` / Qwen3: Ono_anna) | Randomly assigned as presenter or questioner each session |
+| **Host 1** | Male (Kokoro: `am_fenrir` / VOICEVOX: id=51) | Randomly assigned as presenter or questioner each session |
+| **Host 2** | Female (Kokoro: `af_heart` / VOICEVOX: id=2) | Randomly assigned as presenter or questioner each session |
 
 Personality is determined by role, not host: the **presenter** is an enthusiastic science communicator; the **questioner** is a curious, skeptical interviewer. Override with `PODCAST_HOSTS` env var (`host1_leads`, `host2_leads`, or `random`).
 
@@ -289,11 +289,9 @@ ollama pull qwen3:8b                # Fast model (default)
 docker run -d -p 8080:8080 searxng/searxng:latest
 ```
 
-**Qwen3-TTS** — Optional high-quality Japanese TTS (conda env: `qwen3_tts`):
+**VOICEVOX** — Japanese TTS engine (Docker):
 ```bash
-bash docker/qwen3-tts/run_server.sh
-# First-time init:
-bash docker/qwen3-tts/init_and_start.sh
+docker run -d --name voicevox -p 50021:50021 voicevox/voicevox_engine:cpu-latest
 ```
 
 ## Installation
@@ -334,7 +332,7 @@ export FAST_LLM_BASE_URL="http://localhost:11434/v1"
 
 # Service endpoints (defaults shown)
 export SEARXNG_URL="http://localhost:8080"
-export QWEN3_TTS_API_URL="http://localhost:8082/tts"
+export VOICEVOX_API_URL="http://localhost:50021"
 
 # Audio
 export VOICE_DUCKING_DB="-20"         # BGM ducking in dB during speech
@@ -487,7 +485,7 @@ dr2_podcast/                          # Main package
 │   ├── social_science.py             # DEPRECATED — moved into clinical.py Orchestrator
 │   └── wwc_database.py               # What Works Clearinghouse SQLite database
 ├── audio/
-│   └── engine.py                     # Kokoro TTS + BGM mixing (dual-voice, 24kHz WAV)
+│   └── engine.py                     # Kokoro TTS (EN) + VOICEVOX (JA) + BGM mixing (dual-voice, 24kHz WAV)
 ├── evaluation/
 │   ├── scorecard.py                  # Run quality scorecard generation
 │   ├── lesson_generator.py           # LLM-assisted observation extraction from scorecards
@@ -505,7 +503,7 @@ tests/                                # Test suite (22 files, ~195 tests)
 |---------------|---------|
 | `start_podcast_web_ui.sh` | Web UI launcher script |
 | `start_vllm_docker.sh` | vLLM Docker container launcher |
-| `docker/qwen3-tts/` | Qwen3-TTS FastAPI server for high-quality Japanese TTS (conda env: `qwen3_tts`) |
+| `docker/qwen3-tts/` | Legacy Qwen3-TTS server (unused — replaced by VOICEVOX) |
 | `requirements.txt` | Core Python dependencies |
 | `podcast_tasks.json` | Persistent task queue for the web UI |
 | `Podcast BGM/` | Pre-built WAV background music library for BGM mixing |

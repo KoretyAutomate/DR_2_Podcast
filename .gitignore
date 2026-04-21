@@ -40,7 +40,7 @@ Intro Script ja.txt
 reflections/
 .pytest_cache/
 
-# Qwen3-TTS — large files excluded from git
+# Qwen3-TTS (legacy, unused — replaced by VOICEVOX) — large files excluded from git
 docker/qwen3-tts/checkpoints/
 docker/qwen3-tts/outputs/
 docker/qwen3-tts/logs/

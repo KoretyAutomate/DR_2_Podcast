@@ -54,6 +54,27 @@ class TestCleanScriptForTTS:
         assert "internal thoughts" not in result
         assert "Visible line" in result
 
+    def test_strips_latin_japanese_boundary_spaces(self):
+        text = "Host 1: AI ラボ員達の DHA 配合サプリを mg ずつ。"
+        result = clean_script_for_tts(text)
+        assert "AIラボ員達" in result
+        assert "DHA配合" in result
+        assert "mgずつ" in result
+        assert "Speaker 1:" in result
+
+    def test_preserves_latin_inner_spacing(self):
+        # Spaces between two Latin tokens (e.g. "100 mg") must stay.
+        text = "Host 1: 摂取量は 100 mg 必要です。"
+        result = clean_script_for_tts(text)
+        assert "100 mg" in result
+        assert "は100" in result
+        assert "mg必要です" in result
+
+    def test_preserves_pure_english_spacing(self):
+        text = "Host 1: This is a normal English sentence."
+        result = clean_script_for_tts(text)
+        assert "This is a normal English sentence" in result
+
 
 # ---------------------------------------------------------------------------
 # _chunk_japanese_text
