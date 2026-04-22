@@ -94,8 +94,8 @@ class LLM(_BaseLLM):
                 len(str(m.get("content", ""))) for m in params.get("messages", [])
                 if isinstance(m, dict)
             )
-            # Conservative estimate: ~3.5 chars per token for mixed EN/JA content
-            est_prompt_tokens = int(total_chars / 3.5) + 500  # 500-token buffer for overhead
+            # Nemotron-H tokenizer: ~2 chars/token for mixed EN/JA (Japanese ~1, English ~4)
+            est_prompt_tokens = int(total_chars / 2.0) + 500  # 500-token buffer for overhead
             available = self.ctx_window - est_prompt_tokens
             if available < configured_max:
                 capped = max(1024, available)

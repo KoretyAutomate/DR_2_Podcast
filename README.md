@@ -276,7 +276,7 @@ Personality is determined by role, not host: the **presenter** is an enthusiasti
 ```bash
 ./start_vllm_docker.sh
 ```
-The launcher script pulls `RedHatAI/Qwen3.5-122B-A10B-NVFP4` with `--reasoning-parser qwen3` and `--enable-auto-tool-choice --tool-call-parser hermes`. GPU memory utilization defaults to 82%. See `start_vllm_docker.sh` for all tunables.
+The launcher script mounts `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` from the local HuggingFace cache and serves it with `--reasoning-parser qwen3` and `--enable-auto-tool-choice --tool-call-parser hermes`. GPU memory utilization defaults to 82%. See `start_vllm_docker.sh` for all tunables.
 
 **Ollama** — Required for the fast model:
 ```bash

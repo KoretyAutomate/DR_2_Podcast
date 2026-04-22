@@ -1,16 +1,16 @@
 #!/bin/bash
 # vLLM Docker Server Startup Script
-# Model:  RedHatAI/Qwen3.5-122B-A10B-NVFP4 (NVFP4 pre-quantized, ~75.6 GB)
+# Model:  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 (NVFP4 pre-quantized, ~75 GB)
 # Image:  ghcr.io/bjk110/vllm-spark:v019-ngc2603
 #         (vLLM 0.19.1 · FlashInfer 0.6.7 · SM121 source build · NGC 26.03)
 # Source: https://github.com/JungkwanBan/spark_vllm_docker
 # Port:   8000
 
 # Mount the full model directory (not just snapshot) so that symlinks to blobs/ resolve inside the container
-MODEL_HOST_PATH="$HOME/.cache/huggingface/hub/models--RedHatAI--Qwen3.5-122B-A10B-NVFP4"
-MODEL_CONTAINER_BASE="/models/RedHatAI_Qwen3.5-122B-A10B-NVFP4"
-MODEL_CONTAINER_PATH="${MODEL_CONTAINER_BASE}/snapshots/49d19c108259a21450c40b8af38828b0a97390d8"
-SERVED_MODEL_NAME="RedHatAI/Qwen3.5-122B-A10B-NVFP4"
+MODEL_HOST_PATH="$HOME/.cache/huggingface/hub/models--nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+MODEL_CONTAINER_BASE="/models/nvidia_NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+MODEL_CONTAINER_PATH="${MODEL_CONTAINER_BASE}/snapshots/0d6fa3ecad422a12f475b6896dd68e6bb79460b5"
+SERVED_MODEL_NAME="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
 ENTRYPOINT_DIR="/home/korety/opt/spark_vllm_docker"   # cloned from spark_vllm_docker (persistent; /tmp is wiped on reboot)
 
 PORT=8000
@@ -42,7 +42,7 @@ mkdir -p /home/korety/.vllm-cache/vllm
 # Start vLLM via the unified spark entrypoint
 # ROLE=head + TP_SIZE=1 → standalone serve (no Ray, no multi-node overhead)
 # Key SM121/NVFP4 notes (from redhatai-122b-nvfp4.env preset):
-#   - No --quantization flag: RedHatAI model is compressed-tensors format, auto-detected
+#   - No --quantization flag: Nemotron NVFP4 model is compressed-tensors format, auto-detected
 #   - VLLM_USE_FLASHINFER_MOE_FP4=0: use native cutlass_moe_fp4 (SM12x compatible)
 #   - VLLM_NVFP4_MOE_FORCE_MARLIN=0: stable CUTLASS path
 #   - Thinking mode disabled at call sites via /no_think prefix

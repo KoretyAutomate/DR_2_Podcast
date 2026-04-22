@@ -29,10 +29,10 @@ _SOT_BLOCK_RE = re.compile(
 def _estimate_task_tokens(task, translation_task_obj=None, language='en'):
     """Rough estimate of input tokens for a CrewAI task (description + context chain outputs).
 
-    Japanese/Chinese: ~2 chars/token. Other languages: ~4 chars/token.
+    Nemotron-H tokenizer: Japanese/Chinese ~1 char/token, other languages ~4 chars/token.
     Adds 2000-token buffer for agent system prompt overhead.
     """
-    chars_per_tok = 2 if language in ('ja', 'zh') else 4
+    chars_per_tok = 1 if language in ('ja', 'zh') else 4
     total_chars = len(task.description or '')
     for ctx_task in (task.context or []):
         raw = getattr(getattr(ctx_task, 'output', None), 'raw', '') or ''

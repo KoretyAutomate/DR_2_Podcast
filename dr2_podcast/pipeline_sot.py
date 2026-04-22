@@ -9,7 +9,12 @@ _format_study_characteristics_table, _format_references).
 
 import re
 from pathlib import Path
+from dr2_podcast.config import SMART_MODEL
 from dr2_podcast.utils import strip_think_blocks
+
+
+def _smart_model_display() -> str:
+    return SMART_MODEL.split("/", 1)[-1] if SMART_MODEL else "Smart LLM"
 
 
 def _extract_conclusion_status(grade_report: str, domain: str = "clinical",
@@ -498,7 +503,8 @@ def build_imrad_sot(
     out.append(t(tmpl, "methods", "screening_header"))
     out.append(t(tmpl, "methods", "screening_body",
                  aff_screened=aff_screened, fal_screened=fal_screened,
-                 total_screened=total_screened))
+                 total_screened=total_screened,
+                 smart_model=_smart_model_display()))
 
     # 2.4 Data Extraction
     out.append(t(tmpl, "methods", "extraction_header"))

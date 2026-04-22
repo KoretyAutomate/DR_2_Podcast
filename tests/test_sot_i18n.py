@@ -226,7 +226,8 @@ class TestJACorrectTerms:
     def test_rct_correct(self, ja):
         """無作為化比較試験, NOT 随機化."""
         screening = t(ja, "methods", "screening_body",
-                      aff_screened=0, fal_screened=0, total_screened=0)
+                      aff_screened=0, fal_screened=0, total_screened=0,
+                      smart_model="test-model")
         assert "無作為化比較試験" in screening
 
     def test_ja_section_headers(self, ja):

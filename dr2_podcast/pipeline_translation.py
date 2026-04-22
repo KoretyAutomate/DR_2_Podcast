@@ -94,7 +94,7 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
                               *, _call_smart_model) -> str:
     """Translate SOT on the Smart Model (sequential, no audit).
 
-    The Smart Model (Qwen3.5-122B-A10B) is multilingual and translates IMRaD
+    The Smart Model (configured via MODEL_NAME env var) translates IMRaD
     sections directly.
     """
     # Strip leftover <think> blocks from Qwen3 thinking mode that may be embedded in the SOT

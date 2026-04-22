@@ -2,7 +2,7 @@
 Deep Research Agent - Evidence-Based Clinical Research Pipeline
 
 Optimized for Nvidia DGX Spark (128GB Unified Memory):
-- SMART MODEL (Qwen3.5-122B-A10B-NVFP4) on port 8000: Reasoning, planning, evaluation
+- SMART MODEL (configured via MODEL_NAME env var) on port 8000: Reasoning, planning, evaluation
 - FAST MODEL (qwen3:8b via Ollama) on port 11434: Parallel content summarization
 
 Architecture (7-Step Clinical Pipeline — parallel a/b tracks):
@@ -56,8 +56,8 @@ logger = logging.getLogger(__name__)
 MAX_INPUT_TOKENS = 32000
 # Safe char budget for Smart Model content (32K-token context).
 # Reserve ~3,200 tokens for system prompt + completion → ~29K tokens available.
-# At ~2.5 chars/token (conservative for medical/CJK text) → 70K chars.
-_SMART_CONTENT_CHARS = 70_000
+# At ~1 char/token (Nemotron-H tokenizer on medical/CJK text) → 29K chars.
+_SMART_CONTENT_CHARS = 29_000
 MAX_CONCURRENT_SUMMARIES = 10
 MAX_RESEARCH_ITERATIONS = 3
 

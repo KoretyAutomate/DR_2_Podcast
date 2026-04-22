@@ -115,7 +115,7 @@ SOT_TEMPLATES = {
             ),
             "screening_header": "\n### 2.3 Screening & Selection\n",
             "screening_body": (
-                "Title and abstract screening was performed by the Smart Model (Qwen3.5-122B-A10B) "
+                "Title and abstract screening was performed by the Smart Model ({smart_model}) "
                 "using structured inclusion/exclusion criteria:\n\n"
                 "**Inclusion criteria:** Human clinical studies (RCTs, meta-analyses, systematic reviews, "
                 "large cohort studies); sample size \u2265 30 participants; published in peer-reviewed journals; "
@@ -364,7 +364,7 @@ SOT_TEMPLATES = {
             ),
             "screening_header": "\n### 2.3 スクリーニングと選択\n",
             "screening_body": (
-                "タイトルおよび抄録のスクリーニングは、Smart Model (Qwen3.5-122B-A10B)により"
+                "タイトルおよび抄録のスクリーニングは、Smart Model ({smart_model})により"
                 "構造化された組み入れ/除外基準を用いて実施された:\n\n"
                 "**組み入れ基準:** ヒト臨床研究（無作為化比較試験、メタアナリシス、系統的レビュー、"
                 "大規模コホート研究）；サンプルサイズ≧30人；査読付きジャーナルに掲載；"
