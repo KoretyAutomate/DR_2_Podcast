@@ -15,7 +15,21 @@ OUTPUT_DIR_OVERRIDE = os.environ.get("OUTPUT_DIR")
 
 # --- Service URLs ---
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:8080")
-VOICEVOX_URL = os.environ.get("VOICEVOX_API_URL", "http://localhost:50021")
+
+# --- TTS Configuration ---
+# Engine selectors per language. Known engines: "voicevox" (JA, HTTP/Docker), "kokoro" (EN, in-process).
+# To add a new engine: define a _generate_audio_<name> adapter in audio/engine.py and register it.
+TTS_ENGINE_JA = os.environ.get("TTS_ENGINE_JA", "voicevox")
+TTS_ENGINE_EN = os.environ.get("TTS_ENGINE_EN", "kokoro")
+
+# Generic HTTP endpoint — used by any HTTP-based TTS engine (VOICEVOX and future engines).
+# Kokoro runs in-process and ignores this.
+TTS_API_URL = os.environ.get("TTS_API_URL", "http://localhost:50021")
+
+# Speaker identifiers — string form so different engines can interpret as needed
+# (VOICEVOX: integer speaker ID; cloud TTS: voice name/UUID). Engine adapter casts.
+TTS_HOST1_ID = os.environ.get("TTS_HOST1_ID", "51")
+TTS_HOST2_ID = os.environ.get("TTS_HOST2_ID", "2")
 
 # --- Timeouts (seconds) ---
 LLM_TIMEOUT = 300

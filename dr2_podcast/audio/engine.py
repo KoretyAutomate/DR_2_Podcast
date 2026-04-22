@@ -24,6 +24,13 @@ import os
 import random
 from pathlib import Path
 from dr2_podcast.utils import strip_think_blocks
+from dr2_podcast.config import (
+    TTS_API_URL,
+    TTS_ENGINE_EN,
+    TTS_ENGINE_JA,
+    TTS_HOST1_ID,
+    TTS_HOST2_ID,
+)
 
 from pydub import AudioSegment, effects
 
@@ -192,15 +199,15 @@ VOICE_MAP = {
 }
 
 # ---------------------------------------------------------------------------
-# VOICEVOX Configuration (Japanese TTS)
+# VOICEVOX Adapter (Japanese TTS, HTTP/Docker)
 # ---------------------------------------------------------------------------
-_VOICEVOX_API_URL = "http://localhost:50021"
+# URL aliased to preserve existing call-site names; single source of truth is config.TTS_API_URL.
+_VOICEVOX_API_URL = TTS_API_URL
 
-# Speaker IDs — set via env or default.  Override with VOICEVOX_HOST1_ID / VOICEVOX_HOST2_ID.
-def _get_voicevox_speaker_ids():
-    host1 = int(os.getenv("VOICEVOX_HOST1_ID", "51"))   # †聖騎士 紅桜† ノーマル
-    host2 = int(os.getenv("VOICEVOX_HOST2_ID", "2"))    # 四国めたん ノーマル
-    return host1, host2
+def _get_tts_speaker_ids_int():
+    """Speaker IDs as integers — for engines that use numeric IDs (VOICEVOX et al.).
+    Defaults: 51 (†聖騎士 紅桜† ノーマル) and 2 (四国めたん ノーマル)."""
+    return int(TTS_HOST1_ID), int(TTS_HOST2_ID)
 
 def _voicevox_available():
     """Check if VOICEVOX engine is reachable."""
@@ -262,7 +269,7 @@ def _generate_audio_voicevox(script_text: str, output_filename: str) -> str:
     Parses multi-speaker script and calls VOICEVOX REST API for synthesis.
     VOICEVOX provides accurate Japanese kanji reading.
     """
-    host1_id, host2_id = _get_voicevox_speaker_ids()
+    host1_id, host2_id = _get_tts_speaker_ids_int()
 
     logger.info("=" * 60)
     logger.info("VOICEVOX — JAPANESE AUDIO GENERATION")
@@ -412,6 +419,18 @@ def _generate_audio_voicevox(script_text: str, output_filename: str) -> str:
         return None
 
 
+# ---------------------------------------------------------------------------
+# TTS Engine Registry — maps engine name → adapter fn(script_text, output_filename)
+# Adapters must accept (str, str) and return the output path (or None on failure).
+# To add a new engine: implement _generate_audio_<name> above and add an entry here.
+# "kokoro" is not in this dict — it runs inline in generate_audio_from_script because
+# it shares the function's local state (chunking, mixing) and is the EN default.
+# ---------------------------------------------------------------------------
+_TTS_ENGINES = {
+    "voicevox": _generate_audio_voicevox,
+}
+
+
 def _chunk_japanese_text(text: str, max_chars: int = 80) -> list:
     """Split Japanese text at sentence-end punctuation to keep each TTS call under max_chars."""
     sentences = re.split(r'(?<=[。！？\n])', text)
@@ -452,12 +471,22 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         [TRANSITION]
         Host 1: Studies show that moderate coffee intake...
     """
-    # Route Japanese to VOICEVOX
-    if lang_code == 'j':
-        logger.info("Using VOICEVOX for Japanese TTS")
-        return _generate_audio_voicevox(script_text, output_filename)
+    # Select engine by language. Engine registry dispatches HTTP-based engines;
+    # Kokoro runs inline below (in-process, shares this function's state).
+    engine_name = TTS_ENGINE_JA if lang_code == 'j' else TTS_ENGINE_EN
+    logger.info(f"Selected TTS engine: {engine_name} (lang_code={lang_code})")
 
-    # English and all other languages use Kokoro TTS
+    if engine_name != "kokoro":
+        adapter = _TTS_ENGINES.get(engine_name)
+        if adapter is None:
+            logger.error(
+                f"Unknown TTS engine '{engine_name}'. "
+                f"Registered: {sorted(_TTS_ENGINES.keys()) + ['kokoro']}"
+            )
+            return None
+        return adapter(script_text, output_filename)
+
+    # Kokoro TTS path (English default, and any language where TTS_ENGINE_* = kokoro)
     logger.info("=" * 60)
     logger.info("KOKORO TTS AUDIO GENERATION")
     logger.info("=" * 60)
