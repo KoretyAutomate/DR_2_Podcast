@@ -104,12 +104,12 @@ The system uses two local LLMs working in tandem:
 
 | Role | Default Model | Hosted On | Purpose |
 |------|---------------|-----------|---------|
-| **Smart model** | `RedHatAI/Qwen3.5-122B-A10B-NVFP4` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing, SOT translation |
+| **Smart model** | `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing, SOT translation |
 | **Fast model** | `qwen3:8b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
 
 Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
 
-SOT translation is handled directly by the Smart Model (Qwen3.5-122B-A10B is multilingual, including Japanese). If the fast model is unavailable, the smart model handles all summarization and extraction (slower but functional).
+SOT translation is handled directly by the Smart Model (multilingual, including Japanese — set via `MODEL_NAME`). If the fast model is unavailable, the smart model handles all summarization and extraction (slower but functional).
 
 ## Evidence-Based Research Pipeline
 
@@ -220,7 +220,7 @@ Dispatches to the appropriate 7-step pipeline based on the Phase 0 domain result
 Batch HEAD requests validate all cited URLs. The Source-of-Truth is then assembled in **IMRaD format** (Introduction, Methods, Results, and Discussion) — a structured scientific paper format derived deterministically from the pipeline's raw outputs. See [Source of Truth (IMRaD Format)](#source-of-truth-imrad-format) below.
 
 ### Phase 3 — Report Translation (conditional)
-For non-English output, the Source-of-Truth is translated by the Smart Model (`Qwen3.5-122B-A10B-NVFP4`), which is multilingual and handles all IMRaD sections directly. Skipped entirely for English runs.
+For non-English output, the Source-of-Truth is translated by the Smart Model (set via `MODEL_NAME`), which is multilingual and handles all IMRaD sections directly. Skipped entirely for English runs.
 
 ### Phase 4 — Episode Blueprint (Crew 3)
 The Producer generates a 7-section Episode Blueprint: episode thesis, listener value proposition, hook question, content framework (PPP or QEI), 4-act narrative arc, GRADE-informed evidence framing, and citation plan. The Source-of-Truth summary is injected directly into task descriptions.
@@ -325,14 +325,20 @@ export PODCAST_CORE_TARGET="busy professionals aged 30-50"
 export PODCAST_CHANNEL_MISSION="turning complex science into actionable protocols"
 
 # Model config (defaults shown)
-export MODEL_NAME="RedHatAI/Qwen3.5-122B-A10B-NVFP4"
+export MODEL_NAME="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
 export LLM_BASE_URL="http://localhost:8000/v1"
 export FAST_MODEL_NAME="qwen3:8b"
 export FAST_LLM_BASE_URL="http://localhost:11434/v1"
 
 # Service endpoints (defaults shown)
 export SEARXNG_URL="http://localhost:8080"
-export VOICEVOX_API_URL="http://localhost:50021"
+
+# TTS engine configuration (defaults shown)
+export TTS_ENGINE_JA="voicevox"         # Japanese engine (registry: voicevox)
+export TTS_ENGINE_EN="kokoro"           # English engine (Kokoro in-process)
+export TTS_API_URL="http://localhost:50021"   # HTTP endpoint for HTTP-based engines (VOICEVOX etc.)
+export TTS_HOST1_ID="51"                # VOICEVOX: †聖騎士 紅桜† ノーマル
+export TTS_HOST2_ID="2"                 # VOICEVOX: 四国めたん ノーマル
 
 # Audio
 export VOICE_DUCKING_DB="-20"         # BGM ducking in dB during speech
@@ -429,18 +435,19 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
 ├── audio/
 │   ├── audio.wav                     Phase 8 — raw TTS audio (24kHz WAV, no BGM)
 │   └── audio_mixed.wav               Phase 8 — BGM-mixed final audio (24kHz WAV)
-├── meta/
-│   ├── session_metadata.txt          Topic, language, character assignments
-│   ├── podcast_generation.log        Execution log
-│   ├── checkpoint.json               Resume checkpoint for interrupted runs
-│   ├── research_framing.pdf          PDF export of research framing
-│   ├── source_of_truth.pdf           PDF export of IMRaD SOT
-│   ├── source_of_truth_ja.pdf        PDF export of translated SOT (Japanese only)
-│   └── accuracy_audit.pdf            PDF export of accuracy audit
-└── extraction_cache.json             Step 4 — PMID-keyed extraction cache
+└── meta/
+    ├── session_metadata.txt          Topic, language, character assignments
+    ├── podcast_generation.log        Execution log
+    ├── checkpoint.json               Resume checkpoint for interrupted runs
+    ├── extraction_cache.json         Step 4 — PMID-keyed extraction cache (per-run snapshot)
+    ├── research_framing.pdf          PDF export of research framing
+    ├── source_of_truth.pdf           PDF export of IMRaD SOT
+    ├── source_of_truth_ja.pdf        PDF export of translated SOT (Japanese only)
+    └── accuracy_audit.pdf            PDF export of accuracy audit
 
 research_outputs/
 ├── run_scorecard.json                Run quality scorecard (evaluation module)
+├── topic_index.json                  Cross-run topic index (used by reuse workflow)
 └── extraction_cache.json             Step 4 — persistent PMID-keyed extraction cache (shared across all runs)
 ```
 
@@ -508,6 +515,24 @@ tests/                                # Test suite (22 files, ~195 tests)
 | `podcast_tasks.json` | Persistent task queue for the web UI |
 | `Podcast BGM/` | Pre-built WAV background music library for BGM mixing |
 | `asset/` | Kokoro TTS model weights (safetensors, voice files, tokenizer) |
+| `voicevox_samples/` | Reference WAV samples for VOICEVOX speaker IDs |
+| `educational_series/` | Hand-authored educational episode source-of-truth + scripts (bypasses CrewAI pipeline; see below) |
+| `Intro Script ja.txt` | Reusable Japanese channel intro text |
+| `regen_script_and_audio.py` | One-shot helper: regenerate polish + audio from an existing run's `script_draft.md` |
+| `regen_edu_ep01.py`, `regen_edu_ep01_voicevox.py` | Educational Episode 1 regen (VOICEVOX variant uses the migrated TTS backend) |
+| `regen_edu_ep02_voicevox.py`, `regen_edu_ep02_audio_only.py` | Educational Episode 2 regen (audio-only variant skips `_finalize_script()` when the draft already has `## [emotion]` cues) |
+| `presentation/` | Project presentation assets (`build_slides.py`, `DR_2_Podcast_presentation.pptx`) |
+
+## Educational Episode Workflow (Manual Script Path)
+
+For the scientific-literacy series on the Japanese channel **仕組み化パパの効率化ラボ**, the CrewAI pipeline (tuned for evidence-review 4-Act structure) produces the wrong content shape. The working pattern for educational episodes bypasses CrewAI:
+
+1. Author the Source-of-Truth by hand in `educational_series/epNN_source_of_truth.md`
+2. Author the Host 1 / Host 2 script by hand in `educational_series/epNN_script_draft.md`
+3. Run the matching `regen_edu_epNN_voicevox.py` helper, which loads the draft and invokes `_finalize_script()` + `_run_audio_pipeline()` directly for VOICEVOX + BGM rendering
+4. For drafts that already include `## [emotion]` cues, use the `_audio_only.py` variant to skip `_finalize_script()` and avoid a redundant Smart-Model pass
+
+See `educational_series/GRAND_PLAN.md` for the 14-day series outline.
 
 ## License
 
