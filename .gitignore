@@ -54,3 +54,7 @@ presentation/
 # Evaluation runtime state (lesson JSON queues)
 dr2_podcast/evaluation/lessons_pending.json
 dr2_podcast/evaluation/lessons_promoted.json
+
+# Educational series — per-episode source-of-truth, scripts, ad-hoc regen scripts (local only)
+educational_series/
+regen_edu_ep*.py
