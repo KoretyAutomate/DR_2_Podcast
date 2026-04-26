@@ -5,7 +5,7 @@ youtube_token.pickle
 client_secret.json
 
 # Claude-generated planning & project docs (local only)
-PLAN.md
+PLAN*.md
 CLAUDE.md
 .claude/
 AUDIT_FINDINGS.md
@@ -13,6 +13,13 @@ AUDIT_FINDINGS.md
 # Python & Environment
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
 
 # Project Outputs & Logs
 research_outputs/
@@ -26,27 +33,30 @@ tasks_db.json
 *.mp3
 *.wav
 Podcast BGM/
+voicevox_samples/
 *.safetensors
 
 # Archived/orphaned scripts
 archived_scripts/
 
-# Test results
+# Test results & coverage
 test_results/
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
 
 # Misc debris
 home/
 Intro Script ja.txt
 reflections/
-.pytest_cache/
 
-# Qwen3-TTS (legacy, unused — replaced by VOICEVOX) — large files excluded from git
-docker/qwen3-tts/checkpoints/
-docker/qwen3-tts/outputs/
-docker/qwen3-tts/logs/
-docker/qwen3-tts/.env
-docker/qwen3-tts/build.log
-PLAN.md
+# TTS Docker — large model artifacts, runtime outputs, local env
+docker/*/checkpoints/
+docker/*/outputs/
+docker/*/logs/
+docker/*/.env
+docker/*/build.log
 
 # Presentation — contains large .pptx binary
 presentation/
@@ -57,4 +67,16 @@ dr2_podcast/evaluation/lessons_promoted.json
 
 # Educational series — per-episode source-of-truth, scripts, ad-hoc regen scripts (local only)
 educational_series/
-regen_edu_ep*.py
+regen_*.py
+*.jsonl
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.bak
+*.tmp
+*.swp
+*~
+.idea/
+.vscode/
+.ipynb_checkpoints/

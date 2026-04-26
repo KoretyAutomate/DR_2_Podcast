@@ -510,7 +510,7 @@ tests/                                # Test suite (22 files, ~195 tests)
 |---------------|---------|
 | `start_podcast_web_ui.sh` | Web UI launcher script |
 | `start_vllm_docker.sh` | vLLM Docker container launcher |
-| `docker/qwen3-tts/` | Legacy Qwen3-TTS server (unused — replaced by VOICEVOX) |
+| `docker/tts/` | Legacy TTS server (unused — replaced by VOICEVOX) |
 | `requirements.txt` | Core Python dependencies |
 | `podcast_tasks.json` | Persistent task queue for the web UI |
 | `Podcast BGM/` | Pre-built WAV background music library for BGM mixing |
