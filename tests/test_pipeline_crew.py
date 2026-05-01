@@ -94,7 +94,7 @@ class TestEstimateTaskTokens:
         task = SimpleNamespace(description="Test description " * 100, context=[])
         est_ja = _estimate_task_tokens(task, None, "ja")
         est_en = _estimate_task_tokens(task, None, "en")
-        # Nemotron-H Japanese: ~1 char/token → higher token count for same text
+        # Qwen3 Japanese: ~1.5 chars/token → higher token count for same text
         assert est_ja > est_en
 
     def test_with_context_tasks(self):

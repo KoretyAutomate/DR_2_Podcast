@@ -56,7 +56,8 @@ logger = logging.getLogger(__name__)
 MAX_INPUT_TOKENS = 32000
 # Safe char budget for Smart Model content (32K-token context).
 # Reserve ~3,200 tokens for system prompt + completion → ~29K tokens available.
-# At ~1 char/token (Nemotron-H tokenizer on medical/CJK text) → 29K chars.
+# Qwen3 tokenizer is ~1.5 chars/token on medical/CJK text → ~43K chars headroom;
+# kept at 29K for safety margin under worst-case all-CJK input.
 _SMART_CONTENT_CHARS = 29_000
 MAX_CONCURRENT_SUMMARIES = 10
 MAX_RESEARCH_ITERATIONS = 3
@@ -1879,7 +1880,11 @@ class ResearchAgent:
 
     async def _fast_screen_abstracts(self, records: List[WideNetRecord]) -> List[Dict]:
         """Use fast model to extract study_type, sample_size, primary_objective from abstracts."""
-        semaphore = asyncio.Semaphore(10)
+        # Concurrency=2 + timeout=180 per CLAUDE.md footgun: Ollama fast models run on
+        # CPU/contended GPU when vLLM holds the smart-model allocation. Higher concurrency
+        # or shorter timeouts produce queue thrash where openai-SDK retries fire before
+        # Ollama can drain the queue, wasting compute and stalling Step 2.
+        semaphore = asyncio.Semaphore(2)
 
         async def screen_one(record: WideNetRecord) -> Dict:
             async with semaphore:
@@ -1898,7 +1903,7 @@ class ResearchAgent:
                             )},
                             {"role": "user", "content": f"Title: {record.title}\n\nAbstract: {record.abstract[:2000]}"}
                         ],
-                        max_tokens=256, temperature=0.1, timeout=60
+                        max_tokens=256, temperature=0.1, timeout=180
                     )
                     raw = safe_message_text(resp)
                     # Parse JSON from response

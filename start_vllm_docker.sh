@@ -1,26 +1,33 @@
 #!/bin/bash
 # vLLM Docker Server Startup Script
-# Model:  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 (NVFP4 pre-quantized, ~75 GB)
+# Model:  Intel/Qwen3.5-122B-A10B-int4-AutoRound (INT4 AutoRound + FP8 KV cache, ~65 GB)
 # Image:  ghcr.io/bjk110/vllm-spark:v019-ngc2603
 #         (vLLM 0.19.1 · FlashInfer 0.6.7 · SM121 source build · NGC 26.03)
-# Source: https://github.com/JungkwanBan/spark_vllm_docker
+# Source: https://github.com/JungkwanBan/SPARK_Qwen3.5-122B-A10B-NVFP4 (multi-quant)
 # Port:   8000
 
-# Mount the full model directory (not just snapshot) so that symlinks to blobs/ resolve inside the container
-MODEL_HOST_PATH="$HOME/.cache/huggingface/hub/models--nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
-MODEL_CONTAINER_BASE="/models/nvidia_NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
-MODEL_CONTAINER_PATH="${MODEL_CONTAINER_BASE}/snapshots/0d6fa3ecad422a12f475b6896dd68e6bb79460b5"
-SERVED_MODEL_NAME="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+# Mount the full model directory (not just snapshot) so that symlinks to blobs/ resolve inside the container.
+# Snapshot path resolved dynamically from refs/main so future model updates don't require manual hash bumps.
+MODEL_HOST_PATH="$HOME/.cache/huggingface/hub/models--Intel--Qwen3.5-122B-A10B-int4-AutoRound"
+MODEL_CONTAINER_BASE="/models/Intel_Qwen3.5-122B-A10B-int4-AutoRound"
+MODEL_SNAPSHOT_HASH="$(cat ${MODEL_HOST_PATH}/refs/main 2>/dev/null)"
+MODEL_CONTAINER_PATH="${MODEL_CONTAINER_BASE}/snapshots/${MODEL_SNAPSHOT_HASH}"
+SERVED_MODEL_NAME="Intel/Qwen3.5-122B-A10B-int4-AutoRound"
 ENTRYPOINT_DIR="/home/korety/opt/spark_vllm_docker"   # cloned from spark_vllm_docker (persistent; /tmp is wiped on reboot)
 
 PORT=8000
-MAX_MODEL_LEN=32768       # 32k context; model supports up to 262k
+MAX_MODEL_LEN=65536       # 64k context; model supports up to 262k. Phase 4 CrewAI ReAct +
+                          # tool observations hit the 32k ceiling on Japanese runs, so 65k.
 MAX_NUM_SEQS=4
-MAX_NUM_BATCHED_TOKENS=32768
-GPU_MEMORY_UTIL=0.82      # 82% of 119.7GiB (~98.1GiB): 72GiB weights + ~26GiB KV cache
+MAX_NUM_BATCHED_TOKENS=65536
+GPU_MEMORY_UTIL=0.82      # 82% of ~121GiB unified RAM (~99.8GiB). Reduced from Nemotron's
+                          # 0.88 (2026-04-30) — INT4 weights (~65GB) + FP8 KV cache halve the
+                          # KV memory vs Nemotron NVFP4 + BF16 KV. Estimated headroom at 65k×4
+                          # is ~14GB. GATE: if vLLM startup logs "Available KV cache memory:
+                          # -X GiB", bump to 0.85 and retry.
                           # GB10 has no GDS support (nogds_force.patch), so weight loading
-                          # uses CPU-intermediate copies: peak = 72GB weights + CPU buffer.
-                          # First-run compile: ~30 min total. Subsequent starts: ~5 min (cached).
+                          # uses CPU-intermediate copies. First-run compile: ~30 min total.
+                          # Subsequent starts: ~5 min (cached).
                           # VOICEVOX runs on CPU (Docker) — no GPU memory conflict.
 
 echo "=========================================="
@@ -41,10 +48,12 @@ mkdir -p /home/korety/.vllm-cache/vllm
 
 # Start vLLM via the unified spark entrypoint
 # ROLE=head + TP_SIZE=1 → standalone serve (no Ray, no multi-node overhead)
-# Key SM121/NVFP4 notes (from redhatai-122b-nvfp4.env preset):
-#   - No --quantization flag: Nemotron NVFP4 model is compressed-tensors format, auto-detected
-#   - VLLM_USE_FLASHINFER_MOE_FP4=0: use native cutlass_moe_fp4 (SM12x compatible)
-#   - VLLM_NVFP4_MOE_FORCE_MARLIN=0: stable CUTLASS path
+# Key SM121/INT4 AutoRound notes (from intel-122b-int4.env preset):
+#   - No --quantization flag: AutoRound checkpoint is auto-detected by vLLM Marlin
+#   - VLLM_MARLIN_USE_ATOMIC_ADD=1: required for INT4 AutoRound numerical stability
+#   - --kv-cache-dtype fp8: halves KV memory vs BF16, enables 65k context at 0.82 GPU util
+#   - VLLM_USE_FLASHINFER_MOE_FP4=0 / VLLM_NVFP4_MOE_FORCE_MARLIN=0: NVFP4 flags inert for INT4
+#     but kept to avoid unintended fallback if image defaults change
 #   - Thinking mode disabled at call sites via /no_think prefix
 docker run --runtime nvidia --gpus all \
   --name vllm-server \
@@ -65,8 +74,8 @@ docker run --runtime nvidia --gpus all \
   -e MAX_NUM_SEQS="${MAX_NUM_SEQS}" \
   -e GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTIL}" \
   -e MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS}" \
-  -e VLLM_EXTRA_ARGS="--enable-chunked-prefill --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser hermes" \
-  -e VLLM_MARLIN_USE_ATOMIC_ADD=0 \
+  -e VLLM_EXTRA_ARGS="--enable-chunked-prefill --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser hermes" \
+  -e VLLM_MARLIN_USE_ATOMIC_ADD=1 \
   -e VLLM_USE_FLASHINFER_MOE_FP4=0 \
   -e VLLM_NVFP4_MOE_FORCE_MARLIN=0 \
   -e TORCH_MATMUL_PRECISION=high \

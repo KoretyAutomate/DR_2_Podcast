@@ -29,7 +29,7 @@ _SOT_BLOCK_RE = re.compile(
 def _estimate_task_tokens(task, translation_task_obj=None, language='en'):
     """Rough estimate of input tokens for a CrewAI task (description + context chain outputs).
 
-    Nemotron-H tokenizer: Japanese/Chinese ~1 char/token, other languages ~4 chars/token.
+    Qwen3 tokenizer: Japanese/Chinese ~1.5 chars/token, other languages ~3-4 chars/token.
     Adds 2000-token buffer for agent system prompt overhead.
     """
     chars_per_tok = 1 if language in ('ja', 'zh') else 4
@@ -282,6 +282,7 @@ def create_agents_and_tasks(
         llm=dgx_llm_creative,
         verbose=True,
         tools=[read_full_report],
+        max_iter=6,
     )
 
     editor_agent = Agent(

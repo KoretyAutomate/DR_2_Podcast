@@ -104,7 +104,7 @@ The system uses two local LLMs working in tandem:
 
 | Role | Default Model | Hosted On | Purpose |
 |------|---------------|-----------|---------|
-| **Smart model** | `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing, SOT translation |
+| **Smart model** | `Intel/Qwen3.5-122B-A10B-int4-AutoRound` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing, SOT translation |
 | **Fast model** | `qwen3:8b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
 
 Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
@@ -276,7 +276,7 @@ Personality is determined by role, not host: the **presenter** is an enthusiasti
 ```bash
 ./start_vllm_docker.sh
 ```
-The launcher script mounts `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` from the local HuggingFace cache and serves it with `--reasoning-parser qwen3` and `--enable-auto-tool-choice --tool-call-parser hermes`. GPU memory utilization defaults to 82%. See `start_vllm_docker.sh` for all tunables.
+The launcher script mounts `Intel/Qwen3.5-122B-A10B-int4-AutoRound` from the local HuggingFace cache and serves it with `--kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser hermes`. GPU memory utilization defaults to 82% (FP8 KV cache + INT4 weights leave ~14 GiB of headroom at 65k context). See `start_vllm_docker.sh` for all tunables.
 
 **Ollama** — Required for the fast model:
 ```bash
@@ -325,7 +325,7 @@ export PODCAST_CORE_TARGET="busy professionals aged 30-50"
 export PODCAST_CHANNEL_MISSION="turning complex science into actionable protocols"
 
 # Model config (defaults shown)
-export MODEL_NAME="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+export MODEL_NAME="Intel/Qwen3.5-122B-A10B-int4-AutoRound"
 export LLM_BASE_URL="http://localhost:8000/v1"
 export FAST_MODEL_NAME="qwen3:8b"
 export FAST_LLM_BASE_URL="http://localhost:11434/v1"
