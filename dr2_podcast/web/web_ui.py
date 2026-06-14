@@ -1959,10 +1959,34 @@ async def generate_intro(request: GenerateIntroRequest, username: str = Depends(
 
     payload = {
         "model": "",  # filled per endpoint below
-        "messages": [{"role": "system", "content": "/no_think"}, {"role": "user", "content": prompt}],
-        "max_tokens": 120,
+        "messages": [{"role": "user", "content": prompt}],
+        # Headroom above the ~40-80 token answer. Reasoning models that ignore
+        # the disable-thinking switch otherwise hit finish_reason=length before
+        # emitting any answer, leaving content=null.
+        "max_tokens": 256,
         "temperature": 0.8,
+        # Qwen3.5 (smart) and qwen3:8b (fast) are reasoning models. A "/no_think"
+        # system message is NOT honored by their chat templates — the model
+        # reasons, dumps it into the `reasoning` field, and burns the whole
+        # token budget, returning content=null. enable_thinking=False is the
+        # template-level switch that actually puts the answer in `content`.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
+
+    def _extract_intro(resp):
+        """Pull non-empty intro text from a 200 response, or None.
+
+        Reasoning models can return content=null (all tokens spent thinking) or
+        an empty string; both must be treated as failure, never returned as a
+        blank-but-successful intro."""
+        try:
+            content = resp.json()["choices"][0]["message"].get("content")
+        except Exception:
+            return None
+        if not content:
+            return None
+        intro = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        return intro or None
 
     llm_base       = os.environ["LLM_BASE_URL"].rstrip("/")
     model_name     = os.environ["MODEL_NAME"]
@@ -1975,10 +1999,13 @@ async def generate_intro(request: GenerateIntroRequest, username: str = Depends(
             payload["model"] = model_name
             r = await client.post(f"{llm_base}/chat/completions", json=payload)
             if r.status_code == 200:
-                intro = r.json()["choices"][0]["message"]["content"].strip()
-                intro = re.sub(r"<think>.*?</think>", "", intro, flags=re.DOTALL).strip()
-                return {"intro": intro}
-            print(f"[generate-intro] primary non-200: {r.status_code} {r.text[:200]}")
+                intro = _extract_intro(r)
+                if intro:
+                    return {"intro": intro}
+                fr = r.json()["choices"][0].get("finish_reason")
+                print(f"[generate-intro] primary 200 but empty content (finish_reason={fr})")
+            else:
+                print(f"[generate-intro] primary non-200: {r.status_code} {r.text[:200]}")
         except Exception as e:
             print(f"[generate-intro] primary error: {e}")
 
@@ -1988,14 +2015,17 @@ async def generate_intro(request: GenerateIntroRequest, username: str = Depends(
                 payload["model"] = fast_model
                 r = await client.post(f"{fast_base}/chat/completions", json=payload)
                 if r.status_code == 200:
-                    intro = r.json()["choices"][0]["message"]["content"].strip()
-                    intro = re.sub(r"<think>.*?</think>", "", intro, flags=re.DOTALL).strip()
-                    return {"intro": intro}
-                print(f"[generate-intro] fallback non-200: {r.status_code} {r.text[:200]}")
+                    intro = _extract_intro(r)
+                    if intro:
+                        return {"intro": intro}
+                    fr = r.json()["choices"][0].get("finish_reason")
+                    print(f"[generate-intro] fallback 200 but empty content (finish_reason={fr})")
+                else:
+                    print(f"[generate-intro] fallback non-200: {r.status_code} {r.text[:200]}")
             except Exception as e:
                 print(f"[generate-intro] fallback error: {e}")
 
-    raise HTTPException(status_code=503, detail="LLM unavailable — fill in the intro manually.")
+    raise HTTPException(status_code=503, detail="LLM returned no intro text — try again or fill it in manually.")
 
 
 @app.post("/api/generate")
