@@ -2096,7 +2096,8 @@ class ResearchAgent:
                 except (json.JSONDecodeError, OSError):
                     return {}
         else:
-            cache_path = Path("research_outputs/extraction_cache.json")
+            # Anchor to project root, not CWD — CLI and web UI launch from different dirs
+            cache_path = Path(__file__).resolve().parents[2] / "research_outputs" / "extraction_cache.json"
             if cache_path.exists():
                 try:
                     with open(cache_path, 'r') as f:
@@ -2111,7 +2112,8 @@ class ResearchAgent:
         if output_dir:
             cache_path = Path(output_dir) / "meta" / "extraction_cache.json"
         else:
-            cache_path = Path("research_outputs/extraction_cache.json")
+            # Anchor to project root, not CWD — CLI and web UI launch from different dirs
+            cache_path = Path(__file__).resolve().parents[2] / "research_outputs" / "extraction_cache.json"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_path, 'w') as f:
             json.dump(cache, f, indent=2)

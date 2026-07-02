@@ -8,7 +8,6 @@ crewai[tools]==1.7.2
 crewai-tools==1.7.2
 python-dotenv==1.1.1
 pydantic==2.11.10
-langchain-community==0.4.1
 prefect>=3.0,<4
 
 # --- LLM / AI Clients ---
@@ -18,7 +17,6 @@ httpx==0.28.1
 # --- Web UI ---
 fastapi==0.127.1
 uvicorn==0.40.0
-bcrypt==5.0.0
 
 # --- Research & Scraping ---
 requests==2.32.5
@@ -27,7 +25,6 @@ defusedxml>=0.7.1
 lxml==6.0.2
 
 # --- Document Generation ---
-fpdf==1.7.2
 markdown-it-py==4.0.0
 weasyprint==68.1
 

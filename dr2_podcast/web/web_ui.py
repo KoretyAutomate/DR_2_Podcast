@@ -65,6 +65,15 @@ print("export PODCAST_WEB_USER=your_username", file=sys.stderr)
 print("export PODCAST_WEB_PASSWORD=your_password", file=sys.stderr)
 print("="*60, file=sys.stderr)
 
+# Launch wrappers capture stderr (incl. the password above) into web_ui.log —
+# keep it and the task-history file owner-readable only.
+for _sensitive in (SCRIPT_DIR / "web_ui.log", TASKS_FILE):
+    try:
+        if _sensitive.exists():
+            os.chmod(_sensitive, 0o600)
+    except OSError:
+        pass
+
 @asynccontextmanager
 async def lifespan(app):
     threading.Thread(target=worker_thread, daemon=True).start()
@@ -150,8 +159,14 @@ def save_tasks():
     with tasks_lock:
         tmp = TASKS_FILE.with_suffix('.tmp')
         try:
+            # Never persist upload credentials to disk — they stay in-memory
+            # only; uploads fall back to env vars after a restart.
+            serializable = {
+                tid: {k: v for k, v in t.items() if k not in _CREDENTIAL_FIELDS}
+                for tid, t in tasks_db.items()
+            }
             with open(tmp, 'w') as f:
-                json.dump(tasks_db, f, indent=2, default=str)
+                json.dump(serializable, f, indent=2, default=str)
             os.replace(tmp, TASKS_FILE)
         except Exception:
             logger.exception("Failed to save tasks to %s", TASKS_FILE)
@@ -1827,14 +1842,21 @@ async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify
             f"{llm_base}/chat/completions",
             json={
                 "model": model_name,
-                "messages": [{"role": "system", "content": "/no_think"}, {"role": "user", "content": prompt}],
+                "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
-                "max_tokens": 512,
+                # Headroom in case the disable-thinking switch is ignored and
+                # reasoning burns tokens before the answer (see generate_intro).
+                "max_tokens": 1024,
+                # Reasoning models (Qwen3.5) don't honor a "/no_think" system
+                # message — this template switch puts the answer in `content`.
+                "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=30.0,
         )
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"].strip()
+        content = resp.json()["choices"][0]["message"].get("content")
+        if not content:
+            return {"has_match": False, "matches": []}
         content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
         # Parse scores from LLM response
@@ -1865,7 +1887,11 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
     # Resolve reuse_dir from output_dir or task_id
     reuse_dir = None
     if request.reuse_output_dir:
-        reuse_dir = Path(request.reuse_output_dir)
+        reuse_dir = Path(request.reuse_output_dir).resolve()
+        # Confine user-supplied paths to the outputs tree (same guard as /api/download)
+        if not reuse_dir.is_relative_to(OUTPUT_DIR.resolve()):
+            raise HTTPException(status_code=400,
+                                detail="reuse_output_dir must be inside research_outputs/")
     elif request.reuse_task_id:
         prev_task = tasks_db.get(request.reuse_task_id)
         if prev_task and prev_task.get("output_dir"):
@@ -2208,6 +2234,19 @@ def _stream_process_output(proc, task_id: str) -> list:
     return output_lines
 
 
+def _resolve_upload_audio(resolved_dir: Path) -> str:
+    """Locate a run's final audio for upload.
+
+    Current runs nest audio under audio/ (prefer the BGM-mixed master);
+    top-level names are kept as fallback for pre-subdir legacy runs."""
+    for rel in ("audio/audio_mixed.wav", "audio/audio.wav",
+                "audio_mixed.wav", "audio.wav"):
+        candidate = resolved_dir / rel
+        if candidate.exists():
+            return str(candidate)
+    return str(resolved_dir / "audio" / "audio_mixed.wav")
+
+
 def run_podcast_generation(task_id: str, topic: str, language: str,
                            accessibility_level: str = "simple",
                            podcast_length: str = "long", podcast_hosts: str = "random",
@@ -2288,7 +2327,7 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
 
         # Generation succeeded — run uploads if requested
         resolved_dir = Path(tasks_db[task_id].get("output_dir") or str(OUTPUT_DIR))
-        audio_path = str(resolved_dir / "audio.wav")
+        audio_path = _resolve_upload_audio(resolved_dir)
         title = topic.strip()
 
         if upload_buzzsprout or upload_youtube:
@@ -2410,7 +2449,7 @@ def run_podcast_reuse(task_data: dict):
 
         # Handle uploads
         resolved_dir = Path(tasks_db[task_id].get("output_dir") or str(OUTPUT_DIR))
-        audio_path = str(resolved_dir / "audio.wav")
+        audio_path = _resolve_upload_audio(resolved_dir)
 
         if upload_buzzsprout or upload_youtube:
             tasks_db[task_id]["status"] = "uploading"
@@ -2707,9 +2746,14 @@ async def youtube_preflight(request: YoutubePreflightRequest = YoutubePreflightR
     """Run YouTube OAuth consent flow (may open browser). Must be called before generation."""
     from dr2_podcast.tools.upload_utils import get_youtube_credentials
     try:
-        if request.secret_path:
-            os.environ["YOUTUBE_CLIENT_SECRET_PATH"] = request.secret_path
-        get_youtube_credentials()
+        secret_path = request.secret_path or None
+        if secret_path:
+            p = Path(secret_path)
+            if p.is_absolute() or ".." in p.parts:
+                return {"ready": False,
+                        "error": "secret_path must be a relative path inside the project (no '..')"}
+        # Pass explicitly — mutating os.environ would leak into every later task
+        get_youtube_credentials(youtube_secret_path=secret_path)
         return {"ready": True}
     except Exception as e:
         return {"ready": False, "error": str(e)}
@@ -2726,9 +2770,12 @@ async def upload_config(username: str = Depends(verify_credentials)):
 
 if __name__ == "__main__":
     port = int(os.getenv("PODCAST_WEB_PORT", 8501))
+    # Default to loopback — Basic auth over plain HTTP is sniffable/brute-forceable
+    # on a shared network. Set PODCAST_WEB_BIND=0.0.0.0 to expose on the LAN.
+    host = os.getenv("PODCAST_WEB_BIND", "127.0.0.1")
 
-    print(f"\nStarting DR_2_Podcast Web UI on http://0.0.0.0:{port}")
+    print(f"\nStarting DR_2_Podcast Web UI on http://{host}:{port}")
     print(f"Access from browser: http://localhost:{port}")
     print("\nPress Ctrl+C to stop\n")
 
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host=host, port=port)

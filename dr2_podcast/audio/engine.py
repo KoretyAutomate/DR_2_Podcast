@@ -208,8 +208,16 @@ _AIVISSPEECH_API_URL = TTS_API_URL
 
 def _get_tts_speaker_ids_int():
     """Speaker (style) IDs as integers — for engines that use numeric IDs (AivisSpeech, VOICEVOX et al.).
-    Defaults: 888753760 (Anneli ノーマル) and 888753763 (Anneli 落ち着き)."""
-    return int(TTS_HOST1_ID), int(TTS_HOST2_ID)
+    Defaults: 1937616896 (にせ ノーマル) and 1717361472 (みちのくあいり 標準).
+    Returns (None, None) if the configured IDs are not numeric (e.g. cloud-TTS voice names)."""
+    try:
+        return int(TTS_HOST1_ID), int(TTS_HOST2_ID)
+    except (TypeError, ValueError):
+        logger.error(
+            f"TTS_HOST1_ID/TTS_HOST2_ID must be integer style IDs for this engine "
+            f"(got {TTS_HOST1_ID!r}, {TTS_HOST2_ID!r})"
+        )
+        return None, None
 
 def _aivisspeech_available():
     """Check if the AivisSpeech engine is reachable."""
@@ -273,6 +281,8 @@ def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
     accurate kanji reading via OpenJTalk, with a VOICEVOX-compatible HTTP API.
     """
     host1_id, host2_id = _get_tts_speaker_ids_int()
+    if host1_id is None or host2_id is None:
+        return None
 
     logger.info("=" * 60)
     logger.info("AIVISSPEECH — JAPANESE AUDIO GENERATION")

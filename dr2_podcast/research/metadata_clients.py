@@ -547,7 +547,7 @@ class CrossrefClient:
         try:
             async with self.limiter:
                 resp = await self._http.get(
-                    f"{self.BASE_URL}/works/{doi}",
+                    f"{self.BASE_URL}/works/{_url_quote(doi, safe='')}",
                     headers=self._headers(),
                 )
                 if resp.status_code == 404:

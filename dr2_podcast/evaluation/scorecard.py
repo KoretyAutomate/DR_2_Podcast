@@ -97,10 +97,11 @@ def _parse_log_metrics(log_path: Path) -> dict:
         ratios = [int(new) / int(orig) for orig, new in deficit_ratios if int(orig) > 0]
         metrics["max_deficit_ratio"] = round(max(ratios), 3) if ratios else 1.0
 
-    # Assembled draft length ("Assembled draft: XXXX chars")
-    m_draft = re.search(r"Assembled draft:\s*(\d+)\s*chars", text)
+    # Assembled draft length ("Assembled draft: XXXX chars" JA / "XXXX words" EN)
+    m_draft = re.search(r"Assembled draft:\s*(\d+)\s*(chars|words)", text)
     if m_draft:
         metrics["draft_char_count"] = int(m_draft.group(1))
+        metrics["draft_length_unit"] = m_draft.group(2)
 
     # Script target length ("Sectional draft: N sections, total budget XXXX chars")
     m_budget = re.search(r"total budget\s+(\d+)\s+(?:chars|words)", text)
@@ -371,8 +372,14 @@ def generate_scorecard(output_dir: str) -> dict:
     topic = log_m.pop("topic", "")
     language = log_m.pop("language", "en")
 
-    # Script adherence
-    draft_chars = log_m.get("draft_char_count", script_m.get("script_char_count", 0))
+    # Script adherence — measure in the language's length unit (JA: chars, EN: words)
+    # so actual_length is comparable to script_target_length parsed from the same log
+    draft_unit = log_m.pop("draft_length_unit", "chars" if language == "ja" else "words")
+    if draft_unit == "words":
+        fallback_length = script_m.get("script_word_count", 0)
+    else:
+        fallback_length = script_m.get("script_char_count", 0)
+    draft_chars = log_m.get("draft_char_count", fallback_length)
     # Prefer log-derived target ("Sectional draft: N sections, total budget XXXX chars")
     target_length = log_m.pop("script_target_length", None)
     if target_length is None:

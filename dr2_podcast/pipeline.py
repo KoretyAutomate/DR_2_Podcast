@@ -844,22 +844,31 @@ def check_supplemental_needed(topic: str, reuse_dir: Path) -> dict:
             f"{SMART_BASE_URL}/chat/completions",
             json={
                 "model": SMART_MODEL,
-                "messages": [{"role": "system", "content": "/no_think"}, {"role": "user", "content": prompt}],
+                "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
-                "max_tokens": 1024,
+                # Headroom in case the disable-thinking switch is ignored and
+                # reasoning burns tokens before the answer (see generate_intro).
+                "max_tokens": 2048,
+                # Reasoning models (Qwen3.5) don't honor a "/no_think" system
+                # message — this template switch puts the answer in `content`.
+                "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=60.0,
         )
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"].strip()
+        content = resp.json()["choices"][0]["message"].get("content")
+        if not content:
+            raise ValueError("LLM returned empty content (reasoning burned the token budget?)")
         # Strip <think> blocks (Qwen3 safety net)
-        content = strip_think_blocks(content)
+        content = strip_think_blocks(content.strip())
 
-        # Extract JSON from response — try full parse first, then narrow regex fallback
+        # Extract JSON from response — full parse first, then outermost-braces
+        # fallback (the expected object nests {} inside "queries", so a
+        # no-nested-braces pattern can never match it)
         try:
             result = json.loads(content)
         except json.JSONDecodeError:
-            json_match = re.search(r'\{[^{}]*\}', content)
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
             result = json.loads(json_match.group()) if json_match else None
         if result:
             return {
