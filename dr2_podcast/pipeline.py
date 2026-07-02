@@ -903,9 +903,9 @@ SUPPORTED_LANGUAGES = {
     },
     'ja': {
         'name': '日本語 (Japanese)',
-        'tts_code': 'j',            # VOICEVOX
+        'tts_code': 'j',            # AivisSpeech
         'instruction': 'すべてのコンテンツを日本語で書いてください。(Write all content in Japanese.)',
-        'speech_rate': 350,         # ~350 chars/min (calibrated from VOICEVOX actual output)
+        'speech_rate': 350,         # ~350 chars/min (VOICEVOX-era calibration; re-tune for AivisSpeech)
         'length_unit': 'chars',
         'prompt_unit': 'character',
     }

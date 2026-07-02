@@ -17,19 +17,24 @@ OUTPUT_DIR_OVERRIDE = os.environ.get("OUTPUT_DIR")
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:8080")
 
 # --- TTS Configuration ---
-# Engine selectors per language. Known engines: "voicevox" (JA, HTTP/Docker), "kokoro" (EN, in-process).
+# Engine selectors per language. Known engines: "aivisspeech" (JA, HTTP/Docker), "kokoro" (EN, in-process).
 # To add a new engine: define a _generate_audio_<name> adapter in audio/engine.py and register it.
-TTS_ENGINE_JA = os.environ.get("TTS_ENGINE_JA", "voicevox")
+TTS_ENGINE_JA = os.environ.get("TTS_ENGINE_JA", "aivisspeech")
 TTS_ENGINE_EN = os.environ.get("TTS_ENGINE_EN", "kokoro")
 
-# Generic HTTP endpoint — used by any HTTP-based TTS engine (VOICEVOX and future engines).
-# Kokoro runs in-process and ignores this.
-TTS_API_URL = os.environ.get("TTS_API_URL", "http://localhost:50021")
+# Generic HTTP endpoint — used by any HTTP-based TTS engine (AivisSpeech and future engines).
+# AivisSpeech-Engine default port is 10101. Kokoro runs in-process and ignores this.
+TTS_API_URL = os.environ.get("TTS_API_URL", "http://localhost:10101")
 
 # Speaker identifiers — string form so different engines can interpret as needed
-# (VOICEVOX: integer speaker ID; cloud TTS: voice name/UUID). Engine adapter casts.
-TTS_HOST1_ID = os.environ.get("TTS_HOST1_ID", "51")
-TTS_HOST2_ID = os.environ.get("TTS_HOST2_ID", "2")
+# (AivisSpeech/VOICEVOX: integer speaker/style ID; cloud TTS: voice name/UUID). Engine adapter casts.
+# AivisSpeech style IDs (values below verified live via GET /speakers on 2026-06-28).
+# Host 1 (male)   = にせ ノーマル          (AivisHub model 6d11c6c2-f4a4-4435-887e-23dd60f8b8dd)
+# Host 2 (female) = みちのくあいり 標準     (AivisHub model 1b2830f4-8cf1-4184-a0d9-3a1bace3a844)
+# Both models are ACML 1.0 licensed and must be installed into AivisSpeech first.
+# If reinstalled/another engine: re-verify with `curl http://localhost:10101/speakers`.
+TTS_HOST1_ID = os.environ.get("TTS_HOST1_ID", "1937616896")
+TTS_HOST2_ID = os.environ.get("TTS_HOST2_ID", "1717361472")
 
 # --- Timeouts (seconds) ---
 LLM_TIMEOUT = 300

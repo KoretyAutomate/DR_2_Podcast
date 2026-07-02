@@ -1,6 +1,6 @@
 # Deep-Research Podcast Crew
 
-An AI-powered pipeline that deeply researches any scientific topic using a clinical systematic-review methodology (PICO/GRADE), synthesizes evidence from both affirmative and adversarial perspectives, and produces a broadcast-ready podcast with local TTS audio (Kokoro for English, VOICEVOX for Japanese) — all running on local models. Includes a FastAPI web UI for one-click production with live progress tracking.
+An AI-powered pipeline that deeply researches any scientific topic using a clinical systematic-review methodology (PICO/GRADE), synthesizes evidence from both affirmative and adversarial perspectives, and produces a broadcast-ready podcast with local TTS audio (Kokoro for English, AivisSpeech for Japanese) — all running on local models. Includes a FastAPI web UI for one-click production with live progress tracking.
 
 ## System Overview
 
@@ -61,7 +61,7 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
                                        ▼
                 ┌─────────────────────────────────────────────┐
                 │  Phase 8 — Audio Production                 │
-                │  Kokoro TTS (EN), VOICEVOX (JA),             │
+                │  Kokoro TTS (EN), AivisSpeech (JA),          │
                 │  two voices, 24kHz WAV + BGM                │
                 └─────────────────────────────────────────────┘
 ```
@@ -240,13 +240,15 @@ Audio is rendered with two voices at 24kHz WAV, followed by BGM mixing. TTS engi
 | Language | TTS Engine | Host 1 (Male) | Host 2 (Female) |
 |----------|------------|---------------|-----------------|
 | English  | Kokoro TTS (local, CPU) | `am_fenrir` (American male) | `af_heart` (American female) |
-| Japanese | VOICEVOX (Docker, port 50021) | †聖騎士 紅桜† ノーマル (id=51) | 四国めたん ノーマル (id=2) |
+| Japanese | AivisSpeech (Docker, port 10101) | にせ ノーマル (id=1937616896) | みちのくあいり 標準 (id=1717361472) |
+
+The `にせ` and `みちのくあいり` models (both ACML 1.0) must be installed into AivisSpeech before use (IDs above verified live via `curl http://localhost:10101/speakers`). Install headless via `POST /aivm_models/install` with `-F "url=https://api.aivis-project.com/v1/aivm-models/<model-uuid>/download?model_type=AIVMX"`. Style IDs are engine-assigned — re-verify after any reinstall.
 
 ## Multi-Language Support
 
 The pipeline supports English and Japanese output:
 - **English**: Default. All research, scripts, and audio in English.
-- **Japanese**: A translation task runs in Crew 2 before Crew 3. Audio is rendered by **VOICEVOX** (Docker container at port 50021) — Kokoro is not used for Japanese. A post-Crew 3 language auditor detects Chinese contamination (CJK text without hiragana/katakana) and automatically runs a correction pass to translate any Chinese passages into natural Japanese.
+- **Japanese**: A translation task runs in Crew 2 before Crew 3. Audio is rendered by **AivisSpeech** (Docker container at port 10101) — Kokoro is not used for Japanese. A post-Crew 3 language auditor detects Chinese contamination (CJK text without hiragana/katakana) and automatically runs a correction pass to translate any Chinese passages into natural Japanese.
 
 ### Script Length Enforcement
 
@@ -256,8 +258,8 @@ After Crew 3 completes, the pipeline measures script length against the target (
 
 | Host | Voice | Role |
 |------|-------|------|
-| **Host 1** | Male (Kokoro: `am_fenrir` / VOICEVOX: id=51) | Randomly assigned as presenter or questioner each session |
-| **Host 2** | Female (Kokoro: `af_heart` / VOICEVOX: id=2) | Randomly assigned as presenter or questioner each session |
+| **Host 1** | Male (Kokoro: `am_fenrir` / AivisSpeech: にせ, id=1937616896) | Randomly assigned as presenter or questioner each session |
+| **Host 2** | Female (Kokoro: `af_heart` / AivisSpeech: みちのくあいり, id=1717361472) | Randomly assigned as presenter or questioner each session |
 
 Personality is determined by role, not host: the **presenter** is an enthusiastic science communicator; the **questioner** is a curious, skeptical interviewer. Override with `PODCAST_HOSTS` env var (`host1_leads`, `host2_leads`, or `random`).
 
@@ -289,9 +291,9 @@ ollama pull qwen3:8b                # Fast model (default)
 docker run -d -p 8080:8080 searxng/searxng:latest
 ```
 
-**VOICEVOX** — Japanese TTS engine (Docker):
+**AivisSpeech** — Japanese TTS engine (Docker):
 ```bash
-docker run -d --name voicevox -p 50021:50021 voicevox/voicevox_engine:cpu-latest
+docker run -d --name aivisspeech -p 10101:10101 ghcr.io/aivis-project/aivisspeech-engine:cpu-latest
 ```
 
 ## Installation
@@ -334,11 +336,11 @@ export FAST_LLM_BASE_URL="http://localhost:11434/v1"
 export SEARXNG_URL="http://localhost:8080"
 
 # TTS engine configuration (defaults shown)
-export TTS_ENGINE_JA="voicevox"         # Japanese engine (registry: voicevox)
+export TTS_ENGINE_JA="aivisspeech"      # Japanese engine (registry: aivisspeech)
 export TTS_ENGINE_EN="kokoro"           # English engine (Kokoro in-process)
-export TTS_API_URL="http://localhost:50021"   # HTTP endpoint for HTTP-based engines (VOICEVOX etc.)
-export TTS_HOST1_ID="51"                # VOICEVOX: †聖騎士 紅桜† ノーマル
-export TTS_HOST2_ID="2"                 # VOICEVOX: 四国めたん ノーマル
+export TTS_API_URL="http://localhost:10101"   # HTTP endpoint for HTTP-based engines (AivisSpeech etc.)
+export TTS_HOST1_ID="1937616896"        # AivisSpeech: にせ ノーマル (male host)
+export TTS_HOST2_ID="1717361472"        # AivisSpeech: みちのくあいり 標準 (female host)
 
 # Audio
 export VOICE_DUCKING_DB="-20"         # BGM ducking in dB during speech
@@ -492,7 +494,7 @@ dr2_podcast/                          # Main package
 │   ├── social_science.py             # DEPRECATED — moved into clinical.py Orchestrator
 │   └── wwc_database.py               # What Works Clearinghouse SQLite database
 ├── audio/
-│   └── engine.py                     # Kokoro TTS (EN) + VOICEVOX (JA) + BGM mixing (dual-voice, 24kHz WAV)
+│   └── engine.py                     # Kokoro TTS (EN) + AivisSpeech (JA) + BGM mixing (dual-voice, 24kHz WAV)
 ├── evaluation/
 │   ├── scorecard.py                  # Run quality scorecard generation
 │   ├── lesson_generator.py           # LLM-assisted observation extraction from scorecards
@@ -510,7 +512,7 @@ tests/                                # Test suite (22 files, ~195 tests)
 |---------------|---------|
 | `start_podcast_web_ui.sh` | Web UI launcher script |
 | `start_vllm_docker.sh` | vLLM Docker container launcher |
-| `docker/tts/` | Legacy TTS server (unused — replaced by VOICEVOX) |
+| `docker/tts/` | Legacy TTS server (unused — replaced by AivisSpeech) |
 | `requirements.txt` | Core Python dependencies |
 | `podcast_tasks.json` | Persistent task queue for the web UI |
 | `Podcast BGM/` | Pre-built WAV background music library for BGM mixing |
