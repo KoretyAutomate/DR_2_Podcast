@@ -33,6 +33,16 @@ from prefect import flow, task, get_run_logger
 
 logger = logging.getLogger(__name__)
 
+
+def _append_to_description_once(task_ref, note: str) -> None:
+    """Append a note to a CrewAI task description only if not already present.
+
+    Phase tasks retry (and the flow can resume) with the SAME shared task
+    objects — a bare ``description +=`` would inject the note again on every
+    re-execution, compounding the prompt."""
+    if note and note not in task_ref.description:
+        task_ref.description += note
+
 # ---------------------------------------------------------------------------
 # Cache key helper — phases are keyed by (output_dir, phase_number) so that
 # resuming the same run directory skips already-completed phases.
@@ -140,7 +150,7 @@ def phase_0_framing(
             "Prioritise RCTs, systematic reviews, GRADE evidence levels, NNT/ARR statistics, "
             f"and databases such as {', '.join(domain_classification.primary_databases)}."
         )
-    framing_task_ref.description += _domain_framing_note
+    _append_to_description_once(framing_task_ref, _domain_framing_note)
 
     # Run framing crew
     framing_output = ""
@@ -895,16 +905,16 @@ def run_pipeline_flow(
             "For detailed sources, use ListResearchSources('lead') and ListResearchSources('counter').\n"
             "--- END SOURCE OF TRUTH ---\n"
         )
-        script_task_ref.description += sot_injection
-        audit_task_ref.description += sot_injection
-        blueprint_task_ref.description += (
+        _append_to_description_once(script_task_ref, sot_injection)
+        _append_to_description_once(audit_task_ref, sot_injection)
+        _append_to_description_once(blueprint_task_ref, (
             "\n\nSOURCE OF TRUTH: Use ReadFullReport('sot') to read the full "
             "research document in the target language. Follow the two-pass workflow "
             "described above.\n"
-        )
+        ))
 
     if evidence_quality == "limited":
-        script_task_ref.description += (
+        _append_to_description_once(script_task_ref, (
             "\n\nEVIDENCE QUALITY NOTE — READ CAREFULLY:\n"
             "The systematic review found limited direct scientific evidence for this question.\n"
             "Your script MUST:\n"
@@ -913,7 +923,7 @@ def run_pipeline_flow(
             "(b) what related evidence suggests, (c) what remains unknown.\n"
             "3. Frame recommendations as 'based on current evidence' — not 'proven'.\n"
             "4. Do NOT invent citations.\n"
-        )
+        ))
 
     # -------------------------------------------------------------------
     # Phase 3: SOT Translation (skipped for English)

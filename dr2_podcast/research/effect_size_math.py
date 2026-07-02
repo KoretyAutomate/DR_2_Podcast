@@ -12,10 +12,7 @@ Parallel to clinical_math.py but for social science effect measures:
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass  # Social science extraction types defined in social_science_research.py
+from typing import List, Optional
 
 
 @dataclass

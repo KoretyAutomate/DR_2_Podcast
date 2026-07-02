@@ -491,7 +491,6 @@ dr2_podcast/                          # Main package
 │   ├── search_service.py             # SearXNG client, page scraping, content extraction
 │   ├── fulltext_fetcher.py           # 4-tier full-text fetcher (PMC/Unpaywall/scrape)
 │   ├── metadata_clients.py           # OpenAlex, Semantic Scholar, Crossref, ERIC clients
-│   ├── social_science.py             # DEPRECATED — moved into clinical.py Orchestrator
 │   └── wwc_database.py               # What Works Clearinghouse SQLite database
 ├── audio/
 │   └── engine.py                     # Kokoro TTS (EN) + AivisSpeech (JA) + BGM mixing (dual-voice, 24kHz WAV)

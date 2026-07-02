@@ -526,6 +526,32 @@ def load_checkpoint(output_dir_path):
     return data
 
 
+def _load_resume_metadata(output_dir_path):
+    """Fallback resume source for runs made after the Prefect migration.
+
+    Those runs write no checkpoint.json — phase skipping happens through
+    Prefect task caching keyed on the output dir — so recover topic/language
+    from meta/session_metadata.txt instead. Returns a checkpoint-shaped dict
+    or None."""
+    meta_file = Path(output_dir_path) / "meta" / "session_metadata.txt"
+    if not meta_file.exists():
+        return None
+    try:
+        text = meta_file.read_text()
+    except OSError:
+        return None
+    m_topic = re.search(r"^Topic:\s*(.+?)\s*$", text, re.MULTILINE)
+    if not m_topic:
+        return None
+    m_lang = re.search(r"^Language:.*\((\w{2})\)\s*$", text, re.MULTILINE)
+    return {
+        "topic": m_topic.group(1),
+        "language": m_lang.group(1) if m_lang else None,
+        "completed_phases": None,   # tracked by Prefect cache, not listed here
+        "timestamp": None,
+    }
+
+
 # ================================================================
 
 # output_dir initialized in __main__ block (avoids creating directories on import)
@@ -2071,14 +2097,18 @@ if __name__ == "__main__":
             sys.exit(1)
         _resume_checkpoint = load_checkpoint(_resume_dir)
         if _resume_checkpoint is None:
-            print(f"ERROR: No valid {CHECKPOINT_FILE} found in {_resume_dir}")
+            # Post-Prefect runs have no checkpoint.json; resume via session metadata
+            _resume_checkpoint = _load_resume_metadata(_resume_dir)
+        if _resume_checkpoint is None:
+            print(f"ERROR: No {CHECKPOINT_FILE} or meta/session_metadata.txt found in {_resume_dir}")
             sys.exit(1)
         output_dir = _resume_dir
         print(f"\n{'='*70}")
         print(f"RESUME MODE: Resuming from {_resume_dir.name}")
-        print(f"  Completed phases: {_resume_checkpoint['completed_phases']}")
+        completed = _resume_checkpoint.get("completed_phases")
+        print(f"  Completed phases: {completed if completed is not None else 'tracked by Prefect cache'}")
         print(f"  Topic: {_resume_checkpoint['topic']}")
-        print(f"  Last checkpoint: {_resume_checkpoint['timestamp']}")
+        print(f"  Last checkpoint: {_resume_checkpoint.get('timestamp') or 'n/a'}")
         print(f"{'='*70}\n")
     else:
         output_dir = create_timestamped_output_dir(base_output_dir)
@@ -2088,7 +2118,7 @@ if __name__ == "__main__":
     # Override topic/language from checkpoint if resuming
     if _resume_checkpoint:
         args.topic = _resume_checkpoint["topic"]
-        if not args.language:
+        if not args.language and _resume_checkpoint.get("language"):
             args.language = _resume_checkpoint["language"]
     topic_name = get_topic(args)
     SESSION_ROLES = assign_roles()
@@ -2162,6 +2192,9 @@ if __name__ == "__main__":
             # Create new output dir
             new_output_dir = create_timestamped_output_dir(base_output_dir)
             logger.info(f"[OUTPUT_DIR] {new_output_dir}")
+            # Rebind the module global so @tool functions (ListResearchSources
+            # etc.) and the end-of-run evaluation read THIS run's artifacts
+            output_dir = new_output_dir
 
             # Copy research artifacts
             _copy_research_artifacts(reuse_dir, new_output_dir)
@@ -2192,9 +2225,6 @@ if __name__ == "__main__":
             blueprint_task.description = f"{blueprint_task.description}{sot_injection}"
             audit_task.description = f"{audit_task.description}{sot_injection}"
 
-            # Update output_dir for file outputs
-            # Reassign global output_dir so output_file paths work
-            import builtins
             # Update task output_file paths to new dir
             for task_obj in [audit_task, blueprint_task]:
                 if hasattr(task_obj, '_original_output_file') or hasattr(task_obj, 'output_file'):
@@ -2314,6 +2344,9 @@ if __name__ == "__main__":
             logger.info(f"\n{'='*70}")
             logger.info("REUSE_COMPLETE: CREW3_ONLY")
             logger.info(f"{'='*70}")
+            # This branch exits before the normal-path eval below — evaluate here
+            from dr2_podcast.evaluation import run_self_evaluation
+            run_self_evaluation(new_output_dir)
             sys.exit(0)
 
         elif args.check_supplemental:
@@ -2328,6 +2361,7 @@ if __name__ == "__main__":
                 # Full reuse — copy everything
                 new_output_dir = create_timestamped_output_dir(base_output_dir)
                 logger.info(f"[OUTPUT_DIR] {new_output_dir}")
+                output_dir = new_output_dir
                 _copy_all_artifacts(reuse_dir, new_output_dir)
 
                 # Session metadata
@@ -2344,6 +2378,9 @@ if __name__ == "__main__":
                 logger.info(f"\n{'='*70}")
                 logger.info("REUSE_COMPLETE: NO_CHANGES")
                 logger.info(f"{'='*70}")
+                # This branch exits before the normal-path eval below — evaluate here
+                from dr2_podcast.evaluation import run_self_evaluation
+                run_self_evaluation(new_output_dir)
                 sys.exit(0)
 
             else:
@@ -2353,6 +2390,7 @@ if __name__ == "__main__":
 
                 new_output_dir = create_timestamped_output_dir(base_output_dir)
                 logger.info(f"[OUTPUT_DIR] {new_output_dir}")
+                output_dir = new_output_dir
                 _copy_research_artifacts(reuse_dir, new_output_dir)
 
                 # Run supplemental research with BraveSearch
@@ -2521,6 +2559,9 @@ if __name__ == "__main__":
                 logger.info(f"\n{'='*70}")
                 logger.info("REUSE_COMPLETE: SUPPLEMENTAL")
                 logger.info(f"{'='*70}")
+                # This branch exits before the normal-path eval below — evaluate here
+                from dr2_podcast.evaluation import run_self_evaluation
+                run_self_evaluation(new_output_dir)
                 sys.exit(0)
 
     # ================================================================
@@ -2579,17 +2620,5 @@ if __name__ == "__main__":
         raise
 
     # --- Self-evaluation loop (non-blocking) ---
-    try:
-        from dr2_podcast.evaluation.scorecard import generate_scorecard
-        from dr2_podcast.evaluation.lesson_generator import generate_lessons
-        from dr2_podcast.evaluation.telegram_report import send_run_report
-        from dr2_podcast.evaluation.lesson_reviewer import check_threshold, run_review
-
-        _scorecard = generate_scorecard(str(output_dir))
-        _lessons = generate_lessons(_scorecard, str(output_dir))
-        send_run_report(_scorecard, _lessons)
-
-        if check_threshold():
-            run_review()
-    except Exception as _eval_err:
-        logger.warning("Self-evaluation error (non-blocking): %s", _eval_err)
+    from dr2_podcast.evaluation import run_self_evaluation
+    run_self_evaluation(output_dir)

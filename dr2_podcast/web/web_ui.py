@@ -2179,12 +2179,16 @@ def _stream_process_output(proc, task_id: str) -> list:
     """Stream subprocess stdout, parse phase markers and sources, discover output_dir."""
     output_lines = []
     start_time = tasks_db[task_id]["start_time"]
-    output_dir_discovered = False
+    output_dir_discovered = False   # True only once the authoritative marker is seen
+    mtime_fallback_tried = False
 
     for line in proc.stdout:
         output_lines.append(line)
 
-        # 0. Discover output_dir from [OUTPUT_DIR] marker or fallback
+        # 0. Discover output_dir. The [OUTPUT_DIR] marker printed by the
+        # subprocess is authoritative; the mtime scan is a display-only
+        # fallback (it can pick a concurrent run's dir) and must never
+        # block a later marker from overriding it.
         if not output_dir_discovered:
             if "[OUTPUT_DIR]" in line:
                 try:
@@ -2194,11 +2198,11 @@ def _stream_process_output(proc, task_id: str) -> list:
                         output_dir_discovered = True
                 except Exception:
                     pass
-            if not output_dir_discovered:
+            elif not mtime_fallback_tried:
+                mtime_fallback_tried = True
                 found_dir = _find_latest_output_dir()
                 if found_dir:
                     tasks_db[task_id]["output_dir"] = str(found_dir)
-                    output_dir_discovered = True
 
         # 1. Parse Phase Markers
         for marker, phase_name, progress_pct, is_phase in PHASE_MARKERS:
@@ -2319,10 +2323,12 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
             save_tasks()
             return
 
-        # Find the most recent timestamped output directory
-        output_dir = _find_latest_output_dir()
-        if output_dir:
-            tasks_db[task_id]["output_dir"] = str(output_dir)
+        # Output dir normally comes from the [OUTPUT_DIR] marker during
+        # streaming; fall back to the mtime scan only if it never appeared.
+        if not tasks_db[task_id].get("output_dir"):
+            output_dir = _find_latest_output_dir()
+            if output_dir:
+                tasks_db[task_id]["output_dir"] = str(output_dir)
         save_tasks()
 
         # Generation succeeded — run uploads if requested
@@ -2363,23 +2369,8 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
                 podcast_length=podcast_length, podcast_hosts=podcast_hosts,
             )
 
-        # --- Self-evaluation loop (non-blocking) ---
-        _eval_dir = tasks_db[task_id].get("output_dir")
-        if _eval_dir:
-            try:
-                from dr2_podcast.evaluation.scorecard import generate_scorecard
-                from dr2_podcast.evaluation.lesson_generator import generate_lessons
-                from dr2_podcast.evaluation.telegram_report import send_run_report
-                from dr2_podcast.evaluation.lesson_reviewer import check_threshold, run_review
-
-                _scorecard = generate_scorecard(_eval_dir)
-                _lessons = generate_lessons(_scorecard, _eval_dir)
-                send_run_report(_scorecard, _lessons)
-
-                if check_threshold():
-                    run_review()
-            except Exception as _eval_err:
-                print(f"Self-evaluation error (non-blocking): {_eval_err}")
+        # Self-evaluation runs inside the pipeline subprocess — re-running it
+        # here would double Telegram reports and duplicate pending lessons.
 
     except Exception as e:
         tasks_db[task_id]["status"] = "failed"
@@ -2484,23 +2475,15 @@ def run_podcast_reuse(task_data: dict):
                 podcast_hosts=podcast_hosts,
             )
 
-        # --- Self-evaluation loop (non-blocking) ---
-        _eval_dir = tasks_db[task_id].get("output_dir")
-        if _eval_dir:
-            try:
-                from dr2_podcast.evaluation.scorecard import generate_scorecard
-                from dr2_podcast.evaluation.lesson_generator import generate_lessons
-                from dr2_podcast.evaluation.telegram_report import send_run_report
-                from dr2_podcast.evaluation.lesson_reviewer import check_threshold, run_review
-
-                _scorecard = generate_scorecard(_eval_dir)
-                _lessons = generate_lessons(_scorecard, _eval_dir)
-                send_run_report(_scorecard, _lessons)
-
-                if check_threshold():
-                    run_review()
-            except Exception as _eval_err:
-                print(f"Self-evaluation error (non-blocking): {_eval_err}")
+        # --- Self-evaluation (non-blocking) ---
+        # Subprocess reuse modes (crew3_reuse / check_supplemental) evaluate
+        # inside the pipeline subprocess; only the in-process tts_only path
+        # needs it here.
+        if reuse_mode == "tts_only":
+            _eval_dir = tasks_db[task_id].get("output_dir")
+            if _eval_dir:
+                from dr2_podcast.evaluation import run_self_evaluation
+                run_self_evaluation(_eval_dir)
 
     except Exception as e:
         tasks_db[task_id]["status"] = "failed"
@@ -2524,17 +2507,21 @@ def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     tasks_db[task_id]["progress"] = 10
     save_tasks()
 
-    # Copy all artifacts from previous run
+    # Copy all artifacts from previous run. Runs nest artifacts in
+    # research/ scripts/ meta/ audio/ subdirs (audio/ is skipped — we
+    # regenerate it); top-level files are copied for legacy runs.
     for item in reuse_dir.iterdir():
         if item.is_file():
-            dest = new_output_dir / item.name
-            # Skip audio files — we'll regenerate them
             if item.suffix in ('.wav', '.mp3'):
                 continue
-            shutil.copy2(item, dest)
+            shutil.copy2(item, new_output_dir / item.name)
+        elif item.is_dir() and item.name in ("research", "scripts", "meta"):
+            shutil.copytree(item, new_output_dir / item.name, dirs_exist_ok=True)
 
-    # Load the polished script
-    script_path = new_output_dir / "script_final.md"
+    # Load the polished script (new layout: scripts/; legacy: top level)
+    script_path = new_output_dir / "scripts" / "script_final.md"
+    if not script_path.exists():
+        script_path = new_output_dir / "script_final.md"
     if not script_path.exists():
         script_path = new_output_dir / "PODCAST_SCRIPT_POLISHED.md"
     if not script_path.exists():
@@ -2551,7 +2538,11 @@ def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     lang_code = "a" if task_data.get("language", "en") == "en" else "j"
 
     cleaned_script = clean_script_for_tts(script_text)
-    output_path = new_output_dir / "audio.wav"
+    # Same layout as normal runs: audio artifacts live in audio/
+    # (scorecard and uploads only look there)
+    audio_dir = new_output_dir / "audio"
+    audio_dir.mkdir(exist_ok=True)
+    output_path = audio_dir / "audio.wav"
 
     tts_result = generate_audio_from_script(cleaned_script, str(output_path), lang_code=lang_code)
     if not tts_result:
@@ -2566,7 +2557,8 @@ def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
 
     if audio_file.exists():
         try:
-            mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav")
+            mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav",
+                                          transition_positions_ms=positions)
             if mastered and os.path.exists(mastered) and mastered != str(audio_file):
                 audio_file = Path(mastered)
         except Exception as e:
@@ -2629,10 +2621,12 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
         error_text = "\n".join(clean_lines[-50:])
         raise RuntimeError(error_text or f"Process exited with code {proc.returncode}")
 
-    # Find output dir
-    output_dir = _find_latest_output_dir()
-    if output_dir:
-        tasks_db[task_id]["output_dir"] = str(output_dir)
+    # Output dir normally comes from the [OUTPUT_DIR] marker during streaming;
+    # fall back to the mtime scan only if it never appeared.
+    if not tasks_db[task_id].get("output_dir"):
+        output_dir = _find_latest_output_dir()
+        if output_dir:
+            tasks_db[task_id]["output_dir"] = str(output_dir)
     save_tasks()
 
 
