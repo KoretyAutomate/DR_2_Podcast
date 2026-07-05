@@ -28,7 +28,7 @@ GPU_MEMORY_UTIL=0.82      # 82% of ~121GiB unified RAM (~99.8GiB). Reduced from 
                           # GB10 has no GDS support (nogds_force.patch), so weight loading
                           # uses CPU-intermediate copies. First-run compile: ~30 min total.
                           # Subsequent starts: ~5 min (cached).
-                          # VOICEVOX runs on CPU (Docker) — no GPU memory conflict.
+                          # AivisSpeech runs on CPU (Docker) — no GPU memory conflict.
 
 echo "=========================================="
 echo "Starting vLLM Server (Docker)"

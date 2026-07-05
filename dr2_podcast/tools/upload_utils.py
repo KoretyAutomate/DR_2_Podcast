@@ -20,6 +20,7 @@ YOUTUBE SETUP
 
 import json
 import logging
+import mimetypes
 import os
 from pathlib import Path
 
@@ -75,8 +76,9 @@ def upload_to_buzzsprout(audio_path: str, title: str,
     headers = {"Authorization": f"Token token={api_key}"}
 
     try:
+        mime = mimetypes.guess_type(audio_path)[0] or "audio/wav"
         with open(audio_path, "rb") as f:
-            files = {"audio_file": (Path(audio_path).name, f, "audio/mpeg")}
+            files = {"audio_file": (Path(audio_path).name, f, mime)}
             data = {"title": title}
             # No published_at → episode stays as draft
             response = httpx.post(url, headers=headers, files=files, data=data, timeout=120)

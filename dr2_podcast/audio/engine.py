@@ -5,11 +5,11 @@ TTS Audio Engine for Deep Research Podcast
 Generates high-quality, multi-speaker podcast audio with automatic TTS engine selection:
 
   - English:  Kokoro TTS (local, CPU, proven quality)
-  - Japanese: VOICEVOX (Docker container, accurate kanji reading)
+  - Japanese: AivisSpeech (Docker container, Style-Bert-VITS2, natural/emotional)
 
 Features:
 - Dual-voice system with speaker detection
-- Automatic language routing (lang_code='a' → Kokoro, 'j' → VOICEVOX)
+- Automatic language routing (lang_code='a' → Kokoro, 'j' → AivisSpeech)
 - Script parsing and audio stitching
 - WAV export with BGM support
 """
@@ -30,6 +30,7 @@ from dr2_podcast.config import (
     TTS_ENGINE_JA,
     TTS_HOST1_ID,
     TTS_HOST2_ID,
+    TTS_SPEED_SCALE,
 )
 
 from pydub import AudioSegment, effects
@@ -199,48 +200,59 @@ VOICE_MAP = {
 }
 
 # ---------------------------------------------------------------------------
-# VOICEVOX Adapter (Japanese TTS, HTTP/Docker)
+# AivisSpeech Adapter (Japanese TTS, HTTP/Docker)
 # ---------------------------------------------------------------------------
+# AivisSpeech-Engine is API-compatible with VOICEVOX (same /audio_query → /synthesis,
+# /version). Default port 10101. Voices are Style-Bert-VITS2 models (natural/emotional).
 # URL aliased to preserve existing call-site names; single source of truth is config.TTS_API_URL.
-_VOICEVOX_API_URL = TTS_API_URL
+_AIVISSPEECH_API_URL = TTS_API_URL
 
 def _get_tts_speaker_ids_int():
-    """Speaker IDs as integers — for engines that use numeric IDs (VOICEVOX et al.).
-    Defaults: 51 (†聖騎士 紅桜† ノーマル) and 2 (四国めたん ノーマル)."""
-    return int(TTS_HOST1_ID), int(TTS_HOST2_ID)
+    """Speaker (style) IDs as integers — for engines that use numeric IDs (AivisSpeech, VOICEVOX et al.).
+    Defaults: 1937616896 (にせ ノーマル) and 1717361472 (みちのくあいり 標準).
+    Returns (None, None) if the configured IDs are not numeric (e.g. cloud-TTS voice names)."""
+    try:
+        return int(TTS_HOST1_ID), int(TTS_HOST2_ID)
+    except (TypeError, ValueError):
+        logger.error(
+            f"TTS_HOST1_ID/TTS_HOST2_ID must be integer style IDs for this engine "
+            f"(got {TTS_HOST1_ID!r}, {TTS_HOST2_ID!r})"
+        )
+        return None, None
 
-def _voicevox_available():
-    """Check if VOICEVOX engine is reachable."""
+def _aivisspeech_available():
+    """Check if the AivisSpeech engine is reachable."""
     try:
         import requests
-        resp = requests.get(f"{_VOICEVOX_API_URL}/version", timeout=3)
+        resp = requests.get(f"{_AIVISSPEECH_API_URL}/version", timeout=3)
         return resp.status_code == 200
     except Exception:
         return False
 
 
-def _call_voicevox_segment(text: str, speaker_id: int) -> tuple:
-    """Call VOICEVOX API (two-step: audio_query → synthesis). Returns (audio_np, sample_rate) or (None, None)."""
+def _call_aivisspeech_segment(text: str, speaker_id: int) -> tuple:
+    """Call AivisSpeech API (two-step: audio_query → synthesis). Returns (audio_np, sample_rate) or (None, None)."""
     try:
         import requests
         import io as _io
     except ImportError as e:
-        logger.error(f"Missing dependency for VOICEVOX: {e}")
+        logger.error(f"Missing dependency for AivisSpeech: {e}")
         return None, None
 
     try:
         # Step 1: Create audio query
         q_resp = requests.post(
-            f"{_VOICEVOX_API_URL}/audio_query",
+            f"{_AIVISSPEECH_API_URL}/audio_query",
             params={"text": text, "speaker": speaker_id},
             timeout=30,
         )
         q_resp.raise_for_status()
         query_data = q_resp.json()
+        query_data["speedScale"] = TTS_SPEED_SCALE
 
         # Step 2: Synthesize audio
         synth_resp = requests.post(
-            f"{_VOICEVOX_API_URL}/synthesis",
+            f"{_AIVISSPEECH_API_URL}/synthesis",
             params={"speaker": speaker_id},
             json=query_data,
             timeout=60,
@@ -253,39 +265,42 @@ def _call_voicevox_segment(text: str, speaker_id: int) -> tuple:
         return audio.astype(np.float32), sr
     except requests.exceptions.ConnectionError:
         logger.error(
-            f"VOICEVOX API unreachable at {_VOICEVOX_API_URL}. "
-            f"Start it: docker run -d --name voicevox -p 50021:50021 voicevox/voicevox_engine:cpu-latest"
+            f"AivisSpeech API unreachable at {_AIVISSPEECH_API_URL}. "
+            f"Start it: docker run -d --name aivisspeech -p 10101:10101 ghcr.io/aivis-project/aivisspeech-engine:cpu-latest"
         )
         return None, None
     except Exception as e:
-        logger.error(f"VOICEVOX API error: {e}")
+        logger.error(f"AivisSpeech API error: {e}")
         return None, None
 
 
-def _generate_audio_voicevox(script_text: str, output_filename: str) -> str:
+def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
     """
-    Japanese TTS via VOICEVOX API.
+    Japanese TTS via AivisSpeech API.
 
-    Parses multi-speaker script and calls VOICEVOX REST API for synthesis.
-    VOICEVOX provides accurate Japanese kanji reading.
+    Parses multi-speaker script and calls the AivisSpeech REST API for synthesis.
+    AivisSpeech (Style-Bert-VITS2) provides natural, emotional Japanese speech and
+    accurate kanji reading via OpenJTalk, with a VOICEVOX-compatible HTTP API.
     """
     host1_id, host2_id = _get_tts_speaker_ids_int()
+    if host1_id is None or host2_id is None:
+        return None
 
     logger.info("=" * 60)
-    logger.info("VOICEVOX — JAPANESE AUDIO GENERATION")
+    logger.info("AIVISSPEECH — JAPANESE AUDIO GENERATION")
     logger.info("=" * 60)
-    logger.info(f"API endpoint: {_VOICEVOX_API_URL}")
+    logger.info(f"API endpoint: {_AIVISSPEECH_API_URL}")
     logger.info(f"Voices: Host1 → speaker_id={host1_id}, Host2 → speaker_id={host2_id}")
 
     # Health check
-    if not _voicevox_available():
+    if not _aivisspeech_available():
         logger.error(
-            f"✗ VOICEVOX API not reachable at {_VOICEVOX_API_URL}\n"
-            f"  Start it: docker run -d --name voicevox -p 50021:50021 voicevox/voicevox_engine:cpu-latest"
+            f"✗ AivisSpeech API not reachable at {_AIVISSPEECH_API_URL}\n"
+            f"  Start it: docker run -d --name aivisspeech -p 10101:10101 ghcr.io/aivis-project/aivisspeech-engine:cpu-latest"
         )
         return None
 
-    logger.info("✓ VOICEVOX API is healthy")
+    logger.info("✓ AivisSpeech API is healthy")
 
     # Parse script — strict Speaker N: pattern only
     speaker_pattern = re.compile(r'^(Speaker\s*(\d+))\s*[:：]\s*(.*)', re.IGNORECASE)
@@ -309,7 +324,7 @@ def _generate_audio_voicevox(script_text: str, output_filename: str) -> str:
             chunk_audios = []
             spk_id = host1_id if current_speaker == 1 else host2_id
             for chunk in chunks:
-                a, sr_chunk = _call_voicevox_segment(chunk, spk_id)
+                a, sr_chunk = _call_aivisspeech_segment(chunk, spk_id)
                 if a is not None:
                     chunk_audios.append(a)
                 else:
@@ -403,7 +418,7 @@ def _generate_audio_voicevox(script_text: str, output_filename: str) -> str:
             duration_sec = len(final_audio) / sample_rate
             duration_min = duration_sec / 60
 
-            logger.info(f"\n✓ Audio generated successfully (VOICEVOX):")
+            logger.info(f"\n✓ Audio generated successfully (AivisSpeech):")
             logger.info(f"  File: {output_filename}")
             logger.info(f"  Size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
             logger.info(f"  Duration: {duration_min:.2f} minutes ({duration_sec:.1f} seconds)")
@@ -427,7 +442,7 @@ def _generate_audio_voicevox(script_text: str, output_filename: str) -> str:
 # it shares the function's local state (chunking, mixing) and is the EN default.
 # ---------------------------------------------------------------------------
 _TTS_ENGINES = {
-    "voicevox": _generate_audio_voicevox,
+    "aivisspeech": _generate_audio_aivisspeech,
 }
 
 
@@ -453,7 +468,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
 
     TTS Engine selection:
       - English (lang_code='a'): Kokoro TTS (local, CPU, proven)
-      - Japanese (lang_code='j'): VOICEVOX API (Docker container)
+      - Japanese (lang_code='j'): AivisSpeech API (Docker container)
 
     Args:
         script_text: Full podcast script with "Host 1:" / "Host 2:" labels (renamed to "Speaker N:" before parsing)
@@ -773,6 +788,15 @@ def clean_script_for_tts(script_text: str) -> str:
     # BEFORE markdown # removal below, which would strip the ## prefix leaving bare text
     clean = re.sub(r'^##.*$', '', clean, flags=re.MULTILINE)
 
+    # Drop furigana reading annotations: 漢字（かな） is a pronunciation guide for a
+    # reader, but TTS pronounces the kanji correctly on its own — reading the
+    # hiragana too produces an audible duplicate (e.g. "更年期（こうねんき）" is
+    # heard as "こうねんき、こうねんき"). Only strip when the parenthetical is
+    # PURE hiragana directly after a kanji run — katakana parentheticals (e.g.
+    # "要約（アブストラクト）") are glosses/synonyms carrying new information and
+    # must be read aloud, not furigana, so they're left untouched.
+    clean = re.sub(r'([一-鿿㐀-䶿々]+)（[぀-ゟー]+）', r'\1', clean)
+
     # Remove markdown formatting
     clean = re.sub(r'\*\*', '', clean)  # Bold
     clean = re.sub(r'[*#\[\]]', '', clean)  # Italics, headers, brackets (NOT underscores — protects ___TRANSITION___ placeholders)
@@ -782,8 +806,12 @@ def clean_script_for_tts(script_text: str) -> str:
 
     # Rename speaker labels "Host N:" → "Speaker N:" so that any remaining
     # "Host 1" / "Host 2" in dialogue text can be safely stripped.
-    clean = re.sub(r'^Host\s+(\d)\s*[:：]', r'Speaker \1:', clean, flags=re.MULTILINE)
-    clean = re.sub(r'Host [12]', '', clean)
+    # Case/underscore-insensitive: also catches malformed 'host_1：' / 'HOST 1:'
+    # labels that the pipeline normalizer is the first line of defense against
+    # (the sleep-week Tue episode leaked lowercase host_1： into TTS).
+    clean = re.sub(r'^\*{0,2}host[ _]*(\d)[ _]*\*{0,2}\s*[:：]', r'Speaker \1:',
+                   clean, flags=re.MULTILINE | re.IGNORECASE)
+    clean = re.sub(r'Host [12]', '', clean, flags=re.IGNORECASE)
 
     # Normalize unicode punctuation to ASCII
     unicode_map = {
@@ -799,7 +827,7 @@ def clean_script_for_tts(script_text: str) -> str:
     clean = re.sub(r'[^\S\n]+', ' ', clean)  # collapse spaces/tabs but keep \n
     clean = re.sub(r'\n{3,}', '\n\n', clean)  # collapse excessive blank lines
 
-    # Strip spaces at Latin↔Japanese boundaries (VOICEVOX otherwise inserts an
+    # Strip spaces at Latin↔Japanese boundaries (the JA engine otherwise inserts an
     # audible pause between e.g. "AI ラボ員達" or "DHA 配合").
     _JP = r'\u3005\u3040-\u309F\u30A0-\u30FF\u3400-\u4DBF\u4E00-\u9FFF'
     clean = re.sub(rf'(?<=[A-Za-z0-9])[ \t]+(?=[{_JP}])', '', clean)

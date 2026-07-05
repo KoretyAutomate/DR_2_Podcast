@@ -526,6 +526,32 @@ def load_checkpoint(output_dir_path):
     return data
 
 
+def _load_resume_metadata(output_dir_path):
+    """Fallback resume source for runs made after the Prefect migration.
+
+    Those runs write no checkpoint.json — phase skipping happens through
+    Prefect task caching keyed on the output dir — so recover topic/language
+    from meta/session_metadata.txt instead. Returns a checkpoint-shaped dict
+    or None."""
+    meta_file = Path(output_dir_path) / "meta" / "session_metadata.txt"
+    if not meta_file.exists():
+        return None
+    try:
+        text = meta_file.read_text()
+    except OSError:
+        return None
+    m_topic = re.search(r"^Topic:\s*(.+?)\s*$", text, re.MULTILINE)
+    if not m_topic:
+        return None
+    m_lang = re.search(r"^Language:.*\((\w{2})\)\s*$", text, re.MULTILINE)
+    return {
+        "topic": m_topic.group(1),
+        "language": m_lang.group(1) if m_lang else None,
+        "completed_phases": None,   # tracked by Prefect cache, not listed here
+        "timestamp": None,
+    }
+
+
 # ================================================================
 
 # output_dir initialized in __main__ block (avoids creating directories on import)
@@ -844,22 +870,31 @@ def check_supplemental_needed(topic: str, reuse_dir: Path) -> dict:
             f"{SMART_BASE_URL}/chat/completions",
             json={
                 "model": SMART_MODEL,
-                "messages": [{"role": "system", "content": "/no_think"}, {"role": "user", "content": prompt}],
+                "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
-                "max_tokens": 1024,
+                # Headroom in case the disable-thinking switch is ignored and
+                # reasoning burns tokens before the answer (see generate_intro).
+                "max_tokens": 2048,
+                # Reasoning models (Qwen3.5) don't honor a "/no_think" system
+                # message — this template switch puts the answer in `content`.
+                "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=60.0,
         )
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"].strip()
+        content = resp.json()["choices"][0]["message"].get("content")
+        if not content:
+            raise ValueError("LLM returned empty content (reasoning burned the token budget?)")
         # Strip <think> blocks (Qwen3 safety net)
-        content = strip_think_blocks(content)
+        content = strip_think_blocks(content.strip())
 
-        # Extract JSON from response — try full parse first, then narrow regex fallback
+        # Extract JSON from response — full parse first, then outermost-braces
+        # fallback (the expected object nests {} inside "queries", so a
+        # no-nested-braces pattern can never match it)
         try:
             result = json.loads(content)
         except json.JSONDecodeError:
-            json_match = re.search(r'\{[^{}]*\}', content)
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
             result = json.loads(json_match.group()) if json_match else None
         if result:
             return {
@@ -903,9 +938,9 @@ SUPPORTED_LANGUAGES = {
     },
     'ja': {
         'name': '日本語 (Japanese)',
-        'tts_code': 'j',            # VOICEVOX
+        'tts_code': 'j',            # AivisSpeech
         'instruction': 'すべてのコンテンツを日本語で書いてください。(Write all content in Japanese.)',
-        'speech_rate': 350,         # ~350 chars/min (calibrated from VOICEVOX actual output)
+        'speech_rate': 350,         # ~350 chars/min (VOICEVOX-era calibration; re-tune for AivisSpeech)
         'length_unit': 'chars',
         'prompt_unit': 'character',
     }
@@ -1829,6 +1864,99 @@ def _run_polish_loop(draft_text, draft_count, inventory, target_length_int,
     return polished, current_polish
 
 
+def _audit_requires_correction(audit_output: str) -> bool:
+    """True if the accuracy audit's verdict is FAIL or any finding is HIGH severity.
+
+    Root cause of the sleep-week fabrications reaching audio (2026-05): the flow's
+    only trigger was ``re.search(r'\\*\\*Severity\\*\\*:\\s*HIGH', ...)``, which
+    matches NEITHER the Japanese audit format ``**重大度**: **HIGH**`` NOR the
+    ``HIGH Severity`` / ``(HIGH Severity)`` variants — so corrections never fired.
+    This tolerant detector matches EN and JA verdicts and severity markers.
+    """
+    if not audit_output:
+        return False
+    t = audit_output
+    # Overall verdict FAIL — English "**FAIL**" or Japanese "不合格"
+    if re.search(r'\bFAIL\b', t) or '不合格' in t:
+        return True
+    # HIGH-severity marker: "重大度: HIGH", "Severity: HIGH", "HIGH severity",
+    # "(HIGH Severity)" — tolerant of ** wrapping and label language.
+    if re.search(r'(?:重大度|severity)[^\n]{0,12}HIGH', t, re.IGNORECASE):
+        return True
+    if re.search(r'HIGH[\s_*\-]{0,4}severity', t, re.IGNORECASE):
+        return True
+    if re.search(r'\(\s*HIGH\b', t):
+        return True
+    return False
+
+
+def _run_script_correction(audit_output, polished_text, language, language_config, output_dir):
+    """Apply the accuracy audit's corrections to the script via the Smart Model.
+
+    Returns corrected script text, or None if the result is unusable (too short,
+    or dropped transition markers) so the caller keeps the original. Used by the
+    non-Prefect reuse branches (crew3-only / check-supplemental); the Prefect flow
+    uses its crew-based `_run_inline_correction`.
+    """
+    orig_tx = polished_text.count("[TRANSITION]") + polished_text.count("[INTRO_END]")
+    lang_rule = "\n出力は日本語のみ。中国語は使わないこと。" if language == 'ja' else ""
+    system = (
+        "You are a precise podcast-script editor. Apply ONLY the corrections the accuracy "
+        "audit specifies. Replace fabricated/misattributed citations with the correct "
+        "attribution the audit gives (or drop the citation and state the finding "
+        "qualitatively), and soften confidence/GRADE overstatements to match the source. "
+        "Preserve everything else verbatim: speaker labels (Host 1:/Host 2:), dialogue "
+        "structure, [TRANSITION]/[INTRO_END] markers, length, and tone. "
+        "If a stretch of dialogue is an obvious two-person Q&A but every turn is mislabeled "
+        "with the SAME speaker (e.g. many 'Host 1:' in a row), re-assign the labels so the "
+        "asking turns are the Questioner and the answering turns are the Presenter. "
+        "Do NOT repeat an identical closing/sign-off line more than once. "
+        "Output ONLY the full corrected script." + lang_rule
+    )
+    user = f"ACCURACY AUDIT:\n{audit_output}\n\nSCRIPT TO CORRECT:\n{polished_text}\n\nOutput the full corrected script."
+    try:
+        corrected = strip_think_blocks(_call_smart_model(system, user, max_tokens=16000, temperature=0.1))
+    except Exception as e:
+        logger.warning(f"  Script correction call failed: {e}")
+        return None
+    if not corrected or len(corrected) < len(polished_text) * 0.5:
+        logger.warning("  Correction output too short — keeping original script")
+        return None
+    if orig_tx and (corrected.count("[TRANSITION]") + corrected.count("[INTRO_END]")) < orig_tx:
+        logger.warning("  Correction lost transition markers — keeping original script")
+        return None
+    logger.info("  Script correction applied (%d -> %d chars)", len(polished_text), len(corrected))
+    return corrected
+
+
+def _enforce_audit(audit_output, polished_text, sot_content, language, language_config, output_dir):
+    """Shared audit enforcement for the non-Prefect reuse branches.
+
+    If the audit FAILs / has HIGH-severity drift, or the deterministic citation
+    gate finds fabricated citations, run a correction pass and return the
+    corrected script (else None). The Prefect flow has its own (now correctly
+    triggered) enforcement; this keeps the reuse branches consistent.
+    """
+    from dr2_podcast.pipeline_validators import validate_citations
+    det = validate_citations(polished_text, sot_text=sot_content) if sot_content else []
+    if det:
+        logger.warning("  Citation gate flagged: %s", "; ".join(det))
+    if not (audit_output and (_audit_requires_correction(audit_output) or det)):
+        return None
+    logger.info("  Accuracy gate TRIGGERED — running correction pass")
+    aud = audit_output + (("\n\n## Citation issues\n" + "\n".join(f"- {i}" for i in det)) if det else "")
+    corrected = _run_script_correction(aud, polished_text, language, language_config, output_dir)
+    try:
+        with open(output_path(output_dir, "ACCURACY_CORRECTIONS.md"), 'w', encoding='utf-8') as f:
+            f.write(f"# Accuracy Corrections\n\n"
+                    f"- Audit verdict trigger: {_audit_requires_correction(audit_output)}\n"
+                    f"- Fabricated-citation trigger: {det or 'none'}\n"
+                    f"- Result: {'applied' if corrected else 'FAILED — kept original, manual review needed'}\n")
+    except Exception:
+        pass
+    return corrected
+
+
 def _run_accuracy_audit(audit_task, polish_task, auditor_agent, translation_task):
     """Phase 7: Run accuracy audit."""
     logger.info(f"\n  PHASE 7: ACCURACY AUDIT")
@@ -1850,6 +1978,22 @@ def _finalize_script(polished_text, polish_task, language, language_config, outp
     else:
         script_text = polished_text if polished_text else (
             polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else "")
+
+    # Deterministic speaker-label normalization (Tier-1 gate). Canonicalizes
+    # host_1：/full-width/**Host 1**/ホスト1 variants -> 'Host N:' BEFORE TTS, so
+    # clean_script_for_tts and reaction-guidance regexes match and voice
+    # assignment is correct. Fixes the sleep-week label-corruption class.
+    from dr2_podcast.pipeline_validators import (
+        normalize_speaker_labels, check_speaker_alternation, detect_duplicate_blocks,
+        deduplicate_lines)
+    script_text, _labels_fixed = normalize_speaker_labels(script_text)
+    if _labels_fixed:
+        logger.info(f"  Normalized {_labels_fixed} non-canonical speaker label(s)")
+    script_text, _dups = deduplicate_lines(script_text)
+    if _dups:
+        logger.info(f"  Removed {_dups} duplicate dialogue line(s)")
+    for _issue in check_speaker_alternation(script_text) + detect_duplicate_blocks(script_text):
+        logger.warning(f"  STRUCTURAL: {_issue}")
 
     if language != 'en':
         script_text = _audit_script_language(script_text, language, language_config)
@@ -2062,14 +2206,18 @@ if __name__ == "__main__":
             sys.exit(1)
         _resume_checkpoint = load_checkpoint(_resume_dir)
         if _resume_checkpoint is None:
-            print(f"ERROR: No valid {CHECKPOINT_FILE} found in {_resume_dir}")
+            # Post-Prefect runs have no checkpoint.json; resume via session metadata
+            _resume_checkpoint = _load_resume_metadata(_resume_dir)
+        if _resume_checkpoint is None:
+            print(f"ERROR: No {CHECKPOINT_FILE} or meta/session_metadata.txt found in {_resume_dir}")
             sys.exit(1)
         output_dir = _resume_dir
         print(f"\n{'='*70}")
         print(f"RESUME MODE: Resuming from {_resume_dir.name}")
-        print(f"  Completed phases: {_resume_checkpoint['completed_phases']}")
+        completed = _resume_checkpoint.get("completed_phases")
+        print(f"  Completed phases: {completed if completed is not None else 'tracked by Prefect cache'}")
         print(f"  Topic: {_resume_checkpoint['topic']}")
-        print(f"  Last checkpoint: {_resume_checkpoint['timestamp']}")
+        print(f"  Last checkpoint: {_resume_checkpoint.get('timestamp') or 'n/a'}")
         print(f"{'='*70}\n")
     else:
         output_dir = create_timestamped_output_dir(base_output_dir)
@@ -2079,7 +2227,7 @@ if __name__ == "__main__":
     # Override topic/language from checkpoint if resuming
     if _resume_checkpoint:
         args.topic = _resume_checkpoint["topic"]
-        if not args.language:
+        if not args.language and _resume_checkpoint.get("language"):
             args.language = _resume_checkpoint["language"]
     topic_name = get_topic(args)
     SESSION_ROLES = assign_roles()
@@ -2153,6 +2301,9 @@ if __name__ == "__main__":
             # Create new output dir
             new_output_dir = create_timestamped_output_dir(base_output_dir)
             logger.info(f"[OUTPUT_DIR] {new_output_dir}")
+            # Rebind the module global so @tool functions (ListResearchSources
+            # etc.) and the end-of-run evaluation read THIS run's artifacts
+            output_dir = new_output_dir
 
             # Copy research artifacts
             _copy_research_artifacts(reuse_dir, new_output_dir)
@@ -2183,9 +2334,6 @@ if __name__ == "__main__":
             blueprint_task.description = f"{blueprint_task.description}{sot_injection}"
             audit_task.description = f"{audit_task.description}{sot_injection}"
 
-            # Update output_dir for file outputs
-            # Reassign global output_dir so output_file paths work
-            import builtins
             # Update task output_file paths to new dir
             for task_obj in [audit_task, blueprint_task]:
                 if hasattr(task_obj, '_original_output_file') or hasattr(task_obj, 'output_file'):
@@ -2266,13 +2414,16 @@ if __name__ == "__main__":
                 session_roles=SESSION_ROLES, topic_name=topic_name,
                 target_instruction=target_instruction)
 
-            # Phase 7: Accuracy Audit
+            # Phase 7: Accuracy Audit + enforcement (correct FAIL/HIGH/fabrication before audio)
             _run_accuracy_audit(audit_task, polish_task, auditor_agent, translation_task)
+            _r_audit = audit_task.output.raw if hasattr(audit_task, 'output') and audit_task.output else ""
+            _r_corrected = _enforce_audit(_r_audit, _r_polished, sot_content, language, language_config, new_output_dir)
 
             # Finalize script (language audit, reaction guidance, save script_final.md)
             logger.info("\n--- Saving Outputs ---")
             script_text = _finalize_script(
-                _r_polished, polish_task, language, language_config, new_output_dir)
+                _r_polished, polish_task, language, language_config, new_output_dir,
+                corrected_text=_r_corrected)
 
             _save_task_outputs(new_output_dir, [
                 ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
@@ -2305,6 +2456,9 @@ if __name__ == "__main__":
             logger.info(f"\n{'='*70}")
             logger.info("REUSE_COMPLETE: CREW3_ONLY")
             logger.info(f"{'='*70}")
+            # This branch exits before the normal-path eval below — evaluate here
+            from dr2_podcast.evaluation import run_self_evaluation
+            run_self_evaluation(new_output_dir)
             sys.exit(0)
 
         elif args.check_supplemental:
@@ -2319,6 +2473,7 @@ if __name__ == "__main__":
                 # Full reuse — copy everything
                 new_output_dir = create_timestamped_output_dir(base_output_dir)
                 logger.info(f"[OUTPUT_DIR] {new_output_dir}")
+                output_dir = new_output_dir
                 _copy_all_artifacts(reuse_dir, new_output_dir)
 
                 # Session metadata
@@ -2335,6 +2490,9 @@ if __name__ == "__main__":
                 logger.info(f"\n{'='*70}")
                 logger.info("REUSE_COMPLETE: NO_CHANGES")
                 logger.info(f"{'='*70}")
+                # This branch exits before the normal-path eval below — evaluate here
+                from dr2_podcast.evaluation import run_self_evaluation
+                run_self_evaluation(new_output_dir)
                 sys.exit(0)
 
             else:
@@ -2344,6 +2502,7 @@ if __name__ == "__main__":
 
                 new_output_dir = create_timestamped_output_dir(base_output_dir)
                 logger.info(f"[OUTPUT_DIR] {new_output_dir}")
+                output_dir = new_output_dir
                 _copy_research_artifacts(reuse_dir, new_output_dir)
 
                 # Run supplemental research with BraveSearch
@@ -2480,13 +2639,16 @@ if __name__ == "__main__":
                     session_roles=SESSION_ROLES, topic_name=topic_name,
                     target_instruction=target_instruction)
 
-                # Phase 7: Accuracy Audit
+                # Phase 7: Accuracy Audit + enforcement (correct FAIL/HIGH/fabrication before audio)
                 _run_accuracy_audit(audit_task, polish_task, auditor_agent, translation_task)
+                _s_audit = audit_task.output.raw if hasattr(audit_task, 'output') and audit_task.output else ""
+                _s_corrected = _enforce_audit(_s_audit, _s_polished, sot_content, language, language_config, new_output_dir)
 
                 # Finalize script (language audit, reaction guidance, save script_final.md)
                 logger.info("\n--- Saving Outputs ---")
                 script_text = _finalize_script(
-                    _s_polished, polish_task, language, language_config, new_output_dir)
+                    _s_polished, polish_task, language, language_config, new_output_dir,
+                    corrected_text=_s_corrected)
 
                 _save_task_outputs(new_output_dir, [
                     ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
@@ -2512,6 +2674,9 @@ if __name__ == "__main__":
                 logger.info(f"\n{'='*70}")
                 logger.info("REUSE_COMPLETE: SUPPLEMENTAL")
                 logger.info(f"{'='*70}")
+                # This branch exits before the normal-path eval below — evaluate here
+                from dr2_podcast.evaluation import run_self_evaluation
+                run_self_evaluation(new_output_dir)
                 sys.exit(0)
 
     # ================================================================
@@ -2570,17 +2735,5 @@ if __name__ == "__main__":
         raise
 
     # --- Self-evaluation loop (non-blocking) ---
-    try:
-        from dr2_podcast.evaluation.scorecard import generate_scorecard
-        from dr2_podcast.evaluation.lesson_generator import generate_lessons
-        from dr2_podcast.evaluation.telegram_report import send_run_report
-        from dr2_podcast.evaluation.lesson_reviewer import check_threshold, run_review
-
-        _scorecard = generate_scorecard(str(output_dir))
-        _lessons = generate_lessons(_scorecard, str(output_dir))
-        send_run_report(_scorecard, _lessons)
-
-        if check_threshold():
-            run_review()
-    except Exception as _eval_err:
-        logger.warning("Self-evaluation error (non-blocking): %s", _eval_err)
+    from dr2_podcast.evaluation import run_self_evaluation
+    run_self_evaluation(output_dir)

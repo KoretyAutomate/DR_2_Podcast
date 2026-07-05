@@ -3,6 +3,10 @@
 
 cd "$(dirname "$0")"
 
+# Files created by the UI (logs, task history) can contain the login password —
+# keep them owner-only.
+umask 077
+
 # Set default port (8501 to avoid conflict with vLLM on 8000)
 PORT=${1:-8501}
 export PODCAST_WEB_PORT=$PORT

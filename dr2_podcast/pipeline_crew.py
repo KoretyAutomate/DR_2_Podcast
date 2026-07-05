@@ -268,6 +268,11 @@ def create_agents_and_tasks(
             f'  6. NO QUIZ-SHOW: The Presenter must NEVER validate the Questioner with grading phrases '
             f'like "Exactly!", "Correct!", "That\'s right!". Every response must advance the conversation '
             f'with new information, a new angle, or a qualification.\n'
+            f'  7. NO FABRICATION: Only cite studies, authors, years, and numbers that appear in the '
+            f'Blueprint / Source-of-Truth. NEVER invent an author-year (e.g. "Vandewalle 2007"), a PMID, '
+            f'or a statistic. If unsure of the source, describe the finding qualitatively without a '
+            f'citation. Match the confidence you convey to the evidence grade --- do not upgrade a '
+            f'LOW/MODERATE finding into a settled fact.\n'
             f'\n'
             f'Your dialogue should dive into nuance, trade-offs, and practical implications. '
             f'{english_instruction}\n\n'
@@ -539,7 +544,18 @@ def create_agents_and_tasks(
             f"3. **Confidence inflation**: LOW confidence claims presented as settled fact\n"
             f"4. **Cherry-picking**: Only one side of CONTESTED claims presented\n"
             f"5. **Contested-as-settled**: Claims marked CONTESTED in source-of-truth presented as consensus\n"
-            + (f"6. **Language consistency**: Flag any non-{language_config['name']} sentences that should be in {language_config['name']}. "
+            f"6. **Fabricated / misattributed citation (ALWAYS HIGH)**: The script names an author+year "
+            f"(e.g. 'Vandewalle et al. (2007)') or study that does NOT appear in the Source-of-Truth "
+            f"reference list. Every 'Author (year)' the script cites MUST exist in the SOT; if it does "
+            f"not, flag it HIGH and give the correct attribution (or say 'no such source').\n"
+            f"7. **Study-finding fidelity (ALWAYS HIGH)**: The script describes a real study's result "
+            f"incorrectly — e.g. reports a NULL/non-significant finding as positive, inverts the "
+            f"direction, or invents a specific number (percentage, effect size, sample size) not in the "
+            f"source. Check each cited number against the SOT.\n"
+            f"8. **GRADE fidelity (ALWAYS HIGH)**: The confidence the script conveys must match the "
+            f"SOT's GRADE. If the SOT grades a claim LOW/MODERATE but the script frames it as "
+            f"'moderate-to-high' or settled, flag it HIGH.\n"
+            + (f"9. **Language consistency**: Flag any non-{language_config['name']} sentences that should be in {language_config['name']}. "
                f"(Exclude scientific abbreviations: ARR, NNT, GRADE, RCT, CI, HR, OR)\n\n"
                if language != 'en' else '\n')
             + f"OUTPUT FORMAT:\n"
@@ -550,7 +566,7 @@ def create_agents_and_tasks(
             f"For each issue:\n"
             f"- **Script says**: [exact quote from script]\n"
             f"- **Source-of-truth says**: [what the evidence actually supports]\n"
-            f"- **Drift type**: [one of the 5 patterns above]\n"
+            f"- **Drift type**: [one of the patterns above]\n"
             f"- **Severity**: HIGH / MEDIUM / LOW\n\n"
             f"## Recommendations\n"
             f"[Specific line-level fixes if needed]\n\n"
@@ -664,6 +680,14 @@ def create_agents_and_tasks(
             f"- VERY LOW confidence -> 'Preliminary findings hint at...'\n"
             f"List each major claim with its recommended framing.\n\n"
             f"## 7. Citations\n"
+            f"CRITICAL — GROUNDING RULE: Every study you list here MUST be copied from the "
+            f"Source-of-Truth reference list. Use the EXACT author/title/year/PMID as written in "
+            f"the SOT. Do NOT invent, guess, or 'fill in' a citation, an author name, a year, or a "
+            f"PMID. If a claim has no matching source in the SOT, state the claim WITHOUT a citation "
+            f"rather than fabricating one. A made-up author-year (e.g. 'Vandewalle 2007') or PMID is "
+            f"a critical failure that fails the whole episode. Likewise, every specific number "
+            f"(percentage, hazard ratio, sample size, effect size) must be copied from the SOT — "
+            f"never invented.\n\n"
             f"### Supporting Evidence\n"
             f"- [Study Title] (Journal, Year) - [URL] - **Validity: V High/Medium/Low**\n"
             f"  - Evidence Type: [RCT/Observational/Animal Model]\n"

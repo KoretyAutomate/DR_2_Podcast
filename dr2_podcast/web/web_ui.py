@@ -65,6 +65,15 @@ print("export PODCAST_WEB_USER=your_username", file=sys.stderr)
 print("export PODCAST_WEB_PASSWORD=your_password", file=sys.stderr)
 print("="*60, file=sys.stderr)
 
+# Launch wrappers capture stderr (incl. the password above) into web_ui.log —
+# keep it and the task-history file owner-readable only.
+for _sensitive in (SCRIPT_DIR / "web_ui.log", TASKS_FILE):
+    try:
+        if _sensitive.exists():
+            os.chmod(_sensitive, 0o600)
+    except OSError:
+        pass
+
 @asynccontextmanager
 async def lifespan(app):
     threading.Thread(target=worker_thread, daemon=True).start()
@@ -150,8 +159,14 @@ def save_tasks():
     with tasks_lock:
         tmp = TASKS_FILE.with_suffix('.tmp')
         try:
+            # Never persist upload credentials to disk — they stay in-memory
+            # only; uploads fall back to env vars after a restart.
+            serializable = {
+                tid: {k: v for k, v in t.items() if k not in _CREDENTIAL_FIELDS}
+                for tid, t in tasks_db.items()
+            }
             with open(tmp, 'w') as f:
-                json.dump(tasks_db, f, indent=2, default=str)
+                json.dump(serializable, f, indent=2, default=str)
             os.replace(tmp, TASKS_FILE)
         except Exception:
             logger.exception("Failed to save tasks to %s", TASKS_FILE)
@@ -1827,14 +1842,21 @@ async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify
             f"{llm_base}/chat/completions",
             json={
                 "model": model_name,
-                "messages": [{"role": "system", "content": "/no_think"}, {"role": "user", "content": prompt}],
+                "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
-                "max_tokens": 512,
+                # Headroom in case the disable-thinking switch is ignored and
+                # reasoning burns tokens before the answer (see generate_intro).
+                "max_tokens": 1024,
+                # Reasoning models (Qwen3.5) don't honor a "/no_think" system
+                # message — this template switch puts the answer in `content`.
+                "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=30.0,
         )
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"].strip()
+        content = resp.json()["choices"][0]["message"].get("content")
+        if not content:
+            return {"has_match": False, "matches": []}
         content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
         # Parse scores from LLM response
@@ -1865,7 +1887,11 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
     # Resolve reuse_dir from output_dir or task_id
     reuse_dir = None
     if request.reuse_output_dir:
-        reuse_dir = Path(request.reuse_output_dir)
+        reuse_dir = Path(request.reuse_output_dir).resolve()
+        # Confine user-supplied paths to the outputs tree (same guard as /api/download)
+        if not reuse_dir.is_relative_to(OUTPUT_DIR.resolve()):
+            raise HTTPException(status_code=400,
+                                detail="reuse_output_dir must be inside research_outputs/")
     elif request.reuse_task_id:
         prev_task = tasks_db.get(request.reuse_task_id)
         if prev_task and prev_task.get("output_dir"):
@@ -2153,12 +2179,16 @@ def _stream_process_output(proc, task_id: str) -> list:
     """Stream subprocess stdout, parse phase markers and sources, discover output_dir."""
     output_lines = []
     start_time = tasks_db[task_id]["start_time"]
-    output_dir_discovered = False
+    output_dir_discovered = False   # True only once the authoritative marker is seen
+    mtime_fallback_tried = False
 
     for line in proc.stdout:
         output_lines.append(line)
 
-        # 0. Discover output_dir from [OUTPUT_DIR] marker or fallback
+        # 0. Discover output_dir. The [OUTPUT_DIR] marker printed by the
+        # subprocess is authoritative; the mtime scan is a display-only
+        # fallback (it can pick a concurrent run's dir) and must never
+        # block a later marker from overriding it.
         if not output_dir_discovered:
             if "[OUTPUT_DIR]" in line:
                 try:
@@ -2168,11 +2198,11 @@ def _stream_process_output(proc, task_id: str) -> list:
                         output_dir_discovered = True
                 except Exception:
                     pass
-            if not output_dir_discovered:
+            elif not mtime_fallback_tried:
+                mtime_fallback_tried = True
                 found_dir = _find_latest_output_dir()
                 if found_dir:
                     tasks_db[task_id]["output_dir"] = str(found_dir)
-                    output_dir_discovered = True
 
         # 1. Parse Phase Markers
         for marker, phase_name, progress_pct, is_phase in PHASE_MARKERS:
@@ -2206,6 +2236,19 @@ def _stream_process_output(proc, task_id: str) -> list:
                 pass
 
     return output_lines
+
+
+def _resolve_upload_audio(resolved_dir: Path) -> str:
+    """Locate a run's final audio for upload.
+
+    Current runs nest audio under audio/ (prefer the BGM-mixed master);
+    top-level names are kept as fallback for pre-subdir legacy runs."""
+    for rel in ("audio/audio_mixed.wav", "audio/audio.wav",
+                "audio_mixed.wav", "audio.wav"):
+        candidate = resolved_dir / rel
+        if candidate.exists():
+            return str(candidate)
+    return str(resolved_dir / "audio" / "audio_mixed.wav")
 
 
 def run_podcast_generation(task_id: str, topic: str, language: str,
@@ -2280,15 +2323,17 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
             save_tasks()
             return
 
-        # Find the most recent timestamped output directory
-        output_dir = _find_latest_output_dir()
-        if output_dir:
-            tasks_db[task_id]["output_dir"] = str(output_dir)
+        # Output dir normally comes from the [OUTPUT_DIR] marker during
+        # streaming; fall back to the mtime scan only if it never appeared.
+        if not tasks_db[task_id].get("output_dir"):
+            output_dir = _find_latest_output_dir()
+            if output_dir:
+                tasks_db[task_id]["output_dir"] = str(output_dir)
         save_tasks()
 
         # Generation succeeded — run uploads if requested
         resolved_dir = Path(tasks_db[task_id].get("output_dir") or str(OUTPUT_DIR))
-        audio_path = str(resolved_dir / "audio.wav")
+        audio_path = _resolve_upload_audio(resolved_dir)
         title = topic.strip()
 
         if upload_buzzsprout or upload_youtube:
@@ -2324,23 +2369,8 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
                 podcast_length=podcast_length, podcast_hosts=podcast_hosts,
             )
 
-        # --- Self-evaluation loop (non-blocking) ---
-        _eval_dir = tasks_db[task_id].get("output_dir")
-        if _eval_dir:
-            try:
-                from dr2_podcast.evaluation.scorecard import generate_scorecard
-                from dr2_podcast.evaluation.lesson_generator import generate_lessons
-                from dr2_podcast.evaluation.telegram_report import send_run_report
-                from dr2_podcast.evaluation.lesson_reviewer import check_threshold, run_review
-
-                _scorecard = generate_scorecard(_eval_dir)
-                _lessons = generate_lessons(_scorecard, _eval_dir)
-                send_run_report(_scorecard, _lessons)
-
-                if check_threshold():
-                    run_review()
-            except Exception as _eval_err:
-                print(f"Self-evaluation error (non-blocking): {_eval_err}")
+        # Self-evaluation runs inside the pipeline subprocess — re-running it
+        # here would double Telegram reports and duplicate pending lessons.
 
     except Exception as e:
         tasks_db[task_id]["status"] = "failed"
@@ -2410,7 +2440,7 @@ def run_podcast_reuse(task_data: dict):
 
         # Handle uploads
         resolved_dir = Path(tasks_db[task_id].get("output_dir") or str(OUTPUT_DIR))
-        audio_path = str(resolved_dir / "audio.wav")
+        audio_path = _resolve_upload_audio(resolved_dir)
 
         if upload_buzzsprout or upload_youtube:
             tasks_db[task_id]["status"] = "uploading"
@@ -2445,23 +2475,15 @@ def run_podcast_reuse(task_data: dict):
                 podcast_hosts=podcast_hosts,
             )
 
-        # --- Self-evaluation loop (non-blocking) ---
-        _eval_dir = tasks_db[task_id].get("output_dir")
-        if _eval_dir:
-            try:
-                from dr2_podcast.evaluation.scorecard import generate_scorecard
-                from dr2_podcast.evaluation.lesson_generator import generate_lessons
-                from dr2_podcast.evaluation.telegram_report import send_run_report
-                from dr2_podcast.evaluation.lesson_reviewer import check_threshold, run_review
-
-                _scorecard = generate_scorecard(_eval_dir)
-                _lessons = generate_lessons(_scorecard, _eval_dir)
-                send_run_report(_scorecard, _lessons)
-
-                if check_threshold():
-                    run_review()
-            except Exception as _eval_err:
-                print(f"Self-evaluation error (non-blocking): {_eval_err}")
+        # --- Self-evaluation (non-blocking) ---
+        # Subprocess reuse modes (crew3_reuse / check_supplemental) evaluate
+        # inside the pipeline subprocess; only the in-process tts_only path
+        # needs it here.
+        if reuse_mode == "tts_only":
+            _eval_dir = tasks_db[task_id].get("output_dir")
+            if _eval_dir:
+                from dr2_podcast.evaluation import run_self_evaluation
+                run_self_evaluation(_eval_dir)
 
     except Exception as e:
         tasks_db[task_id]["status"] = "failed"
@@ -2485,17 +2507,21 @@ def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     tasks_db[task_id]["progress"] = 10
     save_tasks()
 
-    # Copy all artifacts from previous run
+    # Copy all artifacts from previous run. Runs nest artifacts in
+    # research/ scripts/ meta/ audio/ subdirs (audio/ is skipped — we
+    # regenerate it); top-level files are copied for legacy runs.
     for item in reuse_dir.iterdir():
         if item.is_file():
-            dest = new_output_dir / item.name
-            # Skip audio files — we'll regenerate them
             if item.suffix in ('.wav', '.mp3'):
                 continue
-            shutil.copy2(item, dest)
+            shutil.copy2(item, new_output_dir / item.name)
+        elif item.is_dir() and item.name in ("research", "scripts", "meta"):
+            shutil.copytree(item, new_output_dir / item.name, dirs_exist_ok=True)
 
-    # Load the polished script
-    script_path = new_output_dir / "script_final.md"
+    # Load the polished script (new layout: scripts/; legacy: top level)
+    script_path = new_output_dir / "scripts" / "script_final.md"
+    if not script_path.exists():
+        script_path = new_output_dir / "script_final.md"
     if not script_path.exists():
         script_path = new_output_dir / "PODCAST_SCRIPT_POLISHED.md"
     if not script_path.exists():
@@ -2512,7 +2538,11 @@ def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     lang_code = "a" if task_data.get("language", "en") == "en" else "j"
 
     cleaned_script = clean_script_for_tts(script_text)
-    output_path = new_output_dir / "audio.wav"
+    # Same layout as normal runs: audio artifacts live in audio/
+    # (scorecard and uploads only look there)
+    audio_dir = new_output_dir / "audio"
+    audio_dir.mkdir(exist_ok=True)
+    output_path = audio_dir / "audio.wav"
 
     tts_result = generate_audio_from_script(cleaned_script, str(output_path), lang_code=lang_code)
     if not tts_result:
@@ -2527,7 +2557,8 @@ def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
 
     if audio_file.exists():
         try:
-            mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav")
+            mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav",
+                                          transition_positions_ms=positions)
             if mastered and os.path.exists(mastered) and mastered != str(audio_file):
                 audio_file = Path(mastered)
         except Exception as e:
@@ -2590,10 +2621,12 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
         error_text = "\n".join(clean_lines[-50:])
         raise RuntimeError(error_text or f"Process exited with code {proc.returncode}")
 
-    # Find output dir
-    output_dir = _find_latest_output_dir()
-    if output_dir:
-        tasks_db[task_id]["output_dir"] = str(output_dir)
+    # Output dir normally comes from the [OUTPUT_DIR] marker during streaming;
+    # fall back to the mtime scan only if it never appeared.
+    if not tasks_db[task_id].get("output_dir"):
+        output_dir = _find_latest_output_dir()
+        if output_dir:
+            tasks_db[task_id]["output_dir"] = str(output_dir)
     save_tasks()
 
 
@@ -2707,9 +2740,14 @@ async def youtube_preflight(request: YoutubePreflightRequest = YoutubePreflightR
     """Run YouTube OAuth consent flow (may open browser). Must be called before generation."""
     from dr2_podcast.tools.upload_utils import get_youtube_credentials
     try:
-        if request.secret_path:
-            os.environ["YOUTUBE_CLIENT_SECRET_PATH"] = request.secret_path
-        get_youtube_credentials()
+        secret_path = request.secret_path or None
+        if secret_path:
+            p = Path(secret_path)
+            if p.is_absolute() or ".." in p.parts:
+                return {"ready": False,
+                        "error": "secret_path must be a relative path inside the project (no '..')"}
+        # Pass explicitly — mutating os.environ would leak into every later task
+        get_youtube_credentials(youtube_secret_path=secret_path)
         return {"ready": True}
     except Exception as e:
         return {"ready": False, "error": str(e)}
@@ -2726,9 +2764,12 @@ async def upload_config(username: str = Depends(verify_credentials)):
 
 if __name__ == "__main__":
     port = int(os.getenv("PODCAST_WEB_PORT", 8501))
+    # Default to loopback — Basic auth over plain HTTP is sniffable/brute-forceable
+    # on a shared network. Set PODCAST_WEB_BIND=0.0.0.0 to expose on the LAN.
+    host = os.getenv("PODCAST_WEB_BIND", "127.0.0.1")
 
-    print(f"\nStarting DR_2_Podcast Web UI on http://0.0.0.0:{port}")
+    print(f"\nStarting DR_2_Podcast Web UI on http://{host}:{port}")
     print(f"Access from browser: http://localhost:{port}")
     print("\nPress Ctrl+C to stop\n")
 
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host=host, port=port)
