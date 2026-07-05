@@ -1984,10 +1984,14 @@ def _finalize_script(polished_text, polish_task, language, language_config, outp
     # clean_script_for_tts and reaction-guidance regexes match and voice
     # assignment is correct. Fixes the sleep-week label-corruption class.
     from dr2_podcast.pipeline_validators import (
-        normalize_speaker_labels, check_speaker_alternation, detect_duplicate_blocks)
+        normalize_speaker_labels, check_speaker_alternation, detect_duplicate_blocks,
+        deduplicate_lines)
     script_text, _labels_fixed = normalize_speaker_labels(script_text)
     if _labels_fixed:
         logger.info(f"  Normalized {_labels_fixed} non-canonical speaker label(s)")
+    script_text, _dups = deduplicate_lines(script_text)
+    if _dups:
+        logger.info(f"  Removed {_dups} duplicate dialogue line(s)")
     for _issue in check_speaker_alternation(script_text) + detect_duplicate_blocks(script_text):
         logger.warning(f"  STRUCTURAL: {_issue}")
 

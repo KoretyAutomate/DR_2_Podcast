@@ -202,6 +202,28 @@ def validate_citations(script_text: str, sot_path: str | None = None,
 # --------------------------------------------------------------------------- #
 # 3. Duplicate blocks / repeated endings
 # --------------------------------------------------------------------------- #
+def deduplicate_lines(text: str, min_len: int = 25) -> tuple[str, int]:
+    """Remove repeated dialogue lines, keeping the first occurrence. Catches the
+    un-deduplicated repeated closings (the Monday sleep episode 'ended' 3-4 times
+    with the same sign-off). Only substantial Host lines (>= min_len chars) are
+    de-duplicated; short back-channels ('はい。') and ##/[..] lines are untouched.
+    Returns (deduped_text, n_removed).
+    """
+    seen: set[str] = set()
+    out, removed = [], 0
+    for line in text.split("\n"):
+        m = _SPK_CANON.match(line.strip())
+        if m:
+            body = _SPK_CANON.sub("", line.strip()).strip()
+            if len(body) >= min_len:
+                if body in seen:
+                    removed += 1
+                    continue
+                seen.add(body)
+        out.append(line)
+    return "\n".join(out), removed
+
+
 def detect_duplicate_blocks(text: str, min_len: int = 25) -> list[str]:
     """Flag identical dialogue lines that appear more than once — catches the
     un-deduplicated repeated closings (the Monday sleep episode 'ended' 3-4

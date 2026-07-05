@@ -14,6 +14,7 @@ from dr2_podcast.pipeline_validators import (
     check_speaker_alternation,
     validate_citations,
     detect_duplicate_blocks,
+    deduplicate_lines,
     validate_script_structure,
 )
 
@@ -145,6 +146,20 @@ def test_duplicate_ending_flagged():
 def test_short_lines_not_flagged():
     text = "Host 1: はい。\nHost 2: はい。\nHost 1: はい。"
     assert detect_duplicate_blocks(text) == []
+
+
+def test_deduplicate_lines_removes_repeats():
+    line = "Host 1: ありがとうございます！これからも一緒に科学の不思議を探求していきましょうね！"
+    text = f"Host 2: 中身の話をしましょう、十分な長さの本文です。\n{line}\nHost 2: 別の十分に長い本文の話。\n{line}"
+    out, removed = deduplicate_lines(text)
+    assert removed == 1
+    assert out.count("これからも一緒に科学") == 1
+
+
+def test_deduplicate_keeps_short_backchannels():
+    text = "Host 1: はい。\nHost 2: はい。\nHost 1: はい。"
+    out, removed = deduplicate_lines(text)
+    assert removed == 0 and out == text
 
 
 # --------------------------------------------------------------------------- #
