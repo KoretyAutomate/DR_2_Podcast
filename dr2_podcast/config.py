@@ -36,6 +36,12 @@ TTS_API_URL = os.environ.get("TTS_API_URL", "http://localhost:10101")
 TTS_HOST1_ID = os.environ.get("TTS_HOST1_ID", "1937616896")
 TTS_HOST2_ID = os.environ.get("TTS_HOST2_ID", "1717361472")
 
+# Speech rate multiplier for HTTP-based engines that support VOICEVOX-style
+# audio_query's "speedScale" field (AivisSpeech and future engines). 1.0 = engine
+# default. AivisSpeech's default cadence reads slower than VOICEVOX did; 1.1 was
+# chosen after a direct A/B listen (2026-07-03).
+TTS_SPEED_SCALE = float(os.environ.get("TTS_SPEED_SCALE", "1.1"))
+
 # --- Timeouts (seconds) ---
 LLM_TIMEOUT = 300
 SCRAPING_TIMEOUT = 25.0

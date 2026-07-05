@@ -30,6 +30,7 @@ from dr2_podcast.config import (
     TTS_ENGINE_JA,
     TTS_HOST1_ID,
     TTS_HOST2_ID,
+    TTS_SPEED_SCALE,
 )
 
 from pydub import AudioSegment, effects
@@ -247,6 +248,7 @@ def _call_aivisspeech_segment(text: str, speaker_id: int) -> tuple:
         )
         q_resp.raise_for_status()
         query_data = q_resp.json()
+        query_data["speedScale"] = TTS_SPEED_SCALE
 
         # Step 2: Synthesize audio
         synth_resp = requests.post(
@@ -786,6 +788,15 @@ def clean_script_for_tts(script_text: str) -> str:
     # BEFORE markdown # removal below, which would strip the ## prefix leaving bare text
     clean = re.sub(r'^##.*$', '', clean, flags=re.MULTILINE)
 
+    # Drop furigana reading annotations: 漢字（かな） is a pronunciation guide for a
+    # reader, but TTS pronounces the kanji correctly on its own — reading the
+    # hiragana too produces an audible duplicate (e.g. "更年期（こうねんき）" is
+    # heard as "こうねんき、こうねんき"). Only strip when the parenthetical is
+    # PURE hiragana directly after a kanji run — katakana parentheticals (e.g.
+    # "要約（アブストラクト）") are glosses/synonyms carrying new information and
+    # must be read aloud, not furigana, so they're left untouched.
+    clean = re.sub(r'([一-鿿㐀-䶿々]+)（[぀-ゟー]+）', r'\1', clean)
+
     # Remove markdown formatting
     clean = re.sub(r'\*\*', '', clean)  # Bold
     clean = re.sub(r'[*#\[\]]', '', clean)  # Italics, headers, brackets (NOT underscores — protects ___TRANSITION___ placeholders)
@@ -795,8 +806,12 @@ def clean_script_for_tts(script_text: str) -> str:
 
     # Rename speaker labels "Host N:" → "Speaker N:" so that any remaining
     # "Host 1" / "Host 2" in dialogue text can be safely stripped.
-    clean = re.sub(r'^Host\s+(\d)\s*[:：]', r'Speaker \1:', clean, flags=re.MULTILINE)
-    clean = re.sub(r'Host [12]', '', clean)
+    # Case/underscore-insensitive: also catches malformed 'host_1：' / 'HOST 1:'
+    # labels that the pipeline normalizer is the first line of defense against
+    # (the sleep-week Tue episode leaked lowercase host_1： into TTS).
+    clean = re.sub(r'^\*{0,2}host[ _]*(\d)[ _]*\*{0,2}\s*[:：]', r'Speaker \1:',
+                   clean, flags=re.MULTILINE | re.IGNORECASE)
+    clean = re.sub(r'Host [12]', '', clean, flags=re.IGNORECASE)
 
     # Normalize unicode punctuation to ASCII
     unicode_map = {
