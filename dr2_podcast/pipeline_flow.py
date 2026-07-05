@@ -1039,27 +1039,52 @@ def run_pipeline_flow(
     audit_output = p7_result["audit_output"]
 
     # -------------------------------------------------------------------
-    # Conditional Correction (HIGH-severity drift)
+    # Conditional Correction — FAIL verdict / HIGH-severity drift / fabricated citations
+    #
+    # The audit itself reliably DETECTS these (it graded the sleep-week episodes
+    # FAIL); the historical bug was that the only trigger was a regex that matched
+    # neither the Japanese "**重大度**: **HIGH**" nor "HIGH Severity", so the
+    # already-built corrector never ran. _audit_requires_correction() is the
+    # multilingual fix; the deterministic citation gate is an independent trigger.
     # -------------------------------------------------------------------
-    corrected_script_text = _pipeline._run_correction_loop(
-        audit_output=audit_output,
-        polished_text=polished_text,
-        editor_agent=editor_agent_ref,
-        target_instruction=target_instruction,
-        output_dir=output_dir,
-    ) if hasattr(_pipeline, "_run_correction_loop") else None
+    corrected_script_text = None
+    try:
+        from dr2_podcast.pipeline_validators import validate_citations
+        det_citation_issues = validate_citations(polished_text, sot_text=sot_content) if sot_content else []
+    except Exception:
+        det_citation_issues = []
+    if det_citation_issues:
+        flow_logger.warning("Deterministic citation gate flagged %d issue(s): %s",
+                            len(det_citation_issues), "; ".join(det_citation_issues))
 
-    # Fallback: use inline correction logic from pipeline.py
-    if corrected_script_text is None and audit_output:
-        high_severity_found = bool(re.search(r'\*\*Severity\*\*:\s*HIGH', audit_output, re.IGNORECASE))
-        if high_severity_found:
-            corrected_script_text = _run_inline_correction(
-                audit_output=audit_output,
-                polished_text=polished_text,
-                editor_agent_ref=editor_agent_ref,
-                target_instruction=target_instruction,
-                output_dir=output_dir,
-            )
+    if audit_output and (_pipeline._audit_requires_correction(audit_output) or det_citation_issues):
+        flow_logger.info("Accuracy gate TRIGGERED (verdict=%s, citation_issues=%d) — correcting",
+                         "FAIL/HIGH" if _pipeline._audit_requires_correction(audit_output) else "PASS",
+                         len(det_citation_issues))
+        _audit_for_corrector = audit_output or ""
+        if det_citation_issues:
+            _audit_for_corrector += ("\n\n## Deterministic Citation Issues (fix these too)\n"
+                                     + "\n".join(f"- {i}" for i in det_citation_issues))
+        corrected_script_text = _run_inline_correction(
+            audit_output=_audit_for_corrector,
+            polished_text=polished_text,
+            editor_agent_ref=editor_agent_ref,
+            target_instruction=target_instruction,
+            output_dir=output_dir,
+        )
+        try:
+            _pipeline.output_path(Path(output_dir), "ACCURACY_CORRECTIONS.md").write_text(
+                "# Accuracy Corrections\n\n"
+                f"- Audit verdict trigger: {_pipeline._audit_requires_correction(audit_output)}\n"
+                f"- Fabricated-citation trigger: {det_citation_issues or 'none'}\n"
+                f"- Correction result: "
+                f"{'applied' if corrected_script_text else 'FAILED — audio uses UNCORRECTED script, manual review needed'}\n",
+                encoding="utf-8")
+        except Exception:
+            pass
+        if corrected_script_text is None:
+            flow_logger.warning("Correction pass produced no valid script — finalizing the "
+                                "UNCORRECTED script; MANUAL REVIEW NEEDED (see accuracy_audit.md)")
 
     # -------------------------------------------------------------------
     # Finalize + save outputs
