@@ -161,6 +161,15 @@ def test_validate_script_structure_normalizes_and_flags(tmp_path):
     assert any("FABRICATED" in i for i in r["issues"])
 
 
+def test_validate_structure_accepts_sot_text(tmp_path):
+    sot = _write_sot(tmp_path)
+    sot_text = open(sot, encoding="utf-8").read()
+    script = "Host 1: Vandewalle et al. (2007) の話。\nHost 2: なるほど。"
+    r = validate_script_structure(script, sot_text=sot_text)
+    assert not r["pass"]
+    assert any("FABRICATED" in i for i in r["issues"])
+
+
 def test_clean_script_passes():
     script = "\n".join(f"Host {1 if i % 2 == 0 else 2}: 十分な長さの通常の対話文です。" for i in range(10))
     r = validate_script_structure(script)

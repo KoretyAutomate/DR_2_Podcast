@@ -223,17 +223,18 @@ def detect_duplicate_blocks(text: str, min_len: int = 25) -> list[str]:
 # Aggregate
 # --------------------------------------------------------------------------- #
 def validate_script_structure(script_text: str, sot_path: str | None = None,
-                              sources_json_path: str | None = None) -> dict:
+                              sources_json_path: str | None = None,
+                              sot_text: str | None = None) -> dict:
     """Run all deterministic gates. Returns
     {'pass': bool, 'issues': [str], 'normalized_text': str, 'labels_fixed': int}.
     ``normalized_text`` has speaker labels canonicalized and should be used
-    downstream. Citation checks run only when a source path is supplied.
+    downstream. Citation checks run only when a source (path or text) is supplied.
     """
     normalized, fixed = normalize_speaker_labels(script_text)
     issues = check_speaker_alternation(normalized)
     issues += detect_duplicate_blocks(normalized)
-    if sot_path or sources_json_path:
-        issues += validate_citations(normalized, sot_path, sources_json_path)
+    if sot_path or sources_json_path or sot_text:
+        issues += validate_citations(normalized, sot_path, sources_json_path, sot_text)
     return {
         "pass": len(issues) == 0,
         "issues": issues,
