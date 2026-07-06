@@ -80,3 +80,7 @@ Thumbs.db
 .idea/
 .vscode/
 .ipynb_checkpoints/
+
+# Local logo assets / working files (not tracked)
+Logo.png
+Logo_original_backup.png
