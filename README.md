@@ -105,7 +105,7 @@ The system uses two local LLMs working in tandem:
 | Role | Default Model | Hosted On | Purpose |
 |------|---------------|-----------|---------|
 | **Smart model** | `Intel/Qwen3.5-122B-A10B-int4-AutoRound` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing, SOT translation |
-| **Fast model** | `qwen3:8b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
+| **Fast model** | `qwen3.5:9b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
 
 Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
 
@@ -283,7 +283,7 @@ The launcher script mounts `Intel/Qwen3.5-122B-A10B-int4-AutoRound` from the loc
 **Ollama** — Required for the fast model:
 ```bash
 ollama serve
-ollama pull qwen3:8b                # Fast model (default)
+ollama pull qwen3.5:9b                # Fast model (default)
 ```
 
 **SearXNG** — Self-hosted search (optional, improves source diversity):
@@ -329,7 +329,7 @@ export PODCAST_CHANNEL_MISSION="turning complex science into actionable protocol
 # Model config (defaults shown)
 export MODEL_NAME="Intel/Qwen3.5-122B-A10B-int4-AutoRound"
 export LLM_BASE_URL="http://localhost:8000/v1"
-export FAST_MODEL_NAME="qwen3:8b"
+export FAST_MODEL_NAME="qwen3.5:9b"
 export FAST_LLM_BASE_URL="http://localhost:11434/v1"
 
 # Service endpoints (defaults shown)

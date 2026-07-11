@@ -1991,7 +1991,7 @@ async def generate_intro(request: GenerateIntroRequest, username: str = Depends(
         # emitting any answer, leaving content=null.
         "max_tokens": 256,
         "temperature": 0.8,
-        # Qwen3.5 (smart) and qwen3:8b (fast) are reasoning models. A "/no_think"
+        # Qwen3.5 (smart) and qwen3.5:9b (fast) are reasoning models. A "/no_think"
         # system message is NOT honored by their chat templates — the model
         # reasons, dumps it into the `reasoning` field, and burns the whole
         # token budget, returning content=null. enable_thinking=False is the
