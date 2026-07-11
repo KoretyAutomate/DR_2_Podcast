@@ -520,6 +520,36 @@ POLISH_PROMPTS: dict[str, dict[str, str]] = {
         ),
     },
 
+    "reading_tone_rules": {
+        "en": (
+            "READING & TONE RULES (Japanese TTS delivery):\n"
+            "- Context-dependent kanji: when a kanji could be misread, write the intended reading in hiragana. "
+            "方 -> PERSON sense: do NOT use 〜方/〜の方 at all (reads as either かた or ほう — ambiguous in TTS and to listeners); "
+            "rephrase to 〜人 / 〜人々 (症状の方→症状の人, 選んだ方→選んだ人々, その方→その人). "
+            "Direction sense: write ほう in hiragana (下のほう). Manner sense stays as 〜かた (やりかた, かんがえかた); "
+            "表 -> front/coin-face is おもて, but leave 発表/表現/代表 as-is; "
+            "辛い -> spicy is からい, hard/painful is つらい.\n"
+            "- Tone: avoid over-casual intensifiers (超~ -> とても/非常に). "
+            "Do NOT use rhetorical hype numbers ('99%', '8割') as exaggeration, "
+            "especially in an episode that criticizes marketing overstatement -- it reads as hypocritical.\n"
+            "- Preface English idioms before using them.\n"
+        ),
+        "ja": (
+            "読み・トーン規約（日本語TTS向け）:\n"
+            "- 文脈で読みが変わる漢字は、意図した読みをひらがなで書く。"
+            "方 → 人を指す「〜方」「〜の方」は使わない（「かた」とも「ほう」とも読めて紛らわしい）。"
+            "「〜人」「〜人々」に言い換える（症状の方→症状の人、選んだ方→選んだ人々、その方→その人）。"
+            "方向の意味は「ほう」とひらがなで書く（下のほう）。やり方の意味は「〜かた」（やりかた、かんがえかた）。"
+            "表 → 表面・コインの面なら「おもて」。ただし発表・表現・代表などはそのまま。"
+            "辛い → 味なら「からい」、苦しい意味なら「つらい」。\n"
+            "- トーン：過度にくだけた強調（超〜）は「とても」「非常に」に置き換える。"
+            "誇張的な数字（「99%」「8割」など）を煽りとして使わない。"
+            "特にマーケティングの誇張を批判する回では、同じ誇張を使うと矛盾して聞こえる。\n"
+            "- 英語のイディオムは、使う前に日本語で前置きする"
+            "（例：英語に「ガベージ・イン、ガベージ・アウト」という言葉があります）。\n"
+        ),
+    },
+
     "length_section": {
         "en": (
             "- LENGTH: Target {target_script} {target_unit_plural} "

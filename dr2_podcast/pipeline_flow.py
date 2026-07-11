@@ -1057,6 +1057,15 @@ def run_pipeline_flow(
         flow_logger.warning("Deterministic citation gate flagged %d issue(s): %s",
                             len(det_citation_issues), "; ".join(det_citation_issues))
 
+    # Layer 3: warn on CONTEXT-DEPENDENT TTS reading hazards (JA only). Non-blocking.
+    if language != 'en':
+        try:
+            from dr2_podcast.pipeline_validators import validate_tts_readings
+            for _issue in validate_tts_readings(polished_text):
+                flow_logger.warning("TTS_READING: %s", _issue)
+        except Exception:
+            pass
+
     if audit_output and (_pipeline._audit_requires_correction(audit_output) or det_citation_issues):
         flow_logger.info("Accuracy gate TRIGGERED (verdict=%s, citation_issues=%d) — correcting",
                          "FAIL/HIGH" if _pipeline._audit_requires_correction(audit_output) else "PASS",

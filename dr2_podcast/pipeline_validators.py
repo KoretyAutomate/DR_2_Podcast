@@ -263,3 +263,45 @@ def validate_script_structure(script_text: str, sot_path: str | None = None,
         "normalized_text": normalized,
         "labels_fixed": fixed,
     }
+
+
+# --------------------------------------------------------------------------- #
+# 4. TTS context-dependent reading hazards (Layer 3 backstop) — WARN-only
+# --------------------------------------------------------------------------- #
+# Layer 1 (engine.apply_tts_glossary) deterministically fixes CONTEXT-FREE
+# misreadings. This flags CONTEXT-DEPENDENT ones the editor prompt (Layer 2)
+# may miss — the correct reading depends on MEANING, so it can't be blindly
+# substituted (表=おもて/ひょう, 辛い=からい/つらい, の方=ほう/かた, 大あり
+# segmentation). Non-blocking: surfaces to the editor / human pre-render scan.
+# See PLAN.md "TTS glossary + style-rules pipeline enforcement".
+_TTS_READING_HAZARDS = [
+    (re.compile(r'表[がにを](?:出|裏)|表と裏|表向き|コイン[^。\n]{0,8}表'),
+     'TABLE_FRONT: 表 may misread ひょう vs おもて (heads/surface context) — verify'),
+    (re.compile(r'大あり'),
+     'OOARI: 大あり segmentation unreliable in TTS — consider rephrasing'),
+    (re.compile(r'(?:料理|味|スパイス|香辛料|カレー|激|唐辛子)[^。\n]{0,4}辛い|辛い(?:料理|もの|味|食)'),
+     'SPICY_KARAI: 辛い may misread つらい vs からい (spicy context) — verify'),
+    (re.compile(r'(?:こちら|そちら|あちら|どちら|上|下|右|左|前|後|奥|外|内|東|西|南|北)の方'
+                r'|[一-鿿ぁ-ん]の方(?=[はをがにでもへとの])(?![法向面針])'),
+     'NO_HOU_KATA: 〜の方 may misread ほう vs かた — verify reading'),
+]
+
+
+def validate_tts_readings(text: str, max_report: int = 20) -> list[str]:
+    """Flag CONTEXT-DEPENDENT TTS reading hazards for review (warn, non-blocking).
+
+    Complements engine.apply_tts_glossary (Layer 1, deterministic context-free
+    fixes): these readings depend on meaning and cannot be auto-substituted, so
+    they surface as warnings for the editor and human pre-render scan.
+    """
+    issues: list[str] = []
+    for lineno, line in enumerate(text.split("\n"), 1):
+        for pat, msg in _TTS_READING_HAZARDS:
+            m = pat.search(line)
+            if m:
+                issues.append(f"{msg} [L{lineno}: …{m.group(0)}…]")
+                if len(issues) >= max_report:
+                    issues.append(
+                        f"TTS_READINGS_TRUNCATED: >{max_report} hazards; showing first {max_report}")
+                    return issues
+    return issues

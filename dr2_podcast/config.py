@@ -36,6 +36,13 @@ TTS_API_URL = os.environ.get("TTS_API_URL", "http://localhost:10101")
 TTS_HOST1_ID = os.environ.get("TTS_HOST1_ID", "1937616896")
 TTS_HOST2_ID = os.environ.get("TTS_HOST2_ID", "1717361472")
 
+# When enabled, per-episode randomly swap which of the two configured host voices speaks
+# Speaker 1 (the explainer) vs Speaker 2. Seeded deterministically off the script content:
+# the same script always renders the same assignment, but different episodes vary — giving
+# ~50/50 male/female explainer across the series instead of Speaker 1 always being Host 1.
+# Only the two configured voices (TTS_HOST1_ID/TTS_HOST2_ID) are used. Disable with =0.
+TTS_RANDOM_VOICE = os.environ.get("TTS_RANDOM_VOICE", "1") not in ("0", "false", "False", "")
+
 # Speech rate multiplier for HTTP-based engines that support VOICEVOX-style
 # audio_query's "speedScale" field (AivisSpeech and future engines). 1.0 = engine
 # default. AivisSpeech's default cadence reads slower than VOICEVOX did; 1.1 was

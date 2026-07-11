@@ -517,6 +517,7 @@ def create_agents_and_tasks(
                          target_unit_plural=target_unit_plural,
                          range_low=f"{int(target_length_int * (1 - SCRIPT_TOLERANCE)):,}",
                          range_high=f"{int(target_length_int * (1 + SCRIPT_TOLERANCE)):,}")
+            + "\n" + get_prompt("polish", "reading_tone_rules", language)
             + (f"\nCRITICAL: Output MUST be in Japanese only. Do NOT switch to Chinese. "
                f"Keep speaker labels exactly as 'Host 1:' and 'Host 2:' --- do NOT replace them with Japanese names. "
                f"Avoid Kanji that is only used in Chinese (e.g., use \u6c17 instead of \u6c14, \u697d instead of \u4e50). "

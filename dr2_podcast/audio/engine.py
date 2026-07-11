@@ -21,7 +21,9 @@ import torch
 import numpy as np
 import re
 import os
+import json
 import random
+import hashlib
 from pathlib import Path
 from dr2_podcast.utils import strip_think_blocks
 from dr2_podcast.config import (
@@ -30,6 +32,7 @@ from dr2_podcast.config import (
     TTS_ENGINE_JA,
     TTS_HOST1_ID,
     TTS_HOST2_ID,
+    TTS_RANDOM_VOICE,
     TTS_SPEED_SCALE,
 )
 
@@ -286,11 +289,24 @@ def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
     if host1_id is None or host2_id is None:
         return None
 
+    # Randomized voice assignment: seeded off the script content so it is deterministic
+    # per episode (same script → same voices) but varies across episodes. Swaps which of
+    # the two configured voices speaks Speaker 1 vs Speaker 2, so the explainer (Speaker 1)
+    # is not always Host 1. Only the two configured voices are used. Disable: TTS_RANDOM_VOICE=0.
+    _voice_swapped = False
+    if TTS_RANDOM_VOICE and host1_id != host2_id:
+        _seed = int(hashlib.sha256(script_text.encode("utf-8")).hexdigest(), 16)
+        if _seed & 1:
+            host1_id, host2_id = host2_id, host1_id
+            _voice_swapped = True
+
     logger.info("=" * 60)
     logger.info("AIVISSPEECH — JAPANESE AUDIO GENERATION")
     logger.info("=" * 60)
     logger.info(f"API endpoint: {_AIVISSPEECH_API_URL}")
-    logger.info(f"Voices: Host1 → speaker_id={host1_id}, Host2 → speaker_id={host2_id}")
+    _rand_note = (f" [random-voice: {'SWAPPED' if _voice_swapped else 'no-swap'}]"
+                  if TTS_RANDOM_VOICE else " [random-voice: off]")
+    logger.info(f"Voices: Speaker1 → speaker_id={host1_id}, Speaker2 → speaker_id={host2_id}{_rand_note}")
 
     # Health check
     if not _aivisspeech_available():
@@ -766,6 +782,93 @@ MARKER_SILENCE = {
 }
 
 
+# ---------------------------------------------------------------------------
+# TTS reading glossary (Layer 1) — deterministic pre-render substitution of
+# CONFIRMED misread words to hiragana. Data: dr2_podcast/data/tts_glossary.json.
+# Applied inside clean_script_for_tts (after furigana-strip, before markdown
+# cleanup) so it reaches every render path. Context-DEPENDENT readings
+# (方/表/辛い/大あり) live in the editor prompt + validator, NOT here.
+# See PLAN.md "TTS glossary + style-rules pipeline enforcement".
+# ---------------------------------------------------------------------------
+_TTS_GLOSSARY_PATH = Path(__file__).resolve().parent.parent / "data" / "tts_glossary.json"
+_tts_glossary_cache = None  # None = unloaded; dict once loaded (empty dicts = no-op)
+_KANJI_CLASS = r'々一-鿿㐀-䶿'  # CJK ideographs + 々
+
+
+def _load_tts_glossary():
+    """Load + validate the glossary once (cached). Fail-safe: any problem →
+    empty maps (glossary becomes a no-op; the audio path must never crash on it)."""
+    global _tts_glossary_cache
+    if _tts_glossary_cache is not None:
+        return _tts_glossary_cache
+    if os.environ.get("TTS_GLOSSARY_ENABLED", "1").lower() not in ("1", "true", "yes"):
+        logger.info("TTS glossary disabled via TTS_GLOSSARY_ENABLED")
+        _tts_glossary_cache = {"safe": {}, "guarded": {}}
+        return _tts_glossary_cache
+    try:
+        with open(_TTS_GLOSSARY_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        safe = {k: v for k, v in data.get("safe", {}).items() if not k.startswith("_")}
+        guarded = {k: v for k, v in data.get("guarded", {}).items() if not k.startswith("_")}
+        # Idempotency invariant: no output value may contain any key, else a
+        # second pass would re-substitute (edu re-renders rely on idempotency).
+        all_keys = list(safe) + list(guarded)
+        for val in list(safe.values()) + [g["to"] for g in guarded.values()]:
+            for key in all_keys:
+                if key in val:
+                    raise ValueError(
+                        f"glossary not idempotent: value {val!r} contains key {key!r}")
+        _tts_glossary_cache = {"safe": safe, "guarded": guarded}
+        logger.info(f"TTS glossary loaded: {len(safe)} safe + {len(guarded)} guarded entries")
+    except Exception as e:
+        logger.warning(f"TTS glossary unavailable ({type(e).__name__}: {e}); skipping substitution")
+        _tts_glossary_cache = {"safe": {}, "guarded": {}}
+    return _tts_glossary_cache
+
+
+def apply_tts_glossary(text: str) -> str:
+    """Substitute confirmed-misread words to hiragana (Layer 1).
+
+    'safe' keys → plain longest-first replace (non-embeddable words).
+    'guarded' keys → protect listed superstrings, optionally skip when the key
+    is preceded by a kanji (compound boundary), then substitute — avoids
+    corrupting correctly-read compounds like 手強さ/酵母数/意見方針/一番下手.
+    """
+    gl = _load_tts_glossary()
+    if not gl["safe"] and not gl["guarded"]:
+        return text
+    fired = {}
+
+    # Guarded first: protect superstrings, substitute, restore.
+    for i, (key, spec) in enumerate(gl["guarded"].items()):
+        placeholders = {}
+        for j, g in enumerate(spec.get("guards", [])):
+            if g in text:
+                ph = f"\x00G{i}_{j}\x00"
+                text = text.replace(g, ph)
+                placeholders[ph] = g
+        if spec.get("no_kanji_prefix"):
+            text, n = re.subn(rf'(?<![{_KANJI_CLASS}]){re.escape(key)}', spec["to"], text)
+        else:
+            n = text.count(key)
+            text = text.replace(key, spec["to"])
+        if n:
+            fired[key] = n
+        for ph, g in placeholders.items():
+            text = text.replace(ph, g)
+
+    # Safe: longest-first plain replace.
+    for key in sorted(gl["safe"], key=len, reverse=True):
+        n = text.count(key)
+        if n:
+            text = text.replace(key, gl["safe"][key])
+            fired[key] = n
+
+    if fired:
+        logger.info("TTS glossary applied: " + ", ".join(f"{k}×{v}" for k, v in fired.items()))
+    return text
+
+
 def clean_script_for_tts(script_text: str) -> str:
     """
     Clean script text for TTS processing by removing markdown and LLM artifacts.
@@ -796,6 +899,10 @@ def clean_script_for_tts(script_text: str) -> str:
     # "要約（アブストラクト）") are glosses/synonyms carrying new information and
     # must be read aloud, not furigana, so they're left untouched.
     clean = re.sub(r'([一-鿿㐀-䶿々]+)（[぀-ゟー]+）', r'\1', clean)
+
+    # Layer 1: deterministic reading glossary — force CONFIRMED-misread words to
+    # hiragana (after furigana-strip above so 漢字（かな） pairs collapse first).
+    clean = apply_tts_glossary(clean)
 
     # Remove markdown formatting
     clean = re.sub(r'\*\*', '', clean)  # Bold

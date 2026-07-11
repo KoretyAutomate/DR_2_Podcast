@@ -1997,6 +1997,12 @@ def _finalize_script(polished_text, polish_task, language, language_config, outp
 
     if language != 'en':
         script_text = _audit_script_language(script_text, language, language_config)
+        # Layer 3: warn on CONTEXT-DEPENDENT TTS reading hazards the editor may
+        # have missed (表/辛い/の方/大あり). Non-blocking — Layer 1 already fixed
+        # the context-free misreadings deterministically in clean_script_for_tts.
+        from dr2_podcast.pipeline_validators import validate_tts_readings
+        for _issue in validate_tts_readings(script_text):
+            logger.warning(f"  TTS_READING: {_issue}")
 
     logger.info("\nAdding reaction/emotion guidance to script...")
     script_text = _add_reaction_guidance(script_text, language_config)
