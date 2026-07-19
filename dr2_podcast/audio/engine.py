@@ -34,7 +34,6 @@ from dr2_podcast.config import (
     TTS_HOST2_ID,
     TTS_RANDOM_VOICE,
     TTS_SPEED_SCALE,
-    TTS_SPEED_OVERRIDES,
 )
 
 from pydub import AudioSegment, effects
@@ -234,10 +233,8 @@ def _aivisspeech_available():
         return False
 
 
-def _call_aivisspeech_segment(text: str, speaker_id: int, speed_scale: float = None) -> tuple:
-    """Call AivisSpeech API (two-step: audio_query → synthesis). Returns (audio_np, sample_rate) or (None, None).
-
-    speed_scale overrides the global TTS_SPEED_SCALE for this segment (per-voice cadence)."""
+def _call_aivisspeech_segment(text: str, speaker_id: int) -> tuple:
+    """Call AivisSpeech API (two-step: audio_query → synthesis). Returns (audio_np, sample_rate) or (None, None)."""
     try:
         import requests
         import io as _io
@@ -254,7 +251,7 @@ def _call_aivisspeech_segment(text: str, speaker_id: int, speed_scale: float = N
         )
         q_resp.raise_for_status()
         query_data = q_resp.json()
-        query_data["speedScale"] = TTS_SPEED_SCALE if speed_scale is None else speed_scale
+        query_data["speedScale"] = TTS_SPEED_SCALE
 
         # Step 2: Synthesize audio
         synth_resp = requests.post(
@@ -342,9 +339,8 @@ def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
             chunks = _chunk_japanese_text(buffer_text)
             chunk_audios = []
             spk_id = host1_id if current_speaker == 1 else host2_id
-            spk_speed = TTS_SPEED_OVERRIDES.get(spk_id, TTS_SPEED_SCALE)
             for chunk in chunks:
-                a, sr_chunk = _call_aivisspeech_segment(chunk, spk_id, spk_speed)
+                a, sr_chunk = _call_aivisspeech_segment(chunk, spk_id)
                 if a is not None:
                     chunk_audios.append(a)
                 else:
