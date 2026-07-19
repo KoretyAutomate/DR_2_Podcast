@@ -27,6 +27,8 @@
     "母数": { "to": "ぼすう", "no_kanji_prefix": true },
     "見方": { "to": "みかた", "no_kanji_prefix": true },
     "仕方": { "to": "しかた", "no_kanji_prefix": true },
-    "一番下": { "to": "一番した", "guards": ["一番下手", "一番下品"] }
+    "一番下": { "to": "一番した", "guards": ["一番下手", "一番下品"] },
+    "目の": { "to": "めの", "no_kanji_prefix": true },
+    "外そう": { "to": "はずそう", "no_kanji_prefix": true }
   }
 }
