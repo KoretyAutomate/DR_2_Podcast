@@ -28,13 +28,15 @@ TTS_API_URL = os.environ.get("TTS_API_URL", "http://localhost:10101")
 
 # Speaker identifiers — string form so different engines can interpret as needed
 # (AivisSpeech/VOICEVOX: integer speaker/style ID; cloud TTS: voice name/UUID). Engine adapter casts.
-# AivisSpeech style IDs (values below verified live via GET /speakers on 2026-06-28).
+# AivisSpeech style IDs (Host 1 verified 2026-06-28; Host 2 verified live 2026-07-12).
 # Host 1 (male)   = にせ ノーマル          (AivisHub model 6d11c6c2-f4a4-4435-887e-23dd60f8b8dd)
-# Host 2 (female) = みちのくあいり 標準     (AivisHub model 1b2830f4-8cf1-4184-a0d9-3a1bace3a844)
-# Both models are ACML 1.0 licensed and must be installed into AivisSpeech first.
-# If reinstalled/another engine: re-verify with `curl http://localhost:10101/speakers`.
+# Host 2 (female) = わかな ノーマル          (AivisHub model f83c385c-829b-40c4-8c11-639027e61636)
+#   ↳ real-voice (リアボVC公式モデル), same creator family as the prior ほのか. Swapped
+#     ほのか (808373280) → わかな (1138003200) on 2026-07-12 at creator/user request.
+# Both models are ACML 1.0 licensed (commercial use permitted) and must be installed into
+# AivisSpeech first. If reinstalled/another engine: re-verify with `curl http://localhost:10101/speakers`.
 TTS_HOST1_ID = os.environ.get("TTS_HOST1_ID", "1937616896")
-TTS_HOST2_ID = os.environ.get("TTS_HOST2_ID", "1717361472")
+TTS_HOST2_ID = os.environ.get("TTS_HOST2_ID", "1138003200")
 
 # When enabled, per-episode randomly swap which of the two configured host voices speaks
 # Speaker 1 (the explainer) vs Speaker 2. Seeded deterministically off the script content:
@@ -48,6 +50,26 @@ TTS_RANDOM_VOICE = os.environ.get("TTS_RANDOM_VOICE", "1") not in ("0", "false",
 # default. AivisSpeech's default cadence reads slower than VOICEVOX did; 1.1 was
 # chosen after a direct A/B listen (2026-07-03).
 TTS_SPEED_SCALE = float(os.environ.get("TTS_SPEED_SCALE", "1.1"))
+
+# Per-voice speedScale overrides, keyed by integer voice/style ID. Any voice not
+# listed falls back to TTS_SPEED_SCALE. わかな (1138003200) reads rushed at the
+# global 1.1, so she renders at 1.0 (user request, 2026-07-14). Format: "id:speed,id:speed".
+def _parse_speed_overrides(raw: str) -> dict:
+    out = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        vid, sep, spd = pair.partition(":")
+        if not sep:
+            continue
+        try:
+            out[int(vid.strip())] = float(spd.strip())
+        except ValueError:
+            continue
+    return out
+
+TTS_SPEED_OVERRIDES = _parse_speed_overrides(os.environ.get("TTS_SPEED_OVERRIDES", "1138003200:1.0"))
 
 # --- Timeouts (seconds) ---
 LLM_TIMEOUT = 300
