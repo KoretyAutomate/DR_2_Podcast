@@ -240,9 +240,23 @@ Audio is rendered with two voices at 24kHz WAV, followed by BGM mixing. TTS engi
 | Language | TTS Engine | Host 1 (Male) | Host 2 (Female) |
 |----------|------------|---------------|-----------------|
 | English  | Kokoro TTS (local, CPU) | `am_fenrir` (American male) | `af_heart` (American female) |
-| Japanese | AivisSpeech (Docker, port 10101) | にせ ノーマル (id=1937616896) | みちのくあいり 標準 (id=1717361472) |
+| Japanese | AivisSpeech (Docker, port 10101) | にせ ノーマル (id=1937616896) | わかな ノーマル (id=1138003200) |
 
-The `にせ` and `みちのくあいり` models (both ACML 1.0) must be installed into AivisSpeech before use (IDs above verified live via `curl http://localhost:10101/speakers`). Install headless via `POST /aivm_models/install` with `-F "url=https://api.aivis-project.com/v1/aivm-models/<model-uuid>/download?model_type=AIVMX"`. Style IDs are engine-assigned — re-verify after any reinstall.
+The `にせ` and `わかな` models (both ACML 1.0) must be installed into AivisSpeech before use (IDs above verified live via `curl http://localhost:10101/speakers`). Install headless via `POST /aivm_models/install` with `-F "url=https://api.aivis-project.com/v1/aivm-models/<model-uuid>/download?model_type=AIVMX"`. Style IDs are engine-assigned — re-verify after any reinstall.
+
+Delivery speed is `TTS_SPEED_SCALE` (default `1.1`), with per-voice overrides via `TTS_SPEED_OVERRIDES` (`"id:speed,id:speed"` — わかな renders at `1.0`, which reads rushed at the global rate).
+
+#### Script cleaning before TTS
+
+`clean_script_for_tts()` (`dr2_podcast/audio/engine.py`) normalizes the script before synthesis. Beyond stripping markdown and `##` guidance lines while preserving `[TRANSITION]`/`[PAUSE]`/`[BEAT]` markers, it fixes Japanese read-aloud hazards — issues that are inaudible in the text but wrong in the audio:
+
+| Layer | Behavior |
+|-------|----------|
+| Furigana glosses | `漢字（かな）` → `漢字` — the gloss would otherwise be spoken twice ("こうねんき、こうねんき"). Katakana glosses (`要約（アブストラクト）`) are kept, being genuine synonyms. |
+| Stage directions | `（笑）`, `（拍手）`, `（頷きながら）` are removed — reader annotations that TTS reads aloud as words. A **curated** cue list, not a blanket parenthetical strip: most parentheticals are content glosses (`（治療必要数）`, `（Cohen's d）`) that must be spoken. |
+| Reading glossary | `data/tts_glossary.json` forces confirmed-misread words to hiragana (e.g. `母数` → `ぼすう`), boundary-guarded so compounds like `一番下手` are untouched. Disable with `TTS_GLOSSARY_ENABLED=0`. |
+
+All layers are idempotent, so re-rendering an already-cleaned script is faithful.
 
 ## Multi-Language Support
 
@@ -259,7 +273,7 @@ After Crew 3 completes, the pipeline measures script length against the target (
 | Host | Voice | Role |
 |------|-------|------|
 | **Host 1** | Male (Kokoro: `am_fenrir` / AivisSpeech: にせ, id=1937616896) | Randomly assigned as presenter or questioner each session |
-| **Host 2** | Female (Kokoro: `af_heart` / AivisSpeech: みちのくあいり, id=1717361472) | Randomly assigned as presenter or questioner each session |
+| **Host 2** | Female (Kokoro: `af_heart` / AivisSpeech: わかな, id=1138003200) | Randomly assigned as presenter or questioner each session |
 
 Personality is determined by role, not host: the **presenter** is an enthusiastic science communicator; the **questioner** is a curious, skeptical interviewer. Override with `PODCAST_HOSTS` env var (`host1_leads`, `host2_leads`, or `random`).
 
@@ -340,7 +354,7 @@ export TTS_ENGINE_JA="aivisspeech"      # Japanese engine (registry: aivisspeech
 export TTS_ENGINE_EN="kokoro"           # English engine (Kokoro in-process)
 export TTS_API_URL="http://localhost:10101"   # HTTP endpoint for HTTP-based engines (AivisSpeech etc.)
 export TTS_HOST1_ID="1937616896"        # AivisSpeech: にせ ノーマル (male host)
-export TTS_HOST2_ID="1717361472"        # AivisSpeech: みちのくあいり 標準 (female host)
+export TTS_HOST2_ID="1138003200"        # AivisSpeech: わかな ノーマル (female host)
 
 # Audio
 export VOICE_DUCKING_DB="-20"         # BGM ducking in dB during speech
@@ -504,7 +518,7 @@ dr2_podcast/                          # Main package
 └── tools/
     ├── link_validator.py              # URL validation via HEAD requests
     └── upload_utils.py                # Buzzsprout and YouTube upload utilities
-tests/                                # Test suite (22 files, ~195 tests)
+tests/                                # Test suite (25 files, 455 tests)
 ```
 
 | Support Files | Purpose |

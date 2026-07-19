@@ -1046,7 +1046,7 @@ dgx_llm_creative = None  # initialized in __main__
 
 
 def summarize_report_with_fast_model(report_text: str, role: str, topic: str) -> str:
-    """Condense a deep research report using phi4-mini via Ollama.
+    """Condense a deep research report using the fast model (FAST_MODEL_NAME) via Ollama.
 
     Returns a ~2000-word summary that preserves ALL key findings (not just
     the first N characters).  Falls back to [:6000] truncation on error.
@@ -1086,7 +1086,7 @@ def summarize_report_with_fast_model(report_text: str, role: str, topic: str) ->
         # Summary too short — fall through to truncation
         logger.warning(f"  ⚠ {role} summary too short ({len(summary)} chars), falling back to truncation")
     except Exception as e:
-        logger.warning(f"  ⚠ phi4-mini summarization failed for {role}: {e}")
+        logger.warning(f"  ⚠ fast-model summarization failed for {role}: {e}")
 
     return report_text[:6000]
 
