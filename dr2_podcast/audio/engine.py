@@ -34,6 +34,7 @@ from dr2_podcast.config import (
     TTS_HOST2_ID,
     TTS_RANDOM_VOICE,
     TTS_SPEED_SCALE,
+    TTS_SPEED_OVERRIDES,
 )
 
 from pydub import AudioSegment, effects
@@ -233,8 +234,10 @@ def _aivisspeech_available():
         return False
 
 
-def _call_aivisspeech_segment(text: str, speaker_id: int) -> tuple:
-    """Call AivisSpeech API (two-step: audio_query → synthesis). Returns (audio_np, sample_rate) or (None, None)."""
+def _call_aivisspeech_segment(text: str, speaker_id: int, speed_scale: float = None) -> tuple:
+    """Call AivisSpeech API (two-step: audio_query → synthesis). Returns (audio_np, sample_rate) or (None, None).
+
+    speed_scale overrides the global TTS_SPEED_SCALE for this segment (per-voice cadence)."""
     try:
         import requests
         import io as _io
@@ -251,7 +254,7 @@ def _call_aivisspeech_segment(text: str, speaker_id: int) -> tuple:
         )
         q_resp.raise_for_status()
         query_data = q_resp.json()
-        query_data["speedScale"] = TTS_SPEED_SCALE
+        query_data["speedScale"] = TTS_SPEED_SCALE if speed_scale is None else speed_scale
 
         # Step 2: Synthesize audio
         synth_resp = requests.post(
@@ -339,8 +342,9 @@ def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
             chunks = _chunk_japanese_text(buffer_text)
             chunk_audios = []
             spk_id = host1_id if current_speaker == 1 else host2_id
+            spk_speed = TTS_SPEED_OVERRIDES.get(spk_id, TTS_SPEED_SCALE)
             for chunk in chunks:
-                a, sr_chunk = _call_aivisspeech_segment(chunk, spk_id)
+                a, sr_chunk = _call_aivisspeech_segment(chunk, spk_id, spk_speed)
                 if a is not None:
                     chunk_audios.append(a)
                 else:
@@ -794,6 +798,21 @@ _TTS_GLOSSARY_PATH = Path(__file__).resolve().parent.parent / "data" / "tts_glos
 _tts_glossary_cache = None  # None = unloaded; dict once loaded (empty dicts = no-op)
 _KANJI_CLASS = r'々一-鿿㐀-䶿'  # CJK ideographs + 々
 
+# Stage directions / performance cues: annotations written for a human reader
+# that TTS otherwise speaks aloud as words ("（笑）" is heard as "わらい").
+# CURATED, never a blanket parenthetical strip — a corpus scan of every script
+# shows the large majority of parentheticals are content glosses that MUST be
+# spoken (（治療必要数）, （アブストラクト）, （Cohen's d）, （例えば 9 時間以上）).
+# Only whole-parenthetical matches of these cues, plus 〜ながら action cues, go.
+_STAGE_DIRECTION_CUES = [
+    '笑', '笑い', '苦笑', '微笑', '爆笑', '失笑', 'ため息', 'ためいき',
+    '咳払い', '間', '沈黙', '拍手', '拍手音', '効果音', 'BGM', '会話再開',
+]
+_STAGE_DIRECTION_RE = re.compile(
+    r'[（(]\s*(?:' + '|'.join(re.escape(c) for c in _STAGE_DIRECTION_CUES)
+    + r'|[^）)（(]{1,8}ながら)\s*[）)]'
+)
+
 
 def _load_tts_glossary():
     """Load + validate the glossary once (cached). Fail-safe: any problem →
@@ -899,6 +918,12 @@ def clean_script_for_tts(script_text: str) -> str:
     # "要約（アブストラクト）") are glosses/synonyms carrying new information and
     # must be read aloud, not furigana, so they're left untouched.
     clean = re.sub(r'([一-鿿㐀-䶿々]+)（[぀-ゟー]+）', r'\1', clean)
+
+    # Drop stage directions / performance cues (（笑）（拍手）（頷きながら）) — these
+    # are reader annotations, not dialogue, and the furigana strip above does not
+    # catch them (it only matches kanji-then-pure-hiragana). Curated cue list, so
+    # content glosses like （治療必要数）/（アブストラクト） are left to be spoken.
+    clean = _STAGE_DIRECTION_RE.sub('', clean)
 
     # Layer 1: deterministic reading glossary — force CONFIRMED-misread words to
     # hiragana (after furigana-strip above so 漢字（かな） pairs collapse first).

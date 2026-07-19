@@ -75,6 +75,36 @@ class TestCleanScriptForTTS:
         result = clean_script_for_tts(text)
         assert "This is a normal English sentence" in result
 
+    @pytest.mark.parametrize("cue", [
+        "（笑）", "（笑い）", "（苦笑）", "（拍手）", "（拍手音）",
+        "（ため息）", "（沈黙）", "（頷きながら）", "（笑いながら）", "(会話再開)",
+    ])
+    def test_strips_stage_directions(self, cue):
+        result = clean_script_for_tts(f"Host 1: そうですね{cue}。確かに。")
+        assert cue.strip("（）()") not in result
+        assert "そうですね" in result and "確かに" in result
+
+    @pytest.mark.parametrize("gloss", [
+        "（治療必要数）", "（アブストラクト）", "（Cohen's d）", "（レプチン）",
+        "（例えば 9 時間以上）", "（特にレム睡眠と徐波睡眠）", "（筋肉減少症）", "(HR)",
+    ])
+    def test_preserves_content_glosses(self, gloss):
+        """Content parentheticals carry meaning and must still be spoken —
+        the stage-direction strip is a curated cue list, not a blanket strip."""
+        inner = gloss.strip("（）()")
+        result = clean_script_for_tts(f"Host 1: NNT{gloss}について。")
+        assert inner.replace(" ", "") in result.replace(" ", "")
+
+    def test_stage_direction_strip_is_idempotent(self):
+        once = clean_script_for_tts("Host 1: なるほど（笑）。")
+        assert clean_script_for_tts(once) == once
+
+    def test_stage_direction_cue_word_inside_larger_paren_is_kept(self):
+        """Only WHOLE-parenthetical cue matches are stripped — a cue word
+        appearing inside a longer content gloss must survive."""
+        result = clean_script_for_tts("Host 1: 反応（笑いと拍手の反応）がありました。")
+        assert "笑いと拍手の反応" in result
+
 
 # ---------------------------------------------------------------------------
 # _chunk_japanese_text
