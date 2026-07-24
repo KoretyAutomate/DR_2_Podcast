@@ -257,6 +257,8 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
         "en": (
             "  4. ACT 2 --- EVIDENCE & NUANCE (above 50%% of the episode --- at least {act2_min} {target_unit_plural}, expand freely):\n"
             "     Start by stating the episode's conclusion upfront.\n"
+            "     Then ANNOUNCE the scaffold before diving in: how many studies/points are coming ('Today we'll look at three studies'), "
+            "and number each one as you reach it ('The first study...', 'Second...'). Audio has no headings --- spoken signposts ARE the structure.\n"
             "     Then walk through EACH study individually:\n"
             "     - Present the study's finding with GRADE-informed framing from the Blueprint\n"
             "     - Questioner asks a study-specific question (from Coverage Checklist) --- focus on methodology: sample size, study design, confounders, effect sizes\n"
@@ -269,6 +271,9 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
         "ja": (
             "  4. ACT 2 --- EVIDENCE & NUANCE (above 50%% of the episode --- at least {act2_min} {target_unit_plural}, expand freely):\n"
             "     まずエピソードの結論を先に述べてください。\n"
+            "     次に、本題に入る前に骨組みを宣言してください：いくつの研究・ポイントを見るのかを先に言い"
+            "（「今日は三つの研究を見ていきます」）、各研究の冒頭で番号を口に出す（「一つ目の研究は…」「二つ目は…」）。"
+            "音声には見出しがないため、口頭のサインポストが構造そのものです。\n"
             "     次に各研究を個別に取り上げます:\n"
             "     - Blueprintからの GRADE に基づくフレーミングで研究の知見を提示\n"
             "     - 質問者が研究固有の質問をする（Coverage Checklistから）--- 方法論に焦点: サンプルサイズ、研究デザイン、交絡因子、効果量\n"
@@ -355,11 +360,12 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
     "wrapup": {
         "en": (
             "  7. WRAP-UP (~60 {target_unit_plural}, ~25 seconds):\n"
-            "     Three-sentence summary of the most important takeaways.\n\n"
+            "     Three-sentence summary of the most important takeaways, "
+            "walking back through the numbered points announced in Act 2 in order.\n\n"
         ),
         "ja": (
             "  7. まとめ (~60 {target_unit_plural}, ~25秒):\n"
-            "     最も重要なポイントを3文で要約。\n\n"
+            "     最も重要なポイントを3文で要約。Act 2で宣言した番号付きポイントを順にたどって振り返る。\n\n"
         ),
     },
 
@@ -533,6 +539,10 @@ POLISH_PROMPTS: dict[str, dict[str, str]] = {
             "Do NOT use rhetorical hype numbers ('99%', '8割') as exaggeration, "
             "especially in an episode that criticizes marketing overstatement -- it reads as hypocritical.\n"
             "- Preface English idioms before using them.\n"
+            "- Verbiage streamlining: delete wrapper nouns that add no meaning --- "
+            "no-op ほう/かた (「言い切ってくれる人のほうを」-> 「言い切ってくれる人を」; keep genuine comparatives 〜のほうが), "
+            "「〜の側」 around a plain noun (name the thing directly), "
+            "and doubled statements (the same content restated in adjacent sentences --- keep the stronger one).\n"
         ),
         "ja": (
             "読み・トーン規約（日本語TTS向け）:\n"
@@ -547,6 +557,10 @@ POLISH_PROMPTS: dict[str, dict[str, str]] = {
             "特にマーケティングの誇張を批判する回では、同じ誇張を使うと矛盾して聞こえる。\n"
             "- 英語のイディオムは、使う前に日本語で前置きする"
             "（例：英語に「ガベージ・イン、ガベージ・アウト」という言葉があります）。\n"
+            "- 簡潔さ：意味を足さない包装語は削る。"
+            "無意味な「ほう」「かた」（「言い切ってくれる人のほうを」→「言い切ってくれる人を」。本当の比較「〜のほうが」は残す）。"
+            "名詞を包むだけの「〜の側」は名詞を直接言う。"
+            "隣接する文で同じ内容を言い直さない（強いほうの文だけ残す）。\n"
         ),
     },
 
