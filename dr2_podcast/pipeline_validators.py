@@ -305,3 +305,93 @@ def validate_tts_readings(text: str, max_report: int = 20) -> list[str]:
                         f"TTS_READINGS_TRUNCATED: >{max_report} hazards; showing first {max_report}")
                     return issues
     return issues
+
+
+# ---------------------------------------------------------------- GRADE / NNT
+# The final GRADE level and the ARR/NNT figures are produced by the Auditor and
+# by deterministic Python math (research/clinical_math.py) — NOT written by the
+# script LLM. So when the script disagrees with them, the script is wrong.
+# Observed 2026-05-05 sleep episode: the LLM auditor graded the script FAIL yet
+# missed every GRADE/NNT inversion (script claimed "中程度〜高い" against a basis
+# of LOW, and projected "年間数万単位" of prevented cases against NNT = inf).
+# Detection is a string comparison; it does not need an LLM.
+
+_GRADE_FINAL = re.compile(
+    r'(?:FINAL\s+GRADE|最終\s*GRADE|Overall\s+GRADE)\s*[:：]?\s*\**\s*'
+    r'(VERY\s+LOW|LOW|MODERATE|HIGH|非常に低い|低い|中程度|高い)', re.I)
+
+# Level tokens as they appear in a Japanese script, mapped to canonical grades.
+_GRADE_TOKENS = [
+    (re.compile(r'非常に低い|VERY\s+LOW', re.I), 'VERY LOW'),
+    (re.compile(r'中程度|中等度|MODERATE', re.I), 'MODERATE'),
+    (re.compile(r'高い|HIGH', re.I), 'HIGH'),
+    (re.compile(r'低い|LOW', re.I), 'LOW'),
+]
+_GRADE_MENTION = re.compile(r'GRADE|グレード')
+
+# "no measurable difference" signatures from the deterministic math.
+_NNT_NULL = re.compile(r'NNT[^\n]{0,40}\binf\b|no_effect|ARR\s*=\s*\+?0\.0000')
+# Script turning that null into a positive population-level benefit.
+_NNT_PROJECTION = re.compile(
+    r'(?:NNT|治療必要数)[^\n]{0,80}?(?:防げ|予防でき|減らせ)'
+    r'|(?:年間|試算)[^\n]{0,30}?[0-9０-９万千百]+\s*(?:人|単位)[^\n]{0,20}?(?:防げ|予防でき|減らせ)')
+
+
+def _canonical_grade(text: str) -> str | None:
+    """Extract the basis's final GRADE level, or None if not stated."""
+    m = _GRADE_FINAL.search(text or "")
+    if not m:
+        return None
+    raw = m.group(1).upper().strip()
+    return {'非常に低い': 'VERY LOW', '低い': 'LOW',
+            '中程度': 'MODERATE', '高い': 'HIGH'}.get(m.group(1), raw)
+
+
+def validate_grade_consistency(script_text: str,
+                               grade_path: str | None = None,
+                               sot_path: str | None = None,
+                               basis_text: str | None = None) -> list[str]:
+    """Flag script claims that contradict the basis's GRADE level or NNT result.
+
+    Deterministic: compares what the script says about certainty against values
+    the pipeline itself computed. Fail-safe — returns [] when the basis states
+    no final GRADE (never guesses a grade it cannot read).
+
+    Warn-level, like validate_tts_readings: a hit means a human/LLM must look,
+    not that the run halts.
+    """
+    basis = basis_text or ""
+    if not basis:
+        for p in (grade_path, sot_path):
+            if not p:
+                continue
+            try:
+                basis += Path(p).read_text(encoding="utf-8") + "\n"
+            except (OSError, UnicodeDecodeError):
+                continue
+    if not basis:
+        return []
+
+    issues: list[str] = []
+    grade = _canonical_grade(basis)
+
+    if grade:
+        for lineno, line in enumerate(script_text.split("\n"), 1):
+            if not _GRADE_MENTION.search(line):
+                continue
+            for pat, level in _GRADE_TOKENS:
+                m = pat.search(line)
+                if m and level != grade:
+                    issues.append(
+                        f"GRADE_CONTRADICTION: script says '{m.group(0)}' "
+                        f"({level}) but basis final GRADE is {grade} [L{lineno}]")
+                    break
+
+    if _NNT_NULL.search(basis):
+        for lineno, line in enumerate(script_text.split("\n"), 1):
+            m = _NNT_PROJECTION.search(line)
+            if m:
+                issues.append(
+                    f"NNT_NULL_CONTRADICTION: basis computed NNT=inf/no_effect but "
+                    f"script projects a benefit [L{lineno}: …{m.group(0)[:40]}…]")
+    return issues

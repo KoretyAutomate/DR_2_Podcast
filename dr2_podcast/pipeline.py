@@ -2004,6 +2004,20 @@ def _finalize_script(polished_text, polish_task, language, language_config, outp
         for _issue in validate_tts_readings(script_text):
             logger.warning(f"  TTS_READING: {_issue}")
 
+    # Warn on script claims contradicting the computed GRADE / NNT. The live
+    # Prefect path (pipeline_flow) gates on this; here it surfaces as a warning
+    # so reuse branches that skip the flow still report it.
+    try:
+        from dr2_podcast.pipeline_validators import validate_grade_consistency
+        _sot = output_path(output_dir, "research/source_of_truth_ja.md")
+        if not Path(_sot).exists():
+            _sot = output_path(output_dir, "research/source_of_truth.md")
+        _grade = output_path(output_dir, "research/grade_synthesis.md")
+        for _issue in validate_grade_consistency(script_text, str(_grade), str(_sot)):
+            logger.warning(f"  GRADE_CHECK: {_issue}")
+    except Exception:
+        pass
+
     logger.info("\nAdding reaction/emotion guidance to script...")
     script_text = _add_reaction_guidance(script_text, language_config)
 

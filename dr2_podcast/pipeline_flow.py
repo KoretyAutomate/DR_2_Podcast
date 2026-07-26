@@ -1057,6 +1057,21 @@ def run_pipeline_flow(
         flow_logger.warning("Deterministic citation gate flagged %d issue(s): %s",
                             len(det_citation_issues), "; ".join(det_citation_issues))
 
+    # Deterministic GRADE/NNT gate — an independent trigger, same rationale as
+    # citations. The final GRADE and the ARR/NNT math are computed, not written,
+    # so a script contradicting them is always the script's error. The LLM
+    # auditor is unreliable here (2026-05-05 sleep episode: graded FAIL, caught
+    # 3 of 9 HIGH defects, missed every GRADE/NNT inversion).
+    try:
+        from dr2_podcast.pipeline_validators import validate_grade_consistency
+        det_grade_issues = validate_grade_consistency(
+            polished_text, basis_text=sot_content) if sot_content else []
+    except Exception:
+        det_grade_issues = []
+    if det_grade_issues:
+        flow_logger.warning("Deterministic GRADE/NNT gate flagged %d issue(s): %s",
+                            len(det_grade_issues), "; ".join(det_grade_issues))
+
     # Layer 3: warn on CONTEXT-DEPENDENT TTS reading hazards (JA only). Non-blocking.
     if language != 'en':
         try:
@@ -1066,14 +1081,22 @@ def run_pipeline_flow(
         except Exception:
             pass
 
-    if audit_output and (_pipeline._audit_requires_correction(audit_output) or det_citation_issues):
-        flow_logger.info("Accuracy gate TRIGGERED (verdict=%s, citation_issues=%d) — correcting",
+    if audit_output and (_pipeline._audit_requires_correction(audit_output)
+                         or det_citation_issues or det_grade_issues):
+        flow_logger.info("Accuracy gate TRIGGERED (verdict=%s, citation_issues=%d, grade_issues=%d) — correcting",
                          "FAIL/HIGH" if _pipeline._audit_requires_correction(audit_output) else "PASS",
-                         len(det_citation_issues))
+                         len(det_citation_issues), len(det_grade_issues))
         _audit_for_corrector = audit_output or ""
         if det_citation_issues:
             _audit_for_corrector += ("\n\n## Deterministic Citation Issues (fix these too)\n"
                                      + "\n".join(f"- {i}" for i in det_citation_issues))
+        if det_grade_issues:
+            _audit_for_corrector += (
+                "\n\n## Deterministic GRADE/NNT Contradictions (fix these too)\n"
+                "The basis's final GRADE and the ARR/NNT figures are computed by the pipeline, "
+                "not written by an LLM. Where the script disagrees, the SCRIPT is wrong — "
+                "restate it to match the basis. Do not raise the certainty level.\n"
+                + "\n".join(f"- {i}" for i in det_grade_issues))
         corrected_script_text = _run_inline_correction(
             audit_output=_audit_for_corrector,
             polished_text=polished_text,
@@ -1086,6 +1109,7 @@ def run_pipeline_flow(
                 "# Accuracy Corrections\n\n"
                 f"- Audit verdict trigger: {_pipeline._audit_requires_correction(audit_output)}\n"
                 f"- Fabricated-citation trigger: {det_citation_issues or 'none'}\n"
+                f"- GRADE/NNT contradiction trigger: {det_grade_issues or 'none'}\n"
                 f"- Correction result: "
                 f"{'applied' if corrected_script_text else 'FAILED — audio uses UNCORRECTED script, manual review needed'}\n",
                 encoding="utf-8")

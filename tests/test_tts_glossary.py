@@ -61,6 +61,33 @@ class TestApplyGlossary:
     def test_acronyms(self):
         assert apply_tts_glossary("NMNとBMI") == "エヌエムエヌとボディマスインデックス"
 
+    # Ep09 listening round 2026-07-24: 五つ目→「ごつめ」, 建前→「けんまえ」,
+    # 放っておけない→「はなっておけない」. Same family as the 2026-07-24 ep08
+    # finding 4つ目→「よんつめ」. All context-free → glossary, not per-script kana.
+    @pytest.mark.parametrize("src,want", [
+        ("五つ目のパターン", "いつつめのパターン"),
+        ("六つ目、特許取得", "むっつめ、特許取得"),
+        ("5つ目のフレーズ", "いつつめのフレーズ"),
+        ("6つのフレーズ", "むっつのフレーズ"),
+        ("4つ目の選択肢", "よっつめの選択肢"),
+        ("五つ、高額の掲載料", "いつつ、高額の掲載料"),
+        ("建前としては", "たてまえとしては"),
+        ("放っておけない病気", "ほうっておけない病気"),
+        ("放っておくと悪化する", "ほうっておくと悪化する"),
+    ])
+    def test_ep09_round_readings(self, src, want):
+        assert apply_tts_glossary(src) == want
+
+    def test_ordinal_longest_first(self):
+        # 五つ目/六つ目 must win over the bare 五つ/六つ keys, and the guarded
+        # 目の rule (which fires first) must still land on いつつめの.
+        assert apply_tts_glossary("五つ目のパターンと六つ目") == "いつつめのパターンとむっつめ"
+
+    def test_ordinals_idempotent(self):
+        s = "五つ目、六つ目、5つ目、4つ目、建前、放っておけない"
+        once = apply_tts_glossary(s)
+        assert apply_tts_glossary(once) == once
+
 
 class TestGlossaryLoad:
     def test_invariant_holds(self):

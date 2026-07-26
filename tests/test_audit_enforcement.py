@@ -39,7 +39,7 @@ def test_real_sleep_audits_trigger():
     """The three real sleep audits that were ignored must now all trigger."""
     import pathlib
     base = pathlib.Path("research_outputs")
-    for folder in ("2026-05-05_04-26-02", "2026-05-05_00-44-54", "2026-05-05_02-43-07"):
+    for folder in ("Ep020_睡眠とホルモン_テストステロンと成長ホルモン", "Ep018_睡眠と脳_グリンパティック系と認知症", "Ep019_睡眠と代謝_血糖と食欲"):
         audit = base / folder / "research" / "accuracy_audit.md"
         if audit.exists():  # skip gracefully if the fixture run dir is absent
             assert _audit_requires_correction(audit.read_text(encoding="utf-8")) is True
