@@ -5,7 +5,9 @@ GET  /health -> {"status": "ok"}
 Speaker map: Host1 -> Aiden (male), Host2 -> Ono_anna (Japanese female)
 """
 
-import io, os, logging
+import io
+import os
+import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel

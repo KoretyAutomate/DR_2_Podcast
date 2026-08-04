@@ -152,7 +152,7 @@ def get_youtube_credentials(youtube_secret_path: str = None):
 
     # Try loading cached token first
     if _TOKEN_PATH.exists():
-        with open(_TOKEN_PATH, "r") as f:
+        with open(_TOKEN_PATH) as f:
             creds_data = json.load(f)
         creds = Credentials.from_authorized_user_info(creds_data, scopes=_YOUTUBE_SCOPES)
         if creds and not creds.expired:

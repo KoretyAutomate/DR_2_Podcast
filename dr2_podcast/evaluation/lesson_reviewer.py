@@ -337,4 +337,4 @@ if __name__ == "__main__":
             pending = _load_pending()
             print(f"Threshold not reached ({len(pending)}/10 pending)")
     else:
-        print(f"Usage: python -m dr2_podcast.evaluation.lesson_reviewer [review|pending|run]")
+        print("Usage: python -m dr2_podcast.evaluation.lesson_reviewer [review|pending|run]")

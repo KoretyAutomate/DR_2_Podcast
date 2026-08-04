@@ -24,7 +24,6 @@ import atexit
 import json
 import logging
 import os
-import random
 import re
 import sqlite3
 import time
@@ -52,7 +51,7 @@ from dr2_podcast.config import (
 )
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 import defusedxml.ElementTree as ET
@@ -62,7 +61,7 @@ from bs4 import BeautifulSoup
 import openai
 from openai import AsyncOpenAI
 
-from dr2_podcast.research.search_service import SearxngClient, SearchResult
+from dr2_podcast.research.search_service import SearxngClient
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +189,7 @@ class FetchedPage:
     title: str
     content: str
     word_count: int
-    error: Optional[str] = None
+    error: str | None = None
 
 
 from dr2_podcast.pipeline_types import StudyMetadata, SummarizedSource, SearchMetrics, ResearchReport
@@ -203,9 +202,9 @@ from dr2_podcast.pipeline_types import StudyMetadata, SummarizedSource, SearchMe
 class TierKeywords:
     """Plain keyword lists for one search tier — NO Boolean/MeSH syntax."""
 
-    intervention: List[str]  # exact terms for the intervention at this tier
-    outcome: List[str]  # outcome terms at this tier
-    population: List[str]  # population terms
+    intervention: list[str]  # exact terms for the intervention at this tier
+    outcome: list[str]  # outcome terms at this tier
+    population: list[str]  # population terms
     rationale: str  # scientist's justification for this tier's scope
 
 
@@ -213,7 +212,7 @@ class TierKeywords:
 class TieredSearchPlan:
     """Three-tier keyword plan produced by the scientist and approved by the Auditor."""
 
-    pico: Dict[str, str]  # P, I, C, O — used downstream in _build_case, screening
+    pico: dict[str, str]  # P, I, C, O — used downstream in _build_case, screening
     tier1: TierKeywords  # Exact folk/named terms → "Established evidence"
     tier2: TierKeywords  # Canonical scientific synonyms, same substance → "Supporting evidence"
     tier3: TierKeywords  # Active compound class / mechanism → "Speculative extrapolation"
@@ -227,20 +226,20 @@ class TieredSearchPlan:
 class WideNetRecord:
     """Lightweight screening record — no full text, just title + abstract metadata."""
 
-    pmid: Optional[str]
-    doi: Optional[str]
+    pmid: str | None
+    doi: str | None
     title: str
     abstract: str
     study_type: str
-    sample_size: Optional[str]
-    primary_objective: Optional[str]
-    year: Optional[int]
-    journal: Optional[str]
-    authors: Optional[str]
+    sample_size: str | None
+    primary_objective: str | None
+    year: int | None
+    journal: str | None
+    authors: str | None
     url: str
     source_db: str  # "pubmed", "cochrane_central", "scholar"
-    research_tier: Optional[int] = None  # 1=exact folk  2=scientific synonyms  3=compound class
-    relevance_score: Optional[float] = None
+    research_tier: int | None = None  # 1=exact folk  2=scientific synonyms  3=compound class
+    relevance_score: float | None = None
     paper_metadata: Optional["PaperMetadata"] = None
 
 
@@ -248,31 +247,31 @@ class WideNetRecord:
 class DeepExtraction:
     """Clinical variable extraction from full-text articles (Step 4)."""
 
-    pmid: Optional[str]
-    doi: Optional[str]
+    pmid: str | None
+    doi: str | None
     title: str
     url: str
-    attrition_pct: Optional[str] = None
-    effect_size: Optional[str] = None
-    demographics: Optional[str] = None
-    follow_up_period: Optional[str] = None
-    funding_source: Optional[str] = None
-    conflicts_of_interest: Optional[str] = None
-    biological_mechanism: Optional[str] = None
-    control_event_rate: Optional[float] = None  # CER — needed for Step 7
-    experimental_event_rate: Optional[float] = None  # EER — needed for Step 7
-    outcome_is_adverse: Optional[bool] = None  # True = event is bad (default assumption)
-    primary_outcome: Optional[str] = None
-    secondary_outcomes: Optional[List[str]] = None
-    blinding: Optional[str] = None
-    randomization_method: Optional[str] = None
-    intention_to_treat: Optional[bool] = None
-    sample_size_total: Optional[int] = None
-    sample_size_intervention: Optional[int] = None
-    sample_size_control: Optional[int] = None
-    study_design: Optional[str] = None
-    risk_of_bias: Optional[str] = None
-    research_tier: Optional[int] = None  # 1=folk 2=synonym 3=compound
+    attrition_pct: str | None = None
+    effect_size: str | None = None
+    demographics: str | None = None
+    follow_up_period: str | None = None
+    funding_source: str | None = None
+    conflicts_of_interest: str | None = None
+    biological_mechanism: str | None = None
+    control_event_rate: float | None = None  # CER — needed for Step 7
+    experimental_event_rate: float | None = None  # EER — needed for Step 7
+    outcome_is_adverse: bool | None = None  # True = event is bad (default assumption)
+    primary_outcome: str | None = None
+    secondary_outcomes: list[str] | None = None
+    blinding: str | None = None
+    randomization_method: str | None = None
+    intention_to_treat: bool | None = None
+    sample_size_total: int | None = None
+    sample_size_intervention: int | None = None
+    sample_size_control: int | None = None
+    study_design: str | None = None
+    risk_of_bias: str | None = None
+    research_tier: int | None = None  # 1=folk 2=synonym 3=compound
     raw_facts: str = ""
     paper_metadata: Optional["PaperMetadata"] = None
 
@@ -295,15 +294,15 @@ class PaperMetadata:
     All fields optional — pipeline degrades gracefully if APIs are unreachable.
     """
 
-    citation_count: Optional[int] = None
-    influential_citation_count: Optional[int] = None
-    fwci: Optional[float] = None
-    funding_sources: Optional[List[str]] = None
-    is_retracted: Optional[bool] = None
-    is_corrected: Optional[bool] = None
-    has_clinical_trial_number: Optional[bool] = None
-    clinical_trial_numbers: Optional[List[str]] = None
-    enrichment_sources: List[str] = field(default_factory=list)
+    citation_count: int | None = None
+    influential_citation_count: int | None = None
+    fwci: float | None = None
+    funding_sources: list[str] | None = None
+    is_retracted: bool | None = None
+    is_corrected: bool | None = None
+    has_clinical_trial_number: bool | None = None
+    clinical_trial_numbers: list[str] | None = None
+    enrichment_sources: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {}
@@ -335,14 +334,14 @@ class PubMedClient:
     def __init__(self):
         self.api_key = os.getenv("PUBMED_API_KEY")
 
-    async def search(self, query: str, max_results: int = 10) -> List[Dict[str, str]]:
+    async def search(self, query: str, max_results: int = 10) -> list[dict[str, str]]:
         """Legacy search — returns simple dicts for backward compatibility."""
         records = await self.search_extended(query, max_results=max_results)
         return [{"url": r["url"], "title": r.get("title", ""), "snippet": r.get("abstract", "")[:500]} for r in records]
 
     async def search_extended(
         self, query: str, max_results: int = 500, sort: str = "relevance"
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Enhanced search returning rich article records with metadata.
 
         Returns list of dicts with: pmid, doi, title, abstract (full), study_type,
@@ -391,7 +390,7 @@ class PubMedClient:
             logger.error(f"PubMed search failed: {e}")
         return results
 
-    def _parse_articles_xml(self, xml_text: str) -> List[Dict[str, Any]]:
+    def _parse_articles_xml(self, xml_text: str) -> list[dict[str, Any]]:
         """Parse PubMed efetch XML into rich article records."""
         results = []
         try:
@@ -409,7 +408,7 @@ class PubMedClient:
                 logger.debug(f"Failed to parse article: {e}")
         return results
 
-    def _parse_single_article(self, article) -> Optional[Dict[str, Any]]:
+    def _parse_single_article(self, article) -> dict[str, Any] | None:
         """Parse a single PubmedArticle XML element."""
         pmid_el = article.find(".//PMID")
         if pmid_el is None:
@@ -505,7 +504,7 @@ class PubMedClient:
         }
 
     @staticmethod
-    def _classify_study_type(pub_types: List[str]) -> str:
+    def _classify_study_type(pub_types: list[str]) -> str:
         """Classify study type from PubMed PublicationType elements (no LLM)."""
         pt_lower = [p.lower() for p in pub_types]
         if any("meta-analysis" in p for p in pt_lower):
@@ -531,7 +530,7 @@ class PubMedClient:
         return "other"
 
 
-def _dedup_and_filter(results: List[Dict[str, str]]) -> List[Dict[str, str]]:
+def _dedup_and_filter(results: list[dict[str, str]]) -> list[dict[str, str]]:
     """Deduplicate results by URL and filter junk domains."""
     seen = set()
     unique = []
@@ -556,7 +555,7 @@ class SearchService:
         self.general_count = 0
         self.total_identified_raw = 0
 
-    async def _extract_searxng_results(self, raw: list) -> List[Dict[str, str]]:
+    async def _extract_searxng_results(self, raw: list) -> list[dict[str, str]]:
         """Extract url/title/snippet from SearXNG raw results."""
         results = []
         for r in raw:
@@ -569,7 +568,7 @@ class SearchService:
 
     async def search(
         self, query: str, max_results: int = 10, min_academic: int = MIN_ACADEMIC_RESULTS
-    ) -> List[Dict[str, str]]:
+    ) -> list[dict[str, str]]:
         academic_results = []
 
         # Tier 1a: PubMed
@@ -688,7 +687,7 @@ class ContentFetcher:
             except Exception as e:
                 return FetchedPage(url=url, title="", content="", word_count=0, error=str(e)[:200])
 
-    async def fetch_all(self, urls: List[str]) -> List[FetchedPage]:
+    async def fetch_all(self, urls: list[str]) -> list[FetchedPage]:
         return await asyncio.gather(*[self.fetch_page(url) for url in urls])
 
 
@@ -700,7 +699,7 @@ class FastWorker:
         self.model = model
         self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUMMARIES)
 
-    def _parse_metadata_from_response(self, raw_text: str) -> Tuple[str, Optional[StudyMetadata]]:
+    def _parse_metadata_from_response(self, raw_text: str) -> tuple[str, StudyMetadata | None]:
         """Parse FACTS and METADATA sections from fast model response.
 
         Returns (facts_text, metadata_or_none). On parse failure, returns
@@ -814,7 +813,7 @@ class FastWorker:
                     url=page.url, title=page.title, summary="", query=query, goal=goal, error=str(e)[:200]
                 )
 
-    async def summarize_batch(self, pages: List[FetchedPage], goal: str, query: str) -> List[SummarizedSource]:
+    async def summarize_batch(self, pages: list[FetchedPage], goal: str, query: str) -> list[SummarizedSource]:
         return await asyncio.gather(*[self.summarize(page, goal, query) for page in pages])
 
 
@@ -837,7 +836,7 @@ class ResearchAgent:
     def __init__(
         self,
         smart_client: AsyncOpenAI,
-        fast_worker: Optional[FastWorker],
+        fast_worker: FastWorker | None,
         search_service: SearchService,
         fetcher: ContentFetcher,
         smart_model: str = SMART_MODEL,
@@ -861,7 +860,7 @@ class ResearchAgent:
             self.smart_client, self.smart_model, system, user, max_tokens=max_tokens, temperature=temperature
         )
 
-    def _parse_json_queries(self, raw: str) -> List[ResearchQuery]:
+    def _parse_json_queries(self, raw: str) -> list[ResearchQuery]:
         """Parse JSON query list from smart model output."""
         if "```" in raw:
             match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
@@ -874,7 +873,7 @@ class ResearchAgent:
             logger.warning(f"Failed to parse queries JSON, raw: {raw[:300]}")
             return []
 
-    def _format_evidence_so_far(self, summaries: List[SummarizedSource]) -> str:
+    def _format_evidence_so_far(self, summaries: list[SummarizedSource]) -> str:
         """Format collected evidence for the smart model to review."""
         good = [s for s in summaries if s.summary and s.summary != "NO RELEVANT DATA" and not s.error]
         if not good:
@@ -885,8 +884,8 @@ class ResearchAgent:
         return "\n".join(blocks)
 
     async def _search_and_summarize(
-        self, queries: List[ResearchQuery], seen_urls: set, log
-    ) -> Tuple[List[SummarizedSource], int, int]:
+        self, queries: list[ResearchQuery], seen_urls: set, log
+    ) -> tuple[list[SummarizedSource], int, int]:
         """Execute search + fetch + summarize for a batch of queries."""
         all_summaries = []
         total_fetched = 0
@@ -959,7 +958,7 @@ class ResearchAgent:
             log: Logging callback
         """
         start_time = time.time()
-        all_summaries: List[SummarizedSource] = []
+        all_summaries: list[SummarizedSource] = []
         seen_urls: set = set()
         total_fetched = 0
         total_errors = 0
@@ -994,7 +993,7 @@ class ResearchAgent:
                     f'Return ONLY a JSON array: [{{"query": "...", "goal": "..."}}]'
                 )
 
-            log(f"    Planning: asking smart model for queries...")
+            log("    Planning: asking smart model for queries...")
             raw_plan = await self._call_smart(
                 "You are a research planning expert. Return ONLY valid JSON arrays.",
                 plan_prompt,
@@ -1004,7 +1003,7 @@ class ResearchAgent:
             queries = self._parse_json_queries(raw_plan)
 
             if not queries:
-                log(f"    Smart model returned no new queries — evidence deemed sufficient")
+                log("    Smart model returned no new queries — evidence deemed sufficient")
                 break
 
             log(f"    Plan: {len(queries)} queries")
@@ -1012,7 +1011,7 @@ class ResearchAgent:
                 log(f"      {i}. [{q.goal[:50]}] {q.query}")
 
             # Step 2: Delegate search + summarization to workers
-            log(f"    Delegating to search + summarize workers...")
+            log("    Delegating to search + summarize workers...")
             batch_summaries, batch_fetched, batch_errors = await self._search_and_summarize(queries, seen_urls, log)
             all_summaries.extend(batch_summaries)
             total_fetched += batch_fetched
@@ -1262,7 +1261,7 @@ class ResearchAgent:
         topic: str,
         role: str,
         framing_context: str,
-        decomposition: Optional[Dict],
+        decomposition: dict | None,
         auditor_feedback: str = "",
         log=logger.info,
     ) -> TieredSearchPlan:
@@ -1544,7 +1543,7 @@ class ResearchAgent:
             approved = bool(data.get("approved", False))
             notes = data.get("notes", "")
             if approved:
-                log(f"    [Auditor] APPROVED")
+                log("    [Auditor] APPROVED")
             else:
                 log(f"    [Auditor] REJECTED — {notes[:200]}")
             return approved, notes
@@ -1553,7 +1552,7 @@ class ResearchAgent:
             return False, f"Rejected: auditor response could not be parsed ({type(e).__name__})"
 
     async def _formulate_tiered_strategy(
-        self, topic: str, role: str, framing_context: str, decomposition: Optional[Dict], log=logger.info
+        self, topic: str, role: str, framing_context: str, decomposition: dict | None, log=logger.info
     ) -> TieredSearchPlan:
         """Step 1: Scientist generates tier keywords, Auditor reviews; loop until approved."""
         MAX_REVISIONS = 2
@@ -1585,7 +1584,7 @@ class ResearchAgent:
     def _build_tier_query(self, tier: TierKeywords, extra_filters: str = "") -> str:
         """Deterministic PubMed Boolean builder — no LLM. AND between groups, OR within groups."""
 
-        def group(terms: List[str]) -> str:
+        def group(terms: list[str]) -> str:
             quoted = [f'"{t}"[Title/Abstract]' for t in terms if t.strip()]
             return "(" + " OR ".join(quoted) + ")" if quoted else ""
 
@@ -1617,7 +1616,7 @@ class ResearchAgent:
         if getattr(self, "_domain", "clinical") == "social_science":
             return await self._tiered_search_social(plan, log)
         log(f"    [Step 2] Tiered cascade search ({plan.role})...")
-        all_records: List[WideNetRecord] = []
+        all_records: list[WideNetRecord] = []
         seen_pmids: set = set()
         seen_urls: set = set()
         highest_tier = 0
@@ -1800,7 +1799,7 @@ class ResearchAgent:
     async def _tiered_search_social(self, plan: TieredSearchPlan, log=logger.info) -> tuple:
         """Step 2: Search OpenAlex + ERIC + Scholar for social science topics."""
         log(f"    [Step 2] Social science search ({plan.role})...")
-        all_records: List[WideNetRecord] = []
+        all_records: list[WideNetRecord] = []
         seen_titles: set = set()
         seen_urls: set = set()
         highest_tier = 0
@@ -1972,7 +1971,7 @@ class ResearchAgent:
 
         return all_records[:500], highest_tier
 
-    async def _fast_screen_abstracts(self, records: List[WideNetRecord]) -> List[Dict]:
+    async def _fast_screen_abstracts(self, records: list[WideNetRecord]) -> list[dict]:
         """Use fast model to extract study_type, sample_size, primary_objective from abstracts."""
         # Concurrency=2 + timeout=180 per CLAUDE.md footgun: Ollama fast models run on
         # CPU/contended GPU when vLLM holds the smart-model allocation. Higher concurrency
@@ -1980,7 +1979,7 @@ class ResearchAgent:
         # Ollama can drain the queue, wasting compute and stalling Step 2.
         semaphore = asyncio.Semaphore(2)
 
-        async def screen_one(record: WideNetRecord) -> Dict:
+        async def screen_one(record: WideNetRecord) -> dict:
             async with semaphore:
                 try:
                     resp = await self.fast_worker.client.chat.completions.create(
@@ -2019,21 +2018,21 @@ class ResearchAgent:
 
     async def _screen_and_prioritize(
         self,
-        records: List[WideNetRecord],
+        records: list[WideNetRecord],
         strategy: TieredSearchPlan,
         max_select: int = 20,
         topic: str = "",
         log=logger.info,
-    ) -> List[WideNetRecord]:
+    ) -> list[WideNetRecord]:
         """Step 3: Smart model screens wide net records → top 20 with tier-aware priority."""
         if not records:
-            log(f"    [Step 3] No records to screen")
+            log("    [Step 3] No records to screen")
             return []
 
         pico_str = json.dumps(strategy.pico)
 
         # Group records by tier
-        tier_groups: Dict[int, List[WideNetRecord]] = {1: [], 2: [], 3: []}
+        tier_groups: dict[int, list[WideNetRecord]] = {1: [], 2: [], 3: []}
         for r in records:
             tier = r.research_tier if r.research_tier in (1, 2, 3) else 3
             tier_groups[tier].append(r)
@@ -2041,7 +2040,7 @@ class ResearchAgent:
         log(f"    [Step 3] Pool by tier: T1={len(tier_groups[1])}, T2={len(tier_groups[2])}, T3={len(tier_groups[3])}")
 
         # Screen each tier independently with tier-appropriate intervention
-        screened: Dict[int, List[WideNetRecord]] = {}
+        screened: dict[int, list[WideNetRecord]] = {}
         for tier_num in [1, 2, 3]:
             tier_records = tier_groups[tier_num]
             if not tier_records:
@@ -2069,7 +2068,7 @@ class ResearchAgent:
         tier3_cap = int(max_select * MAX_TIER3_RATIO)
         tier12_budget = max_select - min_t3
 
-        selected: List[WideNetRecord] = list(screened[1][:tier12_budget])
+        selected: list[WideNetRecord] = list(screened[1][:tier12_budget])
         remaining12 = tier12_budget - len(selected)
         if remaining12 > 0:
             selected.extend(screened[2][:remaining12])
@@ -2094,14 +2093,14 @@ class ResearchAgent:
 
     async def _screen_chunk(
         self,
-        records: List[WideNetRecord],
+        records: list[WideNetRecord],
         offset: int,
         pico_str: str,
         max_select: int,
         topic: str,
         log,
         intervention_override: str = "",
-    ) -> List[WideNetRecord]:
+    ) -> list[WideNetRecord]:
         """Screen a chunk of records with the smart model."""
         compact = []
         for i, r in enumerate(records):
@@ -2214,7 +2213,7 @@ class ResearchAgent:
             cache_path = Path(output_dir) / "meta" / "extraction_cache.json"
             if cache_path.exists():
                 try:
-                    with open(cache_path, "r") as f:
+                    with open(cache_path) as f:
                         return json.load(f)
                 except (json.JSONDecodeError, OSError):
                     return {}
@@ -2222,7 +2221,7 @@ class ResearchAgent:
             legacy_path = Path(output_dir) / "extraction_cache.json"
             if legacy_path.exists():
                 try:
-                    with open(legacy_path, "r") as f:
+                    with open(legacy_path) as f:
                         return json.load(f)
                 except (json.JSONDecodeError, OSError):
                     return {}
@@ -2231,7 +2230,7 @@ class ResearchAgent:
             cache_path = Path(__file__).resolve().parents[2] / "research_outputs" / "extraction_cache.json"
             if cache_path.exists():
                 try:
-                    with open(cache_path, "r") as f:
+                    with open(cache_path) as f:
                         return json.load(f)
                 except (json.JSONDecodeError, OSError):
                     return {}
@@ -2295,8 +2294,8 @@ class ResearchAgent:
         return d
 
     async def _deep_extract_batch(
-        self, articles, records: List[WideNetRecord], pico: Dict[str, str], log=logger.info, output_dir: str = None
-    ) -> List[DeepExtraction]:
+        self, articles, records: list[WideNetRecord], pico: dict[str, str], log=logger.info, output_dir: str = None
+    ) -> list[DeepExtraction]:
         """Step 4: Extract clinical variables from full-text articles using fast model.
         Uses PMID-keyed cache to ensure identical NNT across runs for the same paper."""
         log(f"    [Step 4] Deep extraction from {len(articles)} articles (Smart Model)...")
@@ -2507,7 +2506,7 @@ class ResearchAgent:
         return list(results)
 
     async def _build_case(
-        self, topic: str, strategy: TieredSearchPlan, extractions: List[DeepExtraction], case_type: str, log=logger.info
+        self, topic: str, strategy: TieredSearchPlan, extractions: list[DeepExtraction], case_type: str, log=logger.info
     ) -> str:
         """Step 5/6: Smart model builds affirmative or falsification case from extraction data."""
         log(f"    [Step {'5' if case_type == 'affirmative' else '6'}] Building {case_type} case...")
@@ -2691,7 +2690,7 @@ class Orchestrator:
 
     async def run(
         self, topic: str, framing_context: str = "", progress_callback=None, output_dir: str = None
-    ) -> Dict[str, ResearchReport]:
+    ) -> dict[str, ResearchReport]:
         """Run the full 7-step clinical research pipeline.
 
         Args:
@@ -2743,7 +2742,7 @@ class Orchestrator:
 
         # --- Phase 0: Concept Decomposition (C2) ---
         log(f"\n{'=' * 70}")
-        log(f"PHASE 0: CONCEPT DECOMPOSITION")
+        log("PHASE 0: CONCEPT DECOMPOSITION")
         log(f"{'=' * 70}")
         decomposition = await self.lead_researcher._decompose_topic(topic, framing_context)
         if decomposition.get("canonical_terms"):
@@ -2756,14 +2755,14 @@ class Orchestrator:
             nonlocal aff_wide_net_total, aff_screened_in, aff_fulltext_ok, aff_fulltext_err
 
             log(f"\n{'=' * 70}")
-            log(f"STEP 1a: TIERED KEYWORD GENERATION + AUDITOR GATE (Affirmative)")
+            log("STEP 1a: TIERED KEYWORD GENERATION + AUDITOR GATE (Affirmative)")
             log(f"{'=' * 70}")
             plan = await self.lead_researcher._formulate_tiered_strategy(
                 topic, "affirmative", framing_context, decomposition, log=log
             )
 
             log(f"\n{'=' * 70}")
-            log(f"STEP 2a: TIERED CASCADE SEARCH (Affirmative)")
+            log("STEP 2a: TIERED CASCADE SEARCH (Affirmative)")
             log(f"{'=' * 70}")
             records, aff_highest_tier = await self.lead_researcher._tiered_search(plan, log)
             aff_wide_net_total = len(records)
@@ -2795,7 +2794,7 @@ class Orchestrator:
             )
 
             log(f"\n{'=' * 70}")
-            log(f"STEP 5a: AFFIRMATIVE CASE")
+            log("STEP 5a: AFFIRMATIVE CASE")
             log(f"{'=' * 70}")
             case_report = await self.lead_researcher._build_case(topic, plan, extractions, "affirmative", log)
 
@@ -2806,14 +2805,14 @@ class Orchestrator:
             nonlocal fal_wide_net_total, fal_screened_in, fal_fulltext_ok, fal_fulltext_err
 
             log(f"\n{'=' * 70}")
-            log(f"STEP 1b: TIERED KEYWORD GENERATION + AUDITOR GATE (Falsification)")
+            log("STEP 1b: TIERED KEYWORD GENERATION + AUDITOR GATE (Falsification)")
             log(f"{'=' * 70}")
             plan = await self.counter_researcher._formulate_tiered_strategy(
                 topic, "adversarial", framing_context, decomposition, log=log
             )
 
             log(f"\n{'=' * 70}")
-            log(f"STEP 2b: TIERED CASCADE SEARCH (Falsification)")
+            log("STEP 2b: TIERED CASCADE SEARCH (Falsification)")
             log(f"{'=' * 70}")
             records, fal_highest_tier = await self.counter_researcher._tiered_search(plan, log)
             fal_wide_net_total = len(records)
@@ -2845,7 +2844,7 @@ class Orchestrator:
             )
 
             log(f"\n{'=' * 70}")
-            log(f"STEP 5b: FALSIFICATION CASE")
+            log("STEP 5b: FALSIFICATION CASE")
             log(f"{'=' * 70}")
             case_report = await self.counter_researcher._build_case(topic, plan, extractions, "falsification", log)
 
@@ -2853,7 +2852,7 @@ class Orchestrator:
 
         # --- Run both tracks in parallel ---
         log(f"\n{'=' * 70}")
-        log(f"RUNNING AFFIRMATIVE & FALSIFICATION TRACKS IN PARALLEL")
+        log("RUNNING AFFIRMATIVE & FALSIFICATION TRACKS IN PARALLEL")
         log(f"{'=' * 70}")
 
         (
@@ -2870,13 +2869,13 @@ class Orchestrator:
                 format_effect_size_report,
             )
 
-            log(f"STEP 6: DETERMINISTIC MATH (Effect Size)")
+            log("STEP 6: DETERMINISTIC MATH (Effect Size)")
             log(f"{'=' * 70}")
             impacts = es_batch_calculate(all_extractions)
             math_report = format_effect_size_report(impacts)
             log(f"    Calculated effect sizes for {len(impacts)} studies")
         else:
-            log(f"STEP 6: DETERMINISTIC MATH (ARR/NNT)")
+            log("STEP 6: DETERMINISTIC MATH (ARR/NNT)")
             log(f"{'=' * 70}")
             impacts = clinical_math.batch_calculate(all_extractions)
             math_report = clinical_math.format_math_report(impacts)
@@ -2887,7 +2886,7 @@ class Orchestrator:
 
         # --- Step 8: GRADE Synthesis ---
         log(f"\n{'=' * 70}")
-        log(f"STEP 7: GRADE SYNTHESIS")
+        log("STEP 7: GRADE SYNTHESIS")
         log(f"{'=' * 70}")
 
         search_date = datetime.date.today().isoformat()
@@ -3087,8 +3086,8 @@ class Orchestrator:
         total_ft_err: int,
         search_date: str,
         log=logger.info,
-        aff_extractions: Optional[List[DeepExtraction]] = None,
-        fal_extractions: Optional[List[DeepExtraction]] = None,
+        aff_extractions: list[DeepExtraction] | None = None,
+        fal_extractions: list[DeepExtraction] | None = None,
     ) -> str:
         """Step 7: GRADE / Evidence Quality synthesis by the Auditor."""
         synthesis_label = "Evidence Quality" if self.domain == "social_science" else "GRADE"
@@ -3231,7 +3230,7 @@ class Orchestrator:
             )
 
     @staticmethod
-    def _extractions_to_sources(extractions: List[DeepExtraction], role: str) -> List[SummarizedSource]:
+    def _extractions_to_sources(extractions: list[DeepExtraction], role: str) -> list[SummarizedSource]:
         """Convert DeepExtraction list to SummarizedSource for backward compatibility."""
         sources = []
         original_count = len(extractions)
@@ -3266,7 +3265,7 @@ class Orchestrator:
         return sources
 
     @staticmethod
-    async def _enrich_with_metadata(records: List[WideNetRecord], log=logger.info) -> List[WideNetRecord]:
+    async def _enrich_with_metadata(records: list[WideNetRecord], log=logger.info) -> list[WideNetRecord]:
         """Enrich WideNetRecords with metadata from OpenAlex, Semantic Scholar, Crossref.
 
         Optional — returns records unchanged on failure. All API errors are caught.
@@ -3337,8 +3336,8 @@ class Orchestrator:
 
     @staticmethod
     def _summarize_metadata_for_grade(
-        aff_extractions: List[DeepExtraction],
-        fal_extractions: List[DeepExtraction],
+        aff_extractions: list[DeepExtraction],
+        fal_extractions: list[DeepExtraction],
     ) -> str:
         """Produce a text block summarizing metadata signals for GRADE synthesis."""
         lines = []
@@ -3379,10 +3378,10 @@ class Orchestrator:
         output_dir: str,
         aff_strategy: TieredSearchPlan,
         fal_strategy: TieredSearchPlan,
-        aff_records: List[WideNetRecord],
-        fal_records: List[WideNetRecord],
-        aff_top: List[WideNetRecord],
-        fal_top: List[WideNetRecord],
+        aff_records: list[WideNetRecord],
+        fal_records: list[WideNetRecord],
+        aff_top: list[WideNetRecord],
+        fal_top: list[WideNetRecord],
         math_report: str,
         aff_highest_tier: int = 1,
         fal_highest_tier: int = 1,
@@ -3471,7 +3470,6 @@ async def run_deep_research(
     output_dir: str = None,
     domain: str = "clinical",
 ) -> "DeepResearchResult":
-    from dr2_podcast.pipeline_types import DeepResearchResult  # noqa: F811 — local import to avoid circular
 
     orchestrator = Orchestrator(
         brave_api_key=brave_api_key,

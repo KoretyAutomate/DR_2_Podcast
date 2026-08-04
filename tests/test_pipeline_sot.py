@@ -5,7 +5,6 @@ File under test: dr2_podcast/pipeline_sot.py
 
 from types import SimpleNamespace
 
-import pytest
 
 from dr2_podcast.pipeline_sot import (
     _extract_conclusion_status,

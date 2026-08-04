@@ -5,7 +5,6 @@ File under test: dr2_podcast/research/clinical.py
 
 from types import SimpleNamespace
 
-import pytest
 
 from dr2_podcast.research.clinical import _detect_synthetic_citations, _CITATION_RE
 

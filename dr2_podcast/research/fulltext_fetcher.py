@@ -14,10 +14,8 @@ import asyncio
 import logging
 import os
 from urllib.parse import quote as _url_quote, urlparse
-import re
 import defusedxml.ElementTree as ET
 from dataclasses import dataclass
-from typing import List, Optional
 
 import httpx
 from bs4 import BeautifulSoup
@@ -40,14 +38,14 @@ _SCRAPE_BLOCKED_DOMAINS = frozenset(
 
 @dataclass
 class FullTextArticle:
-    pmid: Optional[str]
-    doi: Optional[str]
+    pmid: str | None
+    doi: str | None
     title: str
     full_text: str
     source: str  # "pmc", "europepmc", "unpaywall", "ncbi_abstract", "scrape"
     word_count: int
     url: str
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class FullTextFetcher:
@@ -59,7 +57,7 @@ class FullTextFetcher:
         self.ncbi_api_key = os.getenv("PUBMED_API_KEY", "")
         self.cache = cache  # PageCache instance (optional)
 
-    async def fetch_fulltext(self, pmid: Optional[str], doi: Optional[str], title: str, url: str) -> FullTextArticle:
+    async def fetch_fulltext(self, pmid: str | None, doi: str | None, title: str, url: str) -> FullTextArticle:
         """Try PMC EFetch → Europe PMC → Unpaywall → NCBI Abstract → publisher scrape."""
         async with self.semaphore:
             # Tier 1: PMC full text via NCBI ELink + EFetch
@@ -142,7 +140,7 @@ class FullTextFetcher:
                 error="All full-text sources exhausted",
             )
 
-    async def fetch_all(self, records) -> List[FullTextArticle]:
+    async def fetch_all(self, records) -> list[FullTextArticle]:
         """Parallel fetch from a list of WideNetRecord objects."""
         tasks = [
             self.fetch_fulltext(
@@ -155,7 +153,7 @@ class FullTextFetcher:
         ]
         return await asyncio.gather(*tasks)
 
-    async def _try_pmc(self, pmid: str) -> Optional[str]:
+    async def _try_pmc(self, pmid: str) -> str | None:
         """Tier 1: PMC full text via NCBI ELink + EFetch (replaces broken OAI endpoint)."""
         try:
             base_params = {"api_key": self.ncbi_api_key} if self.ncbi_api_key else {}
@@ -194,7 +192,7 @@ class FullTextFetcher:
             logger.warning(f"PMC EFetch failed for PMID {pmid}: {e}")
             return None
 
-    async def _try_europepmc(self, pmid: str) -> Optional[str]:
+    async def _try_europepmc(self, pmid: str) -> str | None:
         """Tier 2: Europe PMC REST API — full-text XML for OA articles."""
         try:
             async with httpx.AsyncClient(timeout=15, follow_redirects=True) as http:
@@ -207,7 +205,7 @@ class FullTextFetcher:
             logger.warning(f"Europe PMC fetch failed for PMID {pmid}: {e}")
             return None
 
-    async def _try_unpaywall(self, doi: str) -> Optional[str]:
+    async def _try_unpaywall(self, doi: str) -> str | None:
         """Tier 3: Unpaywall API — find OA PDF URL, then scrape it."""
         if not self.unpaywall_email:
             return None
@@ -234,7 +232,7 @@ class FullTextFetcher:
             logger.warning(f"Unpaywall fetch failed for DOI {doi}: {e}")
             return None
 
-    async def _try_ncbi_abstract(self, pmid: str) -> Optional[str]:
+    async def _try_ncbi_abstract(self, pmid: str) -> str | None:
         """Tier 4: NCBI EFetch abstract XML — reliable fallback when full text unavailable."""
         try:
             params: dict = {"db": "pubmed", "id": pmid, "rettype": "abstract", "retmode": "xml"}
@@ -250,7 +248,7 @@ class FullTextFetcher:
             logger.warning(f"NCBI abstract fetch failed for PMID {pmid}: {e}")
             return None
 
-    async def _try_scrape(self, url: str) -> Optional[str]:
+    async def _try_scrape(self, url: str) -> str | None:
         """Tier 5: Publisher page scrape (last resort)."""
         if not url:
             return None
@@ -280,7 +278,7 @@ class FullTextFetcher:
             logger.warning(f"Scrape failed for {url}: {e}")
             return None
 
-    def _extract_text_from_xml(self, xml_text: str) -> Optional[str]:
+    def _extract_text_from_xml(self, xml_text: str) -> str | None:
         """Extract readable text from PMC/Europe PMC/NCBI EFetch XML."""
         try:
             root = ET.fromstring(xml_text)

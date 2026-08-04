@@ -309,9 +309,9 @@ def create_agents_and_tasks(
             f'no personal names, no "Host 1", no "Host 2" spoken aloud. '
             f"Names are only used as speaker LABELS before the colon, never within the dialogue itself."
             + (
-                f"\n\nLANGUAGE WARNING: When generating Japanese output, you MUST stay in Japanese throughout. "
-                f"Do NOT switch to Chinese. "
-                f"Avoid Kanji that is only used in Chinese (e.g., use \u6c17 instead of \u6c14, \u697d instead of \u4e50)."
+                "\n\nLANGUAGE WARNING: When generating Japanese output, you MUST stay in Japanese throughout. "
+                "Do NOT switch to Chinese. "
+                "Avoid Kanji that is only used in Chinese (e.g., use \u6c17 instead of \u6c14, \u697d instead of \u4e50)."
                 if language == "ja"
                 else ""
             )
@@ -477,9 +477,9 @@ def create_agents_and_tasks(
                 aim_target=f"{int(target_length_int * 1.2):,}",
             )
             + (
-                f"\nCRITICAL LANGUAGE RULE: You are writing in Japanese. "
-                f"Do NOT use Chinese at any point. Every sentence must be in Japanese. "
-                f"Use standard Japanese kanji only (\u6c17 not \u6c14, \u697d not \u4e50).\n"
+                "\nCRITICAL LANGUAGE RULE: You are writing in Japanese. "
+                "Do NOT use Chinese at any point. Every sentence must be in Japanese. "
+                "Use standard Japanese kanji only (\u6c17 not \u6c14, \u697d not \u4e50).\n"
                 if language == "ja"
                 else ""
             )
@@ -502,9 +502,9 @@ def create_agents_and_tasks(
         translation_task = Task(
             description=(
                 (
-                    f"ABSOLUTE RULE: Output MUST be in Japanese ONLY. NEVER use Chinese at any point.\n"
-                    f"WRONG: \u6267\u884c\u529f\u80fd -> CORRECT: \u5b9f\u884c\u6a5f\u80fd; WRONG: \u8865\u5145 -> CORRECT: \u88dc\u5145; WRONG: \u8ba4\u77e5 -> CORRECT: \u8a8d\u77e5\n"
-                    f"If unsure of the Japanese term, keep the English term --- NEVER use Chinese.\n\n"
+                    "ABSOLUTE RULE: Output MUST be in Japanese ONLY. NEVER use Chinese at any point.\n"
+                    "WRONG: \u6267\u884c\u529f\u80fd -> CORRECT: \u5b9f\u884c\u6a5f\u80fd; WRONG: \u8865\u5145 -> CORRECT: \u88dc\u5145; WRONG: \u8ba4\u77e5 -> CORRECT: \u8a8d\u77e5\n"
+                    "If unsure of the Japanese term, keep the English term --- NEVER use Chinese.\n\n"
                     if language == "ja"
                     else ""
                 )
@@ -538,8 +538,8 @@ def create_agents_and_tasks(
             f"  - {SESSION_ROLES['questioner']['label']} (Questioner): asks bridging questions, occasionally pushes back\n\n"
             f"VERIFY 8-PART STRUCTURE (all must be present):\n"
             f"  1. Channel Intro\n"
-            f"  2. Hook (provocative question)\n" + get_prompt("polish", "structure_acts", language) + f"  7. Wrap-up\n"
-            f"  8. One Action Ending\n\n"
+            f"  2. Hook (provocative question)\n" + get_prompt("polish", "structure_acts", language) + "  7. Wrap-up\n"
+            "  8. One Action Ending\n\n"
             + (
                 f"CHANNEL INTRO VERIFICATION:\n"
                 f'The Channel Intro MUST contain this EXACT text: "{channel_intro}"\n'
@@ -577,9 +577,9 @@ def create_agents_and_tasks(
             + "\n"
             + get_prompt("polish", "reading_tone_rules", language)
             + (
-                f"\nCRITICAL: Output MUST be in Japanese only. Do NOT switch to Chinese. "
-                f"Keep speaker labels exactly as 'Host 1:' and 'Host 2:' --- do NOT replace them with Japanese names. "
-                f"Avoid Kanji that is only used in Chinese (e.g., use \u6c17 instead of \u6c14, \u697d instead of \u4e50). "
+                "\nCRITICAL: Output MUST be in Japanese only. Do NOT switch to Chinese. "
+                "Keep speaker labels exactly as 'Host 1:' and 'Host 2:' --- do NOT replace them with Japanese names. "
+                "Avoid Kanji that is only used in Chinese (e.g., use \u6c17 instead of \u6c14, \u697d instead of \u4e50). "
                 if language == "ja"
                 else ""
             )

@@ -8,7 +8,7 @@ deep research pipeline.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from dr2_podcast.research.clinical import DeepExtraction
@@ -27,8 +27,8 @@ class ClinicalImpact:
 
 
 def calculate_impact(
-    study_id: str, cer: float, eer: float, outcome_is_adverse: Optional[bool] = None
-) -> Optional[ClinicalImpact]:
+    study_id: str, cer: float, eer: float, outcome_is_adverse: bool | None = None
+) -> ClinicalImpact | None:
     """
     Calculate ARR, RRR, NNT from CER and EER.
 
@@ -77,7 +77,7 @@ def calculate_impact(
     )
 
 
-def batch_calculate(extractions: List["DeepExtraction"]) -> List[ClinicalImpact]:
+def batch_calculate(extractions: list["DeepExtraction"]) -> list[ClinicalImpact]:
     """Calculate clinical impact for all studies that have CER and EER."""
     results = []
     for ex in extractions:
@@ -93,7 +93,7 @@ def batch_calculate(extractions: List["DeepExtraction"]) -> List[ClinicalImpact]
     return results
 
 
-def format_math_report(impacts: List[ClinicalImpact]) -> str:
+def format_math_report(impacts: list[ClinicalImpact]) -> str:
     """Format a deterministic math report for the Auditor."""
     if not impacts:
         return (

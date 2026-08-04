@@ -25,10 +25,7 @@ import json
 import logging
 import os
 import re
-import sys
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Optional
 
 from prefect import flow, task, get_run_logger
 
@@ -217,7 +214,6 @@ def phase_1_research(
     """Phase 1: Deep research pipeline (clinical or social science)."""
     from dr2_podcast import pipeline as _pipeline
     from dr2_podcast.research.clinical import run_deep_research
-    from dr2_podcast.config import EVIDENCE_LIMITED_THRESHOLD
 
     run_logger = get_run_logger()
     output_dir_path = Path(output_dir)
@@ -504,11 +500,10 @@ def phase_3_translation(
     script_task_ref,
     audit_task_ref,
     translation_task_ref,
-    sot_file_path: Optional[str],
+    sot_file_path: str | None,
 ):
     """Phase 3: Translate Source-of-Truth for non-English pipelines."""
     from dr2_podcast import pipeline as _pipeline
-    from dr2_podcast.pipeline_crew import _build_sot_injection_for_stage
 
     run_logger = get_run_logger()
     output_dir_path = Path(output_dir)
@@ -567,8 +562,8 @@ def phase_4_blueprint(
     topic_name: str,
     language: str,
     language_config: dict,
-    sot_file_path: Optional[str],
-    sot_translated_file_path: Optional[str],
+    sot_file_path: str | None,
+    sot_translated_file_path: str | None,
     sot_summary: str,
     translated_sot_summary: str,
     grade_injection: str,
@@ -653,7 +648,6 @@ def phase_5_script_draft(
 ):
     """Phase 5: Generate script draft via sequential section calls."""
     from dr2_podcast import pipeline as _pipeline
-    from dr2_podcast.pipeline_script import _count_words
 
     run_logger = get_run_logger()
     output_dir_path = Path(output_dir)
@@ -721,7 +715,6 @@ def phase_6_polish(
 ):
     """Phase 6: Polish loop with shrinkage guard."""
     from dr2_podcast import pipeline as _pipeline
-    from dr2_podcast.pipeline_script import SCRIPT_TOLERANCE
 
     run_logger = get_run_logger()
     output_dir_path = Path(output_dir)
@@ -896,7 +889,6 @@ def run_pipeline_flow(
     automatically. Phases run strictly sequentially (single GPU constraint).
     """
     from dr2_podcast import pipeline as _pipeline
-    from dr2_podcast.config import EVIDENCE_LIMITED_THRESHOLD
 
     flow_logger = get_run_logger()
     output_dir_str = str(output_dir)
@@ -1301,7 +1293,7 @@ def _run_inline_correction(
     target_instruction: str,
     output_dir: Path,
     max_attempts: int = 2,
-) -> Optional[str]:
+) -> str | None:
     """Run script correction for HIGH-severity drift. Returns corrected text or None."""
     from dr2_podcast import pipeline as _pipeline
     from crewai import Crew, Task

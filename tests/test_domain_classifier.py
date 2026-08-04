@@ -4,7 +4,6 @@ Unit tests for domain_classifier.py.
 
 import asyncio
 
-import pytest
 
 from dr2_podcast.research.domain_classifier import (
     ResearchDomain,

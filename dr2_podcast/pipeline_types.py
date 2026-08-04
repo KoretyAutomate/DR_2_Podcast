@@ -5,8 +5,8 @@ and related functions, enabling static type checking and documenting the
 data contracts between pipeline phases.
 """
 
-from dataclasses import dataclass, field, fields
-from typing import TypedDict, List, Optional, Dict, Any
+from dataclasses import dataclass, fields
+from typing import TypedDict, Any
 
 
 class PipelineMetrics(TypedDict, total=False):
@@ -48,17 +48,17 @@ class PipelineData(TypedDict, total=False):
 class StudyMetadata:
     """Structured metadata extracted from a scientific source."""
 
-    study_type: Optional[str] = None  # RCT, meta-analysis, cohort, observational, etc.
-    sample_size: Optional[str] = None  # "n=1234" or None
-    key_result: Optional[str] = None  # Main quantitative finding
-    publication_year: Optional[int] = None
-    journal_name: Optional[str] = None
-    authors: Optional[str] = None  # "First Author et al."
-    effect_size: Optional[str] = None  # "HR 0.82", "OR 1.5", "d=0.3"
-    limitations: Optional[str] = None  # Author-stated limitations
-    demographics: Optional[str] = None  # "age 25-45, 60% female, healthy adults"
-    funding_source: Optional[str] = None  # "Industry-funded", "NIH grant", "Independent", etc.
-    research_tier: Optional[int] = None  # 1=folk 2=synonym 3=compound
+    study_type: str | None = None  # RCT, meta-analysis, cohort, observational, etc.
+    sample_size: str | None = None  # "n=1234" or None
+    key_result: str | None = None  # Main quantitative finding
+    publication_year: int | None = None
+    journal_name: str | None = None
+    authors: str | None = None  # "First Author et al."
+    effect_size: str | None = None  # "HR 0.82", "OR 1.5", "d=0.3"
+    limitations: str | None = None  # Author-stated limitations
+    demographics: str | None = None  # "age 25-45, 60% female, healthy adults"
+    funding_source: str | None = None  # "Industry-funded", "NIH grant", "Independent", etc.
+    research_tier: int | None = None  # 1=folk 2=synonym 3=compound
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None}
@@ -76,8 +76,8 @@ class SummarizedSource:
     summary: str
     query: str
     goal: str
-    error: Optional[str] = None
-    metadata: Optional[StudyMetadata] = None
+    error: str | None = None
+    metadata: StudyMetadata | None = None
 
 
 @dataclass
@@ -85,7 +85,7 @@ class SearchMetrics:
     """PRISMA-style search flow metrics for auto-generated methodology sections."""
 
     search_date: str  # ISO date
-    databases_searched: List[str]  # ["PubMed", "Google Scholar", "Google", "Bing", "Brave"]
+    databases_searched: list[str]  # ["PubMed", "Google Scholar", "Google", "Bing", "Brave"]
     total_identified: int  # raw results before dedup
     total_after_dedup: int  # after dedup
     total_fetched: int  # pages fetched
@@ -106,14 +106,14 @@ class SearchMetrics:
 class ResearchReport:
     topic: str
     role: str
-    sources: List[SummarizedSource]
+    sources: list[SummarizedSource]
     report: str
     iterations_used: int
     total_urls_fetched: int
     total_summaries: int
     total_errors: int
     duration_seconds: float
-    search_metrics: Optional[SearchMetrics] = None
+    search_metrics: SearchMetrics | None = None
 
 
 class DeepResearchResult(TypedDict):

@@ -11,11 +11,9 @@ Classification uses deterministic keyword rules first, LLM only for ambiguous ca
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 from dr2_podcast.utils import safe_message_text, QWEN3_NO_THINK_EXTRA_BODY
 
@@ -206,7 +204,7 @@ def _pattern_matches(topic: str, patterns: list) -> int:
     return sum(1 for p in patterns if p.search(topic))
 
 
-def classify_topic_deterministic(topic: str) -> Optional[DomainClassification]:
+def classify_topic_deterministic(topic: str) -> DomainClassification | None:
     """Deterministic classification using keyword rules.
 
     Returns None if topic is ambiguous (requires LLM fallback).

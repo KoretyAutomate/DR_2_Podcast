@@ -7,7 +7,6 @@ prompt translation, and script language audit.
 """
 
 import logging
-import os
 import re
 from dr2_podcast.utils import strip_think_blocks
 
@@ -105,10 +104,10 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
     lang_code = language_config.get("code", language)
 
     translate_system = (
-        "You are a professional English (en) to {lang_name} ({lang_code}) translator. "
+        f"You are a professional English (en) to {lang_name} ({lang_code}) translator. "
         "Your goal is to accurately convey the meaning and nuances of the original English text "
-        "while adhering to {lang_name} grammar, vocabulary, and cultural sensitivities. "
-        "Produce only the {lang_name} translation, without any additional explanations or commentary.\n"
+        f"while adhering to {lang_name} grammar, vocabulary, and cultural sensitivities. "
+        f"Produce only the {lang_name} translation, without any additional explanations or commentary.\n"
         "RULES:\n"
         "- Preserve ALL markdown formatting (headers, tables, bullet points, bold, italic)\n"
         "- Keep study names, journal names, and URLs in English\n"
@@ -116,7 +115,7 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
         "- Preserve ALL numerical values exactly (percentages, CI ranges, p-values, sample sizes)\n"
         "- Keep confidence labels (HIGH/MEDIUM/LOW/CONTESTED) in English\n"
         "- Translate meaning, not word-for-word"
-    ).format(lang_name=lang_name, lang_code=lang_code)
+    )
 
     # --- Flatten sections into ordered chunk list ---
     # Each chunk: (index, header, body, passthrough_flag)
@@ -167,7 +166,7 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
 
     # --- Sequential smart-model translation ---
     logger.info("  Running sequential translate on Smart Model (no audit)")
-    translate_user = "Please translate the following English text into {}:\n\n".format(lang_name)
+    translate_user = f"Please translate the following English text into {lang_name}:\n\n"
     results = {}
     translate_count = 0
     for chunk_idx, header, body in translatable:

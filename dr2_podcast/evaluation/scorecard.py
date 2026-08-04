@@ -10,7 +10,6 @@ regressions vs the rolling average of the last 5 scorecards.
 import json
 import logging
 import re
-import struct
 import wave
 from datetime import datetime
 from pathlib import Path

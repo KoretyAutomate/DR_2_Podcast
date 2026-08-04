@@ -1,7 +1,6 @@
 """Tests for pipeline_crew.py -- CrewAI agent/task utilities."""
 
 import time
-import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 

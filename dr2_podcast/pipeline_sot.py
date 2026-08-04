@@ -8,7 +8,6 @@ _format_study_characteristics_table, _format_references).
 """
 
 import re
-from pathlib import Path
 from dr2_podcast.config import SMART_MODEL
 from dr2_podcast.utils import strip_think_blocks
 
@@ -236,21 +235,21 @@ def _build_social_science_sot(
     # --- Methods ---
     out.append("\n## 3. Methods\n")
     out.append("### 3.1 Search Strategy\n")
-    out.append(f"**Framework:** PECO (Population, Exposure, Comparison, Outcome)\n")
+    out.append("**Framework:** PECO (Population, Exposure, Comparison, Outcome)\n")
     if peco:
         out.append(f"- **P (Population):** {peco.get('P', 'Not specified')}\n")
         out.append(f"- **E (Exposure):** {peco.get('E', 'Not specified')}\n")
         out.append(f"- **C (Comparison):** {peco.get('C', 'Not specified')}\n")
         out.append(f"- **O (Outcome):** {peco.get('O', 'Not specified')}\n")
 
-    out.append(f"\n### 3.2 Data Collection\n")
-    out.append(f"**Databases:** OpenAlex, ERIC (IES), Google Scholar\n")
+    out.append("\n### 3.2 Data Collection\n")
+    out.append("**Databases:** OpenAlex, ERIC (IES), Google Scholar\n")
     out.append(f"**Search date:** {search_date}\n")
     out.append(f"**Records identified:** {total_wide}\n")
     out.append(f"**Screened:** {total_screened}\n")
     out.append(f"**Extracted:** {total_ft_ok}\n")
 
-    out.append(f"\n### 3.3 Statistical Analysis\n")
+    out.append("\n### 3.3 Statistical Analysis\n")
     out.append(
         "Effect sizes were standardized to Cohen's d using deterministic Python calculations. "
         "Hedges' g correction was applied where sample sizes were available. "

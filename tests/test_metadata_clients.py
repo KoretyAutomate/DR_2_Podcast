@@ -4,11 +4,9 @@ Unit tests for metadata_clients.py — offline tests using sample JSON fixtures.
 
 import asyncio
 import os
-import sqlite3
 import tempfile
 import time
 
-import pytest
 
 from dr2_podcast.research.metadata_clients import (
     RateLimiter,

@@ -17,7 +17,6 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +30,11 @@ class WWCRating:
     intervention_name: str
     study_citation: str
     wwc_rating: str  # "Meets WWC Standards Without Reservations", etc.
-    improvement_index: Optional[float] = None
+    improvement_index: float | None = None
     domain: str = ""  # e.g., "Literacy", "Math", "Science"
     outcome_domain: str = ""
     study_design: str = ""  # "RCT", "QED", etc.
-    sample_size: Optional[int] = None
+    sample_size: int | None = None
     grade_level: str = ""
     effectiveness_rating: str = ""  # "Positive", "Potentially Positive", etc.
 
@@ -90,7 +89,7 @@ class WWCDatabase:
             self.conn.execute("DELETE FROM wwc_ratings")
 
         count = 0
-        with open(csv_path, "r", encoding="utf-8-sig") as f:
+        with open(csv_path, encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             # Normalize header names (strip whitespace, lowercase)
             if reader.fieldnames:
@@ -139,7 +138,7 @@ class WWCDatabase:
         logger.info(f"WWC database: imported {count} records from {csv_path.name}")
         return count
 
-    def lookup_intervention(self, name: str) -> List[WWCRating]:
+    def lookup_intervention(self, name: str) -> list[WWCRating]:
         """Fuzzy match against intervention names.
 
         Returns all matching ratings, ordered by intervention name similarity.
@@ -155,7 +154,7 @@ class WWCDatabase:
         ).fetchall()
         return [self._row_to_rating(r) for r in rows]
 
-    def lookup_study(self, title: str, author: str = "") -> List[WWCRating]:
+    def lookup_study(self, title: str, author: str = "") -> list[WWCRating]:
         """Search by study title and/or author in the citation field."""
         query_parts = []
         params = []
@@ -216,7 +215,7 @@ class WWCDatabase:
         return ""
 
     @staticmethod
-    def _safe_float(val: str) -> Optional[float]:
+    def _safe_float(val: str) -> float | None:
         if not val:
             return None
         try:
@@ -225,7 +224,7 @@ class WWCDatabase:
             return None
 
     @staticmethod
-    def _safe_int(val: str) -> Optional[int]:
+    def _safe_int(val: str) -> int | None:
         if not val:
             return None
         try:

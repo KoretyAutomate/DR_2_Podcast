@@ -15,15 +15,13 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict
 import queue
 import secrets
 import re
 import shutil
-import base64
 
 from fastapi import FastAPI, HTTPException, Depends
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, SecretStr
 import uvicorn
@@ -31,7 +29,7 @@ import httpx
 from dotenv import load_dotenv
 
 from dr2_podcast.config import SMART_BASE_URL, FAST_BASE_URL, OUTPUT_DIR_OVERRIDE
-from dr2_podcast.tools.upload_utils import validate_upload_config, upload_to_buzzsprout, upload_to_youtube
+from dr2_podcast.tools.upload_utils import upload_to_buzzsprout, upload_to_youtube
 
 load_dotenv()
 
@@ -91,7 +89,7 @@ security = HTTPBasic()
 _CREDENTIAL_FIELDS = {"buzzsprout_api_key", "buzzsprout_account_id", "youtube_secret_path"}
 
 # Task storage
-tasks_db: Dict[str, Dict] = {}
+tasks_db: dict[str, dict] = {}
 tasks_lock = threading.RLock()
 
 # Task Queue
@@ -111,7 +109,7 @@ EXPECTED_ARTIFACTS_EXTRA = {
 _ARTIFACT_SUBDIRS = ("research", "scripts", "audio", "meta")
 
 
-def count_artifacts(directory: Optional[str], language: str = "en") -> tuple[int, int]:
+def count_artifacts(directory: str | None, language: str = "en") -> tuple[int, int]:
     """Count generated artifacts vs expected total.
 
     Checks both flat (legacy) and subdirectory layouts.
@@ -135,7 +133,7 @@ def count_artifacts(directory: Optional[str], language: str = "en") -> tuple[int
 
 current_task_id = None
 # Maps task_id → subprocess PID for running tasks (used by /api/stop)
-_running_pids: Dict[str, int] = {}
+_running_pids: dict[str, int] = {}
 
 
 def load_tasks():
@@ -144,7 +142,7 @@ def load_tasks():
     with tasks_lock:
         if TASKS_FILE.exists():
             try:
-                with open(TASKS_FILE, "r") as f:
+                with open(TASKS_FILE) as f:
                     tasks_db = json.load(f)
 
                 # CLEANUP: Mark any interrupted "running" tasks as "cancelled" on startup
@@ -457,7 +455,7 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
 @app.get("/", response_class=HTMLResponse)
 def home(username: str = Depends(verify_credentials)):
     """Main page with podcast generation UI"""
-    html = f"""
+    html = """
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -466,7 +464,7 @@ def home(username: str = Depends(verify_credentials)):
         <title>DR_2_Podcast Generator</title>
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
         <style>
-            :root {{
+            :root {
                 --bg-color: #0f172a;
                 --card-bg: rgba(30, 41, 59, 0.7);
                 --text-primary: #f8fafc;
@@ -477,15 +475,15 @@ def home(username: str = Depends(verify_credentials)):
                 --success-color: #10b981;
                 --warning-color: #f59e0b;
                 --error-color: #ef4444;
-            }}
+            }
 
-            * {{
+            * {
                 margin: 0;
                 padding: 0;
                 box-sizing: border-box;
-            }}
+            }
 
-            body {{
+            body {
                 font-family: 'Inter', system-ui, -apple-system, sans-serif;
                 background-color: var(--bg-color);
                 background-image: 
@@ -496,15 +494,15 @@ def home(username: str = Depends(verify_credentials)):
                 min-height: 100vh;
                 padding: 40px 20px;
                 line-height: 1.6;
-            }}
+            }
 
-            .container {{
+            .container {
                 max-width: 900px;
                 margin: 0 auto;
-            }}
+            }
 
             /* Glassmorphism Card Style */
-            .glass-card {{
+            .glass-card {
                 background: var(--card-bg);
                 backdrop-filter: blur(12px);
                 -webkit-backdrop-filter: blur(12px);
@@ -513,14 +511,14 @@ def home(username: str = Depends(verify_credentials)):
                 padding: 40px;
                 margin-bottom: 30px;
                 box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
-            }}
+            }
 
-            .header {{
+            .header {
                 text-align: center;
                 margin-bottom: 40px;
-            }}
+            }
 
-            h1 {{
+            h1 {
                 font-size: 2.5rem;
                 font-weight: 700;
                 background: linear-gradient(135deg, #fff 0%, #cbd5e1 100%);
@@ -528,34 +526,34 @@ def home(username: str = Depends(verify_credentials)):
                 -webkit-text-fill-color: transparent;
                 margin-bottom: 10px;
                 letter-spacing: -0.02em;
-            }}
+            }
 
-            .subtitle {{
+            .subtitle {
                 color: var(--text-secondary);
                 font-size: 1.1rem;
                 font-weight: 300;
-            }}
+            }
 
-            h2 {{
+            h2 {
                 color: var(--text-primary);
                 font-size: 1.5rem;
                 font-weight: 600;
                 margin-bottom: 24px;
                 border-bottom: 1px solid var(--border-color);
                 padding-bottom: 12px;
-            }}
+            }
 
             /* Form Elements */
-            label {{
+            label {
                 display: block;
                 font-size: 0.9rem;
                 font-weight: 500;
                 color: var(--text-secondary);
                 margin-bottom: 8px;
                 margin-top: 20px;
-            }}
+            }
 
-            input[type="text"], select, textarea {{
+            input[type="text"], select, textarea {
                 width: 100%;
                 background: rgba(15, 23, 42, 0.6);
                 border: 1px solid var(--border-color);
@@ -566,23 +564,23 @@ def home(username: str = Depends(verify_credentials)):
                 font-family: inherit;
                 transition: all 0.3s ease;
                 box-sizing: border-box;
-            }}
+            }
 
-            input[type="text"]:focus, select:focus, textarea:focus {{
+            input[type="text"]:focus, select:focus, textarea:focus {
                 outline: none;
                 border-color: var(--accent-primary);
                 box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
-            }}
+            }
             
-            select {{
+            select {
                 appearance: none;
                 background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
                 background-repeat: no-repeat;
                 background-position: right 12px center;
                 background-size: 16px;
-            }}
+            }
 
-            button {{
+            button {
                 background: linear-gradient(135deg, var(--accent-primary) 0%, #7c3aed 100%);
                 color: white;
                 border: none;
@@ -595,23 +593,23 @@ def home(username: str = Depends(verify_credentials)):
                 margin-top: 30px;
                 transition: all 0.3s ease;
                 box-shadow: 0 4px 14px 0 rgba(124, 58, 237, 0.39);
-            }}
+            }
 
-            button:hover {{
+            button:hover {
                 transform: translateY(-2px);
                 box-shadow: 0 6px 20px rgba(124, 58, 237, 0.23);
-            }}
+            }
 
-            button:disabled {{
+            button:disabled {
                 background: linear-gradient(135deg, #475569 0%, #334155 100%);
                 cursor: not-allowed;
                 transform: none;
                 box-shadow: none;
                 opacity: 0.7;
-            }}
+            }
 
             /* Custom Checkbox */
-            .checkbox-wrapper {{
+            .checkbox-wrapper {
                 display: flex;
                 align-items: center;
                 gap: 12px;
@@ -619,9 +617,9 @@ def home(username: str = Depends(verify_credentials)):
                 margin-top: 8px;
                 color: var(--text-primary);
                 font-weight: 400;
-            }}
+            }
 
-            input[type="checkbox"] {{
+            input[type="checkbox"] {
                 appearance: none;
                 background-color: rgba(15, 23, 42, 0.6);
                 margin: 0;
@@ -634,9 +632,9 @@ def home(username: str = Depends(verify_credentials)):
                 display: grid;
                 place-content: center;
                 transition: 0.2s ease-in-out;
-            }}
+            }
 
-            input[type="checkbox"]::before {{
+            input[type="checkbox"]::before {
                 content: "";
                 width: 10px;
                 height: 10px;
@@ -645,45 +643,45 @@ def home(username: str = Depends(verify_credentials)):
                 box-shadow: inset 1em 1em var(--text-primary);
                 transform-origin: center;
                 clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
-            }}
+            }
 
-            input[type="checkbox"]:checked {{
+            input[type="checkbox"]:checked {
                 background-color: var(--accent-primary);
                 border-color: var(--accent-primary);
-            }}
+            }
             
-            input[type="checkbox"]:checked::before {{
+            input[type="checkbox"]:checked::before {
                 transform: scale(1);
-            }}
+            }
 
             /* Config Sections */
-            .config-section {{
+            .config-section {
                 background: rgba(15, 23, 42, 0.4);
                 border: 1px solid var(--border-color);
                 border-radius: 8px;
                 padding: 20px;
                 margin-top: 10px;
-            }}
+            }
 
             /* Status Box */
-            .status-box {{
+            .status-box {
                 margin-top: 30px;
                 display: none;
                 border-top: 1px solid var(--border-color);
                 padding-top: 30px;
-            }}
+            }
 
-            .status-box.show {{
+            .status-box.show {
                 display: block;
                 animation: fadeIn 0.5s ease-out;
-            }}
+            }
 
-            @keyframes fadeIn {{
-                from {{ opacity: 0; transform: translateY(10px); }}
-                to {{ opacity: 1; transform: translateY(0); }}
-            }}
+            @keyframes fadeIn {
+                from { opacity: 0; transform: translateY(10px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
 
-            .status-header {{
+            .status-header {
                 font-size: 1.1rem;
                 font-weight: 600;
                 color: var(--text-primary);
@@ -691,31 +689,31 @@ def home(username: str = Depends(verify_credentials)):
                 display: flex;
                 align-items: center;
                 gap: 10px;
-            }}
+            }
 
-            .progress {{
+            .progress {
                 width: 100%;
                 height: 6px;
                 background: rgba(255,255,255,0.1);
                 border-radius: 3px;
                 overflow: hidden;
                 margin-bottom: 20px;
-            }}
+            }
 
-            .progress-bar {{
+            .progress-bar {
                 height: 100%;
                 background: linear-gradient(90deg, var(--accent-secondary), var(--accent-primary));
                 width: 0%;
                 transition: width 0.4s ease;
                 box-shadow: 0 0 10px rgba(139, 92, 246, 0.5);
-            }}
+            }
 
             /* History List */
-            .history {{
+            .history {
                 list-style: none;
-            }}
+            }
 
-            .history-item {{
+            .history-item {
                 background: rgba(255, 255, 255, 0.03);
                 padding: 20px;
                 border-radius: 12px;
@@ -725,44 +723,44 @@ def home(username: str = Depends(verify_credentials)):
                 display: flex;
                 flex-direction: column;
                 gap: 5px;
-            }}
+            }
 
-            .history-item:hover {{
+            .history-item:hover {
                 border-color: var(--border-color);
                 background: rgba(255, 255, 255, 0.06);
-            }}
+            }
 
-            .history-topic {{
+            .history-topic {
                 font-weight: 600;
                 color: var(--text-primary);
                 font-size: 1.05rem;
-            }}
+            }
 
-            .history-meta {{
+            .history-meta {
                 font-size: 0.85rem;
                 color: var(--text-secondary);
-            }}
+            }
 
-            .history-summary {{
+            .history-summary {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
                 cursor: pointer;
-            }}
+            }
 
-            .history-details {{
+            .history-details {
                 display: none;
                 margin-top: 15px;
                 padding-top: 15px;
                 border-top: 1px dashed var(--border-color);
                 font-size: 0.9rem;
-            }}
+            }
             
-            .history-details.open {{
+            .history-details.open {
                 display: block;
-            }}
+            }
             
-            .artifact-pill {{
+            .artifact-pill {
                 display: inline-flex;
                 align-items: center;
                 padding: 4px 10px;
@@ -773,14 +771,14 @@ def home(username: str = Depends(verify_credentials)):
                 margin: 2px;
                 text-decoration: none;
                 border: 1px solid rgba(99, 102, 241, 0.2);
-            }}
+            }
             
-            .artifact-pill:hover {{
+            .artifact-pill:hover {
                 background: rgba(99, 102, 241, 0.2);
-            }}
+            }
 
             /* Buttons inside sections */
-            .auth-btn {{
+            .auth-btn {
                 background: transparent;
                 border: 1px solid var(--accent-primary);
                 color: var(--accent-primary);
@@ -791,22 +789,22 @@ def home(username: str = Depends(verify_credentials)):
                 margin-top: 10px;
                 width: auto;
                 box-shadow: none;
-            }}
+            }
             
-            .auth-btn:hover {{
+            .auth-btn:hover {
                 background: rgba(139, 92, 246, 0.1);
                 transform: none;
                 box-shadow: none;
-            }}
+            }
 
             /* Status Colors */
-            .status-pending {{ color: var(--warning-color); }}
-            .status-running {{ color: var(--accent-secondary); }}
-            .status-completed {{ color: var(--success-color); }}
-            .status-failed {{ color: var(--error-color); }}
+            .status-pending { color: var(--warning-color); }
+            .status-running { color: var(--accent-secondary); }
+            .status-completed { color: var(--success-color); }
+            .status-failed { color: var(--error-color); }
 
             /* Download Button */
-            .download-link {{
+            .download-link {
                 display: inline-flex;
                 align-items: center;
                 gap: 8px;
@@ -819,13 +817,13 @@ def home(username: str = Depends(verify_credentials)):
                 font-weight: 500;
                 margin-top: 15px;
                 transition: all 0.2s;
-            }}
+            }
 
-            .download-link:hover {{
+            .download-link:hover {
                 background: rgba(16, 185, 129, 0.2);
-            }}
+            }
             
-            .error {{
+            .error {
                 background: rgba(239, 68, 68, 0.1);
                 border: 1px solid var(--error-color);
                 color: #fca5a5;
@@ -833,10 +831,10 @@ def home(username: str = Depends(verify_credentials)):
                 border-radius: 8px;
                 margin-top: 15px;
                 font-size: 0.9rem;
-            }}
+            }
 
             /* Visualizer Grid */
-            .research-grid {{
+            .research-grid {
                 display: grid;
                 grid-template-columns: repeat(auto-fill, minmax(24px, 1fr));
                 gap: 8px;
@@ -846,24 +844,24 @@ def home(username: str = Depends(verify_credentials)):
                 padding: 10px;
                 background: rgba(0, 0, 0, 0.2);
                 border-radius: 8px;
-            }}
+            }
 
-            .source-icon {{
+            .source-icon {
                 width: 24px;
                 height: 24px;
                 border-radius: 4px;
                 background: #1e293b;
                 border: 1px solid var(--border-color);
                 transition: transform 0.2s;
-            }}
+            }
             
-            .source-icon:hover {{
+            .source-icon:hover {
                 transform: scale(1.2);
                 z-index: 10;
                 border-color: var(--accent-secondary);
-            }}
+            }
 
-            .counter-box {{
+            .counter-box {
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
@@ -872,18 +870,18 @@ def home(username: str = Depends(verify_credentials)):
                 border: 1px solid rgba(139, 92, 246, 0.2);
                 padding: 15px;
                 border-radius: 12px;
-            }}
+            }
 
-            .counter-label {{ font-size: 0.9rem; color: var(--accent-primary); font-weight: 600; }}
-            .counter-value {{ font-size: 1.5rem; color: #fff; font-weight: 700; }}
+            .counter-label { font-size: 0.9rem; color: var(--accent-primary); font-weight: 600; }
+            .counter-value { font-size: 1.5rem; color: #fff; font-weight: 700; }
             
-            .eta-box {{
+            .eta-box {
                 font-family: monospace;
                 font-size: 0.9rem;
                 color: var(--text-secondary);
                 text-align: right;
                 margin-top: 5px;
-            }}
+            }
 
         </style>
     </head>
@@ -1115,61 +1113,61 @@ def home(username: str = Depends(verify_credentials)):
             let pendingTaskIds = [];  // queued tasks waiting to be tracked
 
             // Production History toggle
-            document.getElementById('historyToggle').addEventListener('click', function() {{
+            document.getElementById('historyToggle').addEventListener('click', function() {
                 const el = document.getElementById('history');
                 const arrow = document.getElementById('historyArrow');
-                if (el.style.display === 'none') {{
+                if (el.style.display === 'none') {
                     el.style.display = 'block';
                     arrow.innerHTML = '&#9660;';
-                }} else {{
+                } else {
                     el.style.display = 'none';
                     arrow.innerHTML = '&#9654;';
-                }}
-            }});
+                }
+            });
 
             // Load history on page load
             loadHistory();
             
             // Check System Status (Git)
-            (async () => {{
-                try {{
+            (async () => {
+                try {
                     const res = await fetch('/api/system_status');
                     const status = await res.json();
                     const el = document.getElementById('gitStatus');
-                    if (!status.git_clean) {{
+                    if (!status.git_clean) {
                         el.textContent = status.message;
                         el.style.display = 'inline-block';
-                    }}
-                }} catch(e) {{ console.warn('Git status check failed'); }}
-            }})();
+                    }
+                } catch(e) { console.warn('Git status check failed'); }
+            })();
 
             // Pre-fill fields if server already has config
-            (async () => {{
-                try {{
+            (async () => {
+                try {
                     const cfg = await (await fetch('/api/upload_config')).json();
-                    if (cfg.buzzsprout_configured) {{
+                    if (cfg.buzzsprout_configured) {
                         document.getElementById('buzzsproutApiKey').placeholder = '(already configured on server)';
                         document.getElementById('buzzsproutAccountId').placeholder = '(already configured on server)';
-                    }}
-                    if (cfg.youtube_configured) {{
+                    }
+                    if (cfg.youtube_configured) {
                         document.getElementById('ytAuthStatus').textContent = 'Client secret found on server';
                         document.getElementById('ytAuthStatus').style.color = '#10b981';
-                    }}
-                }} catch(e) {{ console.warn('upload_config check failed', e); }}
-            }})();
+                    }
+                } catch(e) { console.warn('upload_config check failed', e); }
+            })();
 
             // Toggle Buzzsprout fields
-            document.getElementById('uploadBuzzsprout').addEventListener('change', function() {{
+            document.getElementById('uploadBuzzsprout').addEventListener('change', function() {
                 document.getElementById('buzzsproutFields').style.display = this.checked ? 'block' : 'none';
-            }});
+            });
 
             // Toggle YouTube fields
-            document.getElementById('uploadYoutube').addEventListener('change', function() {{
+            document.getElementById('uploadYoutube').addEventListener('change', function() {
                 document.getElementById('youtubeFields').style.display = this.checked ? 'block' : 'none';
-            }});
+            });
 
             // --- Channel Intro — LLM-powered Auto Generate ---
-            document.getElementById('regenIntroBtn').addEventListener('click', async function() {{
+            document.getElementById('regenIntroBtn').addEventListener('click', async function() {
                 const btn     = this;
                 const el      = document.getElementById('channelIntro');
                 const name    = (document.getElementById('channelName').value || '').trim();
@@ -1180,67 +1178,67 @@ def home(username: str = Depends(verify_credentials)):
                 btn.disabled = true;
                 btn.textContent = '⏳ Generating...';
 
-                try {{
-                    const res = await fetch('/api/generate-intro', {{
+                try {
+                    const res = await fetch('/api/generate-intro', {
                         method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
                             channel_name: name,
                             core_target: target,
                             channel_mission: mission,
                             language: lang
-                        }})
-                    }});
-                    if (res.ok) {{
+                        })
+                    });
+                    if (res.ok) {
                         const data = await res.json();
                         el.value = data.intro || '';
-                    }} else {{
-                        const err = await res.json().catch(() => ({{}}));
+                    } else {
+                        const err = await res.json().catch(() => ({}));
                         alert('Could not generate intro: ' + (err.detail || res.statusText));
-                    }}
-                }} catch (e) {{
+                    }
+                } catch (e) {
                     alert('Network error: ' + e.message);
-                }} finally {{
+                } finally {
                     btn.disabled = false;
                     btn.textContent = '✨ Auto Generate';
-                }}
-            }});
+                }
+            });
 
             // YouTube OAuth preflight
-            document.getElementById('ytAuthBtn').addEventListener('click', async function() {{
+            document.getElementById('ytAuthBtn').addEventListener('click', async function() {
                 this.textContent = 'Authorizing...';
                 this.disabled = true;
                 const secretPath = document.getElementById('youtubeSecretPath').value;
-                try {{
-                    const res = await fetch('/api/youtube/preflight', {{
+                try {
+                    const res = await fetch('/api/youtube/preflight', {
                         method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{ secret_path: secretPath }})
-                    }});
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ secret_path: secretPath })
+                    });
                     const data = await res.json();
                     const status = document.getElementById('ytAuthStatus');
-                    if (data.ready) {{
+                    if (data.ready) {
                         this.textContent = 'Authorized';
                         this.style.background = 'rgba(16, 185, 129, 0.1)';
                         this.style.color = '#10b981';
                         this.style.borderColor = '#10b981';
                         status.textContent = 'Authorized';
                         status.style.color = '#10b981';
-                    }} else {{
+                    } else {
                         this.textContent = 'Retry';
                         status.textContent = 'Failed: ' + data.error;
                         status.style.color = '#ef4444';
-                    }}
-                }} catch(e) {{
+                    }
+                } catch(e) {
                     this.textContent = 'Error';
                     document.getElementById('ytAuthStatus').textContent = 'Network error';
-                }}
+                }
                 this.disabled = false;
-            }});
+            });
 
             // Show reuse modal and return user decision as a Promise
-            function showReuseModal(match) {{
-                return new Promise((resolve) => {{
+            function showReuseModal(match) {
+                return new Promise((resolve) => {
                     const modal = document.getElementById('reuseModal');
                     const infoDiv = document.getElementById('reuseMatchInfo');
                     const diffDiv = document.getElementById('reuseParamDiff');
@@ -1250,10 +1248,10 @@ def home(username: str = Depends(verify_credentials)):
                     infoDiv.innerHTML = `
                         <div style="background:rgba(139,92,246,0.1); border:1px solid rgba(139,92,246,0.3); border-radius:8px; padding:16px;">
                             <div style="font-weight:600; color:var(--text-primary); margin-bottom:8px;">Previous Topic</div>
-                            <div style="color:var(--text-secondary); margin-bottom:12px;">${{match.topic}}</div>
+                            <div style="color:var(--text-secondary); margin-bottom:12px;">${match.topic}</div>
                             <div style="display:flex; gap:16px; font-size:0.85rem;">
-                                <span style="color:var(--accent-primary);">Similarity: ${{match.similarity_score}}%</span>
-                                <span style="color:var(--text-secondary);">Completed: ${{date}}</span>
+                                <span style="color:var(--accent-primary);">Similarity: ${match.similarity_score}%</span>
+                                <span style="color:var(--text-secondary);">Completed: ${date}</span>
                             </div>
                         </div>
                     `;
@@ -1272,16 +1270,16 @@ def home(username: str = Depends(verify_credentials)):
                     ];
 
                     let tableRows = '';
-                    for (const [name, old, cur] of params) {{
+                    for (const [name, old, cur] of params) {
                         const changed = old !== cur;
                         const color = changed ? 'var(--warning-color)' : 'var(--text-secondary)';
                         const badge = changed ? ' <span style="color:var(--warning-color); font-size:0.75rem;">(changed)</span>' : '';
                         tableRows += `<tr>
-                            <td style="padding:6px 12px; color:var(--text-secondary);">${{name}}</td>
-                            <td style="padding:6px 12px; color:${{color}};">${{old}}</td>
-                            <td style="padding:6px 12px; color:${{color}};">${{cur}}${{badge}}</td>
+                            <td style="padding:6px 12px; color:var(--text-secondary);">${name}</td>
+                            <td style="padding:6px 12px; color:${color};">${old}</td>
+                            <td style="padding:6px 12px; color:${color};">${cur}${badge}</td>
                         </tr>`;
-                    }}
+                    }
 
                     diffDiv.innerHTML = `
                         <table style="width:100%; font-size:0.85rem; border-collapse:collapse;">
@@ -1290,44 +1288,44 @@ def home(username: str = Depends(verify_credentials)):
                                 <th style="padding:6px 12px; text-align:left; color:var(--text-secondary); font-weight:500;">Previous</th>
                                 <th style="padding:6px 12px; text-align:left; color:var(--text-secondary); font-weight:500;">Current</th>
                             </tr></thead>
-                            <tbody>${{tableRows}}</tbody>
+                            <tbody>${tableRows}</tbody>
                         </table>
                     `;
 
                     modal.style.display = 'flex';
 
-                    function cleanup() {{
+                    function cleanup() {
                         modal.style.display = 'none';
                         document.getElementById('reuseCancelBtn').removeEventListener('click', onCancel);
                         document.getElementById('reuseFreshBtn').removeEventListener('click', onFresh);
                         document.getElementById('reuseUseBtn').removeEventListener('click', onReuse);
-                    }}
-                    function onCancel() {{ cleanup(); resolve({{ action: 'cancel' }}); }}
-                    function onFresh() {{ cleanup(); resolve({{ action: 'fresh' }}); }}
-                    function onReuse() {{ cleanup(); resolve({{ action: 'reuse', match }}); }}
+                    }
+                    function onCancel() { cleanup(); resolve({ action: 'cancel' }); }
+                    function onFresh() { cleanup(); resolve({ action: 'fresh' }); }
+                    function onReuse() { cleanup(); resolve({ action: 'reuse', match }); }
 
                     document.getElementById('reuseCancelBtn').addEventListener('click', onCancel);
                     document.getElementById('reuseFreshBtn').addEventListener('click', onFresh);
                     document.getElementById('reuseUseBtn').addEventListener('click', onReuse);
-                }});
-            }}
+                });
+            }
 
             // Helper: start tracking a task after submission
-            function startTracking(taskId) {{
+            function startTracking(taskId) {
                 const statusBox = document.getElementById('statusBox');
-                if (currentTaskId && statusInterval) {{
+                if (currentTaskId && statusInterval) {
                     pendingTaskIds.push(taskId);
                     showQueuedToast(taskId, pendingTaskIds.length);
-                }} else {{
+                } else {
                     currentTaskId = taskId;
                     statusBox.classList.add('show');
                     statusInterval = setInterval(checkStatus, 2000);
-                }}
-            }}
+                }
+            }
 
             // Helper: get current form params as object
-            function getFormParams() {{
-                return {{
+            function getFormParams() {
+                return {
                     topic: document.getElementById('topic').value,
                     language: document.getElementById('language').value,
                     accessibility_level: document.getElementById('accessibility').value,
@@ -1342,11 +1340,11 @@ def home(username: str = Depends(verify_credentials)):
                     buzzsprout_api_key: document.getElementById('buzzsproutApiKey').value || '',
                     buzzsprout_account_id: document.getElementById('buzzsproutAccountId').value || '',
                     youtube_secret_path: document.getElementById('youtubeSecretPath').value || ''
-                }};
-            }}
+                };
+            }
 
             // Form submission
-            document.getElementById('podcastForm').addEventListener('submit', async (e) => {{
+            document.getElementById('podcastForm').addEventListener('submit', async (e) => {
                 e.preventDefault();
 
                 const topic = document.getElementById('topic').value;
@@ -1356,132 +1354,132 @@ def home(username: str = Depends(verify_credentials)):
 
                 // Step 1: Check for similar previous runs (only if "leverage past" is checked)
                 const leveragePast = document.getElementById('leveragePast').checked;
-                if (leveragePast) {{
-                    try {{
+                if (leveragePast) {
+                    try {
                         button.disabled = true;
                         button.textContent = 'Checking for similar topics...';
-                        const reuseRes = await fetch('/api/check-reuse', {{
+                        const reuseRes = await fetch('/api/check-reuse', {
                             method: 'POST',
-                            headers: {{ 'Content-Type': 'application/json' }},
-                            body: JSON.stringify({{ topic }})
-                        }});
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ topic })
+                        });
                         const reuseData = await reuseRes.json();
 
-                        if (reuseData.has_match && reuseData.matches.length > 0) {{
+                        if (reuseData.has_match && reuseData.matches.length > 0) {
                             // Auto-reuse: skip modal, go directly to reuse endpoint
                             button.disabled = true;
                             button.textContent = 'Reusing previous research...';
                             const params = getFormParams();
                             const match = reuseData.matches[0];
-                            const reuseResp = await fetch('/api/generate-reuse', {{
+                            const reuseResp = await fetch('/api/generate-reuse', {
                                 method: 'POST',
-                                headers: {{ 'Content-Type': 'application/json' }},
-                                body: JSON.stringify({{
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
                                     ...params,
                                     reuse_task_id: match.task_id || '',
                                     reuse_output_dir: match.output_dir || ''
-                                }})
-                            }});
+                                })
+                            });
                             if (!reuseResp.ok) throw new Error('Failed to start reuse generation');
                             const reuseResult = await reuseResp.json();
                             button.disabled = false;
                             button.textContent = 'Initiate Production Sequence';
                             startTracking(reuseResult.task_id);
                             return;
-                        }} else {{
+                        } else {
                             // No match found — show brief toast and proceed with fresh generation
                             const toast = document.createElement('div');
                             toast.textContent = 'No similar past research found. Running fresh generation.';
                             toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#334155;color:#e2e8f0;padding:12px 20px;border-radius:8px;z-index:9999;font-size:14px;';
                             document.body.appendChild(toast);
                             setTimeout(() => toast.remove(), 4000);
-                        }}
-                    }} catch (err) {{
+                        }
+                    } catch (err) {
                         console.warn('Reuse check failed, proceeding with fresh generation:', err);
-                    }}
-                }}
+                    }
+                }
 
                 // Step 2: Queue status check
-                try {{
+                try {
                     const qRes = await fetch('/api/queue-info');
                     const qInfo = await qRes.json();
                     const busy = qInfo.running + qInfo.queued;
 
-                    if (busy > 0) {{
+                    if (busy > 0) {
                         let msg = '';
-                        if (qInfo.running > 0 && qInfo.queued > 0) {{
-                            msg = `There is 1 task running and ${{qInfo.queued}} queued request${{qInfo.queued > 1 ? 's' : ''}}. Your request will be added to the queue.`;
-                        }} else if (qInfo.running > 0) {{
+                        if (qInfo.running > 0 && qInfo.queued > 0) {
+                            msg = `There is 1 task running and ${qInfo.queued} queued request${qInfo.queued > 1 ? 's' : ''}. Your request will be added to the queue.`;
+                        } else if (qInfo.running > 0) {
                             msg = `There is 1 task currently running. Your request will be queued next.`;
-                        }} else {{
-                            msg = `There ${{qInfo.queued === 1 ? 'is' : 'are'}} ${{qInfo.queued}} queued request${{qInfo.queued > 1 ? 's' : ''}} ahead. Your request will be added to the queue.`;
-                        }}
-                        if (!confirm(msg + '\\n\\nProceed?')) {{
+                        } else {
+                            msg = `There ${qInfo.queued === 1 ? 'is' : 'are'} ${qInfo.queued} queued request${qInfo.queued > 1 ? 's' : ''} ahead. Your request will be added to the queue.`;
+                        }
+                        if (!confirm(msg + '\\n\\nProceed?')) {
                             button.disabled = false;
                             button.textContent = 'Initiate Production Sequence';
                             return;
-                        }}
-                    }}
-                }} catch (err) {{
+                        }
+                    }
+                } catch (err) {
                     console.warn('Queue check failed, proceeding anyway:', err);
-                }}
+                }
 
                 // Step 3: Normal generation
                 button.disabled = true;
                 button.textContent = 'Submitting...';
 
-                try {{
+                try {
                     const params = getFormParams();
-                    const response = await fetch('/api/generate', {{
+                    const response = await fetch('/api/generate', {
                         method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(params)
-                    }});
+                    });
 
-                    if (!response.ok) {{
+                    if (!response.ok) {
                         throw new Error('Failed to start generation');
-                    }}
+                    }
 
                     const data = await response.json();
                     button.disabled = false;
                     button.textContent = 'Initiate Production Sequence';
                     startTracking(data.task_id);
 
-                }} catch (error) {{
+                } catch (error) {
                     showError(error.message);
                     button.disabled = false;
                     button.textContent = 'Initiate Production Sequence';
-                }}
-            }});
+                }
+            });
 
-            async function checkStatus() {{
+            async function checkStatus() {
                 if (!currentTaskId) return;
 
-                try {{
-                    const response = await fetch(`/api/status/${{currentTaskId}}`);
+                try {
+                    const response = await fetch(`/api/status/${currentTaskId}`);
                     const data = await response.json();
 
                     updateStatus(data);
 
-                    if (data.status === 'completed' || data.status === 'failed') {{
+                    if (data.status === 'completed' || data.status === 'failed') {
                         clearInterval(statusInterval);
                         statusInterval = null;
                         loadHistory();
 
                         // Pick up next pending task if any
-                        if (pendingTaskIds.length > 0) {{
+                        if (pendingTaskIds.length > 0) {
                             currentTaskId = pendingTaskIds.shift();
                             statusInterval = setInterval(checkStatus, 2000);
-                        }} else {{
+                        } else {
                             currentTaskId = null;
-                        }}
-                    }}
-                }} catch (error) {{
+                        }
+                    }
+                } catch (error) {
                     console.error('Status check failed:', error);
-                }}
-            }}
+                }
+            }
 
-            function updateStatus(data) {{
+            function updateStatus(data) {
                 const statusText = document.getElementById('statusText');
                 const statusDetails = document.getElementById('statusDetails');
                 const progressBar = document.getElementById('progressBar');
@@ -1490,24 +1488,24 @@ def home(username: str = Depends(verify_credentials)):
 
                 let displayStatus = data.status.charAt(0).toUpperCase() + data.status.slice(1);
                 statusText.textContent = displayStatus;
-                statusText.className = `status-${{data.status}}`;
+                statusText.className = `status-${data.status}`;
 
                 const stopBtn = document.getElementById('stopBtn');
 
-                if (data.status === 'running' || data.status === 'queued') {{
+                if (data.status === 'running' || data.status === 'queued') {
                     statusBox.style.display = 'block';
                     stopBtn.style.display = 'inline-block';
                     stopBtn.disabled = false;
                     stopBtn.textContent = 'Stop';
 
-                    if (data.status === 'queued') {{
+                    if (data.status === 'queued') {
                         statusText.textContent = 'Queued for Production...';
                         statusDetails.textContent = 'Waiting for previous task to finish.';
                         statusIcon.textContent = '⏳';
                         progressBar.style.width = '100%';
                         progressBar.style.background = '#334155'; // Grey for queued
                         return;
-                    }}
+                    }
 
                     statusText.textContent = 'Production In Progress...';
                     statusIcon.textContent = '⚡';
@@ -1515,30 +1513,30 @@ def home(username: str = Depends(verify_credentials)):
                     const pct = data.progress || 0;
                     progressBar.style.width = pct + '%';
                     const step = data.current_step || data.phase || 'Initializing...';
-                    statusDetails.textContent = `Phase: ${{step}} >> Progress: ${{pct}}%`;
+                    statusDetails.textContent = `Phase: ${step} >> Progress: ${pct}%`;
                     statusIcon.textContent = '⚙️';
                     
                     // Update numeric ETA
-                    if (data.estimated_remaining) {{
+                    if (data.estimated_remaining) {
                          const mins = Math.floor(data.estimated_remaining / 60);
                          const secs = Math.floor(data.estimated_remaining % 60);
-                         document.getElementById('etaDisplay').textContent = `⏱️ Approx. Remaining: ${{mins}}m ${{secs}}s`;
-                    }}
+                         document.getElementById('etaDisplay').textContent = `⏱️ Approx. Remaining: ${mins}m ${secs}s`;
+                    }
                     
                     // Update Artifact Count
                     const artifactNav = document.getElementById('artifactProgress');
                     const artifactCount = document.getElementById('artifactCount');
-                    if (data.artifacts_total) {{
+                    if (data.artifacts_total) {
                         artifactNav.style.display = 'block';
-                        artifactCount.textContent = `${{data.artifacts_created}}/${{data.artifacts_total}}`;
-                    }}
+                        artifactCount.textContent = `${data.artifacts_created}/${data.artifacts_total}`;
+                    }
                     
                     // Update Step Durations
                     const durationBox = document.getElementById('stepDurations');
                     const durationList = document.getElementById('stepDurationList');
                     const currentTimer = document.getElementById('currentStepTimer');
                     
-                    const PHASE_GROUPS = {{
+                    const PHASE_GROUPS = {
                         'Research Framing': 'Scientific Fact Finding',
                         'Clinical Research': 'Scientific Fact Finding',
                         'Clinical Research Complete': 'Scientific Fact Finding',
@@ -1553,71 +1551,71 @@ def home(username: str = Depends(verify_credentials)):
                         'Audio Production': 'Podcast Recording',
                         'Reuse Analysis': 'Scientific Fact Finding',
                         'Supplemental Research': 'Scientific Fact Finding',
-                    }};
+                    };
                     const GROUP_ORDER = ['Scientific Fact Finding', 'Translation', 'Podcast Planning', 'Podcast Recording'];
 
-                    if ((data.step_durations && data.step_durations.length > 0) || data.current_step_duration_seconds > 0) {{
+                    if ((data.step_durations && data.step_durations.length > 0) || data.current_step_duration_seconds > 0) {
                         durationBox.style.display = 'block';
 
                         // Sum completed phase durations into groups
-                        const groupTotals = {{}};
+                        const groupTotals = {};
                         GROUP_ORDER.forEach(g => groupTotals[g] = 0);
-                        if (data.step_durations) {{
-                            data.step_durations.forEach(s => {{
+                        if (data.step_durations) {
+                            data.step_durations.forEach(s => {
                                 const group = PHASE_GROUPS[s.phase];
                                 if (group) groupTotals[group] += s.duration;
-                            }});
-                        }}
+                            });
+                        }
 
                         // Add running current step duration to its group
                         const currentGroup = PHASE_GROUPS[data.phase] || null;
-                        if (currentGroup && data.current_step_duration_seconds > 0) {{
+                        if (currentGroup && data.current_step_duration_seconds > 0) {
                             groupTotals[currentGroup] += data.current_step_duration_seconds;
-                        }}
+                        }
 
                         // Render only groups that have time > 0
                         durationList.innerHTML = GROUP_ORDER
                             .filter(g => groupTotals[g] > 0)
-                            .map(g => {{
+                            .map(g => {
                                 const secs = groupTotals[g];
-                                const fmt = `${{Math.floor(secs / 60)}}m ${{Math.floor(secs % 60)}}s`;
+                                const fmt = `${Math.floor(secs / 60)}m ${Math.floor(secs % 60)}s`;
                                 const isCurrent = (g === currentGroup && data.status === 'running');
                                 return `<tr style="border-bottom: 1px dashed var(--border-color);">
-                                    <td style="padding: 4px 0;${{isCurrent ? ' font-weight: bold;' : ''}}">${{g}}${{isCurrent ? ' ⏱' : ''}}</td>
-                                    <td style="text-align: right; color: var(--text-secondary);">${{fmt}}</td>
+                                    <td style="padding: 4px 0;${isCurrent ? ' font-weight: bold;' : ''}">${g}${isCurrent ? ' ⏱' : ''}</td>
+                                    <td style="text-align: right; color: var(--text-secondary);">${fmt}</td>
                                 </tr>`;
-                            }}).join('');
+                            }).join('');
 
                         // Current Step timer — use the same group total for consistency
-                        if (currentGroup && data.status === 'running') {{
+                        if (currentGroup && data.status === 'running') {
                             const secs = groupTotals[currentGroup] || 0;
-                            const fmt = `${{Math.floor(secs / 60)}}m ${{Math.floor(secs % 60)}}s`;
-                            currentTimer.textContent = `${{currentGroup}} — ${{fmt}}`;
-                        }} else {{
+                            const fmt = `${Math.floor(secs / 60)}m ${Math.floor(secs % 60)}s`;
+                            currentTimer.textContent = `${currentGroup} — ${fmt}`;
+                        } else {
                             currentTimer.textContent = '';
-                        }}
-                    }} else {{
+                        }
+                    } else {
                          durationBox.style.display = 'none';
-                    }}
+                    }
 
                     // Update Research Visualizer
-                    if (data.sources && data.sources.length > 0) {{
+                    if (data.sources && data.sources.length > 0) {
                         document.getElementById('researchViz').style.display = 'block';
                         document.getElementById('sourceCount').textContent = data.sources.length;
                         
                         const grid = document.getElementById('sourceGrid');
-                        grid.innerHTML = data.sources.map(url => {{
+                        grid.innerHTML = data.sources.map(url => {
                             let domain = '';
-                            try {{ domain = new URL(url).hostname; }} catch(e) {{ return ''; }}
-                            return `<img src="https://www.google.com/s2/favicons?domain=${{domain}}&sz=64" class="source-icon" title="${{domain}}" />`;
-                        }}).join('');
-                    }}
+                            try { domain = new URL(url).hostname; } catch(e) { return ''; }
+                            return `<img src="https://www.google.com/s2/favicons?domain=${domain}&sz=64" class="source-icon" title="${domain}" />`;
+                        }).join('');
+                    }
 
-                }} else if (data.status === 'uploading') {{
+                } else if (data.status === 'uploading') {
                     progressBar.style.width = '75%';
                     statusDetails.textContent = 'Uploading to external platforms...';
                     statusIcon.textContent = '☁️';
-                }} else if (data.status === 'completed') {{
+                } else if (data.status === 'completed') {
                     stopBtn.style.display = 'none';
                     progressBar.style.width = '100%';
                     statusDetails.textContent = 'Production Cycle Complete.';
@@ -1625,41 +1623,41 @@ def home(username: str = Depends(verify_credentials)):
 
                     // Show download links
                     let uploadsHtml = '';
-                    if (data.upload_results) {{
-                        if (data.upload_results.buzzsprout) {{
+                    if (data.upload_results) {
+                        if (data.upload_results.buzzsprout) {
                             const bs = data.upload_results.buzzsprout;
                             uploadsHtml += bs.success
-                                ? `<a href="${{bs.url}}" target="_blank" class="download-link" style="border-color:#f59e0b; color:#f59e0b; background:rgba(245, 158, 11, 0.1);">🎙️ Buzzsprout Draft (ep #${{bs.episode_id}})</a>`
-                                : `<span style="color:#ef4444; font-size:0.9rem;">Buzzsprout upload failed: ${{bs.error}}</span>`;
-                        }}
-                        if (data.upload_results.youtube) {{
+                                ? `<a href="${bs.url}" target="_blank" class="download-link" style="border-color:#f59e0b; color:#f59e0b; background:rgba(245, 158, 11, 0.1);">🎙️ Buzzsprout Draft (ep #${bs.episode_id})</a>`
+                                : `<span style="color:#ef4444; font-size:0.9rem;">Buzzsprout upload failed: ${bs.error}</span>`;
+                        }
+                        if (data.upload_results.youtube) {
                             const yt = data.upload_results.youtube;
                             uploadsHtml += yt.success
-                                ? `<a href="${{yt.url}}" target="_blank" class="download-link" style="border-color:#ef4444; color:#ef4444; background:rgba(239, 68, 68, 0.1);">▶️ YouTube (private)</a>`
-                                : `<span style="color:#ef4444; font-size:0.9rem;">YouTube upload failed: ${{yt.error}}</span>`;
-                        }}
-                    }}
+                                ? `<a href="${yt.url}" target="_blank" class="download-link" style="border-color:#ef4444; color:#ef4444; background:rgba(239, 68, 68, 0.1);">▶️ YouTube (private)</a>`
+                                : `<span style="color:#ef4444; font-size:0.9rem;">YouTube upload failed: ${yt.error}</span>`;
+                        }
+                    }
 
                     downloads.innerHTML = `
                         <h3 style="margin-top:20px; font-size:1.1rem; color:var(--text-primary);">Artifacts Generated:</h3>
                         <div style="display:flex; flex-wrap:wrap; gap:10px;">
-                        <a href="/api/download/${{data.task_id}}/audio.wav" class="download-link">🎵 Audio (WAV)</a>
-                        <a href="/api/download/${{data.task_id}}/source_of_truth.md" class="download-link">📋 Source of Truth</a>
-                        <a href="/api/download/${{data.task_id}}/show_outline.md" class="download-link">📝 Show Outline</a>
-                        <a href="/api/download/${{data.task_id}}/accuracy_audit.md" class="download-link">✅ Accuracy Audit</a>
-                        <a href="/api/download/${{data.task_id}}/affirmative_case.md" class="download-link">📄 Affirmative Case</a>
-                        <a href="/api/download/${{data.task_id}}/grade_synthesis.md" class="download-link">📄 GRADE Synthesis</a>
-                        <a href="/api/download/${{data.task_id}}/source_of_truth.pdf" class="download-link">📄 Source of Truth PDF</a>
-                        ${{uploadsHtml}}
+                        <a href="/api/download/${data.task_id}/audio.wav" class="download-link">🎵 Audio (WAV)</a>
+                        <a href="/api/download/${data.task_id}/source_of_truth.md" class="download-link">📋 Source of Truth</a>
+                        <a href="/api/download/${data.task_id}/show_outline.md" class="download-link">📝 Show Outline</a>
+                        <a href="/api/download/${data.task_id}/accuracy_audit.md" class="download-link">✅ Accuracy Audit</a>
+                        <a href="/api/download/${data.task_id}/affirmative_case.md" class="download-link">📄 Affirmative Case</a>
+                        <a href="/api/download/${data.task_id}/grade_synthesis.md" class="download-link">📄 GRADE Synthesis</a>
+                        <a href="/api/download/${data.task_id}/source_of_truth.pdf" class="download-link">📄 Source of Truth PDF</a>
+                        ${uploadsHtml}
                         </div>
                     `;
-                }} else if (data.status === 'stopped') {{
+                } else if (data.status === 'stopped') {
                     stopBtn.style.display = 'none';
                     progressBar.style.width = '100%';
                     progressBar.style.background = '#f59e0b';
                     statusIcon.textContent = '🛑';
                     statusDetails.textContent = 'Stopped by user.';
-                }} else if (data.status === 'failed') {{
+                } else if (data.status === 'failed') {
                     stopBtn.style.display = 'none';
                     progressBar.style.width = '100%';
                     progressBar.style.background = '#ef4444';
@@ -1670,106 +1668,106 @@ def home(username: str = Depends(verify_credentials)):
                     const lines = rawError.split('\\n').filter(l => l.trim());
                     const lastLine = lines[lines.length - 1] || rawError;
                     showError(lastLine);
-                }}
-            }}
+                }
+            }
 
-            function showError(message) {{
+            function showError(message) {
                 const error = document.getElementById('error');
                 error.textContent = 'SYSTEM ERROR: ' + message;
                 error.style.display = 'block';
-            }}
+            }
 
-            async function stopTask() {{
+            async function stopTask() {
                 if (!currentTaskId) return;
                 const btn = document.getElementById('stopBtn');
                 btn.disabled = true;
                 btn.textContent = 'Stopping...';
-                try {{
-                    await fetch(`/api/stop/${{currentTaskId}}`, {{ method: 'POST' }});
-                }} catch (err) {{
+                try {
+                    await fetch(`/api/stop/${currentTaskId}`, { method: 'POST' });
+                } catch (err) {
                     console.warn('Stop request failed:', err);
-                }}
-            }}
+                }
+            }
 
-            function showQueuedToast(taskId, position) {{
+            function showQueuedToast(taskId, position) {
                 const toast = document.createElement('div');
                 toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#1e293b;border:1px solid #f59e0b;color:#f59e0b;padding:12px 20px;border-radius:8px;z-index:9999;font-size:0.9rem;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
-                toast.textContent = `Request queued (#${{position}} in queue). Current task progress continues below.`;
+                toast.textContent = `Request queued (#${position} in queue). Current task progress continues below.`;
                 document.body.appendChild(toast);
                 setTimeout(() => toast.remove(), 4000);
-            }}
+            }
 
-                        async function loadHistory() {{
-                try {{
+                        async function loadHistory() {
+                try {
                     const response = await fetch('/api/history');
                     const tasks = await response.json();
 
                     const historyList = document.getElementById('history');
 
-                    if (tasks.length === 0) {{
+                    if (tasks.length === 0) {
                         historyList.innerHTML = '<li style="color: var(--text-secondary); text-align: center; padding: 20px;">No episodes generated yet</li>';
                         return;
-                    }}
+                    }
 
-                    historyList.innerHTML = tasks.map((task, index) => {{
+                    historyList.innerHTML = tasks.map((task, index) => {
                          const date = new Date(task.created_at).toLocaleString();
                          const artifacts = [
-                             {{ name: "Audio (WAV)", file: "audio.wav", icon: "🎵" }},
-                             {{ name: "Source of Truth", file: "source_of_truth.md", icon: "📋" }},
-                             {{ name: "Show Outline", file: "show_outline.md", icon: "📝" }},
-                             {{ name: "Accuracy Audit", file: "accuracy_audit.md", icon: "✅" }},
-                             {{ name: "Affirmative Case", file: "affirmative_case.md", icon: "📄" }},
-                             {{ name: "GRADE Synthesis", file: "grade_synthesis.md", icon: "⚖️" }}
+                             { name: "Audio (WAV)", file: "audio.wav", icon: "🎵" },
+                             { name: "Source of Truth", file: "source_of_truth.md", icon: "📋" },
+                             { name: "Show Outline", file: "show_outline.md", icon: "📝" },
+                             { name: "Accuracy Audit", file: "accuracy_audit.md", icon: "✅" },
+                             { name: "Affirmative Case", file: "affirmative_case.md", icon: "📄" },
+                             { name: "GRADE Synthesis", file: "grade_synthesis.md", icon: "⚖️" }
                          ];
                          
                          const artifactLinks = artifacts.map(a => 
-                             `<a href="/api/download/${{task.task_id}}/${{a.file}}" class="artifact-pill" target="_blank">${{a.icon}} ${{a.name}}</a>`
+                             `<a href="/api/download/${task.task_id}/${a.file}" class="artifact-pill" target="_blank">${a.icon} ${a.name}</a>`
                          ).join('');
 
                          return `
                         <li class="history-item">
-                            <div class="history-summary" onclick="toggleDetails('details-${{task.task_id}}')">
+                            <div class="history-summary" onclick="toggleDetails('details-${task.task_id}')">
                                 <div>
-                                    <div class="history-topic">${{task.topic}}</div>
+                                    <div class="history-topic">${task.topic}</div>
                                     <div class="history-meta">
-                                        ${{task.language === 'en' ? 'English' : '日本語'}} • 
-                                        ${{date}} • 
-                                        Sources: ${{task.sources ? task.sources.length : 0}} • 
-                                        <span class="status-${{task.status}}">${{task.status}}</span>
+                                        ${task.language === 'en' ? 'English' : '日本語'} • 
+                                        ${date} • 
+                                        Sources: ${task.sources ? task.sources.length : 0} • 
+                                        <span class="status-${task.status}">${task.status}</span>
                                     </div>
                                 </div>
                                 <div>
-                                    <span style="font-size: 1.2rem;">${{task.status === 'completed' ? '✅' : '⚙️'}}</span>
+                                    <span style="font-size: 1.2rem;">${task.status === 'completed' ? '✅' : '⚙️'}</span>
                                     <span style="margin-left: 10px; color: var(--text-secondary);">▼</span>
                                 </div>
                             </div>
-                            <div id="details-${{task.task_id}}" class="history-details">
-                                <div style="margin-bottom: 10px; font-weight: 600;">Artifacts Generated (${{task.artifacts_created || 0}}/${{task.artifacts_total || 24}}):</div>
+                            <div id="details-${task.task_id}" class="history-details">
+                                <div style="margin-bottom: 10px; font-weight: 600;">Artifacts Generated (${task.artifacts_created || 0}/${task.artifacts_total || 24}):</div>
                                 <div style="display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px;">
-                                    ${{task.status === 'completed' ? artifactLinks : '<span style="color:var(--text-secondary)">Processing...</span>'}}
+                                    ${task.status === 'completed' ? artifactLinks : '<span style="color:var(--text-secondary)">Processing...</span>'}
                                 </div>
                                 <div style="font-size: 0.8rem; color: var(--text-secondary);">
-                                    Task ID: ${{task.task_id}}<br>
-                                    Duration: ${{task.step_durations ? Math.round(task.step_durations.reduce((a,b)=>a+b.duration,0)/60) : 0}} min
+                                    Task ID: ${task.task_id}<br>
+                                    Duration: ${task.step_durations ? Math.round(task.step_durations.reduce((a,b)=>a+b.duration,0)/60) : 0} min
                                 </div>
                             </div>
                         </li>
-                    `}}).join('');
-                }} catch (error) {{
+                    `}).join('');
+                } catch (error) {
                     console.error('Failed to load history:', error);
-                }}
-            }}
+                }
+            }
             
-            window.toggleDetails = function(id) {{
+            window.toggleDetails = function(id) {
                 const el = document.getElementById(id);
-                if (el.style.display === 'block') {{
+                if (el.style.display === 'block') {
                     el.style.display = 'none';
                     el.classList.remove('open');
-                }} else {{
+                } else {
                     el.style.display = 'block';
                     el.classList.add('open');
-                }}
-            }};
+                }
+            };
 
             // Auto-refresh history every 10 seconds
             setInterval(loadHistory, 10000);
@@ -2192,7 +2190,7 @@ def _close_phase(task_id: str):
         )
 
 
-def _preflight_check() -> Optional[str]:
+def _preflight_check() -> str | None:
     """Test vLLM and Ollama reachability. Returns error message or None."""
     smart_health = SMART_BASE_URL.rstrip("/") + "/models"
     fast_health = FAST_BASE_URL.rstrip("/").replace("/v1", "") + "/api/tags"
@@ -2432,7 +2430,7 @@ def run_podcast_generation(
         save_tasks()
 
 
-def _find_latest_output_dir() -> Optional[Path]:
+def _find_latest_output_dir() -> Path | None:
     """Find the most recently created timestamped subdirectory in research_outputs/."""
     if not OUTPUT_DIR.exists():
         return None

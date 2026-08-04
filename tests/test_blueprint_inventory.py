@@ -7,8 +7,7 @@ _run_condense_pass (_run_trim_pass alias), and the coverage checklist injection 
 All functions are imported from pipeline.py — no inline copies.
 """
 
-import re
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 

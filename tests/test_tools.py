@@ -1,7 +1,6 @@
 """Tests for dr2_podcast/tools -- link_validator and upload_utils."""
 
 import os
-import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 

@@ -8,14 +8,12 @@ Tests that:
 5. _find_artifact() finds files in both flat and subdirectory layouts
 """
 
-import os
 import tempfile
 from pathlib import Path
 
 from dr2_podcast.pipeline import (
     output_path,
     OUTPUT_SUBDIRS,
-    _FILE_SUBDIR_MAP,
     create_timestamped_output_dir,
     _find_artifact,
 )

@@ -456,7 +456,7 @@ def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
             duration_sec = len(final_audio) / sample_rate
             duration_min = duration_sec / 60
 
-            logger.info(f"\n✓ Audio generated successfully (AivisSpeech):")
+            logger.info("\n✓ Audio generated successfully (AivisSpeech):")
             logger.info(f"  File: {output_filename}")
             logger.info(f"  Size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
             logger.info(f"  Duration: {duration_min:.2f} minutes ({duration_sec:.1f} seconds)")
@@ -696,7 +696,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             duration_sec = len(final_audio) / sample_rate
             duration_min = duration_sec / 60
 
-            logger.info(f"\n✓ Audio generated successfully:")
+            logger.info("\n✓ Audio generated successfully:")
             logger.info(f"  File: {output_filename}")
             logger.info(f"  Size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
             logger.info(f"  Duration: {duration_min:.2f} minutes ({duration_sec:.1f} seconds)")
@@ -759,7 +759,7 @@ def post_process_audio(
                 default_bgm = BGM_LIBRARY_DIR / "Interesting BGM.wav"
                 if default_bgm.exists():
                     music_path = str(default_bgm)
-                    logger.warning(f"Falling back to default: Interesting BGM.wav")
+                    logger.warning("Falling back to default: Interesting BGM.wav")
 
         # 2. No BGM available — return voice-only
         if not music_path:

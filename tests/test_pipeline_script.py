@@ -1,6 +1,5 @@
 """Tests for pipeline_script.py — script validation, trimming, and deduplication."""
 
-import pytest
 from dr2_podcast.pipeline_script import (
     _count_words,
     _deduplicate_script,

@@ -1,6 +1,5 @@
 """Unit tests for clinical_math.py — deterministic ARR/NNT calculator."""
 
-import math
 import pytest
 from dr2_podcast.research.clinical_math import ClinicalImpact, calculate_impact, batch_calculate, format_math_report
 

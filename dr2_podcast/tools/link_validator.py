@@ -7,9 +7,7 @@ Used by the Scientific Auditor agent to verify research citations.
 """
 
 from crewai.tools import BaseTool
-from pydantic import BaseModel, Field
 import httpx
-from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -47,12 +45,12 @@ class LinkValidatorTool(BaseTool):
             response = httpx.head(url, headers=headers, timeout=5, follow_redirects=True)
 
             if response.status_code == 200:
-                return f"✓ Valid Link (Status: 200 OK)"
+                return "✓ Valid Link (Status: 200 OK)"
             elif response.status_code == 403:
                 # Protected but exists (common for paywalled journals)
-                return f"⚠ Link is protected (403), but likely exists. May require institutional access."
+                return "⚠ Link is protected (403), but likely exists. May require institutional access."
             elif response.status_code == 404:
-                return f"✗ Broken Link (Status: 404 Not Found)"
+                return "✗ Broken Link (Status: 404 Not Found)"
             elif response.status_code >= 500:
                 return f"⚠ Server error (Status: {response.status_code}). Link may be valid but server is down."
             else:

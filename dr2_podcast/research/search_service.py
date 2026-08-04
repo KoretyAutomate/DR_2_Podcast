@@ -13,13 +13,11 @@ License: MIT
 
 import asyncio
 import logging
-import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import httpx
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
 from dr2_podcast.config import SCRAPING_TIMEOUT, USER_AGENT, SEARXNG_URL
 from dr2_podcast.utils import extract_content_from_html, is_safe_url
@@ -38,8 +36,8 @@ class SearchResult:
     title: str
     url: str
     snippet: str
-    engine: Optional[str] = None
-    score: Optional[float] = None
+    engine: str | None = None
+    score: float | None = None
 
 
 @dataclass
@@ -50,7 +48,7 @@ class ScrapedContent:
     title: str
     content: str
     word_count: int
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @dataclass
@@ -58,11 +56,11 @@ class ResearchResult:
     """Complete research result including search results and scraped content."""
 
     query: str
-    search_results: List[SearchResult]
-    scraped_pages: List[ScrapedContent]
+    search_results: list[SearchResult]
+    scraped_pages: list[ScrapedContent]
     total_results: int
     total_scraped: int
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 class SearxngClient:
@@ -87,7 +85,7 @@ class SearxngClient:
         """
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.client: Optional[httpx.AsyncClient] = None
+        self.client: httpx.AsyncClient | None = None
 
     async def __aenter__(self):
         """Async context manager entry."""
@@ -123,8 +121,8 @@ class SearxngClient:
             return False
 
     async def search(
-        self, query: str, engines: List[str] = None, num_results: int = 5, language: str = "en"
-    ) -> List[SearchResult]:
+        self, query: str, engines: list[str] = None, num_results: int = 5, language: str = "en"
+    ) -> list[SearchResult]:
         """
         Perform a search query using SearXNG.
 
@@ -204,7 +202,7 @@ class DeepResearch:
             searxng_client: Initialized SearXNG client
         """
         self.searxng_client = searxng_client
-        self.scraping_client: Optional[httpx.AsyncClient] = None
+        self.scraping_client: httpx.AsyncClient | None = None
 
     async def __aenter__(self):
         """Async context manager entry."""
@@ -278,7 +276,7 @@ class DeepResearch:
             logger.warning(error_msg)
             return ScrapedContent(url=url, title="Scraping Error", content="", word_count=0, error=error_msg)
 
-    async def deep_dive(self, query: str, top_n: int = 5, engines: List[str] = None) -> ResearchResult:
+    async def deep_dive(self, query: str, top_n: int = 5, engines: list[str] = None) -> ResearchResult:
         """
         Perform deep research on a query.
 

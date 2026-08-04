@@ -1,10 +1,6 @@
 """Tests for pipeline checkpoint/resume functionality (T3.1)."""
 
 import json
-import os
-from datetime import datetime
-
-import pytest
 
 
 class TestSerializeDataclass:

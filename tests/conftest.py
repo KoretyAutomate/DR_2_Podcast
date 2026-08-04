@@ -1,7 +1,6 @@
 """Shared pytest fixtures for DR_2_Podcast test suite."""
 
 import pytest
-import os
 
 
 @pytest.fixture(autouse=True)

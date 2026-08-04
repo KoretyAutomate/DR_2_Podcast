@@ -23,8 +23,6 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from urllib.parse import quote as _url_quote
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -103,7 +101,7 @@ class MetadataCache:
         self.close()
         return False
 
-    def get(self, api_name: str, identifier: str) -> Optional[dict]:
+    def get(self, api_name: str, identifier: str) -> dict | None:
         cutoff = time.time() - self.ttl_seconds
         row = self.conn.execute(
             "SELECT data FROM metadata_cache WHERE api_name = ? AND identifier = ? AND fetched_at > ?",
@@ -166,7 +164,7 @@ class OpenAlexClient:
         return p
 
     @staticmethod
-    def _reconstruct_abstract(inverted_index: Optional[dict]) -> str:
+    def _reconstruct_abstract(inverted_index: dict | None) -> str:
         """Reconstruct abstract text from OpenAlex inverted index format."""
         if not inverted_index:
             return ""
@@ -219,7 +217,7 @@ class OpenAlexClient:
             "abstract_text": self._reconstruct_abstract(raw.get("abstract_inverted_index")),
         }
 
-    async def get_work_by_doi(self, doi: str) -> Optional[dict]:
+    async def get_work_by_doi(self, doi: str) -> dict | None:
         """Look up a single work by DOI."""
         if self.cache:
             cached = self.cache.get("openalex", f"doi:{doi}")
@@ -240,7 +238,7 @@ class OpenAlexClient:
             logger.warning(f"OpenAlex DOI lookup failed for {doi}: {e}")
             return None
 
-    async def get_work_by_pmid(self, pmid: str) -> Optional[dict]:
+    async def get_work_by_pmid(self, pmid: str) -> dict | None:
         """Look up a single work by PMID."""
         if self.cache:
             cached = self.cache.get("openalex", f"pmid:{pmid}")
@@ -261,7 +259,7 @@ class OpenAlexClient:
             logger.warning(f"OpenAlex PMID lookup failed for {pmid}: {e}")
             return None
 
-    async def batch_get_works(self, identifiers: List[str]) -> List[dict]:
+    async def batch_get_works(self, identifiers: list[str]) -> list[dict]:
         """Batch lookup up to 50 works via pipe-separated filter.
 
         identifiers: list of DOIs (e.g. ["10.1234/abc", "10.5678/def"])
@@ -289,7 +287,7 @@ class OpenAlexClient:
                 logger.warning(f"OpenAlex batch lookup failed: {e}")
         return results
 
-    async def search_works(self, query: str, filters: Optional[dict] = None, per_page: int = 25) -> List[dict]:
+    async def search_works(self, query: str, filters: dict | None = None, per_page: int = 25) -> list[dict]:
         """Full-text search with optional filters.
 
         filters: dict of OpenAlex filter keys, e.g.
@@ -366,7 +364,7 @@ class SemanticScholarClient:
             "pmid": str(ext_ids.get("PubMed", "")),
         }
 
-    async def get_paper(self, paper_id: str, fields: str = None) -> Optional[dict]:
+    async def get_paper(self, paper_id: str, fields: str = None) -> dict | None:
         """Look up a single paper. Accepts DOI:xxx, PMID:xxx, or S2 paper ID."""
         cache_key = f"s2:{paper_id}"
         if self.cache:
@@ -392,7 +390,7 @@ class SemanticScholarClient:
             logger.warning(f"Semantic Scholar lookup failed for {paper_id}: {e}")
             return None
 
-    async def batch_get_papers(self, paper_ids: List[str], fields: str = None) -> List[dict]:
+    async def batch_get_papers(self, paper_ids: list[str], fields: str = None) -> list[dict]:
         """Batch lookup up to 500 papers via POST."""
         if not paper_ids:
             return []
@@ -418,8 +416,8 @@ class SemanticScholarClient:
         return results
 
     async def search_papers(
-        self, query: str, fields_of_study: Optional[List[str]] = None, year: Optional[str] = None, limit: int = 25
-    ) -> List[dict]:
+        self, query: str, fields_of_study: list[str] | None = None, year: str | None = None, limit: int = 25
+    ) -> list[dict]:
         """Relevance search with optional field/year filters."""
         try:
             params = {
@@ -526,7 +524,7 @@ class CrossrefClient:
             "license": licenses,
         }
 
-    async def get_work(self, doi: str) -> Optional[dict]:
+    async def get_work(self, doi: str) -> dict | None:
         """Look up a single work by DOI."""
         if self.cache:
             cached = self.cache.get("crossref", f"doi:{doi}")
@@ -550,7 +548,7 @@ class CrossrefClient:
             logger.warning(f"Crossref lookup failed for {doi}: {e}")
             return None
 
-    async def batch_get_works(self, dois: List[str]) -> List[dict]:
+    async def batch_get_works(self, dois: list[str]) -> list[dict]:
         """Sequential lookup with rate limiting (Crossref has no batch endpoint)."""
         results = []
         for doi in dois:
@@ -600,7 +598,7 @@ class ERICClient:
         }
 
     @staticmethod
-    def _extract_year(raw: dict) -> Optional[int]:
+    def _extract_year(raw: dict) -> int | None:
         date_str = raw.get("publicationDateYear")
         if date_str:
             try:
@@ -609,7 +607,7 @@ class ERICClient:
                 pass
         return None
 
-    async def search(self, query: str, max_results: int = 50, filters: Optional[dict] = None) -> List[dict]:
+    async def search(self, query: str, max_results: int = 50, filters: dict | None = None) -> list[dict]:
         """Search ERIC using Solr query syntax.
 
         filters: optional dict, e.g.
@@ -651,30 +649,30 @@ class EnrichedPaper:
     pmid: str = ""
     # OpenAlex
     openalex_id: str = ""
-    cited_by_count: Optional[int] = None
-    fwci: Optional[float] = None
-    openalex_is_retracted: Optional[bool] = None
-    openalex_funding: List[str] = field(default_factory=list)
-    openalex_concepts: List[str] = field(default_factory=list)
+    cited_by_count: int | None = None
+    fwci: float | None = None
+    openalex_is_retracted: bool | None = None
+    openalex_funding: list[str] = field(default_factory=list)
+    openalex_concepts: list[str] = field(default_factory=list)
     abstract_text: str = ""
     # Semantic Scholar
     s2_id: str = ""
-    s2_citation_count: Optional[int] = None
-    influential_citation_count: Optional[int] = None
-    fields_of_study: List[str] = field(default_factory=list)
+    s2_citation_count: int | None = None
+    influential_citation_count: int | None = None
+    fields_of_study: list[str] = field(default_factory=list)
     tldr: str = ""
     # Crossref
-    crossref_citation_count: Optional[int] = None
-    crossref_funders: List[str] = field(default_factory=list)
-    crossref_is_retracted: Optional[bool] = None
-    crossref_is_corrected: Optional[bool] = None
-    clinical_trial_numbers: List[str] = field(default_factory=list)
+    crossref_citation_count: int | None = None
+    crossref_funders: list[str] = field(default_factory=list)
+    crossref_is_retracted: bool | None = None
+    crossref_is_corrected: bool | None = None
+    clinical_trial_numbers: list[str] = field(default_factory=list)
     # Derived
     is_retracted: bool = False
     is_corrected: bool = False
-    all_funding_sources: List[str] = field(default_factory=list)
-    best_citation_count: Optional[int] = None
-    enrichment_sources: List[str] = field(default_factory=list)
+    all_funding_sources: list[str] = field(default_factory=list)
+    best_citation_count: int | None = None
+    enrichment_sources: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {}
@@ -688,11 +686,11 @@ class EnrichedPaper:
 
 
 async def enrich_papers_metadata(
-    papers: List[dict],
-    openalex_client: Optional[OpenAlexClient] = None,
-    s2_client: Optional[SemanticScholarClient] = None,
-    crossref_client: Optional[CrossrefClient] = None,
-) -> List[EnrichedPaper]:
+    papers: list[dict],
+    openalex_client: OpenAlexClient | None = None,
+    s2_client: SemanticScholarClient | None = None,
+    crossref_client: CrossrefClient | None = None,
+) -> list[EnrichedPaper]:
     """Batch-enrich papers from all three metadata APIs.
 
     papers: list of dicts with at least 'doi' and/or 'pmid' keys.

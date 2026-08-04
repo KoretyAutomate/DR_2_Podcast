@@ -12,7 +12,6 @@ Parallel to clinical_math.py but for social science effect measures:
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional
 
 
 @dataclass
@@ -20,12 +19,12 @@ class EffectSizeImpact:
     study_id: str  # ID or title
     effect_type: str  # "cohens_d", "hedges_g", "odds_ratio", "correlation_r", "beta"
     raw_value: float  # Original reported value
-    cohens_d: Optional[float]  # Converted/normalized to Cohen's d
-    hedges_g: Optional[float]  # Small-sample corrected (if n available)
+    cohens_d: float | None  # Converted/normalized to Cohen's d
+    hedges_g: float | None  # Small-sample corrected (if n available)
     magnitude: str  # "negligible", "small", "medium", "large"
     direction: str  # "positive", "negative", "null"
     interpretation: str  # Human-readable interpretation
-    sample_size: Optional[int] = None
+    sample_size: int | None = None
 
 
 def classify_magnitude_d(d: float) -> str:
@@ -61,7 +60,7 @@ def hedges_g_correction(d: float, n: int) -> float:
     return d * correction
 
 
-def odds_ratio_to_d(or_val: float) -> Optional[float]:
+def odds_ratio_to_d(or_val: float) -> float | None:
     """Convert odds ratio to Cohen's d using the log-odds method.
 
     d = ln(OR) * sqrt(3) / pi
@@ -73,7 +72,7 @@ def odds_ratio_to_d(or_val: float) -> Optional[float]:
     return math.log(or_val) * math.sqrt(3) / math.pi
 
 
-def r_to_d(r: float) -> Optional[float]:
+def r_to_d(r: float) -> float | None:
     """Convert Pearson correlation r to Cohen's d.
 
     d = 2r / sqrt(1 - r^2)
@@ -97,8 +96,8 @@ def calculate_effect(
     study_id: str,
     effect_type: str,
     raw_value: float,
-    sample_size: Optional[int] = None,
-) -> Optional[EffectSizeImpact]:
+    sample_size: int | None = None,
+) -> EffectSizeImpact | None:
     """Calculate standardized effect size from a reported statistic.
 
     effect_type: "cohens_d", "hedges_g", "odds_ratio", "correlation_r", "beta"
@@ -163,7 +162,7 @@ def calculate_effect(
     )
 
 
-def batch_calculate(extractions: list) -> List[EffectSizeImpact]:
+def batch_calculate(extractions: list) -> list[EffectSizeImpact]:
     """Calculate effect sizes for all studies that have reported statistics.
 
     Each extraction should have:
@@ -194,7 +193,7 @@ def batch_calculate(extractions: list) -> List[EffectSizeImpact]:
     return results
 
 
-def format_effect_size_report(impacts: List[EffectSizeImpact]) -> str:
+def format_effect_size_report(impacts: list[EffectSizeImpact]) -> str:
     """Format a deterministic effect size report."""
     if not impacts:
         return "No studies provided effect sizes. Effect size calculation not possible.\n"

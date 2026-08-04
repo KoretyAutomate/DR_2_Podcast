@@ -3,8 +3,7 @@
 import os
 import time
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-import pytest
+from unittest.mock import patch
 
 # Ensure env var is set before any import of web_ui (module-level side effects)
 os.environ.setdefault("PODCAST_WEB_PASSWORD", "testpass123")

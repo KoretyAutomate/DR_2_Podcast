@@ -1,6 +1,5 @@
 """Tests for pipeline_translation.py — SOT splitting, Discussion dedup, and script language audit."""
 
-import pytest
 from dr2_podcast.pipeline_translation import (
     _split_sot_imrad,
     _split_at_subheaders,
@@ -93,8 +92,7 @@ class TestDiscussionDedup:
         )
         # The _translate_sot_pipelined function builds chunks + output_plan.
         # We simulate the chunk building logic here to verify dedup.
-        from dr2_podcast.pipeline_translation import _split_sot_imrad, _split_at_subheaders
-        import re
+        from dr2_podcast.pipeline_translation import _split_sot_imrad
 
         imrad_sections = _split_sot_imrad(sot)
         chunks = []

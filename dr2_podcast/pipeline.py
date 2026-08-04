@@ -1,5 +1,4 @@
 import os
-import platform
 import re
 import html as html_module
 import httpx
@@ -9,7 +8,6 @@ import sys
 import json
 import argparse
 import logging
-import asyncio
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -17,16 +15,13 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 # load_dotenv() — called in __main__ block (avoid side effects on import)
-from crewai import Agent, Task, Crew, LLM as _BaseLLM
+from crewai import Task, Crew, LLM as _BaseLLM
 from crewai.tools import tool
 from markdown_it import MarkdownIt
 import weasyprint
 from dr2_podcast.tools.link_validator import LinkValidatorTool
-import soundfile as sf
-import numpy as np
 import wave
 from dr2_podcast.audio.engine import generate_audio_from_script, clean_script_for_tts, post_process_audio
-from dr2_podcast.research.clinical import run_deep_research
 from dr2_podcast.utils import strip_think_blocks
 from dataclasses import fields as dc_fields
 
@@ -35,11 +30,6 @@ from dr2_podcast.config import EVIDENCE_LIMITED_THRESHOLD, OUTPUT_DIR_OVERRIDE
 # --- Extracted modules (T4.1) ---
 from dr2_podcast.pipeline_sot import (
     build_imrad_sot as _build_imrad_sot_impl,
-    _extract_conclusion_status,
-    _parse_grade_sections,
-    _format_study_characteristics_table,
-    _format_references,
-    _build_social_science_sot,
 )
 from dr2_podcast.pipeline_script import (
     _count_words,
@@ -49,24 +39,17 @@ from dr2_podcast.pipeline_script import (
     _add_reaction_guidance as _add_reaction_guidance_impl,
     _quick_content_audit as _quick_content_audit_impl,
     _run_condense_pass as _run_condense_pass_impl,
-    _run_trim_pass as _run_trim_pass_impl,
     SCRIPT_TOLERANCE,
 )
 from dr2_podcast.pipeline_translation import (
-    _split_sot_imrad,
-    _estimate_translation_tokens,
-    _split_at_subheaders,
     _translate_sot_pipelined as _translate_sot_pipelined_impl,
     _translate_prompt as _translate_prompt_impl,
     _audit_script_language as _audit_script_language_impl,
 )
 from dr2_podcast.pipeline_crew import (
-    _estimate_task_tokens,
     _build_sot_injection_for_stage,
     _crew_kickoff_guarded,
-    _SOT_BLOCK_RE,
     create_agents_and_tasks,
-    PHASE_MARKERS,
     TASK_METADATA,
     display_workflow_plan,
     ProgressTracker,
@@ -187,7 +170,7 @@ def setup_logging(output_dir: Path):
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
 
     # Redirect stdout and stderr to logger
-    class StreamToLogger(object):
+    class StreamToLogger:
         def __init__(self, logger, level):
             self.logger = logger
             self.level = level
@@ -2064,7 +2047,7 @@ def _enforce_audit(audit_output, polished_text, sot_content, language, language_
 
 def _run_accuracy_audit(audit_task, polish_task, auditor_agent, translation_task):
     """Phase 7: Run accuracy audit."""
-    logger.info(f"\n  PHASE 7: ACCURACY AUDIT")
+    logger.info("\n  PHASE 7: ACCURACY AUDIT")
     audit_task.context = [polish_task]
     if translation_task is not None:
         audit_task.context = [polish_task, translation_task]
@@ -2193,7 +2176,7 @@ def _run_audio_pipeline(script_text, output_dir, language_config):
         return None, None
 
     if audio_file:
-        logger.info(f"Starting BGM Merging Phase...")
+        logger.info("Starting BGM Merging Phase...")
         try:
             mastered = post_process_audio(
                 str(audio_file), bgm_target="Interesting BGM.wav", transition_positions_ms=transition_positions
@@ -2235,7 +2218,7 @@ def _translate_and_inject_sot(
 
     Returns (translated_sot_text, sot_translated_file, translated_summary).
     """
-    logger.info(f"\nPHASE 3: REPORT TRANSLATION (pipelined)")
+    logger.info("\nPHASE 3: REPORT TRANSLATION (pipelined)")
     translated_sot = _translate_sot_pipelined(sot_content, language, language_config)
     sot_translated_file = None
     translated_summary = ""
@@ -2266,7 +2249,7 @@ def _translate_and_inject_sot(
             )
         )
     else:
-        logger.warning(f"  Warning: Chunked translation produced no output \u2014 translated SOT not saved")
+        logger.warning("  Warning: Chunked translation produced no output \u2014 translated SOT not saved")
 
     return translated_sot, sot_translated_file, translated_summary
 
@@ -2456,7 +2439,7 @@ if __name__ == "__main__":
 
         if args.crew3_only:
             # --- CREW 3 ONLY: Skip research, run podcast production ---
-            logger.info(f"\nMode: Crew 3 Only (podcast production)")
+            logger.info("\nMode: Crew 3 Only (podcast production)")
 
             # Create new output dir
             new_output_dir = create_timestamped_output_dir(base_output_dir)
@@ -2506,7 +2489,7 @@ if __name__ == "__main__":
                         filename = Path(old_path).name
                         task_obj.output_file = str(output_path(new_output_dir, filename))
 
-            logger.info(f"\nCREW 3: PODCAST PRODUCTION")
+            logger.info("\nCREW 3: PODCAST PRODUCTION")
 
             _r_tl_summary = ""
             _r_sot_translated_file = None
@@ -2552,7 +2535,7 @@ if __name__ == "__main__":
             _REUSE_MAX_ATTEMPTS = 3
 
             # Phase 4: Blueprint
-            logger.info(f"\n  PHASE 4: EPISODE BLUEPRINT")
+            logger.info("\n  PHASE 4: EPISODE BLUEPRINT")
             _crew_kickoff_guarded(
                 lambda: Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True),
                 blueprint_task,
@@ -2572,7 +2555,7 @@ if __name__ == "__main__":
             _r_inventory = _parse_blueprint_inventory(_r_bp_raw)
 
             # Phase 5: Script Draft (Sectional)
-            logger.info(f"\n  PHASE 5: SCRIPT DRAFT (SECTIONAL)")
+            logger.info("\n  PHASE 5: SCRIPT DRAFT (SECTIONAL)")
             _r_draft_text, _r_draft_count = _run_sectional_draft(
                 _r_inventory,
                 target_length_int,
@@ -2594,7 +2577,7 @@ if __name__ == "__main__":
             script_task.output = _FakeOutput(_r_draft_text)
 
             # Phase 6: Script Polish
-            logger.info(f"\n  PHASE 6: SCRIPT POLISH (audit loop)")
+            logger.info("\n  PHASE 6: SCRIPT POLISH (audit loop)")
             _r_polished, polish_task = _run_polish_loop(
                 _r_draft_text,
                 _r_draft_count,
@@ -2667,7 +2650,7 @@ if __name__ == "__main__":
 
         elif args.check_supplemental:
             # --- CHECK SUPPLEMENTAL: LLM decides if supplement needed ---
-            logger.info(f"\nMode: Check Supplemental")
+            logger.info("\nMode: Check Supplemental")
 
             result = check_supplemental_needed(topic_name, reuse_dir)
             logger.info(f"  Needs supplement: {result['needs_supplement']}")
@@ -2771,7 +2754,7 @@ if __name__ == "__main__":
                         filename = Path(old_path).name
                         task_obj.output_file = str(output_path(new_output_dir, filename))
 
-                logger.info(f"\nCREW 3: PODCAST PRODUCTION")
+                logger.info("\nCREW 3: PODCAST PRODUCTION")
 
                 _s_tl_summary = ""
                 _s_sot_translated_file = None
@@ -2817,7 +2800,7 @@ if __name__ == "__main__":
                 _SUPP_MAX_ATTEMPTS = 3
 
                 # Phase 4: Blueprint
-                logger.info(f"\n  PHASE 4: EPISODE BLUEPRINT")
+                logger.info("\n  PHASE 4: EPISODE BLUEPRINT")
                 _crew_kickoff_guarded(
                     lambda: Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True),
                     blueprint_task,
@@ -2837,7 +2820,7 @@ if __name__ == "__main__":
                 _s_inventory = _parse_blueprint_inventory(_s_bp_raw)
 
                 # Phase 5: Script Draft (Sectional)
-                logger.info(f"\n  PHASE 5: SCRIPT DRAFT (SECTIONAL)")
+                logger.info("\n  PHASE 5: SCRIPT DRAFT (SECTIONAL)")
                 _s_draft_text, _s_draft_count = _run_sectional_draft(
                     _s_inventory,
                     target_length_int,
@@ -2859,7 +2842,7 @@ if __name__ == "__main__":
                 script_task.output = _FakeOutput(_s_draft_text)
 
                 # Phase 6: Script Polish
-                logger.info(f"\n  PHASE 6: SCRIPT POLISH (audit loop)")
+                logger.info("\n  PHASE 6: SCRIPT POLISH (audit loop)")
                 _s_polished, polish_task = _run_polish_loop(
                     _s_draft_text,
                     _s_draft_count,

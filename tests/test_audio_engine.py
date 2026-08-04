@@ -1,11 +1,10 @@
 """Tests for dr2_podcast/audio/engine.py -- TTS cleaning, chunking, and mixing."""
 
 import pytest
-import re
 import numpy as np
 from unittest.mock import patch, MagicMock
 
-from dr2_podcast.audio.engine import clean_script_for_tts, _chunk_japanese_text, MARKER_SILENCE, _TARGET_RMS
+from dr2_podcast.audio.engine import clean_script_for_tts, _chunk_japanese_text, _TARGET_RMS
 
 
 # ---------------------------------------------------------------------------

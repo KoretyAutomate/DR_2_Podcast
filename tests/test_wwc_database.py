@@ -3,8 +3,6 @@ Unit tests for wwc_database.py.
 """
 
 import csv
-import os
-import tempfile
 
 import pytest
 
