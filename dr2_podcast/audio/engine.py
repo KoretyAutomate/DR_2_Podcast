@@ -318,6 +318,167 @@ def _call_aivisspeech_segment(
         return None, None
 
 
+def assign_seeded_voices(script_text: str, host1_id: int, host2_id: int) -> tuple:
+    """Pick which configured voice speaks Speaker 1, seeded off the script.
+
+    Deterministic per episode (same script → same voices) but varies across
+    episodes, so the explainer (Speaker 1) is not always Host 1. Only the two
+    configured voices are ever used. Disable with TTS_RANDOM_VOICE=0.
+
+    Returns (host1_id, host2_id, swapped).
+    """
+    if not TTS_RANDOM_VOICE or host1_id == host2_id:
+        return host1_id, host2_id, False
+    seed = int(hashlib.sha256(script_text.encode("utf-8")).hexdigest(), 16)
+    if seed & 1:
+        return host2_id, host1_id, True
+    return host1_id, host2_id, False
+
+
+def _marker_silence(marker: str, sample_rate, cumulative_samples: int):
+    """Silence for a pause marker, plus its timeline position if it is a transition.
+
+    Returns (silence_array, position_ms) where position_ms is None for markers
+    other than [TRANSITION].
+    """
+    sr = sample_rate or 24000
+    silence = np.zeros(int(MARKER_SILENCE[marker] * sr), dtype=np.float32)
+    position_ms = None
+    if marker == "[TRANSITION]":
+        position_ms = int((cumulative_samples / sr) * 1000)
+        logger.info(f"  [TRANSITION] marker at {position_ms}ms")
+    return silence, position_ms
+
+
+def _aivisspeech_preflight(host1_id: int, host2_id: int, voice_swapped: bool) -> bool:
+    """Log the run banner and confirm the engine is reachable."""
+    logger.info("=" * 60)
+    logger.info("AIVISSPEECH — JAPANESE AUDIO GENERATION")
+    logger.info("=" * 60)
+    logger.info(f"API endpoint: {_AIVISSPEECH_API_URL}")
+    rand_note = (
+        f" [random-voice: {'SWAPPED' if voice_swapped else 'no-swap'}]" if TTS_RANDOM_VOICE else " [random-voice: off]"
+    )
+    logger.info(f"Voices: Speaker1 → speaker_id={host1_id}, Speaker2 → speaker_id={host2_id}{rand_note}")
+
+    if not _aivisspeech_available():
+        logger.error(
+            f"✗ AivisSpeech API not reachable at {_AIVISSPEECH_API_URL}\n"
+            f"  Start it: docker run -d --name aivisspeech -p 10101:10101 ghcr.io/aivis-project/aivisspeech-engine:cpu-latest"
+        )
+        return False
+
+    logger.info("✓ AivisSpeech API is healthy")
+    return True
+
+
+def _synthesize_turn(text: str, spk_id: int, sample_rate):
+    """Synthesize one speaker turn via AivisSpeech, RMS-normalised.
+
+    Returns (audio, sample_rate), or (None, sample_rate) if every chunk failed.
+    A chunk that fails individually becomes silence proportional to its length
+    rather than dropping the words silently from the timeline.
+    """
+    chunks = _chunk_japanese_text(text)
+    spk_speed = TTS_SPEED_OVERRIDES.get(spk_id, TTS_SPEED_SCALE)
+    spk_inton = TTS_INTONATION_OVERRIDES.get(spk_id, TTS_INTONATION_SCALE)
+
+    chunk_audios = []
+    sr_chunk = None
+    for chunk in chunks:
+        a, sr = _call_aivisspeech_segment(chunk, spk_id, spk_speed, spk_inton)
+        if a is not None:
+            sr_chunk = sr
+            chunk_audios.append(a)
+        else:
+            sr_fallback = sample_rate or 24000
+            silence_secs = max(0.5, len(chunk) / 8.0)
+            chunk_audios.append(np.zeros(int(silence_secs * sr_fallback), dtype=np.float32))
+            logger.warning(f"  Chunk failed — inserted {silence_secs:.1f}s silence")
+
+    if not chunk_audios:
+        return None, sample_rate
+
+    segment_audio = np.concatenate(chunk_audios)
+    rms = np.sqrt(np.mean(segment_audio**2))
+    if rms > 1e-6:
+        segment_audio = np.clip(segment_audio * (_TARGET_RMS / rms), -1.0, 1.0)
+    return segment_audio, (sample_rate if sample_rate is not None else (sr_chunk or 24000))
+
+
+def _write_generated_audio(audio_segments: list, sample_rate, output_filename: str, engine_label: str) -> bool:
+    """Concatenate segments and write the WAV. False if there is nothing to write."""
+    if not (audio_segments and sample_rate):
+        logger.error("✗ ERROR: No audio segments generated")
+        return False
+    try:
+        final_audio = np.concatenate(audio_segments)
+        sf.write(output_filename, final_audio, sample_rate)
+
+        file_size = Path(output_filename).stat().st_size
+        duration_sec = len(final_audio) / sample_rate
+
+        logger.info(f"\n✓ Audio generated successfully ({engine_label}):")
+        logger.info(f"  File: {output_filename}")
+        logger.info(f"  Size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
+        logger.info(f"  Duration: {duration_sec / 60:.2f} minutes ({duration_sec:.1f} seconds)")
+        logger.info(f"  Sample rate: {sample_rate} Hz")
+        logger.info("=" * 60 + "\n")
+        return True
+    except Exception as e:
+        logger.error(f"✗ ERROR: Failed to save audio: {e}")
+        return False
+
+
+class _AivisTimeline:
+    """Accumulates synthesized segments, silences and transition positions.
+
+    Holds the state the generation loop used to carry as `nonlocal` locals:
+    the segment list, the sample rate (discovered from the first successful
+    chunk), the running sample count, and the transition marker positions.
+    """
+
+    def __init__(self, host1_id: int, host2_id: int):
+        self.host1_id = host1_id
+        self.host2_id = host2_id
+        self.segments = []
+        self.sample_rate = None
+        self.transition_positions_ms = []
+        self.cumulative_samples = 0
+        self.segment_count = 0
+
+    def flush_turn(self, text: str, speaker) -> None:
+        """Synthesize a buffered speaker turn and append it."""
+        if not (text and speaker):
+            return
+        logger.info(f"  Segment {self.segment_count + 1} (Speaker {speaker}): {text[:50]}...")
+        spk_id = self.host1_id if speaker == 1 else self.host2_id
+        segment_audio, seg_rate = _synthesize_turn(text, spk_id, self.sample_rate)
+        if segment_audio is None:
+            logger.warning(f"  ⚠ Segment {self.segment_count + 1} failed — skipping")
+            return
+        if self.sample_rate is None:
+            self.sample_rate = seg_rate
+            logger.info(f"  Sample rate: {self.sample_rate} Hz")
+        self._append(segment_audio)
+        self.segment_count += 1
+
+    def add_marker(self, marker: str) -> None:
+        silence, position_ms = _marker_silence(marker, self.sample_rate, self.cumulative_samples)
+        if position_ms is not None:
+            self.transition_positions_ms.append(position_ms)
+        self._append(silence)
+
+    def add_speaker_gap(self) -> None:
+        """0.3s between different speakers — only once the rate is known."""
+        if self.sample_rate:
+            self._append(np.zeros(int(0.3 * self.sample_rate), dtype=np.float32))
+
+    def _append(self, audio) -> None:
+        self.segments.append(audio)
+        self.cumulative_samples += len(audio)
+
+
 def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
     """
     Japanese TTS via AivisSpeech API.
@@ -330,168 +491,63 @@ def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
     if host1_id is None or host2_id is None:
         return None
 
-    # Randomized voice assignment: seeded off the script content so it is deterministic
-    # per episode (same script → same voices) but varies across episodes. Swaps which of
-    # the two configured voices speaks Speaker 1 vs Speaker 2, so the explainer (Speaker 1)
-    # is not always Host 1. Only the two configured voices are used. Disable: TTS_RANDOM_VOICE=0.
-    _voice_swapped = False
-    if TTS_RANDOM_VOICE and host1_id != host2_id:
-        _seed = int(hashlib.sha256(script_text.encode("utf-8")).hexdigest(), 16)
-        if _seed & 1:
-            host1_id, host2_id = host2_id, host1_id
-            _voice_swapped = True
-
-    logger.info("=" * 60)
-    logger.info("AIVISSPEECH — JAPANESE AUDIO GENERATION")
-    logger.info("=" * 60)
-    logger.info(f"API endpoint: {_AIVISSPEECH_API_URL}")
-    _rand_note = (
-        f" [random-voice: {'SWAPPED' if _voice_swapped else 'no-swap'}]" if TTS_RANDOM_VOICE else " [random-voice: off]"
-    )
-    logger.info(f"Voices: Speaker1 → speaker_id={host1_id}, Speaker2 → speaker_id={host2_id}{_rand_note}")
-
-    # Health check
-    if not _aivisspeech_available():
-        logger.error(
-            f"✗ AivisSpeech API not reachable at {_AIVISSPEECH_API_URL}\n"
-            f"  Start it: docker run -d --name aivisspeech -p 10101:10101 ghcr.io/aivis-project/aivisspeech-engine:cpu-latest"
-        )
+    host1_id, host2_id, voice_swapped = assign_seeded_voices(script_text, host1_id, host2_id)
+    if not _aivisspeech_preflight(host1_id, host2_id, voice_swapped):
         return None
-
-    logger.info("✓ AivisSpeech API is healthy")
 
     # Parse script — strict Speaker N: pattern only
     speaker_pattern = re.compile(r"^(Speaker\s*(\d+))\s*[:：]\s*(.*)", re.IGNORECASE)
     speaker_map = {}
-
-    lines = script_text.split("\n")
-    audio_segments = []
-    sample_rate = None
-    transition_positions_ms = []
-    cumulative_samples = 0
+    tl = _AivisTimeline(host1_id, host2_id)
 
     current_speaker = None
     buffer_text = ""
-    segment_count = 0
 
-    def _flush_buffer():
-        nonlocal buffer_text, segment_count, sample_rate, cumulative_samples
-        if buffer_text and current_speaker:
-            logger.info(f"  Segment {segment_count + 1} (Speaker {current_speaker}): {buffer_text[:50]}...")
-            chunks = _chunk_japanese_text(buffer_text)
-            chunk_audios = []
-            spk_id = host1_id if current_speaker == 1 else host2_id
-            spk_speed = TTS_SPEED_OVERRIDES.get(spk_id, TTS_SPEED_SCALE)
-            spk_inton = TTS_INTONATION_OVERRIDES.get(spk_id, TTS_INTONATION_SCALE)
-            for chunk in chunks:
-                a, sr_chunk = _call_aivisspeech_segment(chunk, spk_id, spk_speed, spk_inton)
-                if a is not None:
-                    chunk_audios.append(a)
-                else:
-                    sr_fallback = sample_rate or 24000
-                    silence_secs = max(0.5, len(chunk) / 8.0)
-                    chunk_audios.append(np.zeros(int(silence_secs * sr_fallback), dtype=np.float32))
-                    logger.warning(f"  Chunk failed — inserted {silence_secs:.1f}s silence")
-            if chunk_audios:
-                if sample_rate is None:
-                    sample_rate = sr_chunk if sr_chunk is not None else 24000
-                    logger.info(f"  Sample rate: {sample_rate} Hz")
-                segment_audio = np.concatenate(chunk_audios)
-                rms = np.sqrt(np.mean(segment_audio**2))
-                if rms > 1e-6:
-                    segment_audio = segment_audio * (_TARGET_RMS / rms)
-                    segment_audio = np.clip(segment_audio, -1.0, 1.0)
-                audio_segments.append(segment_audio)
-                cumulative_samples += len(segment_audio)
-                segment_count += 1
-            else:
-                logger.warning(f"  ⚠ Segment {segment_count + 1} failed — skipping")
-        buffer_text = ""
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith("##"):
-            continue
-        if re.match(r"^-{3,}$", line):
+    for raw_line in script_text.split("\n"):
+        line = raw_line.strip()
+        if not line or line.startswith("##") or re.match(r"^-{3,}$", line):
             continue
 
         if line in MARKER_SILENCE:
-            _flush_buffer()
-            _sr = sample_rate or 24000
-            silence_sec = MARKER_SILENCE[line]
-            silence_samples = int(silence_sec * _sr)
-            audio_segments.append(np.zeros(silence_samples, dtype=np.float32))
-            if line == "[TRANSITION]":
-                position_ms = int((cumulative_samples / _sr) * 1000)
-                transition_positions_ms.append(position_ms)
-                logger.info(f"  [TRANSITION] marker at {position_ms}ms")
-            cumulative_samples += silence_samples
+            tl.flush_turn(buffer_text, current_speaker)
+            buffer_text = ""
+            tl.add_marker(line)
             continue
 
         match = speaker_pattern.match(line)
         if match:
             name = match.group(1).strip()
-            slot = int(match.group(2))
-            text_after = match.group(3).strip()
-
             if name not in speaker_map:
-                speaker_map[name] = slot
-                logger.info(f"  Speaker detected: '{name}' → Host {slot}")
-
+                speaker_map[name] = int(match.group(2))
+                logger.info(f"  Speaker detected: '{name}' → Host {speaker_map[name]}")
             new_speaker = speaker_map[name]
-            _flush_buffer()
 
-            if current_speaker is not None and current_speaker != new_speaker and sample_rate:
-                silence = np.zeros(int(0.3 * sample_rate), dtype=np.float32)
-                audio_segments.append(silence)
-                cumulative_samples += len(silence)
+            tl.flush_turn(buffer_text, current_speaker)
+            buffer_text = ""
+            if current_speaker is not None and current_speaker != new_speaker:
+                tl.add_speaker_gap()
 
             current_speaker = new_speaker
-            buffer_text = text_after
+            buffer_text = match.group(3).strip()
+        elif current_speaker is None:
+            # Unlabeled leading prose is the channel intro; spoken by Speaker 2.
+            if line and not line.startswith("["):
+                logger.info(f"  Channel intro (Speaker 2): {line[:60]}...")
+                tl.flush_turn(line, 2)
+            else:
+                logger.debug(f"  Skipping unlabeled line: {line[:60]}...")
         else:
-            if current_speaker is None:
-                if line and not line.startswith("["):
-                    logger.info(f"  Channel intro (Speaker 2): {line[:60]}...")
-                    current_speaker = 2
-                    buffer_text = line
-                    _flush_buffer()
-                    current_speaker = None
-                else:
-                    logger.debug(f"  Skipping unlabeled line: {line[:60]}...")
-                continue
             buffer_text = f"{buffer_text} {line}".strip()
 
-    _flush_buffer()
+    tl.flush_turn(buffer_text, current_speaker)
 
-    logger.info(f"Generated {segment_count} audio segments")
-    if transition_positions_ms:
-        logger.info(f"Transition positions: {transition_positions_ms}")
+    logger.info(f"Generated {tl.segment_count} audio segments")
+    if tl.transition_positions_ms:
+        logger.info(f"Transition positions: {tl.transition_positions_ms}")
 
-    if audio_segments and sample_rate:
-        try:
-            final_audio = np.concatenate(audio_segments)
-            sf.write(output_filename, final_audio, sample_rate)
-
-            file_size = Path(output_filename).stat().st_size
-            duration_sec = len(final_audio) / sample_rate
-            duration_min = duration_sec / 60
-
-            logger.info("\n✓ Audio generated successfully (AivisSpeech):")
-            logger.info(f"  File: {output_filename}")
-            logger.info(f"  Size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
-            logger.info(f"  Duration: {duration_min:.2f} minutes ({duration_sec:.1f} seconds)")
-            logger.info(f"  Sample rate: {sample_rate} Hz")
-            logger.info("=" * 60 + "\n")
-
-            return (output_filename, transition_positions_ms)
-        except Exception as e:
-            logger.error(f"✗ ERROR: Failed to save audio: {e}")
-            return None
-    else:
-        logger.error("✗ ERROR: No audio segments generated")
+    if not _write_generated_audio(tl.segments, tl.sample_rate, output_filename, "AivisSpeech"):
         return None
+    return (output_filename, tl.transition_positions_ms)
 
 
 # ---------------------------------------------------------------------------
