@@ -823,6 +823,115 @@ class FastWorker:
 # --- Smart Model: The Researcher Agent ---
 
 
+def _keyword_domain_vocabulary(is_social: bool) -> dict:
+    """Prompt fragments that differ between the PECO (social) and PICO (clinical) frames."""
+    if is_social:
+        return {
+            "search_db": "cascading academic database search",
+            "framework": "PECO",
+            "exp_label": "exposure",
+            "t1_exp": (
+                "  Exposure: exact folk/common names for *this specific exposure/factor* only.\n"
+                '  Example for screen time: ["screen time", "smartphone use", "social media use"]\n'
+                "  Do NOT include broader digital media — that belongs in Tier 3.\n"
+            ),
+            "t3_exp": (
+                "  Exposure: broader conceptual category (source ambiguity accepted).\n"
+                '  Example: ["digital media", "technology use", "internet exposure", "media consumption"]\n'
+                "  These results require inference (e.g., any digital media -> screen time effect) and "
+                "will be flagged as speculative in the output.\n"
+            ),
+            "fwk_json": '  "peco": {"population": "...", "exposure": "...", "comparison": "...", "outcome": "..."},\n',
+            "fwk_rule": "- Also produce a PECO summary.\n\n",
+        }
+    return {
+        "search_db": "cascading PubMed search",
+        "framework": "PICO",
+        "exp_label": "intervention",
+        "t1_exp": (
+            "  Intervention: exact folk/common names for *this specific substance* only.\n"
+            '  Example for coffee: ["coffee", "coffee drinking", "coffee consumption"]\n'
+            "  Do NOT include caffeine — caffeine also comes from tea, energy drinks, etc.\n"
+        ),
+        "t3_exp": (
+            "  Intervention: active compound class / mechanism (source ambiguity accepted).\n"
+            '  Example: ["caffeine", "methylxanthine", "adenosine antagonist", "caffeinated beverage"]\n'
+            "  These results require inference (e.g., caffeine from any source -> coffee effect) and "
+            "will be flagged as speculative in the output.\n"
+        ),
+        "fwk_json": '  "pico": {"population": "...", "intervention": "...", "comparison": "...", "outcome": "..."},\n',
+        "fwk_rule": "- Also produce a PICO summary.\n\n",
+    }
+
+
+def _format_evidence_blocks(good_summaries: list) -> list:
+    """One markdown block per source, with its study metadata inline."""
+    blocks = []
+    for s in good_summaries:
+        meta_line = ""
+        if s.metadata:
+            m = s.metadata
+            fields = [
+                ("Type", m.study_type),
+                ("N", m.sample_size),
+                ("Journal", m.journal_name),
+                ("Year", m.publication_year),
+                ("Effect", m.effect_size),
+                ("Authors", m.authors),
+                ("Pop", m.demographics),
+                ("Funding", m.funding_source),
+            ]
+            parts = [f"{label}: {value}" for label, value in fields if value]
+            if parts:
+                meta_line = f"**Study Metadata:** {' | '.join(parts)}\n"
+        blocks.append(
+            f"### Source: {s.title or s.url}\n"
+            f"**URL:** {s.url}\n"
+            f"**Research Goal:** {s.goal}\n"
+            f"{meta_line}"
+            f"**Extracted Facts:**\n{s.summary}\n"
+        )
+    return blocks
+
+
+@dataclass
+class AgentDeps:
+    """Collaborators a ResearchAgent works through.
+
+    Both researchers are built from the same four, so they travel together.
+    """
+
+    smart_client: Any
+    fast_worker: Any
+    search_service: Any
+    fetcher: Any
+
+
+@dataclass
+class ResearchConfig:
+    """Model endpoints and search settings for one pipeline run."""
+
+    brave_api_key: str = ""
+    results_per_query: int = 5
+    max_iterations: int = MAX_RESEARCH_ITERATIONS
+    fast_model_available: bool = True
+    domain: str = "clinical"
+    smart_base_url: str = SMART_BASE_URL
+    fast_base_url: str = FAST_BASE_URL
+    smart_model: str = SMART_MODEL
+    fast_model: str = FAST_MODEL
+
+
+@dataclass(frozen=True)
+class _ScreenContext:
+    """What Step 3 screening needs besides the records themselves."""
+
+    pico_str: str
+    max_select: int
+    topic: str
+    intervention_override: str = ""
+
+
 @dataclass(frozen=True)
 class _TrackSpec:
     """What distinguishes the affirmative track from the falsification one.
@@ -954,19 +1063,16 @@ class ResearchAgent:
 
     def __init__(
         self,
-        smart_client: AsyncOpenAI,
-        fast_worker: FastWorker | None,
-        search_service: SearchService,
-        fetcher: ContentFetcher,
+        deps: "AgentDeps",
         smart_model: str = SMART_MODEL,
         results_per_query: int = 5,
         max_iterations: int = MAX_RESEARCH_ITERATIONS,
     ):
-        self.smart_client = smart_client
+        self.smart_client = deps.smart_client
         self.smart_model = smart_model
-        self.fast_worker = fast_worker
-        self.search = search_service
-        self.fetcher = fetcher
+        self.fast_worker = deps.fast_worker
+        self.search = deps.search_service
+        self.fetcher = deps.fetcher
         self.results_per_query = results_per_query
         self.max_iterations = max_iterations
 
@@ -1070,6 +1176,27 @@ class ResearchAgent:
 
         return all_summaries, total_fetched, total_errors
 
+    def _build_plan_prompt(self, role, role_instructions, topic, iteration, all_summaries) -> str:
+        """Iteration 0 opens the search; later iterations ask for gap-filling queries."""
+        if iteration == 0:
+            return (
+                f"You are a {role}. {role_instructions}\n\n"
+                f"Topic: {topic}\n\n"
+                f"Generate 5-7 specific search queries to begin your research.\n"
+                f'Return ONLY a JSON array: [{{"query": "...", "goal": "..."}}]'
+            )
+        good = len([s for s in all_summaries if s.summary and not s.error])
+        return (
+            f"You are a {role}. {role_instructions}\n\n"
+            f"Topic: {topic}\n\n"
+            f"Evidence gathered so far ({good} sources):\n"
+            f"{self._format_evidence_so_far(all_summaries)}\n\n"
+            f"Based on what you have, identify 3-5 specific GAPS in your evidence.\n"
+            f"Generate NEW targeted search queries to fill those gaps.\n"
+            f"If evidence is sufficient, return an empty array: []\n\n"
+            f'Return ONLY a JSON array: [{{"query": "...", "goal": "..."}}]'
+        )
+
     async def research(self, topic: str, role: str, role_instructions: str, log=logger.info) -> ResearchReport:
         """
         Run iterative research as the given role.
@@ -1095,26 +1222,7 @@ class ResearchAgent:
         for iteration in range(self.max_iterations):
             log(f"\n  ── Iteration {iteration + 1}/{self.max_iterations} ──")
 
-            # Step 1: Smart model plans what to search
-            if iteration == 0:
-                plan_prompt = (
-                    f"You are a {role}. {role_instructions}\n\n"
-                    f"Topic: {topic}\n\n"
-                    f"Generate 5-7 specific search queries to begin your research.\n"
-                    f'Return ONLY a JSON array: [{{"query": "...", "goal": "..."}}]'
-                )
-            else:
-                evidence_summary = self._format_evidence_so_far(all_summaries)
-                plan_prompt = (
-                    f"You are a {role}. {role_instructions}\n\n"
-                    f"Topic: {topic}\n\n"
-                    f"Evidence gathered so far ({len([s for s in all_summaries if s.summary and not s.error])} sources):\n"
-                    f"{evidence_summary}\n\n"
-                    f"Based on what you have, identify 3-5 specific GAPS in your evidence.\n"
-                    f"Generate NEW targeted search queries to fill those gaps.\n"
-                    f"If evidence is sufficient, return an empty array: []\n\n"
-                    f'Return ONLY a JSON array: [{{"query": "...", "goal": "..."}}]'
-                )
+            plan_prompt = self._build_plan_prompt(role, role_instructions, topic, iteration, all_summaries)
 
             log("    Planning: asking smart model for queries...")
             raw_plan = await self._call_smart(
@@ -1147,37 +1255,7 @@ class ResearchAgent:
         good_summaries = [s for s in all_summaries if s.summary and s.summary != "NO RELEVANT DATA" and not s.error]
         log(f"\n  Writing final report from {len(good_summaries)} sources...")
 
-        evidence_blocks = []
-        for s in good_summaries:
-            meta_line = ""
-            if s.metadata:
-                m = s.metadata
-                parts = []
-                if m.study_type:
-                    parts.append(f"Type: {m.study_type}")
-                if m.sample_size:
-                    parts.append(f"N: {m.sample_size}")
-                if m.journal_name:
-                    parts.append(f"Journal: {m.journal_name}")
-                if m.publication_year:
-                    parts.append(f"Year: {m.publication_year}")
-                if m.effect_size:
-                    parts.append(f"Effect: {m.effect_size}")
-                if m.authors:
-                    parts.append(f"Authors: {m.authors}")
-                if m.demographics:
-                    parts.append(f"Pop: {m.demographics}")
-                if m.funding_source:
-                    parts.append(f"Funding: {m.funding_source}")
-                if parts:
-                    meta_line = f"**Study Metadata:** {' | '.join(parts)}\n"
-            evidence_blocks.append(
-                f"### Source: {s.title or s.url}\n"
-                f"**URL:** {s.url}\n"
-                f"**Research Goal:** {s.goal}\n"
-                f"{meta_line}"
-                f"**Extracted Facts:**\n{s.summary}\n"
-            )
+        evidence_blocks = _format_evidence_blocks(good_summaries)
         aggregated = "\n---\n".join(evidence_blocks) if evidence_blocks else "No evidence gathered."
         if len(aggregated) > 80000:
             aggregated = aggregated[:80000] + "\n\n[...truncated...]"
@@ -1446,42 +1524,10 @@ class ResearchAgent:
                 '"alertness", "executive function", "mental performance"]\n'
             )
 
-        if is_social:
-            _search_db = "cascading academic database search"
-            _framework = "PECO"
-            _t1_exp = (
-                "  Exposure: exact folk/common names for *this specific exposure/factor* only.\n"
-                '  Example for screen time: ["screen time", "smartphone use", "social media use"]\n'
-                "  Do NOT include broader digital media — that belongs in Tier 3.\n"
-            )
-            _t3_exp = (
-                "  Exposure: broader conceptual category (source ambiguity accepted).\n"
-                '  Example: ["digital media", "technology use", "internet exposure", "media consumption"]\n'
-                "  These results require inference (e.g., any digital media -> screen time effect) and "
-                "will be flagged as speculative in the output.\n"
-            )
-            _fwk_json = '  "peco": {"population": "...", "exposure": "...", "comparison": "...", "outcome": "..."},\n'
-            _fwk_rule = "- Also produce a PECO summary.\n\n"
-            _exp_label = "exposure"
-        else:
-            _search_db = "cascading PubMed search"
-            _framework = "PICO"
-            _t1_exp = (
-                "  Intervention: exact folk/common names for *this specific substance* only.\n"
-                '  Example for coffee: ["coffee", "coffee drinking", "coffee consumption"]\n'
-                "  Do NOT include caffeine — caffeine also comes from tea, energy drinks, etc.\n"
-            )
-            _t3_exp = (
-                "  Intervention: active compound class / mechanism (source ambiguity accepted).\n"
-                '  Example: ["caffeine", "methylxanthine", "adenosine antagonist", "caffeinated beverage"]\n'
-                "  These results require inference (e.g., caffeine from any source -> coffee effect) and "
-                "will be flagged as speculative in the output.\n"
-            )
-            _fwk_json = (
-                '  "pico": {"population": "...", "intervention": "...", "comparison": "...", "outcome": "..."},\n'
-            )
-            _fwk_rule = "- Also produce a PICO summary.\n\n"
-            _exp_label = "intervention"
+        vocab = _keyword_domain_vocabulary(is_social)
+        _search_db = vocab["search_db"]
+        _t1_exp, _t3_exp = vocab["t1_exp"], vocab["t3_exp"]
+        _fwk_json, _fwk_rule, _exp_label = vocab["fwk_json"], vocab["fwk_rule"], vocab["exp_label"]
 
         system = (
             f"{role_header}"
@@ -2063,11 +2109,13 @@ class ResearchAgent:
             screened[tier_num] = await self._screen_chunk(
                 tier_records,
                 0,
-                pico_str,
-                max_select,
-                topic,
+                _ScreenContext(
+                    pico_str=pico_str,
+                    max_select=max_select,
+                    topic=topic,
+                    intervention_override=tier_intervention,
+                ),
                 log,
-                intervention_override=tier_intervention,
             )
             log(f"    [Step 3] Tier {tier_num}: {len(screened[tier_num])} passed screening")
 
@@ -2101,16 +2149,13 @@ class ResearchAgent:
         return selected
 
     async def _screen_chunk(
-        self,
-        records: list[WideNetRecord],
-        offset: int,
-        pico_str: str,
-        max_select: int,
-        topic: str,
-        log,
-        intervention_override: str = "",
+        self, records: list[WideNetRecord], offset: int, ctx: "_ScreenContext", log
     ) -> list[WideNetRecord]:
         """Screen a chunk of records with the smart model."""
+        pico_str = ctx.pico_str
+        max_select = ctx.max_select
+        topic = ctx.topic
+        intervention_override = ctx.intervention_override
         compact = []
         for i, r in enumerate(records):
             compact.append(
@@ -2646,18 +2691,18 @@ class Orchestrator:
     Step 7: GRADE synthesis (Smart Model)
     """
 
-    def __init__(
-        self,
-        smart_base_url: str = SMART_BASE_URL,
-        fast_base_url: str = FAST_BASE_URL,
-        smart_model: str = SMART_MODEL,
-        fast_model: str = FAST_MODEL,
-        brave_api_key: str = "",
-        results_per_query: int = 5,
-        max_iterations: int = MAX_RESEARCH_ITERATIONS,
-        fast_model_available: bool = True,
-        domain: str = "clinical",
-    ):
+    def __init__(self, config: "ResearchConfig | None" = None):
+        config = config or ResearchConfig()
+        smart_base_url = config.smart_base_url
+        fast_base_url = config.fast_base_url
+        smart_model = config.smart_model
+        fast_model = config.fast_model
+        brave_api_key = config.brave_api_key
+        results_per_query = config.results_per_query
+        max_iterations = config.max_iterations
+        fast_model_available = config.fast_model_available
+        domain = config.domain
+
         self.domain = domain
         self.smart_client = AsyncOpenAI(base_url=smart_base_url, api_key="NA")
         self.fast_client = AsyncOpenAI(base_url=fast_base_url, api_key="NA") if fast_model_available else None
@@ -2668,12 +2713,14 @@ class Orchestrator:
         self._page_cache = PageCache()
         fetcher = ContentFetcher(max_concurrent=15, cache=self._page_cache)
 
-        self.lead_researcher = ResearchAgent(
-            self.smart_client, fast_worker, search_svc, fetcher, smart_model, results_per_query, max_iterations
+        deps = AgentDeps(
+            smart_client=self.smart_client,
+            fast_worker=fast_worker,
+            search_service=search_svc,
+            fetcher=fetcher,
         )
-        self.counter_researcher = ResearchAgent(
-            self.smart_client, fast_worker, search_svc, fetcher, smart_model, results_per_query, max_iterations
-        )
+        self.lead_researcher = ResearchAgent(deps, smart_model, results_per_query, max_iterations)
+        self.counter_researcher = ResearchAgent(deps, smart_model, results_per_query, max_iterations)
         self.fast_model_available = fast_model_available
 
         # Set domain on researchers for Step 2 dispatch
@@ -2761,22 +2808,7 @@ class Orchestrator:
         log(f"\n{rule}")
         log("STEP 7: GRADE SYNTHESIS")
         log(rule)
-        return await self._grade_synthesis(
-            topic,
-            aff.case_report,
-            fal.case_report,
-            math_report,
-            aff.plan,
-            fal.plan,
-            aff.wide_net_total + fal.wide_net_total,
-            aff.screened_in + fal.screened_in,
-            aff.fulltext_ok + fal.fulltext_ok,
-            aff.fulltext_err + fal.fulltext_err,
-            search_date,
-            log,
-            aff_extractions=aff.extractions,
-            fal_extractions=fal.extractions,
-        )
+        return await self._grade_synthesis(topic, aff, fal, math_report, search_date, log)
 
     def _log_run_summary(self, start_time, aff: _TrackResult, fal: _TrackResult, impacts, all_extractions, log):
         rule = "=" * 70
@@ -2951,11 +2983,9 @@ class Orchestrator:
             self._run_research_track(_FALSIFICATION_TRACK, topic, framing_context, decomposition, output_dir, log),
         )
 
-        aff_strategy, aff_records, aff_top = aff.plan, aff.records, aff.top_records
-        fal_strategy, fal_records, fal_top = fal.plan, fal.records, fal.top_records
+        aff_strategy, fal_strategy = aff.plan, fal.plan
+        aff_top, fal_top = aff.top_records, fal.top_records
         aff_extractions, fal_extractions = aff.extractions, fal.extractions
-        aff_highest_tier, fal_highest_tier = aff.highest_tier, fal.highest_tier
-
         aff_fulltext_ok, aff_fulltext_err = aff.fulltext_ok, aff.fulltext_err
         fal_fulltext_ok, fal_fulltext_err = fal.fulltext_ok, fal.fulltext_err
 
@@ -2966,18 +2996,7 @@ class Orchestrator:
         audit_text = await self._run_step7_grade(topic, aff, fal, math_report, search_date, log)
 
         if output_dir:
-            self._save_artifacts(
-                output_dir,
-                aff_strategy,
-                fal_strategy,
-                aff_records,
-                fal_records,
-                aff_top,
-                fal_top,
-                math_report,
-                aff_highest_tier=aff_highest_tier,
-                fal_highest_tier=fal_highest_tier,
-            )
+            self._save_artifacts(output_dir, aff, fal, math_report)
 
         # --- Build backward-compatible return ---
         # Convert extractions to SummarizedSource for compatibility
@@ -3030,8 +3049,8 @@ class Orchestrator:
                 "impacts": impacts,
                 "framing_context": framing_context,
                 "search_date": search_date,
-                "aff_highest_tier": aff_highest_tier,
-                "fal_highest_tier": fal_highest_tier,
+                "aff_highest_tier": aff.highest_tier,
+                "fal_highest_tier": fal.highest_tier,
                 "metrics": {
                     "aff_wide_net_total": aff.wide_net_total,
                     "aff_screened_in": aff.screened_in,
@@ -3048,21 +3067,25 @@ class Orchestrator:
     async def _grade_synthesis(
         self,
         topic: str,
-        aff_case: str,
-        fal_case: str,
+        aff: _TrackResult,
+        fal: _TrackResult,
         math_report: str,
-        aff_strategy: TieredSearchPlan,
-        fal_strategy: TieredSearchPlan,
-        total_wide: int,
-        total_screened: int,
-        total_ft_ok: int,
-        total_ft_err: int,
         search_date: str,
         log=logger.info,
-        aff_extractions: list[DeepExtraction] | None = None,
-        fal_extractions: list[DeepExtraction] | None = None,
     ) -> str:
-        """Step 7: GRADE / Evidence Quality synthesis by the Auditor."""
+        """Step 7: GRADE / Evidence Quality synthesis by the Auditor.
+
+        Reads the two tracks' cases, plans, extractions and PRISMA counts off
+        their _TrackResult rather than taking fourteen positional arguments.
+        """
+        aff_case, fal_case = aff.case_report, fal.case_report
+        aff_strategy = aff.plan
+        aff_extractions, fal_extractions = aff.extractions, fal.extractions
+        total_wide = aff.wide_net_total + fal.wide_net_total
+        total_screened = aff.screened_in + fal.screened_in
+        total_ft_ok = aff.fulltext_ok + fal.fulltext_ok
+        total_ft_err = aff.fulltext_err + fal.fulltext_err
+
         synthesis_label = "Evidence Quality" if self.domain == "social_science" else "GRADE"
         log(f"    [Step 7] {synthesis_label} synthesis...")
 
@@ -3347,23 +3370,17 @@ class Orchestrator:
         return "\n".join(lines) if lines else ""
 
     @staticmethod
-    def _save_artifacts(
-        output_dir: str,
-        aff_strategy: TieredSearchPlan,
-        fal_strategy: TieredSearchPlan,
-        aff_records: list[WideNetRecord],
-        fal_records: list[WideNetRecord],
-        aff_top: list[WideNetRecord],
-        fal_top: list[WideNetRecord],
-        math_report: str,
-        aff_highest_tier: int = 1,
-        fal_highest_tier: int = 1,
-    ):
+    def _save_artifacts(output_dir: str, aff: _TrackResult, fal: _TrackResult, math_report: str):
         """Save intermediate pipeline artifacts to output directory.
 
         Writes into research/ subdirectory if it exists (M9 layout).
         Falls back to flat layout for backward compatibility.
         """
+        aff_strategy, fal_strategy = aff.plan, fal.plan
+        aff_records, fal_records = aff.records, fal.records
+        aff_top, fal_top = aff.top_records, fal.top_records
+        aff_highest_tier, fal_highest_tier = aff.highest_tier, fal.highest_tier
+
         import dataclasses
         from pathlib import Path
 
@@ -3432,22 +3449,16 @@ class Orchestrator:
 
 async def run_deep_research(
     topic: str,
-    brave_api_key: str = "",
-    results_per_query: int = 8,
-    max_iterations: int = MAX_RESEARCH_ITERATIONS,
-    fast_model_available: bool = True,
+    config: "ResearchConfig | None" = None,
     framing_context: str = "",
     output_dir: str = None,
-    domain: str = "clinical",
 ) -> "DeepResearchResult":
+    """Entry point for the 7-step pipeline.
 
-    orchestrator = Orchestrator(
-        brave_api_key=brave_api_key,
-        results_per_query=results_per_query,
-        max_iterations=max_iterations,
-        fast_model_available=fast_model_available,
-        domain=domain,
-    )
+    Search/model settings travel as one ResearchConfig; the default is the
+    module's configured smart/fast models with a clinical domain.
+    """
+    orchestrator = Orchestrator(config or ResearchConfig())
     return await orchestrator.run(topic, framing_context=framing_context, output_dir=output_dir)
 
 

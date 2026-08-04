@@ -164,14 +164,14 @@ class TestOrchestratorRun:
 
     def test_totals_handed_to_grade_are_the_sum_of_both_tracks(self, orch):
         _run(orch)
-        args = orch.captured["grade_args"]
-        # positional: topic, aff_case, fal_case, math, aff_plan, fal_plan,
-        #             total_wide, total_screened, total_ft_ok, total_ft_err, date, log
-        total_wide, total_screened, total_ft_ok, total_ft_err = args[6:10]
-        assert total_wide == 8, "4 wide-net records per track"
-        assert total_screened == 4, "2 screened per track"
-        assert total_ft_ok == 2, "one full-text failure per track"
-        assert total_ft_err == 2
+        # positional: topic, aff_track, fal_track, math_report, search_date, log
+        _, aff, fal, _, _, _ = orch.captured["grade_args"]
+        assert aff.plan.role == "affirmative", "the tracks must not be passed in the wrong order"
+        assert fal.plan.role == "adversarial"
+        assert aff.wide_net_total + fal.wide_net_total == 8, "4 wide-net records per track"
+        assert aff.screened_in + fal.screened_in == 4, "2 screened per track"
+        assert aff.fulltext_ok + fal.fulltext_ok == 2, "one full-text failure per track"
+        assert aff.fulltext_err + fal.fulltext_err == 2
 
     def test_retracted_papers_are_filtered_before_extraction(self, orch):
         orch.lead_researcher = FakeResearcher("aff", retracted_idx={0})
@@ -179,8 +179,9 @@ class TestOrchestratorRun:
         pd = result["pipeline_data"]
         assert len(pd["aff_extractions"]) == 1, "the retracted paper must not reach extraction"
         assert len(pd["fal_extractions"]) == 2, "the other track is unaffected"
-        # screened_in is counted BEFORE the retraction filter, so the total is unchanged
-        assert orch.captured["grade_args"][7] == 4
+        # screened_in is counted BEFORE the retraction filter, so it is unchanged
+        _, aff, fal, _, _, _ = orch.captured["grade_args"]
+        assert aff.screened_in + fal.screened_in == 4
 
     def test_clinical_domain_uses_arr_nnt_math(self, orch, monkeypatch):
         from dr2_podcast.research import clinical_math
@@ -211,6 +212,10 @@ class TestOrchestratorRun:
         assert "saved" not in orch.captured
         _run(orch, output_dir=str(tmp_path))
         assert "saved" in orch.captured
+        args, _kwargs = orch.captured["saved"]
+        _out, aff_track, fal_track, _math = args
+        assert aff_track.plan.role == "affirmative", "affirmative track must be the first argument"
+        assert fal_track.plan.role == "adversarial"
 
     def test_result_carries_pipeline_data_for_both_tracks(self, orch):
         result = _run(orch)

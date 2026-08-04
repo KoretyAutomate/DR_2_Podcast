@@ -330,7 +330,7 @@ def phase_1_research(
     """Phase 1: Deep research pipeline (clinical or social science)."""
     from dr2_podcast import pipeline as _pipeline
     from dr2_podcast.pipeline import InsufficientEvidenceError
-    from dr2_podcast.research.clinical import run_deep_research
+    from dr2_podcast.research.clinical import ResearchConfig, run_deep_research
 
     run_logger = get_run_logger()
     output_dir_path = Path(output_dir)
@@ -352,12 +352,14 @@ def phase_1_research(
         deep_reports = asyncio.run(
             run_deep_research(
                 topic=topic_name,
-                brave_api_key=os.getenv("BRAVE_API_KEY", ""),
-                results_per_query=15,
-                fast_model_available=_fast_model_available(run_logger),
+                config=ResearchConfig(
+                    brave_api_key=os.getenv("BRAVE_API_KEY", ""),
+                    results_per_query=15,
+                    fast_model_available=_fast_model_available(run_logger),
+                    domain=_effective_domain,
+                ),
                 framing_context=framing_output,
                 output_dir=str(output_dir_path),
-                domain=_effective_domain,
             )
         )
 
