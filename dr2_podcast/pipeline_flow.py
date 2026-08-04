@@ -194,6 +194,120 @@ def phase_0_framing(
 # ---------------------------------------------------------------------------
 
 
+def _fast_model_available(run_logger) -> bool:
+    """Probe the Ollama-compatible endpoint for the configured fast model."""
+    fast_model_name = os.environ.get("FAST_MODEL_NAME", "")
+    fast_base_url = os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1")
+    try:
+        import httpx
+
+        resp = httpx.get(f"{fast_base_url}/models", timeout=3)
+        if resp.status_code == 200:
+            models = [m.get("id", "") for m in resp.json().get("data", [])]
+            available = fast_model_name in models
+            if available:
+                run_logger.info("Fast model ready: %s", fast_model_name)
+            else:
+                run_logger.warning("Fast model '%s' not found. Available: %s", fast_model_name, models)
+            return available
+    except Exception:
+        run_logger.warning("Fast model not available (Ollama unreachable). Running smart-only mode.")
+    return False
+
+
+def _read_candidate_counts(output_dir_path: Path, run_logger) -> tuple[int, int]:
+    """(affirmative, adversarial) candidate counts from the screening results."""
+    from dr2_podcast import pipeline as _pipeline
+
+    counts = {"aff": 0, "neg": 0}
+    for fname, varname in [("screening_results_aff.json", "aff"), ("screening_results_neg.json", "neg")]:
+        p = _pipeline.output_path(output_dir_path, fname)
+        if p.exists():
+            try:
+                counts[varname] = json.loads(p.read_text()).get("total_candidates", 0)
+            except Exception as exc:
+                run_logger.debug("candidate count unreadable: %s", exc)
+    return counts["aff"], counts["neg"]
+
+
+_REPORT_FILENAMES = {
+    "lead": "affirmative_case.md",
+    "counter": "falsification_case.md",
+    "audit": "grade_synthesis.md",
+}
+
+
+def _save_research_reports(deep_reports: dict, output_dir_path: Path, run_logger) -> None:
+    from dr2_podcast import pipeline as _pipeline
+
+    for role_name, filename in _REPORT_FILENAMES.items():
+        report = deep_reports.get(role_name)
+        if not report:
+            run_logger.warning("%s report missing — skipping save", role_name.capitalize())
+            continue
+        report_file = _pipeline.output_path(output_dir_path, filename)
+        report_file.write_text(report.report)
+        run_logger.info("%s report saved: %s (%d sources)", role_name.capitalize(), filename, report.total_summaries)
+
+
+def _save_sources_json(deep_reports: dict, output_dir_path: Path, run_logger) -> None:
+    """Write research_sources.json, dropping sources that carry no usable summary."""
+    from dr2_podcast import pipeline as _pipeline
+
+    sources_json = {}
+    for role_name in ("lead", "counter"):
+        report = deep_reports[role_name]
+        role_sources = []
+        for idx, src in enumerate(report.sources):
+            if src.error or not src.summary or src.summary.strip().upper() == "NO RELEVANT DATA":
+                continue
+            if not src.url:
+                continue
+            role_sources.append(
+                {
+                    "index": idx,
+                    "url": src.url,
+                    "title": src.title,
+                    "query": src.query,
+                    "goal": src.goal,
+                    "summary": src.summary,
+                    "metadata": src.metadata.to_dict() if src.metadata else None,
+                }
+            )
+        sources_json[role_name] = role_sources
+    sources_file = _pipeline.output_path(output_dir_path, "research_sources.json")
+    sources_file.write_text(json.dumps(sources_json, indent=2, ensure_ascii=False))
+    run_logger.info(
+        "Research library saved: %d lead, %d counter sources",
+        len(sources_json.get("lead", [])),
+        len(sources_json.get("counter", [])),
+    )
+
+
+def _evidence_limited_prefix(aff_candidates: int) -> str:
+    from dr2_podcast.config import EVIDENCE_LIMITED_THRESHOLD as _ELT
+
+    return (
+        "## Evidence Quality Notice\n\n"
+        f"The affirmative research track retrieved only **{aff_candidates} candidate studies** "
+        f"(threshold: {_ELT}). "
+        "The following synthesis is based on limited direct evidence. "
+        "Claims should be interpreted cautiously.\n\n"
+    )
+
+
+def _serialize_deep_reports(deep_reports):
+    """Plain dict of serializable values, or None if it cannot be produced."""
+    if deep_reports is None:
+        return None
+    try:
+        from dr2_podcast.pipeline import _serialize_dataclass
+
+        return _serialize_dataclass(deep_reports)
+    except Exception:
+        return None
+
+
 @task(
     name="phase_1_research",
     retries=1,
@@ -213,6 +327,7 @@ def phase_1_research(
 ):
     """Phase 1: Deep research pipeline (clinical or social science)."""
     from dr2_podcast import pipeline as _pipeline
+    from dr2_podcast.pipeline import InsufficientEvidenceError
     from dr2_podcast.research.clinical import run_deep_research
 
     run_logger = get_run_logger()
@@ -223,25 +338,6 @@ def phase_1_research(
     run_logger.info("=" * 70)
 
     _effective_domain = research_domain if research_domain in ("clinical", "social_science") else "clinical"
-    brave_key = os.getenv("BRAVE_API_KEY", "")
-
-    # Fast model availability check
-    _fast_model_name = os.environ.get("FAST_MODEL_NAME", "")
-    _fast_base_url = os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1")
-    fast_model_available = False
-    try:
-        import httpx
-
-        _resp = httpx.get(f"{_fast_base_url}/models", timeout=3)
-        if _resp.status_code == 200:
-            _models = [m.get("id", "") for m in _resp.json().get("data", [])]
-            fast_model_available = _fast_model_name in _models
-            if fast_model_available:
-                run_logger.info("Fast model ready: %s", _fast_model_name)
-            else:
-                run_logger.warning("Fast model '%s' not found. Available: %s", _fast_model_name, _models)
-    except Exception:
-        run_logger.warning("Fast model not available (Ollama unreachable). Running smart-only mode.")
 
     aff_candidates = 0
     neg_candidates = 0
@@ -254,32 +350,19 @@ def phase_1_research(
         deep_reports = asyncio.run(
             run_deep_research(
                 topic=topic_name,
-                brave_api_key=brave_key,
+                brave_api_key=os.getenv("BRAVE_API_KEY", ""),
                 results_per_query=15,
-                fast_model_available=fast_model_available,
+                fast_model_available=_fast_model_available(run_logger),
                 framing_context=framing_output,
                 output_dir=str(output_dir_path),
                 domain=_effective_domain,
             )
         )
 
-        # Read candidate counts from screening results
-        for fname, varname in [("screening_results_aff.json", "aff"), ("screening_results_neg.json", "neg")]:
-            p = _pipeline.output_path(output_dir_path, fname)
-            if p.exists():
-                try:
-                    val = json.loads(p.read_text()).get("total_candidates", 0)
-                    if varname == "aff":
-                        aff_candidates = val
-                    else:
-                        neg_candidates = val
-                except Exception as exc:
-                    run_logger.debug("candidate count unreadable: %s", exc)
+        aff_candidates, neg_candidates = _read_candidate_counts(output_dir_path, run_logger)
 
         if aff_candidates == 0:
             _pipeline._write_insufficient_evidence_report(topic_name, 0, neg_candidates, output_dir_path)
-            from dr2_podcast.pipeline import InsufficientEvidenceError
-
             raise InsufficientEvidenceError(
                 f"Affirmative track: 0 candidates for '{topic_name}'. "
                 f"Adversarial found {neg_candidates}. "
@@ -289,52 +372,8 @@ def phase_1_research(
         if 0 < aff_candidates < evidence_limited_threshold:
             evidence_quality = "limited"
 
-        # Save research reports
-        REPORT_FILENAMES = {
-            "lead": "affirmative_case.md",
-            "counter": "falsification_case.md",
-            "audit": "grade_synthesis.md",
-        }
-        for role_name, filename in REPORT_FILENAMES.items():
-            report = deep_reports.get(role_name)
-            if not report:
-                run_logger.warning("%s report missing — skipping save", role_name.capitalize())
-                continue
-            report_file = _pipeline.output_path(output_dir_path, filename)
-            report_file.write_text(report.report)
-            run_logger.info(
-                "%s report saved: %s (%d sources)", role_name.capitalize(), filename, report.total_summaries
-            )
-
-        # Save sources JSON
-        sources_json = {}
-        for role_name in ("lead", "counter"):
-            report = deep_reports[role_name]
-            role_sources = []
-            for idx, src in enumerate(report.sources):
-                if src.error or not src.summary or src.summary.strip().upper() == "NO RELEVANT DATA":
-                    continue
-                if not src.url:
-                    continue
-                role_sources.append(
-                    {
-                        "index": idx,
-                        "url": src.url,
-                        "title": src.title,
-                        "query": src.query,
-                        "goal": src.goal,
-                        "summary": src.summary,
-                        "metadata": src.metadata.to_dict() if src.metadata else None,
-                    }
-                )
-            sources_json[role_name] = role_sources
-        sources_file = _pipeline.output_path(output_dir_path, "research_sources.json")
-        sources_file.write_text(json.dumps(sources_json, indent=2, ensure_ascii=False))
-        run_logger.info(
-            "Research library saved: %d lead, %d counter sources",
-            len(sources_json.get("lead", [])),
-            len(sources_json.get("counter", [])),
-        )
+        _save_research_reports(deep_reports, output_dir_path, run_logger)
+        _save_sources_json(deep_reports, output_dir_path, run_logger)
 
         # Build Source-of-Truth
         sot_content = _pipeline.build_imrad_sot(
@@ -343,15 +382,7 @@ def phase_1_research(
             domain=research_domain,
         )
         if evidence_quality == "limited":
-            from dr2_podcast.config import EVIDENCE_LIMITED_THRESHOLD as _ELT
-
-            sot_content = (
-                "## Evidence Quality Notice\n\n"
-                f"The affirmative research track retrieved only **{aff_candidates} candidate studies** "
-                f"(threshold: {_ELT}). "
-                "The following synthesis is based on limited direct evidence. "
-                "Claims should be interpreted cautiously.\n\n"
-            ) + sot_content
+            sot_content = _evidence_limited_prefix(aff_candidates) + sot_content
 
         sot_file = _pipeline.output_path(output_dir_path, "source_of_truth.md")
         sot_file.write_text(sot_content)
@@ -361,21 +392,11 @@ def phase_1_research(
 
     except Exception as exc:
         # Re-raise InsufficientEvidenceError (non-retryable — tells caller to abort)
-        from dr2_podcast.pipeline import InsufficientEvidenceError
-
         if isinstance(exc, InsufficientEvidenceError):
             raise
         run_logger.warning("Deep research failed: %s — continuing without deep research", exc)
 
-    # Serialize deep_reports for storage (plain dict of serializable values)
-    _dr_serialized = None
-    if deep_reports is not None:
-        try:
-            from dr2_podcast.pipeline import _serialize_dataclass
-
-            _dr_serialized = _serialize_dataclass(deep_reports)
-        except Exception:
-            _dr_serialized = None
+    _dr_serialized = _serialize_deep_reports(deep_reports)
 
     return {
         "sot_content": sot_content,
