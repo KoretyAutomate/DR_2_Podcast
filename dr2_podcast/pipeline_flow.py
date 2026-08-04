@@ -593,7 +593,7 @@ def phase_4_blueprint(
 ):
     """Phase 4: Episode blueprint via producer agent."""
     from dr2_podcast import pipeline as _pipeline
-    from dr2_podcast.pipeline_crew import _crew_kickoff_guarded
+    from dr2_podcast.pipeline_crew import _crew_kickoff_guarded, CrewBudget, SotInjection
     from dr2_podcast.utils import strip_think_blocks
     from dr2_podcast.pipeline_script import _parse_blueprint_inventory
 
@@ -614,13 +614,15 @@ def phase_4_blueprint(
         blueprint_task_ref,
         translation_task_ref,
         language,
-        sot_file,
-        sot_translated_file,
-        sot_summary,
-        translated_sot_summary,
-        grade_injection,
-        language_config,
-        "Phase 4 Blueprint",
+        SotInjection(
+            sot_file=sot_file,
+            translated_sot_file=sot_translated_file,
+            sot_summary=sot_summary,
+            translated_sot_summary=translated_sot_summary,
+            grade_numbers_text=grade_injection,
+            language_config=language_config,
+        ),
+        CrewBudget("Phase 4 Blueprint"),
     )
     run_logger.info("Blueprint complete")
 

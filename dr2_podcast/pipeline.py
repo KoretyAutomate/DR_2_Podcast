@@ -50,6 +50,9 @@ from dr2_podcast.pipeline_translation import (
 from dr2_podcast.pipeline_crew import (
     _build_sot_injection_for_stage,
     _crew_kickoff_guarded,
+    CrewBuildConfig,
+    SotInjection as _SotInjection,
+    CrewBudget as _CrewBudget,
     create_agents_and_tasks,
     TASK_METADATA,
     display_workflow_plan,
@@ -1598,31 +1601,33 @@ def _create_agents_and_tasks():
     global framing_task, script_task, translation_task, polish_task, audit_task, blueprint_task
 
     result = create_agents_and_tasks(
-        topic_name=topic_name,
-        language=language,
-        language_config=language_config,
-        english_instruction=english_instruction,
-        target_instruction=target_instruction,
-        target_script=target_script,
-        target_unit_singular=target_unit_singular,
-        target_unit_plural=target_unit_plural,
-        _target_min=_target_min,
-        target_length_int=target_length_int,
-        SESSION_ROLES=SESSION_ROLES,
-        channel_intro=channel_intro,
-        core_target=core_target,
-        channel_mission=channel_mission,
-        accessibility_instruction=accessibility_instruction,
-        accessibility_level=ACCESSIBILITY_LEVEL,
-        dgx_llm_strict=dgx_llm_strict,
-        dgx_llm_creative=dgx_llm_creative,
-        SCRIPT_TOLERANCE=SCRIPT_TOLERANCE,
-        output_dir=output_dir,
-        output_path_fn=output_path,
-        list_research_sources=list_research_sources,
-        read_research_source=read_research_source,
-        read_full_report=read_full_report,
-        link_validator=link_validator,
+        CrewBuildConfig(
+            topic_name=topic_name,
+            language=language,
+            language_config=language_config,
+            english_instruction=english_instruction,
+            target_instruction=target_instruction,
+            target_script=target_script,
+            target_unit_singular=target_unit_singular,
+            target_unit_plural=target_unit_plural,
+            target_min=_target_min,
+            target_length_int=target_length_int,
+            script_tolerance=SCRIPT_TOLERANCE,
+            session_roles=SESSION_ROLES,
+            channel_intro=channel_intro,
+            core_target=core_target,
+            channel_mission=channel_mission,
+            accessibility_instruction=accessibility_instruction,
+            accessibility_level=ACCESSIBILITY_LEVEL,
+            dgx_llm_strict=dgx_llm_strict,
+            dgx_llm_creative=dgx_llm_creative,
+            output_dir=output_dir,
+            output_path_fn=output_path,
+            list_research_sources=list_research_sources,
+            read_research_source=read_research_source,
+            read_full_report=read_full_report,
+            link_validator=link_validator,
+        )
     )
 
     auditor_agent = result["auditor_agent"]
@@ -2234,7 +2239,15 @@ def _translate_and_inject_sot(
         translated_summary = summarize_report_with_fast_model(translated_sot, "sot_translated", topic_name)
         if translated_summary:
             tl_injection = _build_sot_injection_for_stage(
-                1, sot_path, sot_translated_file, sot_summary, translated_summary, grade_injection, language_config
+                1,
+                _SotInjection(
+                    sot_file=sot_path,
+                    translated_sot_file=sot_translated_file,
+                    sot_summary=sot_summary,
+                    translated_sot_summary=translated_summary,
+                    grade_numbers_text=grade_injection,
+                    language_config=language_config,
+                ),
             )
             blueprint_task.description += tl_injection
             script_task.description += tl_injection
@@ -2543,13 +2556,15 @@ if __name__ == "__main__":
                 blueprint_task,
                 translation_task,
                 language,
-                sot_path,
-                _r_sot_translated_file,
-                _truncate_at_boundary(sot_content, 8000),
-                _r_tl_summary,
-                "",
-                language_config,
-                "Phase 4 Blueprint",
+                _SotInjection(
+                    sot_file=sot_path,
+                    translated_sot_file=_r_sot_translated_file,
+                    sot_summary=_truncate_at_boundary(sot_content, 8000),
+                    translated_sot_summary=_r_tl_summary,
+                    grade_numbers_text="",
+                    language_config=language_config,
+                ),
+                _CrewBudget("Phase 4 Blueprint"),
             )
 
             # Parse blueprint inventory for sectional draft
@@ -2808,13 +2823,15 @@ if __name__ == "__main__":
                     blueprint_task,
                     translation_task,
                     language,
-                    sot_path,
-                    _s_sot_translated_file,
-                    _truncate_at_boundary(sot_content, 8000),
-                    _s_tl_summary,
-                    "",
-                    language_config,
-                    "Phase 4 Blueprint",
+                    _SotInjection(
+                        sot_file=sot_path,
+                        translated_sot_file=_s_sot_translated_file,
+                        sot_summary=_truncate_at_boundary(sot_content, 8000),
+                        translated_sot_summary=_s_tl_summary,
+                        grade_numbers_text="",
+                        language_config=language_config,
+                    ),
+                    _CrewBudget("Phase 4 Blueprint"),
                 )
 
                 # Parse blueprint inventory for sectional draft

@@ -9,6 +9,8 @@ from dr2_podcast.pipeline_crew import (
     _estimate_task_tokens,
     _build_sot_injection_for_stage,
     _crew_kickoff_guarded,
+    SotInjection,
+    CrewBudget,
 )
 
 
@@ -126,12 +128,7 @@ class TestBuildSotInjection:
     def test_stage_1_contains_summary(self, tmp_path):
         result = _build_sot_injection_for_stage(
             1,
-            None,
-            None,
-            "This is the summary.",
-            None,
-            "",
-            {"name": "English"},
+            SotInjection(sot_summary="This is the summary.", language_config={"name": "English"}),
         )
         assert "SOURCE OF TRUTH SUMMARY" in result
         assert "This is the summary." in result
@@ -145,12 +142,7 @@ class TestBuildSotInjection:
         )
         result = _build_sot_injection_for_stage(
             2,
-            str(sot_file),
-            None,
-            "",
-            None,
-            "",
-            {"name": "English"},
+            SotInjection(sot_file=str(sot_file), language_config={"name": "English"}),
         )
         assert "[SOT Stage 2" in result
         # Should read abstract from file
@@ -159,12 +151,7 @@ class TestBuildSotInjection:
     def test_stage_2_missing_file(self):
         result = _build_sot_injection_for_stage(
             2,
-            "/nonexistent/file.md",
-            None,
-            "",
-            None,
-            "",
-            {"name": "English"},
+            SotInjection(sot_file="/nonexistent/file.md", language_config={"name": "English"}),
         )
         assert "[SOT Stage 2" in result
         assert "(not available)" in result
@@ -172,12 +159,7 @@ class TestBuildSotInjection:
     def test_stage_3_minimal(self):
         result = _build_sot_injection_for_stage(
             3,
-            None,
-            None,
-            "",
-            None,
-            "ARR: 5%, NNT: 20",
-            {"name": "English"},
+            SotInjection(grade_numbers_text="ARR: 5%, NNT: 20", language_config={"name": "English"}),
         )
         assert "[SOT Stage 3" in result
         assert "--- END SOT ---" in result
@@ -204,15 +186,8 @@ class TestCrewKickoffGuarded:
             task,
             None,
             "en",
-            None,
-            None,
-            "",
-            "",
-            "",
-            {"name": "English"},
-            "test-crew",
-            ctx_window=100000,
-            max_tokens=16000,
+            SotInjection(language_config={"name": "English"}),
+            CrewBudget("test-crew", ctx_window=100000, max_tokens=16000),
         )
         kickoff_mock.assert_called_once()
 
@@ -234,15 +209,8 @@ class TestCrewKickoffGuarded:
             task,
             None,
             "en",
-            None,
-            None,
-            "summary text",
-            "",
-            "",
-            {"name": "English"},
-            "test-crew",
-            ctx_window=8000,
-            max_tokens=4000,
+            SotInjection(sot_summary="summary text", language_config={"name": "English"}),
+            CrewBudget("test-crew", ctx_window=8000, max_tokens=4000),
         )
         # Should have been called once (at some stage)
         assert call_count["n"] >= 1

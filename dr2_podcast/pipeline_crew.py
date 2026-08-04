@@ -8,6 +8,8 @@ display_workflow_plan, ProgressTracker.
 """
 
 import logging
+from dataclasses import dataclass
+from typing import Any
 import os
 import re
 import time
@@ -40,15 +42,47 @@ def _estimate_task_tokens(task, translation_task_obj=None, language="en"):
     return total_chars // chars_per_tok + 2000
 
 
-def _build_sot_injection_for_stage(
-    stage, sot_file, translated_sot_file, sot_summary, translated_sot_summary, grade_numbers_text, language_config
-):
+@dataclass
+class SotInjection:
+    """The Source-of-Truth material a crew task can be given.
+
+    These six always travel together — _build_sot_injection_for_stage picks
+    which subset to inline for a given context-degradation stage, and
+    _crew_kickoff_guarded re-injects a lower stage when the estimate is over
+    budget.
+    """
+
+    sot_file: Any = None
+    translated_sot_file: Any = None
+    sot_summary: str = ""
+    translated_sot_summary: str = ""
+    grade_numbers_text: str = ""
+    language_config: Any = None
+
+
+@dataclass
+class CrewBudget:
+    """Naming and context-window limits for one guarded crew kickoff."""
+
+    crew_name: str
+    ctx_window: int = 32768
+    max_tokens: int = 16000
+
+
+def _build_sot_injection_for_stage(stage, sot: SotInjection):
     """Return SOT injection text for a context-degradation stage.
 
     Stage 1: Full target-language fast-model summary + file path    (~3K tokens)
     Stage 2: IMRaD Abstract + GRADE section from file + path         (~1.5K tokens)
     Stage 3: File path + pre-extracted GRADE/clinical numbers only   (~300 tokens)
     """
+    sot_file = sot.sot_file
+    translated_sot_file = sot.translated_sot_file
+    sot_summary = sot.sot_summary
+    translated_sot_summary = sot.translated_sot_summary
+    grade_numbers_text = sot.grade_numbers_text
+    language_config = sot.language_config
+
     target_file = str(translated_sot_file or sot_file or "")
     lang_name = (
         language_config.get("name", "target language") if isinstance(language_config, dict) else str(language_config)
@@ -104,15 +138,8 @@ def _crew_kickoff_guarded(
     task,
     translation_task_obj,
     language,
-    sot_file,
-    translated_sot_file,
-    sot_summary,
-    translated_sot_summary,
-    grade_numbers_text,
-    language_config,
-    crew_name,
-    ctx_window=32768,
-    max_tokens=16000,
+    sot: SotInjection,
+    budget_cfg: CrewBudget,
 ):
     """Run a crew kickoff with pre-emptive 3-stage context-budget check.
 
@@ -125,7 +152,8 @@ def _crew_kickoff_guarded(
       2 -- Abstract + GRADE sections + file path      (~1.5K tokens)
       3 -- File path + clinical numbers only           (~300 tokens)
     """
-    budget = ctx_window - max_tokens - 2000  # 2000-token system-prompt buffer
+    crew_name = budget_cfg.crew_name
+    budget = budget_cfg.ctx_window - budget_cfg.max_tokens - 2000  # 2000-token system-prompt buffer
 
     for stage in range(1, 4):
         est = _estimate_task_tokens(task, translation_task_obj, language)
@@ -159,15 +187,7 @@ def _crew_kickoff_guarded(
             stage + 1,
         )
         base_desc = _SOT_BLOCK_RE.sub("", task.description)
-        task.description = base_desc + _build_sot_injection_for_stage(
-            stage + 1,
-            sot_file,
-            translated_sot_file,
-            sot_summary,
-            translated_sot_summary,
-            grade_numbers_text,
-            language_config,
-        )
+        task.description = base_desc + _build_sot_injection_for_stage(stage + 1, sot)
 
 
 # ---------------------------------------------------------------------------
@@ -175,41 +195,89 @@ def _crew_kickoff_guarded(
 # ---------------------------------------------------------------------------
 
 
-def create_agents_and_tasks(
-    *,
-    topic_name,
-    language,
-    language_config,
-    english_instruction,
-    target_instruction,
-    target_script,
-    target_unit_singular,
-    target_unit_plural,
-    _target_min,
-    target_length_int,
-    SESSION_ROLES,
-    channel_intro,
-    core_target,
-    channel_mission,
-    accessibility_instruction,
-    accessibility_level,
-    dgx_llm_strict,
-    dgx_llm_creative,
-    SCRIPT_TOLERANCE,
-    output_dir,
-    output_path_fn,
-    list_research_sources,
-    read_research_source,
-    read_full_report,
-    link_validator,
-):
+@dataclass
+class CrewBuildConfig:
+    """Everything needed to construct the Crew 3 agents and tasks.
+
+    This was 24 keyword-only parameters. The fields are still keyword-only at
+    the construction site, so call sites stay self-documenting, but they now
+    travel as one value.
+    """
+
+    # Topic and language
+    topic_name: Any
+    language: Any
+    language_config: Any
+    english_instruction: Any
+    target_instruction: Any
+    target_script: Any
+
+    # Length targeting
+    target_unit_singular: Any
+    target_unit_plural: Any
+    target_min: Any
+    target_length_int: Any
+    script_tolerance: Any
+
+    # Show identity and audience
+    session_roles: Any
+    channel_intro: Any
+    core_target: Any
+    channel_mission: Any
+    accessibility_instruction: Any
+    accessibility_level: Any
+
+    # LLM handles
+    dgx_llm_strict: Any
+    dgx_llm_creative: Any
+
+    # Filesystem + CrewAI tools
+    output_dir: Any
+    output_path_fn: Any
+    list_research_sources: Any
+    read_research_source: Any
+    read_full_report: Any
+    link_validator: Any
+
+
+def create_agents_and_tasks(cfg: CrewBuildConfig):
     """Construct all CrewAI Agents and Tasks.
 
     Called from __main__ after all runtime variables are initialized.
     Returns a dict of agent and task objects.
-
-    Parameters are keyword-only to make call sites self-documenting.
     """
+    # Unpacked in the config's own field groups. Grouped rather than one line
+    # per field so the body below reads as it always has without the unpacking
+    # itself dominating the function's statement count.
+    topic_name, language, language_config = cfg.topic_name, cfg.language, cfg.language_config
+    english_instruction, target_instruction, target_script = (
+        cfg.english_instruction,
+        cfg.target_instruction,
+        cfg.target_script,
+    )
+    target_unit_singular, target_unit_plural, _target_min, target_length_int, SCRIPT_TOLERANCE = (
+        cfg.target_unit_singular,
+        cfg.target_unit_plural,
+        cfg.target_min,
+        cfg.target_length_int,
+        cfg.script_tolerance,
+    )
+    SESSION_ROLES, channel_intro, core_target, channel_mission = (
+        cfg.session_roles,
+        cfg.channel_intro,
+        cfg.core_target,
+        cfg.channel_mission,
+    )
+    accessibility_instruction, accessibility_level = cfg.accessibility_instruction, cfg.accessibility_level
+    dgx_llm_strict, dgx_llm_creative = cfg.dgx_llm_strict, cfg.dgx_llm_creative
+    output_dir, output_path_fn = cfg.output_dir, cfg.output_path_fn
+    list_research_sources, read_research_source, read_full_report, link_validator = (
+        cfg.list_research_sources,
+        cfg.read_research_source,
+        cfg.read_full_report,
+        cfg.link_validator,
+    )
+
     # --- Tonal calibration by audience level ---
     _TONE_BY_LEVEL = {
         "simple": {
