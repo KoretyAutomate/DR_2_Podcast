@@ -14,6 +14,7 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import queue
@@ -365,19 +366,7 @@ def worker_thread():
                 # Normal full pipeline
                 run_podcast_generation(
                     task_id,
-                    task_data["topic"],
-                    task_data["language"],
-                    task_data["accessibility_level"],
-                    task_data["podcast_length"],
-                    task_data["podcast_hosts"],
-                    task_data.get("channel_intro", ""),
-                    task_data["upload_buzzsprout"],
-                    task_data["upload_youtube"],
-                    task_data.get("core_target", ""),
-                    task_data.get("channel_mission", ""),
-                    buzzsprout_api_key=task_data.get("buzzsprout_api_key"),
-                    buzzsprout_account_id=task_data.get("buzzsprout_account_id"),
-                    youtube_secret_path=task_data.get("youtube_secret_path"),
+                    GenerationRequest.from_task_data(task_data),
                 )
 
         except Exception as e:
@@ -2278,22 +2267,122 @@ def _resolve_upload_audio(resolved_dir: Path) -> str:
     return str(resolved_dir / "audio" / "audio_mixed.wav")
 
 
-def run_podcast_generation(
-    task_id: str,
-    topic: str,
-    language: str,
-    accessibility_level: str = "simple",
-    podcast_length: str = "long",
-    podcast_hosts: str = "random",
-    channel_intro: str = "",
-    upload_buzzsprout: bool = False,
-    upload_youtube: bool = False,
-    core_target: str = "",
-    channel_mission: str = "",
-    buzzsprout_api_key: str = None,
-    buzzsprout_account_id: str = None,
-    youtube_secret_path: str = None,
-):
+@dataclass
+class GenerationRequest:
+    """One podcast generation run, as requested from the web UI.
+
+    This was 14 positional/keyword parameters on run_podcast_generation. It is
+    NOT a framework signature — the function is a plain background worker with
+    a single caller, and that caller already holds the values as a dict.
+    """
+
+    topic: str
+    language: str
+    accessibility_level: str = "simple"
+    podcast_length: str = "long"
+    podcast_hosts: str = "random"
+    channel_intro: str = ""
+    upload_buzzsprout: bool = False
+    upload_youtube: bool = False
+    core_target: str = ""
+    channel_mission: str = ""
+    buzzsprout_api_key: str = None
+    buzzsprout_account_id: str = None
+    youtube_secret_path: str = None
+
+    @classmethod
+    def from_task_data(cls, task_data: dict) -> "GenerationRequest":
+        return cls(
+            topic=task_data["topic"],
+            language=task_data["language"],
+            accessibility_level=task_data["accessibility_level"],
+            podcast_length=task_data["podcast_length"],
+            podcast_hosts=task_data["podcast_hosts"],
+            channel_intro=task_data.get("channel_intro", ""),
+            upload_buzzsprout=task_data["upload_buzzsprout"],
+            upload_youtube=task_data["upload_youtube"],
+            core_target=task_data.get("core_target", ""),
+            channel_mission=task_data.get("channel_mission", ""),
+            buzzsprout_api_key=task_data.get("buzzsprout_api_key"),
+            buzzsprout_account_id=task_data.get("buzzsprout_account_id"),
+            youtube_secret_path=task_data.get("youtube_secret_path"),
+        )
+
+
+def _build_generation_env(req: GenerationRequest) -> dict:
+    """Environment for the pipeline subprocess."""
+    env = os.environ.copy()
+    env["ACCESSIBILITY_LEVEL"] = req.accessibility_level
+    env["PODCAST_LENGTH"] = req.podcast_length
+    env["PODCAST_HOSTS"] = req.podcast_hosts
+    if req.channel_intro:
+        env["PODCAST_CHANNEL_INTRO"] = req.channel_intro
+    if req.core_target:
+        env["PODCAST_CORE_TARGET"] = req.core_target
+    if req.channel_mission:
+        env["PODCAST_CHANNEL_MISSION"] = req.channel_mission
+    return env
+
+
+def _mark_task_running(task_id: str) -> None:
+    tasks_db[task_id]["status"] = "running"
+    tasks_db[task_id]["progress"] = 0
+    tasks_db[task_id]["phase"] = ""  # set by first is_phase marker
+    tasks_db[task_id]["current_step"] = "Initializing..."
+    tasks_db[task_id]["phase_start_time"] = time.time()
+    tasks_db[task_id]["step_durations"] = []
+    save_tasks()
+
+
+def _clean_error_output(output_lines: list) -> str:
+    """Last 50 meaningful lines, minus log prefixes and pydantic caret art."""
+    clean_lines = []
+    for line in output_lines[-100:]:
+        stripped = line.rstrip("\n")
+        msg = stripped.split(" - ERROR - ", 1)[-1] if " - ERROR - " in stripped else stripped
+        if msg.strip() and msg.strip().replace("^", "").strip():
+            clean_lines.append(msg)
+    return "\n".join(clean_lines[-50:])
+
+
+def _run_uploads(task_id: str, req: GenerationRequest, title: str) -> None:
+    """Upload the finished audio. `title` is explicit: the full-run path strips
+    the topic, the reuse path does not, and that difference is preserved."""
+    if not (req.upload_buzzsprout or req.upload_youtube):
+        return
+    tasks_db[task_id]["status"] = "uploading"
+    tasks_db[task_id]["phase"] = "Uploading"
+    tasks_db[task_id]["progress"] = 95
+    save_tasks()
+
+    resolved_dir = Path(tasks_db[task_id].get("output_dir") or str(OUTPUT_DIR))
+    audio_path = _resolve_upload_audio(resolved_dir)
+
+    if req.upload_buzzsprout:
+        tasks_db[task_id]["upload_results"]["buzzsprout"] = upload_to_buzzsprout(
+            audio_path, title, api_key=req.buzzsprout_api_key, account_id=req.buzzsprout_account_id
+        )
+        save_tasks()
+
+    if req.upload_youtube:
+        tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(
+            audio_path, title, youtube_secret_path=req.youtube_secret_path
+        )
+        save_tasks()
+
+
+def _register_run_topic(output_dir, req: GenerationRequest) -> None:
+    register_topic(
+        topic=req.topic,
+        output_dir=output_dir,
+        language=req.language,
+        accessibility_level=req.accessibility_level,
+        podcast_length=req.podcast_length,
+        podcast_hosts=req.podcast_hosts,
+    )
+
+
+def run_podcast_generation(task_id: str, req: GenerationRequest):
     """Run pipeline.py in background with real-time phase tracking."""
     try:
         preflight_err = _preflight_check()
@@ -2303,32 +2392,15 @@ def run_podcast_generation(
             save_tasks()
             return
 
-        tasks_db[task_id]["status"] = "running"
-        tasks_db[task_id]["progress"] = 0
-        tasks_db[task_id]["phase"] = ""  # set by first is_phase marker
-        tasks_db[task_id]["current_step"] = "Initializing..."
-        tasks_db[task_id]["phase_start_time"] = time.time()
-        tasks_db[task_id]["step_durations"] = []
-        save_tasks()
-
-        env = os.environ.copy()
-        env["ACCESSIBILITY_LEVEL"] = accessibility_level
-        env["PODCAST_LENGTH"] = podcast_length
-        env["PODCAST_HOSTS"] = podcast_hosts
-        if channel_intro:
-            env["PODCAST_CHANNEL_INTRO"] = channel_intro
-        if core_target:
-            env["PODCAST_CORE_TARGET"] = core_target
-        if channel_mission:
-            env["PODCAST_CHANNEL_MISSION"] = channel_mission
+        _mark_task_running(task_id)
 
         proc = subprocess.Popen(
-            [str(PODCAST_ENV_PYTHON), "-m", "dr2_podcast.pipeline", "--topic", topic, "--language", language],
+            [str(PODCAST_ENV_PYTHON), "-m", "dr2_podcast.pipeline", "--topic", req.topic, "--language", req.language],
             cwd=SCRIPT_DIR,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            env=env,
+            env=_build_generation_env(req),
         )
         _running_pids[task_id] = proc.pid
 
@@ -2342,17 +2414,7 @@ def run_podcast_generation(
 
         if proc.returncode != 0:
             tasks_db[task_id]["status"] = "failed"
-            # Filter out pydantic caret-only lines and log prefixes for cleaner error display
-            raw_lines = output_lines[-100:]
-            clean_lines = []
-            for line in raw_lines:
-                # Strip log prefix (timestamp + level) to get the actual message
-                stripped = line.rstrip("\n")
-                # Skip lines that are only carets/whitespace (pydantic error formatting)
-                msg = stripped.split(" - ERROR - ", 1)[-1] if " - ERROR - " in stripped else stripped
-                if msg.strip() and msg.strip().replace("^", "").strip():
-                    clean_lines.append(msg)
-            error_text = "\n".join(clean_lines[-50:])  # Last 50 meaningful lines
+            error_text = _clean_error_output(output_lines)
             tasks_db[task_id]["error"] = error_text or f"Process exited with code {proc.returncode}"
             save_tasks()
             return
@@ -2366,27 +2428,7 @@ def run_podcast_generation(
         save_tasks()
 
         # Generation succeeded — run uploads if requested
-        resolved_dir = Path(tasks_db[task_id].get("output_dir") or str(OUTPUT_DIR))
-        audio_path = _resolve_upload_audio(resolved_dir)
-        title = topic.strip()
-
-        if upload_buzzsprout or upload_youtube:
-            tasks_db[task_id]["status"] = "uploading"
-            tasks_db[task_id]["phase"] = "Uploading"
-            tasks_db[task_id]["progress"] = 95
-            save_tasks()
-
-            if upload_buzzsprout:
-                tasks_db[task_id]["upload_results"]["buzzsprout"] = upload_to_buzzsprout(
-                    audio_path, title, api_key=buzzsprout_api_key, account_id=buzzsprout_account_id
-                )
-                save_tasks()
-
-            if upload_youtube:
-                tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(
-                    audio_path, title, youtube_secret_path=youtube_secret_path
-                )
-                save_tasks()
+        _run_uploads(task_id, req, req.topic.strip())
 
         # Record the final phase's duration before marking complete
         _close_phase(task_id)
@@ -2398,14 +2440,7 @@ def run_podcast_generation(
 
         # Register in topic index
         if tasks_db[task_id].get("output_dir"):
-            register_topic(
-                topic=topic,
-                output_dir=tasks_db[task_id]["output_dir"],
-                language=language,
-                accessibility_level=accessibility_level,
-                podcast_length=podcast_length,
-                podcast_hosts=podcast_hosts,
-            )
+            _register_run_topic(tasks_db[task_id]["output_dir"], req)
 
         # Self-evaluation runs inside the pipeline subprocess — re-running it
         # here would double Telegram reports and duplicate pending lessons.
@@ -2416,14 +2451,7 @@ def run_podcast_generation(
         # Still register if research completed (source_of_truth.md exists)
         od = tasks_db[task_id].get("output_dir")
         if od and _sot_exists(od):
-            register_topic(
-                topic=topic,
-                output_dir=od,
-                language=language,
-                accessibility_level=accessibility_level,
-                podcast_length=podcast_length,
-                podcast_hosts=podcast_hosts,
-            )
+            _register_run_topic(od, req)
     finally:
         save_tasks()
 
@@ -2448,9 +2476,18 @@ def run_podcast_reuse(task_data: dict):
     podcast_hosts = task_data.get("podcast_hosts", "random")
     upload_buzzsprout = task_data.get("upload_buzzsprout", False)
     upload_youtube = task_data.get("upload_youtube", False)
-    buzzsprout_api_key = task_data.get("buzzsprout_api_key")
-    buzzsprout_account_id = task_data.get("buzzsprout_account_id")
-    youtube_secret_path = task_data.get("youtube_secret_path")
+    req = GenerationRequest(
+        topic=topic,
+        language=language,
+        accessibility_level=task_data.get("accessibility_level", "simple"),
+        podcast_length=task_data.get("podcast_length", "long"),
+        podcast_hosts=podcast_hosts,
+        upload_buzzsprout=upload_buzzsprout,
+        upload_youtube=upload_youtube,
+        buzzsprout_api_key=task_data.get("buzzsprout_api_key"),
+        buzzsprout_account_id=task_data.get("buzzsprout_account_id"),
+        youtube_secret_path=task_data.get("youtube_secret_path"),
+    )
 
     try:
         if reuse_mode != "tts_only":
@@ -2461,13 +2498,7 @@ def run_podcast_reuse(task_data: dict):
                 save_tasks()
                 return
 
-        tasks_db[task_id]["status"] = "running"
-        tasks_db[task_id]["progress"] = 0
-        tasks_db[task_id]["phase"] = ""
-        tasks_db[task_id]["current_step"] = "Initializing..."
-        tasks_db[task_id]["phase_start_time"] = time.time()
-        tasks_db[task_id]["step_durations"] = []
-        save_tasks()
+        _mark_task_running(task_id)
 
         if reuse_mode == "tts_only":
             _run_tts_only_reuse(task_id, task_data, reuse_dir)
@@ -2480,25 +2511,7 @@ def run_podcast_reuse(task_data: dict):
             return
 
         # Handle uploads
-        resolved_dir = Path(tasks_db[task_id].get("output_dir") or str(OUTPUT_DIR))
-        audio_path = _resolve_upload_audio(resolved_dir)
-
-        if upload_buzzsprout or upload_youtube:
-            tasks_db[task_id]["status"] = "uploading"
-            tasks_db[task_id]["phase"] = "Uploading"
-            tasks_db[task_id]["progress"] = 95
-            save_tasks()
-
-            if upload_buzzsprout:
-                tasks_db[task_id]["upload_results"]["buzzsprout"] = upload_to_buzzsprout(
-                    audio_path, topic, api_key=buzzsprout_api_key, account_id=buzzsprout_account_id
-                )
-                save_tasks()
-            if upload_youtube:
-                tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(
-                    audio_path, topic, youtube_secret_path=youtube_secret_path
-                )
-                save_tasks()
+        _run_uploads(task_id, req, topic)
 
         _close_phase(task_id)
         tasks_db[task_id]["status"] = "completed"
@@ -2509,14 +2522,7 @@ def run_podcast_reuse(task_data: dict):
 
         # Register in topic index
         if tasks_db[task_id].get("output_dir"):
-            register_topic(
-                topic=topic,
-                output_dir=tasks_db[task_id]["output_dir"],
-                language=language,
-                accessibility_level=task_data.get("accessibility_level", "simple"),
-                podcast_length=task_data.get("podcast_length", "long"),
-                podcast_hosts=podcast_hosts,
-            )
+            _register_run_topic(tasks_db[task_id]["output_dir"], req)
 
         # --- Self-evaluation (non-blocking) ---
         # Subprocess reuse modes (crew3_reuse / check_supplemental) evaluate
