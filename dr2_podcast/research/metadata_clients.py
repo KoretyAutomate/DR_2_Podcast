@@ -685,115 +685,89 @@ class EnrichedPaper:
         return d
 
 
-async def enrich_papers_metadata(
-    papers: list[dict],
-    openalex_client: OpenAlexClient | None = None,
-    s2_client: SemanticScholarClient | None = None,
-    crossref_client: CrossrefClient | None = None,
-) -> list[EnrichedPaper]:
-    """Batch-enrich papers from all three metadata APIs.
+def _apply_openalex_fields(ep, oa: dict) -> None:
+    ep.openalex_id = oa.get("openalex_id", "")
+    ep.cited_by_count = oa.get("cited_by_count")
+    ep.fwci = oa.get("fwci")
+    ep.openalex_is_retracted = oa.get("is_retracted", False)
+    ep.openalex_funding = oa.get("funding", [])
+    ep.openalex_concepts = oa.get("concepts", [])
+    ep.abstract_text = oa.get("abstract_text", "")
+    ep.enrichment_sources.append("openalex")
 
-    papers: list of dicts with at least 'doi' and/or 'pmid' keys.
-    Returns list of EnrichedPaper with merged data from all sources.
-    """
-    enriched = []
 
-    # Index papers by doi and pmid for matching
-    paper_by_doi = {}
-    paper_by_pmid = {}
-    for p in papers:
-        doi = p.get("doi", "")
-        pmid = p.get("pmid", "")
-        ep = EnrichedPaper(doi=doi, pmid=pmid)
-        if doi:
-            paper_by_doi[doi] = ep
-        if pmid:
-            paper_by_pmid[pmid] = ep
-        enriched.append(ep)
+async def _enrich_from_openalex(enriched: list, client) -> None:
+    """DOI batch first, then a per-paper PMID lookup for anything still unmatched."""
+    dois = [p.doi for p in enriched if p.doi]
+    if dois:
+        try:
+            oa_results = await client.batch_get_works(dois)
+            oa_by_doi = {r["doi"]: r for r in oa_results if r.get("doi")}
+            for ep in enriched:
+                oa = oa_by_doi.get(ep.doi)
+                if oa:
+                    _apply_openalex_fields(ep, oa)
+        except Exception as e:
+            logger.warning(f"OpenAlex batch enrichment failed: {e}")
 
-    # --- OpenAlex batch ---
-    if openalex_client:
-        dois = [p.doi for p in enriched if p.doi]
-        if dois:
+    # Fall back to PMID lookup for papers without DOI
+    for ep in enriched:
+        if ep.pmid and not ep.openalex_id:
             try:
-                oa_results = await openalex_client.batch_get_works(dois)
-                oa_by_doi = {r["doi"]: r for r in oa_results if r.get("doi")}
-                for ep in enriched:
-                    oa = oa_by_doi.get(ep.doi)
-                    if oa:
-                        ep.openalex_id = oa.get("openalex_id", "")
-                        ep.cited_by_count = oa.get("cited_by_count")
-                        ep.fwci = oa.get("fwci")
-                        ep.openalex_is_retracted = oa.get("is_retracted", False)
-                        ep.openalex_funding = oa.get("funding", [])
-                        ep.openalex_concepts = oa.get("concepts", [])
-                        ep.abstract_text = oa.get("abstract_text", "")
-                        ep.enrichment_sources.append("openalex")
+                oa = await client.get_work_by_pmid(ep.pmid)
+                if oa:
+                    _apply_openalex_fields(ep, oa)
             except Exception as e:
-                logger.warning(f"OpenAlex batch enrichment failed: {e}")
+                logger.warning(f"OpenAlex PMID fallback failed for {ep.pmid}: {e}")
 
-        # Fall back to PMID lookup for papers without DOI
+
+async def _enrich_from_semantic_scholar(enriched: list, client) -> None:
+    s2_ids = []
+    for ep in enriched:
+        if ep.doi:
+            s2_ids.append(f"DOI:{ep.doi}")
+        elif ep.pmid:
+            s2_ids.append(f"PMID:{ep.pmid}")
+    if not s2_ids:
+        return
+    try:
+        s2_results = await client.batch_get_papers(s2_ids)
+        s2_by_doi = {r["doi"]: r for r in s2_results if r.get("doi")}
+        s2_by_pmid = {r["pmid"]: r for r in s2_results if r.get("pmid")}
         for ep in enriched:
-            if ep.pmid and not ep.openalex_id:
-                try:
-                    oa = await openalex_client.get_work_by_pmid(ep.pmid)
-                    if oa:
-                        ep.openalex_id = oa.get("openalex_id", "")
-                        ep.cited_by_count = oa.get("cited_by_count")
-                        ep.fwci = oa.get("fwci")
-                        ep.openalex_is_retracted = oa.get("is_retracted", False)
-                        ep.openalex_funding = oa.get("funding", [])
-                        ep.openalex_concepts = oa.get("concepts", [])
-                        ep.abstract_text = oa.get("abstract_text", "")
-                        ep.enrichment_sources.append("openalex")
-                except Exception as e:
-                    logger.warning(f"OpenAlex PMID fallback failed for {ep.pmid}: {e}")
+            s2 = s2_by_doi.get(ep.doi) or s2_by_pmid.get(ep.pmid)
+            if s2:
+                ep.s2_id = s2.get("s2_id", "")
+                ep.s2_citation_count = s2.get("citation_count")
+                ep.influential_citation_count = s2.get("influential_citation_count")
+                ep.fields_of_study = s2.get("fields_of_study", [])
+                ep.tldr = s2.get("tldr", "")
+                ep.enrichment_sources.append("semantic_scholar")
+    except Exception as e:
+        logger.warning(f"Semantic Scholar batch enrichment failed: {e}")
 
-    # --- Semantic Scholar batch ---
-    if s2_client:
-        s2_ids = []
+
+async def _enrich_from_crossref(enriched: list, client) -> None:
+    dois = [p.doi for p in enriched if p.doi]
+    if not dois:
+        return
+    try:
+        cr_results = await client.batch_get_works(dois)
+        cr_by_doi = {r["doi"]: r for r in cr_results if r.get("doi")}
         for ep in enriched:
-            if ep.doi:
-                s2_ids.append(f"DOI:{ep.doi}")
-            elif ep.pmid:
-                s2_ids.append(f"PMID:{ep.pmid}")
-        if s2_ids:
-            try:
-                s2_results = await s2_client.batch_get_papers(s2_ids)
-                s2_by_doi = {r["doi"]: r for r in s2_results if r.get("doi")}
-                s2_by_pmid = {r["pmid"]: r for r in s2_results if r.get("pmid")}
-                for ep in enriched:
-                    s2 = s2_by_doi.get(ep.doi) or s2_by_pmid.get(ep.pmid)
-                    if s2:
-                        ep.s2_id = s2.get("s2_id", "")
-                        ep.s2_citation_count = s2.get("citation_count")
-                        ep.influential_citation_count = s2.get("influential_citation_count")
-                        ep.fields_of_study = s2.get("fields_of_study", [])
-                        ep.tldr = s2.get("tldr", "")
-                        ep.enrichment_sources.append("semantic_scholar")
-            except Exception as e:
-                logger.warning(f"Semantic Scholar batch enrichment failed: {e}")
+            cr = cr_by_doi.get(ep.doi)
+            if cr:
+                ep.crossref_citation_count = cr.get("is_referenced_by_count")
+                ep.crossref_funders = cr.get("funder", [])
+                ep.crossref_is_retracted = cr.get("is_retracted", False)
+                ep.crossref_is_corrected = cr.get("is_corrected", False)
+                ep.clinical_trial_numbers = cr.get("clinical_trial_numbers", [])
+                ep.enrichment_sources.append("crossref")
+    except Exception as e:
+        logger.warning(f"Crossref batch enrichment failed: {e}")
 
-    # --- Crossref ---
-    if crossref_client:
-        dois = [p.doi for p in enriched if p.doi]
-        if dois:
-            try:
-                cr_results = await crossref_client.batch_get_works(dois)
-                cr_by_doi = {r["doi"]: r for r in cr_results if r.get("doi")}
-                for ep in enriched:
-                    cr = cr_by_doi.get(ep.doi)
-                    if cr:
-                        ep.crossref_citation_count = cr.get("is_referenced_by_count")
-                        ep.crossref_funders = cr.get("funder", [])
-                        ep.crossref_is_retracted = cr.get("is_retracted", False)
-                        ep.crossref_is_corrected = cr.get("is_corrected", False)
-                        ep.clinical_trial_numbers = cr.get("clinical_trial_numbers", [])
-                        ep.enrichment_sources.append("crossref")
-            except Exception as e:
-                logger.warning(f"Crossref batch enrichment failed: {e}")
 
-    # --- Merge derived fields ---
+def _merge_derived_fields(enriched: list) -> None:
     for ep in enriched:
         # Retraction: true if ANY source says retracted
         ep.is_retracted = bool(ep.openalex_is_retracted or ep.crossref_is_retracted)
@@ -810,4 +784,26 @@ async def enrich_papers_metadata(
         counts = [c for c in [ep.cited_by_count, ep.s2_citation_count, ep.crossref_citation_count] if c is not None]
         ep.best_citation_count = max(counts) if counts else None
 
+
+async def enrich_papers_metadata(
+    papers: list[dict],
+    openalex_client: OpenAlexClient | None = None,
+    s2_client: SemanticScholarClient | None = None,
+    crossref_client: CrossrefClient | None = None,
+) -> list[EnrichedPaper]:
+    """Batch-enrich papers from all three metadata APIs.
+
+    papers: list of dicts with at least 'doi' and/or 'pmid' keys.
+    Returns list of EnrichedPaper with merged data from all sources.
+    """
+    enriched = [EnrichedPaper(doi=p.get("doi", ""), pmid=p.get("pmid", "")) for p in papers]
+
+    if openalex_client:
+        await _enrich_from_openalex(enriched, openalex_client)
+    if s2_client:
+        await _enrich_from_semantic_scholar(enriched, s2_client)
+    if crossref_client:
+        await _enrich_from_crossref(enriched, crossref_client)
+
+    _merge_derived_fields(enriched)
     return enriched
