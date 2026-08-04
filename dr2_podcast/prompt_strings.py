@@ -13,7 +13,6 @@ inline in their original modules.
 # ---------------------------------------------------------------------------
 
 BLUEPRINT_PROMPTS: dict[str, dict[str, str]] = {
-
     "section5_intro": {
         "en": (
             "## 5. Narrative Arc (4 Acts) with Discussion Points\n\n"
@@ -28,12 +27,10 @@ BLUEPRINT_PROMPTS: dict[str, dict[str, str]] = {
             "回答は、ホストがその人に直接説明するように書いてください。\n"
         ),
     },
-
     "act1_header": {
         "en": "### Act 1 --- The Claim\n",
         "ja": "### Act 1 --- The Claim\n",
     },
-
     "act1_description": {
         "en": (
             "What people believe. The folk wisdom or common assumption. "
@@ -41,11 +38,9 @@ BLUEPRINT_PROMPTS: dict[str, dict[str, str]] = {
             "Key points to cover: [3-4 bullets]\n"
         ),
         "ja": (
-            "人々が信じていること。常識や思い込み。なぜそれが個人的に重要なのか。\n"
-            "カバーすべきポイント: [3-4項目]\n"
+            "人々が信じていること。常識や思い込み。なぜそれが個人的に重要なのか。\nカバーすべきポイント: [3-4項目]\n"
         ),
     },
-
     "act1_discussion": {
         "en": (
             "**Discussion Points (generate 5-8):**\n"
@@ -60,12 +55,10 @@ BLUEPRINT_PROMPTS: dict[str, dict[str, str]] = {
             "[各ポイントについて繰り返す]\n"
         ),
     },
-
     "act2_header": {
         "en": "### Act 2 --- Evidence & Nuance (above 50% of the episode)\n",
         "ja": "### Act 2 --- Evidence & Nuance (above 50% of the episode)\n",
     },
-
     "act2_description": {
         "en": (
             "**Structure:** Start by stating the overall conclusion upfront. Then walk through\n"
@@ -82,23 +75,20 @@ BLUEPRINT_PROMPTS: dict[str, dict[str, str]] = {
             "1-2の質問を生成してください。質問にはその研究名や主要な知見を含めてください。\n"
         ),
     },
-
     "act2_bad_example": {
         "en": 'BAD: "Is there evidence that coffee improves focus?"',
-        "ja": 'BAD: 「コーヒーが集中力を向上させるエビデンスはありますか？」',
+        "ja": "BAD: 「コーヒーが集中力を向上させるエビデンスはありますか？」",
     },
-
     "act2_good_example": {
         "en": (
             'GOOD: "The 2020 Journal of Occupational Health RCT found 100-200mg improves\n'
             'alertness --- but how does that translate to cups for a busy parent?"'
         ),
         "ja": (
-            'GOOD: 「2020年のJournal of Occupational HealthのRCTでは100-200mgが覚醒度を\n'
-            '向上させると報告されましたが、忙しい親にとってカップ数ではどうなりますか？」'
+            "GOOD: 「2020年のJournal of Occupational HealthのRCTでは100-200mgが覚醒度を\n"
+            "向上させると報告されましたが、忙しい親にとってカップ数ではどうなりますか？」"
         ),
     },
-
     "act2_sub_structure": {
         "en": (
             "**Sub-structure per study:**\n"
@@ -123,7 +113,6 @@ BLUEPRINT_PROMPTS: dict[str, dict[str, str]] = {
             "引用すべき数値: [NNT, ARR, サンプルサイズ（利用可能な場合）]\n"
         ),
     },
-
     "act2_discussion": {
         "en": (
             "**Discussion Points (generate 5-8, at least 1 per study):**\n"
@@ -138,12 +127,10 @@ BLUEPRINT_PROMPTS: dict[str, dict[str, str]] = {
             "[各ポイントについて繰り返す]\n"
         ),
     },
-
     "act3_header": {
         "en": "### Act 3 --- Holistic Conclusion\n",
         "ja": "### Act 3 --- Holistic Conclusion\n",
     },
-
     "act3_description": {
         "en": (
             "Synthesize ALL evidence into a unified takeaway. This is NOT new evidence ---\n"
@@ -161,7 +148,6 @@ BLUEPRINT_PROMPTS: dict[str, dict[str, str]] = {
             "- GRADEの確信度とそれが平易な言葉で何を意味するか\n"
         ),
     },
-
     "act3_discussion": {
         "en": (
             "**Discussion Points (generate 3-5):**\n"
@@ -176,12 +162,10 @@ BLUEPRINT_PROMPTS: dict[str, dict[str, str]] = {
             "[各ポイントについて繰り返す]\n"
         ),
     },
-
     "act4_header": {
         "en": "### Act 4 --- The Protocol\n",
         "ja": "### Act 4 --- The Protocol\n",
     },
-
     "act4_description": {
         "en": (
             "Actionable translation to daily life.\n"
@@ -196,23 +180,20 @@ BLUEPRINT_PROMPTS: dict[str, dict[str, str]] = {
             "フレーミング: 「科学は理解しましたが、こんな課題があります...」\n"
         ),
     },
-
     "act4_bad_example": {
         "en": 'BAD: "What is the recommended daily intake?"',
-        "ja": 'BAD: 「推奨される一日の摂取量は？」',
+        "ja": "BAD: 「推奨される一日の摂取量は？」",
     },
-
     "act4_good_example": {
         "en": (
             'GOOD: "I get that I should stop caffeine by 3pm, but my toddler wakes me\n'
             'at 5am and I have a 2pm meeting --- how do I survive the afternoon?"'
         ),
         "ja": (
-            'GOOD: 「午後3時までにカフェインをやめるべきだと分かりましたが、\n'
-            '幼児が朝5時に起きて午後2時に会議があります --- 午後をどう乗り切ればいいですか？」'
+            "GOOD: 「午後3時までにカフェインをやめるべきだと分かりましたが、\n"
+            "幼児が朝5時に起きて午後2時に会議があります --- 午後をどう乗り切ればいいですか？」"
         ),
     },
-
     "act4_discussion": {
         "en": (
             "**Discussion Points (generate 5-8):**\n"
@@ -235,7 +216,6 @@ BLUEPRINT_PROMPTS: dict[str, dict[str, str]] = {
 # ---------------------------------------------------------------------------
 
 SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
-
     "act1": {
         "en": (
             "  3. ACT 1 --- THE CLAIM:\n"
@@ -252,7 +232,6 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "     - 感情的なステークスを確立: なぜリスナーが気にすべきか？\n\n"
         ),
     },
-
     "act2": {
         "en": (
             "  4. ACT 2 --- EVIDENCE & NUANCE (above 50%% of the episode --- at least {act2_min} {target_unit_plural}, expand freely):\n"
@@ -284,7 +263,6 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "     最後に: 「これらすべての研究を通して、見えてくることは...」\n\n"
         ),
     },
-
     "act3": {
         "en": (
             "  5. ACT 3 --- HOLISTIC CONCLUSION:\n"
@@ -305,7 +283,6 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "     - プレゼンターがすべてをまとめ、結論への信頼を構築\n\n"
         ),
     },
-
     "act4": {
         "en": (
             "  6. ACT 4 --- THE PROTOCOL:\n"
@@ -326,7 +303,6 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "     - 各障壁ごとにミニ会話（課題 -> 解決策 -> 励まし）\n\n"
         ),
     },
-
     "length_note": {
         "en": (
             "  NOTE: Only Act 2 has a minimum length target (above 50%). Acts 1, 3, and 4\n"
@@ -341,7 +317,6 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "  ポリッシュフェーズで必要に応じてリバランスします。\n\n"
         ),
     },
-
     "hook": {
         "en": (
             "  2. THE HOOK (~40 {target_unit_plural}, ~15 seconds):\n"
@@ -356,7 +331,6 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "     {questioner}: [興味津々の反応: 「えっ、それ本当ですか？」や「うーん、全然知らなかった...」]\n\n"
         ),
     },
-
     "wrapup": {
         "en": (
             "  7. WRAP-UP (~60 {target_unit_plural}, ~25 seconds):\n"
@@ -368,7 +342,6 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "     最も重要なポイントを3文で要約。Act 2で宣言した番号付きポイントを順にたどって振り返る。\n\n"
         ),
     },
-
     "one_action": {
         "en": (
             "  8. THE 'ONE ACTION' ENDING (~40 {target_unit_plural}, ~15 seconds):\n"
@@ -381,7 +354,6 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "     {questioner}: [短い同意 + サインオフ]\n\n"
         ),
     },
-
     "personality": {
         "en": (
             "PERSONALITY DIRECTIVES:\n"
@@ -430,7 +402,6 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "- モメンタム: 各Actでエネルギーを高める --- 好奇心から始まり、最も驚きの発見でピーク、実践的な明確さで解決\n\n"
         ),
     },
-
     "character_roles": {
         "en": (
             "CHARACTER ROLES:\n"
@@ -443,7 +414,6 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
             "  - {questioner} (質問者): 事前リサーチに基づく的確な質問で専門家の知見を深掘りし、仮説を投げかけながらリスナーの理解を導く、{questioner_personality}\n\n"
         ),
     },
-
     "target_length": {
         "en": (
             "TARGET LENGTH: AT LEAST {target_script} {target_unit_plural} (= {target_min} minutes). "
@@ -484,7 +454,6 @@ SCRIPT_PROMPTS: dict[str, dict[str, str]] = {
 # ---------------------------------------------------------------------------
 
 POLISH_PROMPTS: dict[str, dict[str, str]] = {
-
     "structure_acts": {
         "en": (
             "  3. Act 1 --- The Claim\n"
@@ -499,7 +468,6 @@ POLISH_PROMPTS: dict[str, dict[str, str]] = {
             "  6. Act 4 --- The Protocol\n"
         ),
     },
-
     "expected_output_structure": {
         "en": (
             "8-part structure with [INTRO_END] after Channel Intro and [TRANSITION] markers between acts. "
@@ -512,20 +480,14 @@ POLISH_PROMPTS: dict[str, dict[str, str]] = {
             "One Action ending present."
         ),
     },
-
     "audience_level": {
         "en": (
             "AUDIENCE-LEVEL REQUIREMENTS:\n"
             "- {terminology_rule}\n"
             "- Ensure the questioner's questions feel natural and audience-aligned\n"
         ),
-        "ja": (
-            "対象リスナーレベル要件:\n"
-            "- {terminology_rule}\n"
-            "- 質問者の質問が自然でリスナー目線であることを確認\n"
-        ),
+        "ja": ("対象リスナーレベル要件:\n- {terminology_rule}\n- 質問者の質問が自然でリスナー目線であることを確認\n"),
     },
-
     "reading_tone_rules": {
         "en": (
             "READING & TONE RULES (Japanese TTS delivery):\n"
@@ -563,7 +525,6 @@ POLISH_PROMPTS: dict[str, dict[str, str]] = {
             "隣接する文で同じ内容を言い直さない（強いほうの文だけ残す）。\n"
         ),
     },
-
     "length_section": {
         "en": (
             "- LENGTH: Target {target_script} {target_unit_plural} "
@@ -604,10 +565,9 @@ POLISH_PROMPTS: dict[str, dict[str, str]] = {
 # ---------------------------------------------------------------------------
 
 CONDENSE_PROMPTS: dict[str, dict[str, str]] = {
-
     "system": {
         "en": (
-            "You are condensing a two-host science podcast script about \"{topic_name}\" "
+            'You are condensing a two-host science podcast script about "{topic_name}" '
             "from {current_count} {length_unit} down to approximately {target_count} {length_unit}.\n"
             "Hosts: {presenter} (presenter) and {questioner} (questioner).\n\n"
             "CONDENSING RULES:\n"
@@ -643,7 +603,6 @@ CONDENSE_PROMPTS: dict[str, dict[str, str]] = {
             "{target_instruction}"
         ),
     },
-
     "user": {
         "en": (
             "SCRIPT TO CONDENSE ({current_count} {length_unit}):\n\n"
@@ -665,7 +624,6 @@ CONDENSE_PROMPTS: dict[str, dict[str, str]] = {
 # ---------------------------------------------------------------------------
 
 SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
-
     # Speakability rules vary by language:
     # EN: ~25 words/sentence ≈ 10s at 150 wpm
     # JA: ~60 chars/sentence ≈ 7s at 500 chars/min
@@ -673,10 +631,9 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
         "en": "Max 25 words per sentence (for speakability — hosts must read this aloud without running out of breath)",
         "ja": "1文あたり最大60文字（句点「。」まで）（読みやすさ — ホストが息切れせずに読めるように）",
     },
-
     "system": {
         "en": (
-            "You are writing one section of a two-host science podcast about \"{topic}\".\n\n"
+            'You are writing one section of a two-host science podcast about "{topic}".\n\n'
             "CHARACTER ROLES:\n"
             "  - {presenter} (Presenter): {presenter_personality}\n"
             "  - {questioner} (Questioner): {questioner_personality}\n\n"
@@ -715,7 +672,6 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
             "{questioner}: [対話]\n"
         ),
     },
-
     "user_opening": {
         "en": (
             "SECTION: Opening (Channel Intro + Hook + Act 1 — The Claim)\n"
@@ -758,7 +714,6 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
             "各チェックリスト項目について十分に深く掘り下げ、具体例・ホスト間のやり取りを豊富に含めてください。"
         ),
     },
-
     "user_evidence": {
         "en": (
             "SECTION: Act 2 — Evidence & Nuance (the core of the episode)\n"
@@ -799,7 +754,6 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
             "各チェックリスト項目について十分に深く掘り下げ、具体例・ホスト間のやり取りを豊富に含めてください。"
         ),
     },
-
     "user_synthesis": {
         "en": (
             "SECTION: Act 3 — Holistic Conclusion\n"
@@ -840,7 +794,6 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
             "各チェックリスト項目について十分に深く掘り下げ、具体例・ホスト間のやり取りを豊富に含めてください。"
         ),
     },
-
     "user_closing": {
         "en": (
             "SECTION: Closing (Act 4 — The Protocol + Wrap-up + One Action)\n"
@@ -887,7 +840,6 @@ SECTION_GEN_PROMPTS: dict[str, dict[str, str]] = {
             "各チェックリスト項目について十分に深く掘り下げ、具体例・ホスト間のやり取りを豊富に含めてください。"
         ),
     },
-
     "retry_feedback": {
         "en": (
             "Your previous attempt was only {actual_count} {length_unit} — "

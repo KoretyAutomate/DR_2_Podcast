@@ -32,7 +32,7 @@ class TestCalculateImpact:
         assert result.direction == "no_effect"
         assert result.arr == 0.0
         assert result.rrr == 0.0
-        assert result.nnt == float('inf')
+        assert result.nnt == float("inf")
 
     def test_null_cer(self):
         """None CER should return None."""
@@ -80,11 +80,8 @@ class TestBatchCalculate:
     def _make_extraction(self, pmid, title, cer, eer):
         """Helper to create a mock DeepExtraction-like object."""
         from types import SimpleNamespace
-        return SimpleNamespace(
-            pmid=pmid, title=title,
-            control_event_rate=cer,
-            experimental_event_rate=eer
-        )
+
+        return SimpleNamespace(pmid=pmid, title=title, control_event_rate=cer, experimental_event_rate=eer)
 
     def test_mixed_batch(self):
         """Batch with some having CER/EER and some not."""
@@ -124,10 +121,14 @@ class TestFormatMathReport:
     def test_single_impact(self):
         """Single impact formats correctly."""
         impact = ClinicalImpact(
-            study_id="Test-1", cer=0.20, eer=0.10,
-            arr=0.10, rrr=0.50, nnt=10.0,
+            study_id="Test-1",
+            cer=0.20,
+            eer=0.10,
+            arr=0.10,
+            rrr=0.50,
+            nnt=10.0,
             nnt_interpretation="Treat 10 patients to prevent 1 additional event",
-            direction="benefit"
+            direction="benefit",
         )
         report = format_math_report([impact])
         assert "Test-1" in report

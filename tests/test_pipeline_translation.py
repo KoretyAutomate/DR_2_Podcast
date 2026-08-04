@@ -2,7 +2,9 @@
 
 import pytest
 from dr2_podcast.pipeline_translation import (
-    _split_sot_imrad, _split_at_subheaders, _audit_script_language,
+    _split_sot_imrad,
+    _split_at_subheaders,
+    _audit_script_language,
 )
 
 
@@ -10,8 +12,8 @@ from dr2_podcast.pipeline_translation import (
 # _split_sot_imrad
 # ---------------------------------------------------------------------------
 
-class TestSplitSotImrad:
 
+class TestSplitSotImrad:
     def test_clinical_imrad_headers(self):
         sot = (
             "# Source of Truth: Test\n\n"
@@ -72,8 +74,8 @@ class TestSplitSotImrad:
 # Discussion sub-section deduplication
 # ---------------------------------------------------------------------------
 
-class TestDiscussionDedup:
 
+class TestDiscussionDedup:
     def test_discussion_subsections_appear_once_in_reassembly(self):
         """Discussion sub-sections (### 4.1, 4.2, etc.) should appear exactly once
         in reassembled output, not duplicated as standalone + grouped entries."""
@@ -137,49 +139,36 @@ class TestDiscussionDedup:
         for entry in output_plan:
             if entry[1] == "single":
                 cidx = entry[2][0]
-                assert cidx not in disc_sub_indices, (
-                    f"Sub-chunk {cidx} should not appear as standalone")
+                assert cidx not in disc_sub_indices, f"Sub-chunk {cidx} should not appear as standalone"
 
 
 # ---------------------------------------------------------------------------
 # _audit_script_language
 # ---------------------------------------------------------------------------
 
-class TestAuditScriptLanguage:
 
+class TestAuditScriptLanguage:
     def test_english_returns_unchanged(self):
         script = "Host 1: Welcome to the show.\nHost 2: Great topic."
         result = _audit_script_language(
-            script, "en", {"name": "English"},
-            _call_smart_model=lambda **kw: "should not be called"
+            script, "en", {"name": "English"}, _call_smart_model=lambda **kw: "should not be called"
         )
         assert result == script
 
     def test_short_output_fallback(self):
         script = "Host 1: Long script text " * 20 + "\n[TRANSITION]\nHost 2: More text."
-        result = _audit_script_language(
-            script, "ja", {"name": "Japanese"},
-            _call_smart_model=lambda **kw: "short"
-        )
+        result = _audit_script_language(script, "ja", {"name": "Japanese"}, _call_smart_model=lambda **kw: "short")
         # "short" is < 50% of original → fallback to original
         assert result == script
 
     def test_lost_transition_markers_fallback(self):
-        script = (
-            "Host 1: Some text.\n"
-            "[TRANSITION]\n"
-            "Host 2: More text.\n"
-            "[TRANSITION]\n"
-            "Host 1: Final text.\n"
-        )
+        script = "Host 1: Some text.\n[TRANSITION]\nHost 2: More text.\n[TRANSITION]\nHost 1: Final text.\n"
+
         # LLM returns text without [TRANSITION]
         def mock_smart(**kw):
             return "Host 1: Some text.\nHost 2: More text.\nHost 1: Final text."
 
-        result = _audit_script_language(
-            script, "ja", {"name": "Japanese"},
-            _call_smart_model=mock_smart
-        )
+        result = _audit_script_language(script, "ja", {"name": "Japanese"}, _call_smart_model=mock_smart)
         assert result == script
 
     def test_llm_exception_returns_original(self):
@@ -188,18 +177,12 @@ class TestAuditScriptLanguage:
         def mock_fail(**kw):
             raise Exception("API error")
 
-        result = _audit_script_language(
-            script, "ja", {"name": "Japanese"},
-            _call_smart_model=mock_fail
-        )
+        result = _audit_script_language(script, "ja", {"name": "Japanese"}, _call_smart_model=mock_fail)
         assert result == script
 
     def test_successful_audit(self):
         script = "Host 1: Test line.\n[TRANSITION]\nHost 2: Another line."
         corrected = "Host 1: Corrected line.\n[TRANSITION]\nHost 2: Another corrected line."
 
-        result = _audit_script_language(
-            script, "ja", {"name": "Japanese"},
-            _call_smart_model=lambda **kw: corrected
-        )
+        result = _audit_script_language(script, "ja", {"name": "Japanese"}, _call_smart_model=lambda **kw: corrected)
         assert result == corrected

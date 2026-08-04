@@ -17,6 +17,7 @@ actually sent to the engine.
 Usage:
     python -m dr2_podcast.tools.tts_reading_check <script.txt> [...] [--json OUT]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -69,11 +70,13 @@ _KATA = re.compile(r"[^゠-ヿ]")
 
 # vowel each katakana mora ends on, for expanding the ー long-vowel mark
 _VOWEL = {}
-for _row, _v in (("アカサタナハマヤラワガザダバパャァ", "ア"),
-                 ("イキシチニヒミリギジヂビピィ", "イ"),
-                 ("ウクスツヌフムユルグズヅブプュゥヴ", "ウ"),
-                 ("エケセテネヘメレゲゼデベペェ", "エ"),
-                 ("オコソトノホモヨロヲゴゾドボポョォ", "オ")):
+for _row, _v in (
+    ("アカサタナハマヤラワガザダバパャァ", "ア"),
+    ("イキシチニヒミリギジヂビピィ", "イ"),
+    ("ウクスツヌフムユルグズヅブプュゥヴ", "ウ"),
+    ("エケセテネヘメレゲゼデベペェ", "エ"),
+    ("オコソトノホモヨロヲゴゾドボポョォ", "オ"),
+):
     for _c in _row:
         _VOWEL[_c] = _v
 
@@ -104,8 +107,7 @@ def _norm(kana: str) -> str:
         else:
             out.append(ch)
     s = "".join(out)
-    for a, b in (("ヲ", "オ"), ("ヅ", "ズ"), ("ヂ", "ジ"), ("ヱ", "エ"), ("ヰ", "イ"),
-                 ("・", ""), ("゠", "")):
+    for a, b in (("ヲ", "オ"), ("ヅ", "ズ"), ("ヂ", "ジ"), ("ヱ", "エ"), ("ヰ", "イ"), ("・", ""), ("゠", "")):
         s = s.replace(a, b)
     return s
 
@@ -153,11 +155,16 @@ def check_line(text: str, speaker: int, session: requests.Session) -> dict | Non
 
     # a line with visible content but no reading is SILENT in the audio (the △△ bug)
     if text.strip() and not eng.strip():
-        return {"line": text, "engine_reading": "", "reason": "empty_reading",
-                "detail": "line produces NO audio — silent content loss"}
+        return {
+            "line": text,
+            "engine_reading": "",
+            "reason": "empty_reading",
+            "detail": "line produces NO audio — silent content loss",
+        }
 
-    hazards = [why for src, (bad, why) in HAZARD_READINGS.items()
-               if src in text and (bad in eng if bad else not eng.strip())]
+    hazards = [
+        why for src, (bad, why) in HAZARD_READINGS.items() if src in text and (bad in eng if bad else not eng.strip())
+    ]
 
     # Layer 1 is only a RANKER, and it is blind on ASCII: the engine says エピソドワン
     # for "Episode 1" while pyopenjtalk spells the letters out. Comparing those produces
@@ -207,8 +214,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         rep = check_script(p, args.speaker)
         reports.append(rep)
-        print(f"{p.parent.name:34} lines={rep['lines_checked']:<5} "
-              f"HIGH={rep['high']:<4} review={rep['review']}")
+        print(f"{p.parent.name:34} lines={rep['lines_checked']:<5} HIGH={rep['high']:<4} review={rep['review']}")
 
     if args.json:
         args.json.write_text(json.dumps(reports, ensure_ascii=False, indent=1), encoding="utf-8")

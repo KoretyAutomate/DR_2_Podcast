@@ -17,14 +17,14 @@ from typing import List, Optional
 
 @dataclass
 class EffectSizeImpact:
-    study_id: str              # ID or title
-    effect_type: str           # "cohens_d", "hedges_g", "odds_ratio", "correlation_r", "beta"
-    raw_value: float           # Original reported value
+    study_id: str  # ID or title
+    effect_type: str  # "cohens_d", "hedges_g", "odds_ratio", "correlation_r", "beta"
+    raw_value: float  # Original reported value
     cohens_d: Optional[float]  # Converted/normalized to Cohen's d
     hedges_g: Optional[float]  # Small-sample corrected (if n available)
-    magnitude: str             # "negligible", "small", "medium", "large"
-    direction: str             # "positive", "negative", "null"
-    interpretation: str        # Human-readable interpretation
+    magnitude: str  # "negligible", "small", "medium", "large"
+    direction: str  # "positive", "negative", "null"
+    interpretation: str  # Human-readable interpretation
     sample_size: Optional[int] = None
 
 
@@ -174,13 +174,13 @@ def batch_calculate(extractions: list) -> List[EffectSizeImpact]:
     """
     results = []
     for ex in extractions:
-        es_value = getattr(ex, 'effect_size_value', None)
-        es_type = getattr(ex, 'effect_size_type', None)
+        es_value = getattr(ex, "effect_size_value", None)
+        es_type = getattr(ex, "effect_size_type", None)
         if es_value is None or es_type is None:
             continue
 
-        study_id = getattr(ex, 'pmid', None) or getattr(ex, 'title', "Unknown")
-        sample_size = getattr(ex, 'sample_size_total', None)
+        study_id = getattr(ex, "pmid", None) or getattr(ex, "title", "Unknown")
+        sample_size = getattr(ex, "sample_size_total", None)
 
         impact = calculate_effect(
             study_id=study_id,

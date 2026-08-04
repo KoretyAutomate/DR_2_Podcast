@@ -7,32 +7,46 @@ These lock in two contracts that each caused a round of false findings on 2026-0
      on the reading alone produced 13 false positives (コワサ matched the correct
      壊さなかった/怖さ, ゼロゼロ matched a correct 0.001).
 """
+
 import pytest
 
 from dr2_podcast.tools.tts_reading_check import (
-    HAZARD_READINGS, MARKER_RE, SPEAKER_RE, _norm, check_line, spoken_lines,
+    HAZARD_READINGS,
+    MARKER_RE,
+    SPEAKER_RE,
+    _norm,
+    check_line,
+    spoken_lines,
 )
 
 
 class TestNorm:
-    @pytest.mark.parametrize("a,b", [
-        ("デエタ", "データ"),          # doubled vowel vs ー
-        ("コオヒイ", "コーヒー"),
-        ("メエカア", "メーカー"),
-        ("ホオホオ", "ホウホウ"),      # o-row + ウ is a long o
-        ("エエヨオガク", "エイヨウガク"),  # e-row + イ is a long e, plus ヨウ
-        ("コオコク", "コウコク"),
-        ("ケエケン", "ケイケン"),
-        ("ヘエキン", "ヘイキン"),
-        ("ニュウス", "ニュース"),
-        ("ソオゾオ", "ソウゾウ"),
-    ])
+    @pytest.mark.parametrize(
+        "a,b",
+        [
+            ("デエタ", "データ"),  # doubled vowel vs ー
+            ("コオヒイ", "コーヒー"),
+            ("メエカア", "メーカー"),
+            ("ホオホオ", "ホウホウ"),  # o-row + ウ is a long o
+            ("エエヨオガク", "エイヨウガク"),  # e-row + イ is a long e, plus ヨウ
+            ("コオコク", "コウコク"),
+            ("ケエケン", "ケイケン"),
+            ("ヘエキン", "ヘイキン"),
+            ("ニュウス", "ニュース"),
+            ("ソオゾオ", "ソウゾウ"),
+        ],
+    )
     def test_long_vowel_spellings_are_equivalent(self, a, b):
         assert _norm(a) == _norm(b), f"{a} should normalise equal to {b}"
 
-    @pytest.mark.parametrize("a,b", [
-        ("ヲ", "オ"), ("ヅ", "ズ"), ("ヂ", "ジ"),
-    ])
+    @pytest.mark.parametrize(
+        "a,b",
+        [
+            ("ヲ", "オ"),
+            ("ヅ", "ズ"),
+            ("ヂ", "ジ"),
+        ],
+    )
     def test_kana_variants_collapse(self, a, b):
         assert _norm(a) == _norm(b)
 
@@ -42,10 +56,10 @@ class TestNorm:
 
     def test_genuinely_different_readings_stay_different(self):
         # the whole point — normalisation must not erase real misreadings
-        assert _norm("ツヨサ") != _norm("コワサ")      # 強さ vs 怖さ
-        assert _norm("タテマエ") != _norm("ケンマエ")   # 建前
-        assert _norm("イツツメ") != _norm("ゴツメ")     # 五つ目
-        assert _norm("ヒト") != _norm("ジン")          # 人
+        assert _norm("ツヨサ") != _norm("コワサ")  # 強さ vs 怖さ
+        assert _norm("タテマエ") != _norm("ケンマエ")  # 建前
+        assert _norm("イツツメ") != _norm("ゴツメ")  # 五つ目
+        assert _norm("ヒト") != _norm("ジン")  # 人
 
 
 class TestSpokenLines:
@@ -76,6 +90,7 @@ class TestHazardGating:
     def test_hazard_requires_source_form(self, monkeypatch):
         """怖さ/壊さ legitimately read コワサ — flagging on the reading alone is the bug."""
         import dr2_podcast.tools.tts_reading_check as mod
+
         monkeypatch.setattr(mod, "engine_reading", lambda t, s, sess: "コワサ")
         monkeypatch.setattr(mod, "openjtalk_reading", lambda t: "コワサ")
         # source has no 強さ -> not a hazard
@@ -87,6 +102,7 @@ class TestHazardGating:
     def test_empty_reading_is_flagged(self, monkeypatch):
         """A line that produces no audio is silent content loss — worse than a misreading."""
         import dr2_podcast.tools.tts_reading_check as mod
+
         monkeypatch.setattr(mod, "engine_reading", lambda t, s, sess: "")
         f = check_line("△△", 1, None)
         assert f and f["reason"] == "empty_reading"

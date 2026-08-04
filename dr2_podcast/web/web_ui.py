@@ -3,6 +3,7 @@
 Web-based UI for DR_2_Podcast Generation
 Provides a user-friendly interface for generating research-driven debate podcasts
 """
+
 import os
 import sys
 import signal
@@ -52,9 +53,9 @@ USERNAME = os.getenv("PODCAST_WEB_USER", "admin")
 PASSWORD = os.getenv("PODCAST_WEB_PASSWORD", secrets.token_urlsafe(16))
 
 _password_is_custom = bool(os.getenv("PODCAST_WEB_PASSWORD"))
-print("="*60, file=sys.stderr)
+print("=" * 60, file=sys.stderr)
 print("PODCAST WEB UI CREDENTIALS", file=sys.stderr)
-print("="*60, file=sys.stderr)
+print("=" * 60, file=sys.stderr)
 print(f"Username: {USERNAME}", file=sys.stderr)
 if _password_is_custom:
     print("Password: (set via PODCAST_WEB_PASSWORD)", file=sys.stderr)
@@ -63,7 +64,7 @@ else:
 print("\nSet custom credentials with:", file=sys.stderr)
 print("export PODCAST_WEB_USER=your_username", file=sys.stderr)
 print("export PODCAST_WEB_PASSWORD=your_password", file=sys.stderr)
-print("="*60, file=sys.stderr)
+print("=" * 60, file=sys.stderr)
 
 # Launch wrappers capture stderr (incl. the password above) into web_ui.log —
 # keep it and the task-history file owner-readable only.
@@ -74,6 +75,7 @@ for _sensitive in (SCRIPT_DIR / "web_ui.log", TASKS_FILE):
     except OSError:
         pass
 
+
 @asynccontextmanager
 async def lifespan(app):
     threading.Thread(target=worker_thread, daemon=True).start()
@@ -81,6 +83,7 @@ async def lifespan(app):
     prune_topic_index()
     backfill_topic_index()
     yield
+
 
 app = FastAPI(title="DR_2_Podcast Generator", lifespan=lifespan)
 security = HTTPBasic()
@@ -107,6 +110,7 @@ EXPECTED_ARTIFACTS_EXTRA = {
 
 _ARTIFACT_SUBDIRS = ("research", "scripts", "audio", "meta")
 
+
 def count_artifacts(directory: Optional[str], language: str = "en") -> tuple[int, int]:
     """Count generated artifacts vs expected total.
 
@@ -128,9 +132,11 @@ def count_artifacts(directory: Optional[str], language: str = "en") -> tuple[int
                     break
     return found, len(all_artifacts)
 
+
 current_task_id = None
 # Maps task_id → subprocess PID for running tasks (used by /api/stop)
 _running_pids: Dict[str, int] = {}
+
 
 def load_tasks():
     """Load tasks from file and clean up interrupted runs."""
@@ -138,7 +144,7 @@ def load_tasks():
     with tasks_lock:
         if TASKS_FILE.exists():
             try:
-                with open(TASKS_FILE, 'r') as f:
+                with open(TASKS_FILE, "r") as f:
                     tasks_db = json.load(f)
 
                 # CLEANUP: Mark any interrupted "running" tasks as "cancelled" on startup
@@ -155,17 +161,17 @@ def load_tasks():
                 print(f"Error loading tasks: {e}")
                 tasks_db = {}
 
+
 def save_tasks():
     with tasks_lock:
-        tmp = TASKS_FILE.with_suffix('.tmp')
+        tmp = TASKS_FILE.with_suffix(".tmp")
         try:
             # Never persist upload credentials to disk — they stay in-memory
             # only; uploads fall back to env vars after a restart.
             serializable = {
-                tid: {k: v for k, v in t.items() if k not in _CREDENTIAL_FIELDS}
-                for tid, t in tasks_db.items()
+                tid: {k: v for k, v in t.items() if k not in _CREDENTIAL_FIELDS} for tid, t in tasks_db.items()
             }
-            with open(tmp, 'w') as f:
+            with open(tmp, "w") as f:
                 json.dump(serializable, f, indent=2, default=str)
             os.replace(tmp, TASKS_FILE)
         except Exception:
@@ -178,6 +184,7 @@ def save_tasks():
 
 # --- Topic Index: central registry of completed research runs ---
 
+
 def _sot_exists(output_dir: str) -> bool:
     """Return True if source_of_truth.md exists in the given output directory."""
     d = Path(output_dir)
@@ -185,6 +192,7 @@ def _sot_exists(output_dir: str) -> bool:
         if (d / sub / "source_of_truth.md").exists() or (d / sub / "SOURCE_OF_TRUTH.md").exists():
             return True
     return False
+
 
 def load_topic_index() -> list:
     """Load the topic index from disk."""
@@ -195,11 +203,13 @@ def load_topic_index() -> list:
             pass
     return []
 
+
 def save_topic_index(index: list):
     """Save the topic index to disk."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    with open(TOPIC_INDEX_FILE, 'w') as f:
+    with open(TOPIC_INDEX_FILE, "w") as f:
         json.dump(index, f, indent=2, ensure_ascii=False)
+
 
 def prune_topic_index() -> int:
     """Remove index entries whose output_dir no longer exists on disk.
@@ -215,9 +225,15 @@ def prune_topic_index() -> int:
         print(f"Topic index: pruned {removed} stale entries (remaining: {len(index)})")
     return removed
 
-def register_topic(topic: str, output_dir: str, language: str = "en",
-                    accessibility_level: str = "simple", podcast_length: str = "long",
-                    podcast_hosts: str = "random"):
+
+def register_topic(
+    topic: str,
+    output_dir: str,
+    language: str = "en",
+    accessibility_level: str = "simple",
+    podcast_length: str = "long",
+    podcast_hosts: str = "random",
+):
     """Add a completed research run to the topic index.
 
     Prunes stale entries first, then upserts by output_dir (adds new entry or
@@ -235,17 +251,20 @@ def register_topic(topic: str, output_dir: str, language: str = "en",
                 save_topic_index(index)
             return
 
-    index.append({
-        "topic": topic,
-        "output_dir": output_dir,
-        "language": language,
-        "accessibility_level": accessibility_level,
-        "podcast_length": podcast_length,
-        "podcast_hosts": podcast_hosts,
-        "created_at": Path(output_dir).name,  # e.g. "2026-02-17_02-03-50"
-        "has_sot": has_sot,
-    })
+    index.append(
+        {
+            "topic": topic,
+            "output_dir": output_dir,
+            "language": language,
+            "accessibility_level": accessibility_level,
+            "podcast_length": podcast_length,
+            "podcast_hosts": podcast_hosts,
+            "created_at": Path(output_dir).name,  # e.g. "2026-02-17_02-03-50"
+            "has_sot": has_sot,
+        }
+    )
     save_topic_index(index)
+
 
 def backfill_topic_index():
     """Prune stale entries, then scan research_outputs/ to register any directories
@@ -280,10 +299,10 @@ def backfill_topic_index():
         meta_path = d / "session_metadata.txt"
         if meta_path.exists():
             meta_text = meta_path.read_text()
-            m = re.search(r'^Topic:\s*(.+)$', meta_text, re.MULTILINE)
+            m = re.search(r"^Topic:\s*(.+)$", meta_text, re.MULTILINE)
             if m:
                 topic = m.group(1).strip()
-            lm = re.search(r'^Language:\s*\S+\s*\((\w+)\)', meta_text, re.MULTILINE)
+            lm = re.search(r"^Language:\s*\S+\s*\((\w+)\)", meta_text, re.MULTILINE)
             if lm:
                 lang = lm.group(1).strip()
 
@@ -309,16 +328,18 @@ def backfill_topic_index():
                 pod_hosts = task.get("podcast_hosts", "random")
                 break
 
-        index.append({
-            "topic": topic,
-            "output_dir": str(d),
-            "language": lang,
-            "accessibility_level": access_level,
-            "podcast_length": pod_length,
-            "podcast_hosts": pod_hosts,
-            "created_at": d.name,
-            "has_sot": _sot_exists(str(d)),
-        })
+        index.append(
+            {
+                "topic": topic,
+                "output_dir": str(d),
+                "language": lang,
+                "accessibility_level": access_level,
+                "podcast_length": pod_length,
+                "podcast_hosts": pod_hosts,
+                "created_at": d.name,
+                "has_sot": _sot_exists(str(d)),
+            }
+        )
         added += 1
 
     if added > 0 or refreshed > 0:
@@ -336,7 +357,7 @@ def worker_thread():
             task_data = task_queue.get()
             task_id = task_data["task_id"]
             current_task_id = task_id
-            
+
             print(f"Starting task {task_id} from queue...")
 
             if task_data.get("reuse_mode"):
@@ -360,7 +381,7 @@ def worker_thread():
                     buzzsprout_account_id=task_data.get("buzzsprout_account_id"),
                     youtube_secret_path=task_data.get("youtube_secret_path"),
                 )
-            
+
         except Exception as e:
             print(f"Worker thread error: {e}")
             if current_task_id and tasks_db.get(current_task_id, {}).get("status") != "stopped":
@@ -372,6 +393,7 @@ def worker_thread():
                 _running_pids.pop(current_task_id, None)
             current_task_id = None
             task_queue.task_done()
+
 
 class PodcastRequest(BaseModel):
     topic: str
@@ -388,14 +410,17 @@ class PodcastRequest(BaseModel):
     buzzsprout_account_id: SecretStr = SecretStr("")
     youtube_secret_path: SecretStr = SecretStr("")
 
+
 class GenerateIntroRequest(BaseModel):
     channel_name: str = ""
     core_target: str = ""
     channel_mission: str = ""
     language: str = "en"
 
+
 class ReuseCheckRequest(BaseModel):
     topic: str
+
 
 class ReuseGenerateRequest(BaseModel):
     topic: str
@@ -414,6 +439,7 @@ class ReuseGenerateRequest(BaseModel):
     buzzsprout_account_id: SecretStr = SecretStr("")
     youtube_secret_path: SecretStr = SecretStr("")
 
+
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     """Simple authentication"""
     correct_username = secrets.compare_digest(credentials.username, USERNAME)
@@ -426,6 +452,7 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
             headers={"WWW-Authenticate": "Basic"},
         )
     return credentials.username
+
 
 @app.get("/", response_class=HTMLResponse)
 def home(username: str = Depends(verify_credentials)):
@@ -1752,6 +1779,7 @@ def home(username: str = Depends(verify_credentials)):
     """
     return html
 
+
 @app.get("/api/system_status")
 def get_system_status(username: str = Depends(verify_credentials)):
     """Check git status for unpushed changes."""
@@ -1775,8 +1803,9 @@ def get_system_status(username: str = Depends(verify_credentials)):
     except Exception as e:
         status["git_clean"] = False
         status["message"] = f"Git check failed: {str(e)}"
-    
+
     return status
+
 
 @app.get("/api/queue-info")
 async def get_queue_info(username: str = Depends(verify_credentials)):
@@ -1785,6 +1814,7 @@ async def get_queue_info(username: str = Depends(verify_credentials)):
         running = sum(1 for t in tasks_db.values() if t["status"] == "running")
         queued = sum(1 for t in tasks_db.values() if t["status"] == "queued")
     return {"running": running, "queued": queued}
+
 
 @app.post("/api/check-reuse")
 async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify_credentials)):
@@ -1829,7 +1859,7 @@ async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify
             f"PREVIOUS TOPICS:\n"
         )
         for i, t in enumerate(candidate_topics):
-            prompt += f"  {i+1}. {t}\n"
+            prompt += f"  {i + 1}. {t}\n"
         prompt += f"\nReturn ONLY a JSON array of {len(candidate_topics)} integers. Example: [85, 30, 72]"
 
         # Discover the model name from the vLLM server
@@ -1860,7 +1890,7 @@ async def check_reuse(request: ReuseCheckRequest, username: str = Depends(verify
         content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
         # Parse scores from LLM response
-        array_match = re.search(r'\[[\d\s,]+\]', content)
+        array_match = re.search(r"\[[\d\s,]+\]", content)
         if not array_match:
             return {"has_match": False, "matches": []}
         scores = json.loads(array_match.group())
@@ -1890,8 +1920,7 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
         reuse_dir = Path(request.reuse_output_dir).resolve()
         # Confine user-supplied paths to the outputs tree (same guard as /api/download)
         if not reuse_dir.is_relative_to(OUTPUT_DIR.resolve()):
-            raise HTTPException(status_code=400,
-                                detail="reuse_output_dir must be inside research_outputs/")
+            raise HTTPException(status_code=400, detail="reuse_output_dir must be inside research_outputs/")
     elif request.reuse_task_id:
         prev_task = tasks_db.get(request.reuse_task_id)
         if prev_task and prev_task.get("output_dir"):
@@ -1959,8 +1988,8 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
 async def generate_intro(request: GenerateIntroRequest, username: str = Depends(verify_credentials)):
     """Generate a channel intro using the LLM (smart model with fast-model fallback)."""
     lang_label = "Japanese" if request.language == "ja" else "English"
-    name    = request.channel_name    or "our podcast"
-    target  = request.core_target     or "curious listeners"
+    name = request.channel_name or "our podcast"
+    target = request.core_target or "curious listeners"
     mission = request.channel_mission or "turning science into everyday wisdom"
 
     if request.language == "ja":
@@ -2014,10 +2043,10 @@ async def generate_intro(request: GenerateIntroRequest, username: str = Depends(
         intro = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
         return intro or None
 
-    llm_base       = os.environ["LLM_BASE_URL"].rstrip("/")
-    model_name     = os.environ["MODEL_NAME"]
-    fast_base      = os.environ["FAST_LLM_BASE_URL"].rstrip("/")
-    fast_model     = os.environ["FAST_MODEL_NAME"]
+    llm_base = os.environ["LLM_BASE_URL"].rstrip("/")
+    model_name = os.environ["MODEL_NAME"]
+    fast_base = os.environ["FAST_LLM_BASE_URL"].rstrip("/")
+    fast_model = os.environ["FAST_MODEL_NAME"]
 
     async with httpx.AsyncClient(timeout=30) as client:
         # Primary: MODEL_NAME / LLM_BASE_URL from .env
@@ -2070,8 +2099,7 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
         "channel_intro": request.channel_intro,
         "core_target": request.core_target,
         "channel_mission": request.channel_mission,
-
-        "status": "queued", # Start as queued
+        "status": "queued",  # Start as queued
         "progress": 0,
         "phase": "Queued",
         "created_at": datetime.now().isoformat(),
@@ -2082,7 +2110,7 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
         "upload_results": {},
         "sources": [],
         "start_time": time.time(),
-        "estimated_remaining": None
+        "estimated_remaining": None,
     }
 
     with tasks_lock:
@@ -2098,6 +2126,7 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
     task_queue.put(task)
 
     return {"task_id": task_id, "status": "queued"}
+
 
 # Phase markers parsed from pipeline.py stdout
 # Each entry: (log_marker, display_name, progress_pct, is_phase)
@@ -2154,19 +2183,21 @@ def _close_phase(task_id: str):
         total = existing["duration"]
         existing["duration_formatted"] = f"{int(total // 60)}m {int(total % 60)}s"
     else:
-        step_durations.append({
-            "phase": prev_phase,
-            "duration": duration,
-            "duration_formatted": f"{int(duration // 60)}m {int(duration % 60)}s",
-        })
+        step_durations.append(
+            {
+                "phase": prev_phase,
+                "duration": duration,
+                "duration_formatted": f"{int(duration // 60)}m {int(duration % 60)}s",
+            }
+        )
+
 
 def _preflight_check() -> Optional[str]:
     """Test vLLM and Ollama reachability. Returns error message or None."""
     smart_health = SMART_BASE_URL.rstrip("/") + "/models"
     fast_health = FAST_BASE_URL.rstrip("/").replace("/v1", "") + "/api/tags"
     errors = []
-    for name, url in [("vLLM", smart_health),
-                      ("Ollama", fast_health)]:
+    for name, url in [("vLLM", smart_health), ("Ollama", fast_health)]:
         try:
             resp = httpx.get(url, timeout=3.0)
             resp.raise_for_status()
@@ -2179,7 +2210,7 @@ def _stream_process_output(proc, task_id: str) -> list:
     """Stream subprocess stdout, parse phase markers and sources, discover output_dir."""
     output_lines = []
     start_time = tasks_db[task_id]["start_time"]
-    output_dir_discovered = False   # True only once the authoritative marker is seen
+    output_dir_discovered = False  # True only once the authoritative marker is seen
     mtime_fallback_tried = False
 
     for line in proc.stdout:
@@ -2243,23 +2274,29 @@ def _resolve_upload_audio(resolved_dir: Path) -> str:
 
     Current runs nest audio under audio/ (prefer the BGM-mixed master);
     top-level names are kept as fallback for pre-subdir legacy runs."""
-    for rel in ("audio/audio_mixed.wav", "audio/audio.wav",
-                "audio_mixed.wav", "audio.wav"):
+    for rel in ("audio/audio_mixed.wav", "audio/audio.wav", "audio_mixed.wav", "audio.wav"):
         candidate = resolved_dir / rel
         if candidate.exists():
             return str(candidate)
     return str(resolved_dir / "audio" / "audio_mixed.wav")
 
 
-def run_podcast_generation(task_id: str, topic: str, language: str,
-                           accessibility_level: str = "simple",
-                           podcast_length: str = "long", podcast_hosts: str = "random",
-                           channel_intro: str = "",
-                           upload_buzzsprout: bool = False, upload_youtube: bool = False,
-                           core_target: str = "", channel_mission: str = "",
-                           buzzsprout_api_key: str = None,
-                           buzzsprout_account_id: str = None,
-                           youtube_secret_path: str = None):
+def run_podcast_generation(
+    task_id: str,
+    topic: str,
+    language: str,
+    accessibility_level: str = "simple",
+    podcast_length: str = "long",
+    podcast_hosts: str = "random",
+    channel_intro: str = "",
+    upload_buzzsprout: bool = False,
+    upload_youtube: bool = False,
+    core_target: str = "",
+    channel_mission: str = "",
+    buzzsprout_api_key: str = None,
+    buzzsprout_account_id: str = None,
+    youtube_secret_path: str = None,
+):
     """Run pipeline.py in background with real-time phase tracking."""
     try:
         preflight_err = _preflight_check()
@@ -2271,7 +2308,7 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
 
         tasks_db[task_id]["status"] = "running"
         tasks_db[task_id]["progress"] = 0
-        tasks_db[task_id]["phase"] = ""        # set by first is_phase marker
+        tasks_db[task_id]["phase"] = ""  # set by first is_phase marker
         tasks_db[task_id]["current_step"] = "Initializing..."
         tasks_db[task_id]["phase_start_time"] = time.time()
         tasks_db[task_id]["step_durations"] = []
@@ -2313,10 +2350,10 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
             clean_lines = []
             for l in raw_lines:
                 # Strip log prefix (timestamp + level) to get the actual message
-                stripped = l.rstrip('\n')
+                stripped = l.rstrip("\n")
                 # Skip lines that are only carets/whitespace (pydantic error formatting)
-                msg = stripped.split(' - ERROR - ', 1)[-1] if ' - ERROR - ' in stripped else stripped
-                if msg.strip() and msg.strip().replace('^', '').strip():
+                msg = stripped.split(" - ERROR - ", 1)[-1] if " - ERROR - " in stripped else stripped
+                if msg.strip() and msg.strip().replace("^", "").strip():
                     clean_lines.append(msg)
             error_text = "\n".join(clean_lines[-50:])  # Last 50 meaningful lines
             tasks_db[task_id]["error"] = error_text or f"Process exited with code {proc.returncode}"
@@ -2344,13 +2381,14 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
 
             if upload_buzzsprout:
                 tasks_db[task_id]["upload_results"]["buzzsprout"] = upload_to_buzzsprout(
-                    audio_path, title,
-                    api_key=buzzsprout_api_key, account_id=buzzsprout_account_id)
+                    audio_path, title, api_key=buzzsprout_api_key, account_id=buzzsprout_account_id
+                )
                 save_tasks()
 
             if upload_youtube:
                 tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(
-                    audio_path, title, youtube_secret_path=youtube_secret_path)
+                    audio_path, title, youtube_secret_path=youtube_secret_path
+                )
                 save_tasks()
 
         # Record the final phase's duration before marking complete
@@ -2364,9 +2402,12 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
         # Register in topic index
         if tasks_db[task_id].get("output_dir"):
             register_topic(
-                topic=topic, output_dir=tasks_db[task_id]["output_dir"],
-                language=language, accessibility_level=accessibility_level,
-                podcast_length=podcast_length, podcast_hosts=podcast_hosts,
+                topic=topic,
+                output_dir=tasks_db[task_id]["output_dir"],
+                language=language,
+                accessibility_level=accessibility_level,
+                podcast_length=podcast_length,
+                podcast_hosts=podcast_hosts,
             )
 
         # Self-evaluation runs inside the pipeline subprocess — re-running it
@@ -2380,12 +2421,16 @@ def run_podcast_generation(task_id: str, topic: str, language: str,
         if od:
             if _sot_exists(od):
                 register_topic(
-                    topic=topic, output_dir=od,
-                    language=language, accessibility_level=accessibility_level,
-                    podcast_length=podcast_length, podcast_hosts=podcast_hosts,
+                    topic=topic,
+                    output_dir=od,
+                    language=language,
+                    accessibility_level=accessibility_level,
+                    podcast_length=podcast_length,
+                    podcast_hosts=podcast_hosts,
                 )
     finally:
         save_tasks()
+
 
 def _find_latest_output_dir() -> Optional[Path]:
     """Find the most recently created timestamped subdirectory in research_outputs/."""
@@ -2450,12 +2495,13 @@ def run_podcast_reuse(task_data: dict):
 
             if upload_buzzsprout:
                 tasks_db[task_id]["upload_results"]["buzzsprout"] = upload_to_buzzsprout(
-                    audio_path, topic,
-                    api_key=buzzsprout_api_key, account_id=buzzsprout_account_id)
+                    audio_path, topic, api_key=buzzsprout_api_key, account_id=buzzsprout_account_id
+                )
                 save_tasks()
             if upload_youtube:
                 tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(
-                    audio_path, topic, youtube_secret_path=youtube_secret_path)
+                    audio_path, topic, youtube_secret_path=youtube_secret_path
+                )
                 save_tasks()
 
         _close_phase(task_id)
@@ -2468,7 +2514,8 @@ def run_podcast_reuse(task_data: dict):
         # Register in topic index
         if tasks_db[task_id].get("output_dir"):
             register_topic(
-                topic=topic, output_dir=tasks_db[task_id]["output_dir"],
+                topic=topic,
+                output_dir=tasks_db[task_id]["output_dir"],
                 language=language,
                 accessibility_level=task_data.get("accessibility_level", "simple"),
                 podcast_length=task_data.get("podcast_length", "long"),
@@ -2483,6 +2530,7 @@ def run_podcast_reuse(task_data: dict):
             _eval_dir = tasks_db[task_id].get("output_dir")
             if _eval_dir:
                 from dr2_podcast.evaluation import run_self_evaluation
+
                 run_self_evaluation(_eval_dir)
 
     except Exception as e:
@@ -2512,7 +2560,7 @@ def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     # regenerate it); top-level files are copied for legacy runs.
     for item in reuse_dir.iterdir():
         if item.is_file():
-            if item.suffix in ('.wav', '.mp3'):
+            if item.suffix in (".wav", ".mp3"):
                 continue
             shutil.copy2(item, new_output_dir / item.name)
         elif item.is_dir() and item.name in ("research", "scripts", "meta"):
@@ -2557,8 +2605,9 @@ def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
 
     if audio_file.exists():
         try:
-            mastered = post_process_audio(str(audio_file), bgm_target="Interesting BGM.wav",
-                                          transition_positions_ms=positions)
+            mastered = post_process_audio(
+                str(audio_file), bgm_target="Interesting BGM.wav", transition_positions_ms=positions
+            )
             if mastered and os.path.exists(mastered) and mastered != str(audio_file):
                 audio_file = Path(mastered)
         except Exception as e:
@@ -2586,10 +2635,15 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
         env["PODCAST_CHANNEL_MISSION"] = task_data["channel_mission"]
 
     cmd = [
-        str(PODCAST_ENV_PYTHON), "-m", "dr2_podcast.pipeline",
-        "--topic", topic,
-        "--language", language,
-        "--reuse-dir", str(reuse_dir),
+        str(PODCAST_ENV_PYTHON),
+        "-m",
+        "dr2_podcast.pipeline",
+        "--topic",
+        topic,
+        "--language",
+        language,
+        "--reuse-dir",
+        str(reuse_dir),
     ]
     if reuse_mode == "crew3_reuse":
         cmd.append("--crew3-only")
@@ -2597,8 +2651,12 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
         cmd.append("--check-supplemental")
 
     proc = subprocess.Popen(
-        cmd, cwd=SCRIPT_DIR,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
+        cmd,
+        cwd=SCRIPT_DIR,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
     )
     _running_pids[task_id] = proc.pid
 
@@ -2614,9 +2672,9 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
         raw_lines = output_lines[-100:]
         clean_lines = []
         for l in raw_lines:
-            stripped = l.rstrip('\n')
-            msg = stripped.split(' - ERROR - ', 1)[-1] if ' - ERROR - ' in stripped else stripped
-            if msg.strip() and msg.strip().replace('^', '').strip():
+            stripped = l.rstrip("\n")
+            msg = stripped.split(" - ERROR - ", 1)[-1] if " - ERROR - " in stripped else stripped
+            if msg.strip() and msg.strip().replace("^", "").strip():
                 clean_lines.append(msg)
         error_text = "\n".join(clean_lines[-50:])
         raise RuntimeError(error_text or f"Process exited with code {proc.returncode}")
@@ -2646,7 +2704,9 @@ async def get_status(task_id: str, username: str = Depends(verify_credentials)):
             task["artifacts_total"] = total
         else:
             task["artifacts_created"] = 0
-            task["artifacts_total"] = len(EXPECTED_ARTIFACTS + EXPECTED_ARTIFACTS_EXTRA.get(task.get("language", "en"), []))
+            task["artifacts_total"] = len(
+                EXPECTED_ARTIFACTS + EXPECTED_ARTIFACTS_EXTRA.get(task.get("language", "en"), [])
+            )
 
         # Calculate current step duration
         current_step_duration = 0
@@ -2692,11 +2752,7 @@ async def get_history(username: str = Depends(verify_credentials)):
     """Get list of past production runs"""
     with tasks_lock:
         # Sort by created_at desc
-        sorted_tasks = sorted(
-            tasks_db.values(),
-            key=lambda x: x["created_at"],
-            reverse=True
-        )
+        sorted_tasks = sorted(tasks_db.values(), key=lambda x: x["created_at"], reverse=True)
 
         # Calculate artifact counts for history items
         for task in sorted_tasks:
@@ -2706,10 +2762,13 @@ async def get_history(username: str = Depends(verify_credentials)):
                 task["artifacts_total"] = total
             else:
                 task["artifacts_created"] = 0
-                task["artifacts_total"] = len(EXPECTED_ARTIFACTS + EXPECTED_ARTIFACTS_EXTRA.get(task.get("language", "en"), []))
+                task["artifacts_total"] = len(
+                    EXPECTED_ARTIFACTS + EXPECTED_ARTIFACTS_EXTRA.get(task.get("language", "en"), [])
+                )
 
     # Return last 20 tasks, newest first — strip credential fields
     return [{k: v for k, v in t.items() if k not in _CREDENTIAL_FIELDS} for t in sorted_tasks[:20]]
+
 
 @app.get("/api/download/{task_id}/{filename}")
 def download_file(task_id: str, filename: str, username: str = Depends(verify_credentials)):
@@ -2726,31 +2785,32 @@ def download_file(task_id: str, filename: str, username: str = Depends(verify_cr
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
 
-    return FileResponse(
-        path=file_path,
-        filename=filename,
-        media_type='application/octet-stream'
-    )
+    return FileResponse(path=file_path, filename=filename, media_type="application/octet-stream")
+
 
 class YoutubePreflightRequest(BaseModel):
     secret_path: str = "./client_secret.json"
 
+
 @app.post("/api/youtube/preflight")
-async def youtube_preflight(request: YoutubePreflightRequest = YoutubePreflightRequest(), username: str = Depends(verify_credentials)):
+async def youtube_preflight(
+    request: YoutubePreflightRequest = YoutubePreflightRequest(), username: str = Depends(verify_credentials)
+):
     """Run YouTube OAuth consent flow (may open browser). Must be called before generation."""
     from dr2_podcast.tools.upload_utils import get_youtube_credentials
+
     try:
         secret_path = request.secret_path or None
         if secret_path:
             p = Path(secret_path)
             if p.is_absolute() or ".." in p.parts:
-                return {"ready": False,
-                        "error": "secret_path must be a relative path inside the project (no '..')"}
+                return {"ready": False, "error": "secret_path must be a relative path inside the project (no '..')"}
         # Pass explicitly — mutating os.environ would leak into every later task
         get_youtube_credentials(youtube_secret_path=secret_path)
         return {"ready": True}
     except Exception as e:
         return {"ready": False, "error": str(e)}
+
 
 @app.get("/api/upload_config")
 async def upload_config(username: str = Depends(verify_credentials)):
@@ -2761,6 +2821,7 @@ async def upload_config(username: str = Depends(verify_credentials)):
     youtube_ok = (SCRIPT_DIR / secret_path).exists()
 
     return {"buzzsprout_configured": buzzsprout_ok, "youtube_configured": youtube_ok}
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PODCAST_WEB_PORT", 8501))

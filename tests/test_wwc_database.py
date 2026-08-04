@@ -17,36 +17,76 @@ def sample_csv(tmp_path):
     csv_path = tmp_path / "wwc_sample.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "Intervention Name", "Study Citation", "WWC Rating",
-            "Improvement Index", "Domain", "Outcome Domain",
-            "Study Design", "Sample Size", "Grade Level",
-            "Effectiveness Rating"
-        ])
-        writer.writerow([
-            "Reading Recovery", "Smith et al. (2019)", "Meets WWC Standards Without Reservations",
-            "0.45", "Literacy", "Reading Achievement",
-            "RCT", "500", "Grade 1",
-            "Positive"
-        ])
-        writer.writerow([
-            "Reading Recovery", "Johnson (2020)", "Meets WWC Standards With Reservations",
-            "0.32", "Literacy", "Reading Fluency",
-            "QED", "300", "Grade 1-2",
-            "Potentially Positive"
-        ])
-        writer.writerow([
-            "Success for All", "Brown & Davis (2018)", "Meets WWC Standards Without Reservations",
-            "0.28", "Literacy", "Reading Achievement",
-            "RCT", "1200", "Grade K-2",
-            "Positive"
-        ])
-        writer.writerow([
-            "Cognitive Tutor", "Lee (2021)", "Does Not Meet WWC Standards",
-            "", "Math", "Math Achievement",
-            "QED", "200", "Grade 9-12",
-            "No Discernible Effects"
-        ])
+        writer.writerow(
+            [
+                "Intervention Name",
+                "Study Citation",
+                "WWC Rating",
+                "Improvement Index",
+                "Domain",
+                "Outcome Domain",
+                "Study Design",
+                "Sample Size",
+                "Grade Level",
+                "Effectiveness Rating",
+            ]
+        )
+        writer.writerow(
+            [
+                "Reading Recovery",
+                "Smith et al. (2019)",
+                "Meets WWC Standards Without Reservations",
+                "0.45",
+                "Literacy",
+                "Reading Achievement",
+                "RCT",
+                "500",
+                "Grade 1",
+                "Positive",
+            ]
+        )
+        writer.writerow(
+            [
+                "Reading Recovery",
+                "Johnson (2020)",
+                "Meets WWC Standards With Reservations",
+                "0.32",
+                "Literacy",
+                "Reading Fluency",
+                "QED",
+                "300",
+                "Grade 1-2",
+                "Potentially Positive",
+            ]
+        )
+        writer.writerow(
+            [
+                "Success for All",
+                "Brown & Davis (2018)",
+                "Meets WWC Standards Without Reservations",
+                "0.28",
+                "Literacy",
+                "Reading Achievement",
+                "RCT",
+                "1200",
+                "Grade K-2",
+                "Positive",
+            ]
+        )
+        writer.writerow(
+            [
+                "Cognitive Tutor",
+                "Lee (2021)",
+                "Does Not Meet WWC Standards",
+                "",
+                "Math",
+                "Math Achievement",
+                "QED",
+                "200",
+                "Grade 9-12",
+                "No Discernible Effects",
+            ]
+        )
     return str(csv_path)
 
 
@@ -65,7 +105,6 @@ def populated_db(db, sample_csv):
 
 
 class TestWWCDatabase:
-
     def test_empty_db_not_populated(self, db):
         assert db.is_populated() is False
         assert db.count() == 0

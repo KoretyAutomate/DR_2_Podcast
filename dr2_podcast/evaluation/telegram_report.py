@@ -37,14 +37,17 @@ def _load_credentials() -> tuple[str, str] | None:
 def _send_message(token: str, chat_id: str, text: str) -> bool:
     """Send a message via Telegram Bot API.  Returns True on success."""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-    }).encode("utf-8")
+    payload = json.dumps(
+        {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+        }
+    ).encode("utf-8")
 
     req = urllib.request.Request(
-        url, data=payload,
+        url,
+        data=payload,
         headers={"Content-Type": "application/json"},
     )
 
@@ -78,28 +81,26 @@ def _format_run_report(scorecard: dict, lessons: list[dict]) -> str:
     audio_min = a.get("actual_duration_min") or "?"
     audio_target = a.get("target_duration_min")
     audio_pct = a.get("adherence_pct")
-    audio_pct_str = f"{audio_pct*100:.0f}%" if audio_pct else "?"
+    audio_pct_str = f"{audio_pct * 100:.0f}%" if audio_pct else "?"
 
     # Studies count
     tiers = r.get("studies_found", {})
     total_studies = sum(tiers.values()) if isinstance(tiers, dict) else 0
     timeout_rate = r.get("extraction_timeout_rate", 0)
-    timeout_pct = f"{timeout_rate*100:.0f}%"
+    timeout_pct = f"{timeout_rate * 100:.0f}%"
 
     # Script
     script_adh = s.get("adherence_pct", 0)
-    script_pct = f"{script_adh*100:.0f}%"
+    script_pct = f"{script_adh * 100:.0f}%"
     audit_issues = s.get("content_audit_issues", 0)
 
     # Status icons
     research_icon = _status_icon(1 - timeout_rate, 0.9, higher_better=True)
     script_icon = _status_icon(script_adh, 0.9)
-    audio_icon = _status_icon(
-        a.get("actual_duration_min"), a.get("target_duration_min")
-    )
+    audio_icon = _status_icon(a.get("actual_duration_min"), a.get("target_duration_min"))
 
     lines = [
-        f"\U0001f4cb <b>Podcast Complete:</b> \"{topic}\"",
+        f'\U0001f4cb <b>Podcast Complete:</b> "{topic}"',
         f"Language: {lang} | Pipeline: {pipeline_min}min",
         f"Audio: {audio_min}min (target {audio_target or '?'}, {audio_pct_str})",
         "",

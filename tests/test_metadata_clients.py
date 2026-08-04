@@ -26,8 +26,8 @@ from dr2_podcast.research.metadata_clients import (
 # RateLimiter Tests
 # ──────────────────────────────────────────────────────────────
 
-class TestRateLimiter:
 
+class TestRateLimiter:
     def test_basic_rate_limiting(self):
         """Two requests at 5 req/s should take at least 0.2s total."""
         limiter = RateLimiter(rate=5.0)
@@ -64,8 +64,8 @@ class TestRateLimiter:
 # MetadataCache Tests
 # ──────────────────────────────────────────────────────────────
 
-class TestMetadataCache:
 
+class TestMetadataCache:
     def test_put_and_get(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test_cache.db")
@@ -95,8 +95,7 @@ class TestMetadataCache:
             try:
                 # Manually insert with old timestamp
                 cache.conn.execute(
-                    "INSERT INTO metadata_cache (api_name, identifier, data, fetched_at) "
-                    "VALUES (?, ?, ?, ?)",
+                    "INSERT INTO metadata_cache (api_name, identifier, data, fetched_at) VALUES (?, ?, ?, ?)",
                     ("test_api", "test_id", '{"val": 1}', time.time() - 100),
                 )
                 cache.conn.commit()
@@ -134,8 +133,8 @@ class TestMetadataCache:
 # OpenAlex Client Tests
 # ──────────────────────────────────────────────────────────────
 
-class TestOpenAlexClient:
 
+class TestOpenAlexClient:
     def test_reconstruct_abstract(self):
         """Test inverted index → text reconstruction."""
         inverted = {
@@ -207,8 +206,8 @@ class TestOpenAlexClient:
 # Semantic Scholar Client Tests
 # ──────────────────────────────────────────────────────────────
 
-class TestSemanticScholarClient:
 
+class TestSemanticScholarClient:
     def test_normalize_paper(self):
         client = SemanticScholarClient()
         raw = {
@@ -251,8 +250,8 @@ class TestSemanticScholarClient:
 # Crossref Client Tests
 # ──────────────────────────────────────────────────────────────
 
-class TestCrossrefClient:
 
+class TestCrossrefClient:
     def test_check_retraction_true(self):
         """Retracted paper detected via update-to field."""
         raw = {"update-to": [{"type": "retraction", "DOI": "10.1234/retracted"}]}
@@ -289,9 +288,7 @@ class TestCrossrefClient:
             "is-referenced-by-count": 100,
             "references-count": 30,
             "funder": [{"name": "NIH"}, {"name": "NSF"}],
-            "clinical-trial-number": [
-                {"clinical-trial-number": "NCT001234"}
-            ],
+            "clinical-trial-number": [{"clinical-trial-number": "NCT001234"}],
             "license": [{"URL": "https://creativecommons.org/licenses/by/4.0/"}],
             "update-to": [],
             "relation": {},
@@ -319,8 +316,8 @@ class TestCrossrefClient:
 # ERIC Client Tests
 # ──────────────────────────────────────────────────────────────
 
-class TestERICClient:
 
+class TestERICClient:
     def test_normalize_result(self):
         client = ERICClient()
         raw = {
@@ -357,8 +354,8 @@ class TestERICClient:
 # EnrichedPaper Tests
 # ──────────────────────────────────────────────────────────────
 
-class TestEnrichedPaper:
 
+class TestEnrichedPaper:
     def test_to_dict_minimal(self):
         ep = EnrichedPaper(doi="10.1234/test")
         d = ep.to_dict()
@@ -387,8 +384,8 @@ class TestEnrichedPaper:
 # Aggregator Tests (offline — no API calls)
 # ──────────────────────────────────────────────────────────────
 
-class TestAggregator:
 
+class TestAggregator:
     def test_enrich_empty_list(self):
         result = asyncio.run(enrich_papers_metadata([]))
         assert result == []

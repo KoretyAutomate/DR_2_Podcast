@@ -27,13 +27,14 @@ DEFAULT_DB_PATH = os.path.expanduser("~/.cache/dr2podcast/wwc.db")
 @dataclass
 class WWCRating:
     """A single WWC study finding/rating."""
+
     intervention_name: str
     study_citation: str
-    wwc_rating: str           # "Meets WWC Standards Without Reservations", etc.
+    wwc_rating: str  # "Meets WWC Standards Without Reservations", etc.
     improvement_index: Optional[float] = None
-    domain: str = ""          # e.g., "Literacy", "Math", "Science"
+    domain: str = ""  # e.g., "Literacy", "Math", "Science"
     outcome_domain: str = ""
-    study_design: str = ""    # "RCT", "QED", etc.
+    study_design: str = ""  # "RCT", "QED", etc.
     sample_size: Optional[int] = None
     grade_level: str = ""
     effectiveness_rating: str = ""  # "Positive", "Potentially Positive", etc.
@@ -100,25 +101,19 @@ class WWCDatabase:
 
             for row in reader:
                 # Flexible column mapping
-                intervention = self._get_col(row, col_map, [
-                    "intervention name", "intervention", "program name", "program"
-                ])
-                citation = self._get_col(row, col_map, [
-                    "study citation", "citation", "study", "study reference"
-                ])
-                rating = self._get_col(row, col_map, [
-                    "wwc rating", "rating", "study rating", "wwc study rating"
-                ])
+                intervention = self._get_col(
+                    row, col_map, ["intervention name", "intervention", "program name", "program"]
+                )
+                citation = self._get_col(row, col_map, ["study citation", "citation", "study", "study reference"])
+                rating = self._get_col(row, col_map, ["wwc rating", "rating", "study rating", "wwc study rating"])
 
                 if not intervention or not rating:
                     continue
 
-                imp_idx = self._safe_float(self._get_col(row, col_map, [
-                    "improvement index", "effect size", "improvement"
-                ]))
-                sample = self._safe_int(self._get_col(row, col_map, [
-                    "sample size", "n", "total sample"
-                ]))
+                imp_idx = self._safe_float(
+                    self._get_col(row, col_map, ["improvement index", "effect size", "improvement"])
+                )
+                sample = self._safe_int(self._get_col(row, col_map, ["sample size", "n", "total sample"]))
 
                 self.conn.execute(
                     "INSERT INTO wwc_ratings "

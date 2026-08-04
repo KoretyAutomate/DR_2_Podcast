@@ -12,8 +12,8 @@ from dr2_podcast.audio.engine import clean_script_for_tts, _chunk_japanese_text,
 # clean_script_for_tts
 # ---------------------------------------------------------------------------
 
-class TestCleanScriptForTTS:
 
+class TestCleanScriptForTTS:
     def test_strips_cue_lines(self):
         text = "## [intrigued, leaning in]\nHost 1: Welcome."
         result = clean_script_for_tts(text)
@@ -75,19 +75,39 @@ class TestCleanScriptForTTS:
         result = clean_script_for_tts(text)
         assert "This is a normal English sentence" in result
 
-    @pytest.mark.parametrize("cue", [
-        "（笑）", "（笑い）", "（苦笑）", "（拍手）", "（拍手音）",
-        "（ため息）", "（沈黙）", "（頷きながら）", "（笑いながら）", "(会話再開)",
-    ])
+    @pytest.mark.parametrize(
+        "cue",
+        [
+            "（笑）",
+            "（笑い）",
+            "（苦笑）",
+            "（拍手）",
+            "（拍手音）",
+            "（ため息）",
+            "（沈黙）",
+            "（頷きながら）",
+            "（笑いながら）",
+            "(会話再開)",
+        ],
+    )
     def test_strips_stage_directions(self, cue):
         result = clean_script_for_tts(f"Host 1: そうですね{cue}。確かに。")
         assert cue.strip("（）()") not in result
         assert "そうですね" in result and "確かに" in result
 
-    @pytest.mark.parametrize("gloss", [
-        "（治療必要数）", "（アブストラクト）", "（Cohen's d）", "（レプチン）",
-        "（例えば 9 時間以上）", "（特にレム睡眠と徐波睡眠）", "（筋肉減少症）", "(HR)",
-    ])
+    @pytest.mark.parametrize(
+        "gloss",
+        [
+            "（治療必要数）",
+            "（アブストラクト）",
+            "（Cohen's d）",
+            "（レプチン）",
+            "（例えば 9 時間以上）",
+            "（特にレム睡眠と徐波睡眠）",
+            "（筋肉減少症）",
+            "(HR)",
+        ],
+    )
     def test_preserves_content_glosses(self, gloss):
         """Content parentheticals carry meaning and must still be spoken —
         the stage-direction strip is a curated cue list, not a blanket strip."""
@@ -110,8 +130,8 @@ class TestCleanScriptForTTS:
 # _chunk_japanese_text
 # ---------------------------------------------------------------------------
 
-class TestChunkJapaneseText:
 
+class TestChunkJapaneseText:
     def test_splits_at_punctuation(self):
         text = "first sentence here.second one."
         # Use Japanese punctuation
@@ -149,8 +169,8 @@ class TestChunkJapaneseText:
 # AudioMixer
 # ---------------------------------------------------------------------------
 
-class TestAudioMixer:
 
+class TestAudioMixer:
     def test_mix_podcast_basic(self):
         from dr2_podcast.audio.engine import AudioMixer
 
@@ -167,8 +187,10 @@ class TestAudioMixer:
         mock_music.fade_out = MagicMock(return_value=mock_music)
         mock_music.export = MagicMock()
 
-        with patch("dr2_podcast.audio.engine.AudioSegment") as MockAS, \
-             patch("dr2_podcast.audio.engine.effects") as mock_effects:
+        with (
+            patch("dr2_podcast.audio.engine.AudioSegment") as MockAS,
+            patch("dr2_podcast.audio.engine.effects") as mock_effects,
+        ):
             MockAS.from_wav.side_effect = [mock_voice, mock_music]
             mock_effects.normalize.side_effect = lambda x: x
             result = mixer.mix_podcast("voice.wav", "music.wav", "out.wav")
@@ -180,13 +202,14 @@ class TestAudioMixer:
 # Per-speaker RMS normalization logic
 # ---------------------------------------------------------------------------
 
+
 class TestRMSNormalization:
     """Test the RMS normalization math used in both TTS _flush_buffer paths."""
 
     @staticmethod
     def _normalize(audio: np.ndarray) -> np.ndarray:
         """Replicate the normalization logic from engine.py."""
-        rms = np.sqrt(np.mean(audio ** 2))
+        rms = np.sqrt(np.mean(audio**2))
         if rms > 1e-6:
             audio = audio * (_TARGET_RMS / rms)
             audio = np.clip(audio, -1.0, 1.0)
@@ -196,7 +219,7 @@ class TestRMSNormalization:
         # Create array with known RMS of 0.02
         audio = np.full(1000, 0.02, dtype=np.float32)
         result = self._normalize(audio)
-        result_rms = np.sqrt(np.mean(result ** 2))
+        result_rms = np.sqrt(np.mean(result**2))
         assert abs(result_rms - _TARGET_RMS) < 0.001
 
     def test_zero_array_skipped(self):
@@ -215,5 +238,5 @@ class TestRMSNormalization:
     def test_already_at_target_unchanged(self):
         audio = np.full(1000, _TARGET_RMS, dtype=np.float32)
         result = self._normalize(audio)
-        result_rms = np.sqrt(np.mean(result ** 2))
+        result_rms = np.sqrt(np.mean(result**2))
         assert abs(result_rms - _TARGET_RMS) < 0.001

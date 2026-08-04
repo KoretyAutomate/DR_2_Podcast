@@ -20,7 +20,6 @@ from dr2_podcast.research.effect_size_math import (
 
 
 class TestClassifyMagnitude:
-
     def test_negligible(self):
         assert classify_magnitude_d(0.0) == "negligible"
         assert classify_magnitude_d(0.1) == "negligible"
@@ -46,7 +45,6 @@ class TestClassifyMagnitude:
 
 
 class TestHedgesGCorrection:
-
     def test_large_sample(self):
         """For large N, g ≈ d."""
         d = 0.5
@@ -75,7 +73,7 @@ class TestHedgesGCorrection:
         """n = 4: correction factor = 1 - 3/7 ≈ 0.571."""
         d = 1.0
         g = hedges_g_correction(d, 4)
-        assert g == pytest.approx(1.0 * (1 - 3/7))
+        assert g == pytest.approx(1.0 * (1 - 3 / 7))
 
     def test_negative_d(self):
         d = -0.5
@@ -85,7 +83,6 @@ class TestHedgesGCorrection:
 
 
 class TestOddsRatioToD:
-
     def test_or_1(self):
         """OR = 1 means no effect → d = 0."""
         assert odds_ratio_to_d(1.0) == pytest.approx(0.0)
@@ -111,7 +108,6 @@ class TestOddsRatioToD:
 
 
 class TestRToD:
-
     def test_r_zero(self):
         """r = 0 → d = 0."""
         assert r_to_d(0.0) == pytest.approx(0.0)
@@ -139,7 +135,6 @@ class TestRToD:
 
 
 class TestDToR:
-
     def test_d_zero(self):
         assert d_to_r(0.0) == pytest.approx(0.0)
 
@@ -152,7 +147,6 @@ class TestDToR:
 
 
 class TestCalculateEffect:
-
     def test_cohens_d(self):
         impact = calculate_effect("Study1", "cohens_d", 0.5, sample_size=100)
         assert impact is not None
@@ -207,7 +201,6 @@ class TestCalculateEffect:
 
 
 class TestBatchCalculate:
-
     def test_empty_list(self):
         assert batch_calculate([]) == []
 
@@ -237,7 +230,6 @@ class TestBatchCalculate:
 
 
 class TestFormatReport:
-
     def test_empty_impacts(self):
         report = format_effect_size_report([])
         assert "not possible" in report.lower()

@@ -16,18 +16,19 @@ if TYPE_CHECKING:
 
 @dataclass
 class ClinicalImpact:
-    study_id: str           # PMID or title
-    cer: float              # Control Event Rate
-    eer: float              # Experimental Event Rate
-    arr: float              # Absolute Risk Reduction = CER - EER
-    rrr: float              # Relative Risk Reduction = ARR / CER
-    nnt: float              # Number Needed to Treat = 1 / |ARR|
-    nnt_interpretation: str # "Treat 10 patients to prevent 1 event"
-    direction: str          # "benefit" | "harm" | "no_effect"
+    study_id: str  # PMID or title
+    cer: float  # Control Event Rate
+    eer: float  # Experimental Event Rate
+    arr: float  # Absolute Risk Reduction = CER - EER
+    rrr: float  # Relative Risk Reduction = ARR / CER
+    nnt: float  # Number Needed to Treat = 1 / |ARR|
+    nnt_interpretation: str  # "Treat 10 patients to prevent 1 event"
+    direction: str  # "benefit" | "harm" | "no_effect"
 
 
-def calculate_impact(study_id: str, cer: float, eer: float,
-                     outcome_is_adverse: Optional[bool] = None) -> Optional[ClinicalImpact]:
+def calculate_impact(
+    study_id: str, cer: float, eer: float, outcome_is_adverse: Optional[bool] = None
+) -> Optional[ClinicalImpact]:
     """
     Calculate ARR, RRR, NNT from CER and EER.
 
@@ -48,10 +49,14 @@ def calculate_impact(study_id: str, cer: float, eer: float,
         arr = -arr
     if abs(arr) < 1e-10:
         return ClinicalImpact(
-            study_id=study_id, cer=cer, eer=eer,
-            arr=0.0, rrr=0.0, nnt=float('inf'),
+            study_id=study_id,
+            cer=cer,
+            eer=eer,
+            arr=0.0,
+            rrr=0.0,
+            nnt=float("inf"),
             nnt_interpretation="No measurable difference between groups",
-            direction="no_effect"
+            direction="no_effect",
         )
 
     rrr = arr / cer if abs(cer) > 1e-10 else 0.0
@@ -61,9 +66,14 @@ def calculate_impact(study_id: str, cer: float, eer: float,
     interp = f"Treat {nnt:.0f} patients to {verb} 1 additional event"
 
     return ClinicalImpact(
-        study_id=study_id, cer=cer, eer=eer,
-        arr=round(arr, 6), rrr=round(rrr, 4), nnt=round(nnt, 1),
-        nnt_interpretation=interp, direction=direction
+        study_id=study_id,
+        cer=cer,
+        eer=eer,
+        arr=round(arr, 6),
+        rrr=round(rrr, 4),
+        nnt=round(nnt, 1),
+        nnt_interpretation=interp,
+        direction=direction,
     )
 
 
@@ -107,8 +117,7 @@ def format_math_report(impacts: List[ClinicalImpact]) -> str:
     ]
     for i in impacts:
         lines.append(
-            f"| {i.study_id} | {i.cer:.3f} | {i.eer:.3f} | "
-            f"{i.arr:+.4f} | {i.rrr:+.2%} | {i.nnt:.1f} | {i.direction} |"
+            f"| {i.study_id} | {i.cer:.3f} | {i.eer:.3f} | {i.arr:+.4f} | {i.rrr:+.2%} | {i.nnt:.1f} | {i.direction} |"
         )
     lines.append("")
     for i in impacts:

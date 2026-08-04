@@ -31,55 +31,155 @@ class ResearchDomain(Enum):
 @dataclass
 class DomainClassification:
     domain: ResearchDomain
-    confidence: float           # 0.0-1.0
+    confidence: float  # 0.0-1.0
     reasoning: str
-    suggested_framework: str    # "PICO" | "PECO"
-    primary_databases: list     # e.g. ["PubMed", "Google Scholar"] or ["OpenAlex", "ERIC"]
+    suggested_framework: str  # "PICO" | "PECO"
+    primary_databases: list  # e.g. ["PubMed", "Google Scholar"] or ["OpenAlex", "ERIC"]
 
 
 # --- Deterministic keyword rules ---
 
 CLINICAL_KEYWORDS = {
     # Conditions & anatomy
-    "disease", "disorder", "syndrome", "cancer", "tumor", "diabetes", "hypertension",
-    "cholesterol", "obesity", "bmi", "blood pressure", "heart", "cardiac", "liver",
-    "kidney", "lung", "brain", "neural", "alzheimer", "parkinson", "dementia",
-    "depression", "anxiety", "adhd", "autism spectrum",
+    "disease",
+    "disorder",
+    "syndrome",
+    "cancer",
+    "tumor",
+    "diabetes",
+    "hypertension",
+    "cholesterol",
+    "obesity",
+    "bmi",
+    "blood pressure",
+    "heart",
+    "cardiac",
+    "liver",
+    "kidney",
+    "lung",
+    "brain",
+    "neural",
+    "alzheimer",
+    "parkinson",
+    "dementia",
+    "depression",
+    "anxiety",
+    "adhd",
+    "autism spectrum",
     # Interventions
-    "drug", "medication", "supplement", "vitamin", "dosage", "prescription",
-    "surgery", "chemotherapy", "immunotherapy", "vaccine", "antibiotic",
-    "statin", "insulin", "aspirin", "metformin",
+    "drug",
+    "medication",
+    "supplement",
+    "vitamin",
+    "dosage",
+    "prescription",
+    "surgery",
+    "chemotherapy",
+    "immunotherapy",
+    "vaccine",
+    "antibiotic",
+    "statin",
+    "insulin",
+    "aspirin",
+    "metformin",
     # Clinical methodology
-    "clinical trial", "rct", "randomized", "placebo", "double-blind",
-    "patient", "diagnosis", "treatment", "therapy", "prognosis",
-    "mortality", "morbidity", "incidence", "prevalence",
+    "clinical trial",
+    "rct",
+    "randomized",
+    "placebo",
+    "double-blind",
+    "patient",
+    "diagnosis",
+    "treatment",
+    "therapy",
+    "prognosis",
+    "mortality",
+    "morbidity",
+    "incidence",
+    "prevalence",
     # Biomarkers & mechanisms
-    "biomarker", "gene expression", "receptor", "enzyme", "protein",
-    "inflammation", "oxidative stress", "metabolic",
+    "biomarker",
+    "gene expression",
+    "receptor",
+    "enzyme",
+    "protein",
+    "inflammation",
+    "oxidative stress",
+    "metabolic",
     # Substances with health effects
-    "caffeine", "alcohol", "nicotine", "cannabis", "thc", "cbd",
+    "caffeine",
+    "alcohol",
+    "nicotine",
+    "cannabis",
+    "thc",
+    "cbd",
 }
 
 SOCIAL_SCIENCE_KEYWORDS = {
     # Education
-    "education", "school", "classroom", "teacher", "student", "curriculum",
-    "homework", "reading intervention", "math instruction", "stem education",
-    "special education", "gifted", "kindergarten", "elementary", "middle school",
-    "high school", "university", "college", "academic achievement", "test scores",
-    "standardized test", "literacy", "numeracy", "tutoring", "pedagogy",
-    "online learning", "distance learning", "homeschool",
+    "education",
+    "school",
+    "classroom",
+    "teacher",
+    "student",
+    "curriculum",
+    "homework",
+    "reading intervention",
+    "math instruction",
+    "stem education",
+    "special education",
+    "gifted",
+    "kindergarten",
+    "elementary",
+    "middle school",
+    "high school",
+    "university",
+    "college",
+    "academic achievement",
+    "test scores",
+    "standardized test",
+    "literacy",
+    "numeracy",
+    "tutoring",
+    "pedagogy",
+    "online learning",
+    "distance learning",
+    "homeschool",
     # Parenting & child development
-    "parenting", "child development", "daycare", "childcare", "preschool",
-    "attachment", "screen time", "sibling", "family structure", "divorce",
-    "co-parenting", "breastfeeding duration", "toilet training",
-    "developmental milestone", "socialization",
+    "parenting",
+    "child development",
+    "daycare",
+    "childcare",
+    "preschool",
+    "attachment",
+    "screen time",
+    "sibling",
+    "family structure",
+    "divorce",
+    "co-parenting",
+    "breastfeeding duration",
+    "toilet training",
+    "developmental milestone",
+    "socialization",
     # Productivity & workplace
-    "productivity", "remote work", "work from home", "telecommuting",
-    "4-day work week", "open office", "workplace", "employee",
-    "job satisfaction", "burnout", "work-life balance",
+    "productivity",
+    "remote work",
+    "work from home",
+    "telecommuting",
+    "4-day work week",
+    "open office",
+    "workplace",
+    "employee",
+    "job satisfaction",
+    "burnout",
+    "work-life balance",
     # Social science methodology
-    "quasi-experimental", "difference-in-differences", "regression discontinuity",
-    "cohen's d", "effect size", "longitudinal study",
+    "quasi-experimental",
+    "difference-in-differences",
+    "regression discontinuity",
+    "cohen's d",
+    "effect size",
+    "longitudinal study",
 }
 
 # Patterns that strongly indicate a domain (compiled once)
@@ -179,14 +279,9 @@ async def classify_topic(
     )
 
 
-async def _classify_with_llm(
-    topic: str, smart_client, smart_model: str
-) -> DomainClassification:
+async def _classify_with_llm(topic: str, smart_client, smart_model: str) -> DomainClassification:
     """Use LLM to classify ambiguous topics."""
-    prompt = (
-        "Classify the following research topic into exactly one domain.\n\n"
-        f"TOPIC: {topic}\n"
-    )
+    prompt = f"Classify the following research topic into exactly one domain.\n\nTOPIC: {topic}\n"
     prompt += (
         "\nDOMAINS:\n"
         "1. CLINICAL — Health, medicine, nutrition, pharmacology, disease, fitness.\n"
@@ -213,7 +308,7 @@ async def _classify_with_llm(
     raw = safe_message_text(resp)
 
     # Parse JSON from response (handle markdown code blocks)
-    json_match = re.search(r'\{[^}]+\}', raw)
+    json_match = re.search(r"\{[^}]+\}", raw)
     if not json_match:
         raise ValueError(f"No JSON found in LLM response: {raw[:200]}")
 

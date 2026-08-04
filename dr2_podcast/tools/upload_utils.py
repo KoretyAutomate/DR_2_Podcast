@@ -33,10 +33,14 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent.absolute()
 # Config validation
 # ---------------------------------------------------------------------------
 
-def validate_upload_config(buzzsprout: bool, youtube: bool,
-                           buzzsprout_api_key: str = None,
-                           buzzsprout_account_id: str = None,
-                           youtube_secret_path: str = None) -> dict:
+
+def validate_upload_config(
+    buzzsprout: bool,
+    youtube: bool,
+    buzzsprout_api_key: str = None,
+    buzzsprout_account_id: str = None,
+    youtube_secret_path: str = None,
+) -> dict:
     """Check that credentials exist for the requested platforms.
 
     Credentials can be passed explicitly or fall back to env vars.
@@ -59,12 +63,13 @@ def validate_upload_config(buzzsprout: bool, youtube: bool,
 
     return {"valid": len(errors) == 0, "errors": errors}
 
+
 # ---------------------------------------------------------------------------
 # Buzzsprout
 # ---------------------------------------------------------------------------
 
-def upload_to_buzzsprout(audio_path: str, title: str,
-                         api_key: str = None, account_id: str = None) -> dict:
+
+def upload_to_buzzsprout(audio_path: str, title: str, api_key: str = None, account_id: str = None) -> dict:
     """Upload audio as an unpublished (draft) episode to Buzzsprout.
 
     Credentials can be passed explicitly or fall back to env vars.
@@ -91,6 +96,7 @@ def upload_to_buzzsprout(audio_path: str, title: str,
 
     except Exception as e:
         return {"success": False, "episode_id": None, "url": None, "error": str(e)}
+
 
 # ---------------------------------------------------------------------------
 # YouTube
@@ -135,6 +141,7 @@ def get_youtube_credentials(youtube_secret_path: str = None):
         logger.info("Migrating YouTube token from pickle to JSON format...")
         try:
             import pickle
+
             with open(_LEGACY_TOKEN_PATH, "rb") as f:
                 legacy_creds = pickle.load(f)
             _save_credentials_json(legacy_creds)
@@ -153,6 +160,7 @@ def get_youtube_credentials(youtube_secret_path: str = None):
         # Refresh expired token
         if creds and creds.refresh_token:
             import google.auth.transport.requests
+
             creds.refresh(google.auth.transport.requests.Request())
             _save_credentials_json(creds)
             return creds
@@ -166,15 +174,13 @@ def get_youtube_credentials(youtube_secret_path: str = None):
     return creds
 
 
-def upload_to_youtube(audio_path: str, title: str, privacy: str = "private",
-                      youtube_secret_path: str = None) -> dict:
+def upload_to_youtube(audio_path: str, title: str, privacy: str = "private", youtube_secret_path: str = None) -> dict:
     """Upload audio as a private (or unlisted) YouTube video.
 
     youtube_secret_path can be passed explicitly or falls back to env var.
     """
     if privacy not in ("private", "unlisted"):
-        return {"success": False, "video_id": None, "url": None,
-                "error": "privacy must be 'private' or 'unlisted'"}
+        return {"success": False, "video_id": None, "url": None, "error": "privacy must be 'private' or 'unlisted'"}
 
     try:
         from googleapiclient.discovery import build

@@ -90,8 +90,7 @@ def _split_at_subheaders(body: str) -> list:
     return sections
 
 
-def _translate_sot_pipelined(sot_content: str, language: str, language_config: dict,
-                              *, _call_smart_model) -> str:
+def _translate_sot_pipelined(sot_content: str, language: str, language_config: dict, *, _call_smart_model) -> str:
     """Translate SOT on the Smart Model (sequential, no audit).
 
     The Smart Model (configured via MODEL_NAME env var) translates IMRaD
@@ -102,8 +101,8 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
 
     imrad_sections = _split_sot_imrad(sot_content)
 
-    lang_name = language_config['name']
-    lang_code = language_config.get('code', language)
+    lang_name = language_config["name"]
+    lang_code = language_config.get("code", language)
 
     translate_system = (
         "You are a professional English (en) to {lang_name} ({lang_code}) translator. "
@@ -178,12 +177,19 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
             translated = _call_smart_model(
                 system=translate_system,
                 user=translate_user + body,
-                max_tokens=max_tok, temperature=0.1,
+                max_tokens=max_tok,
+                temperature=0.1,
             )
             translate_count += 1
             results[chunk_idx] = translated
-            logger.info("  Translated %s (%d -> %d chars) [smart, %d/%d]",
-                label, len(body), len(translated), translate_count, total_translatable)
+            logger.info(
+                "  Translated %s (%d -> %d chars) [smart, %d/%d]",
+                label,
+                len(body),
+                len(translated),
+                translate_count,
+                total_translatable,
+            )
         except Exception as e:
             logger.warning("  Translation failed for %s: %s -- keeping original", label, e)
             results[chunk_idx] = body
@@ -233,20 +239,24 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
     result_headers = result_text.count("\n## ")
     if result_headers < source_headers:
         missing = source_headers - result_headers
-        logger.warning("  Translation missing %d section(s): source has %d ## headers, result has %d",
-            missing, source_headers, result_headers)
+        logger.warning(
+            "  Translation missing %d section(s): source has %d ## headers, result has %d",
+            missing,
+            source_headers,
+            result_headers,
+        )
     # Length sanity check
     if len(result_text) < len(sot_content) * 0.5:
-        logger.warning("  Translated SOT suspiciously short: %d chars vs %d chars original",
-            len(result_text), len(sot_content))
+        logger.warning(
+            "  Translated SOT suspiciously short: %d chars vs %d chars original", len(result_text), len(sot_content)
+        )
 
     return result_text
 
 
-def _translate_prompt(prompt_text: str, language: str, language_config: dict,
-                      *, _call_smart_model) -> str:
+def _translate_prompt(prompt_text: str, language: str, language_config: dict, *, _call_smart_model) -> str:
     """Translate a task prompt/instruction to the target language. Preserves structure."""
-    lang_name = language_config['name']
+    lang_name = language_config["name"]
     system = (
         f"Translate these podcast production instructions to {lang_name}.\n"
         f"KEEP intact: all markdown formatting (##, ###, numbered lists, bold), "
@@ -270,12 +280,11 @@ def _translate_prompt(prompt_text: str, language: str, language_config: dict,
         return prompt_text
 
 
-def _audit_script_language(script_text: str, language: str, language_config: dict,
-                           *, _call_smart_model) -> str:
+def _audit_script_language(script_text: str, language: str, language_config: dict, *, _call_smart_model) -> str:
     """Post-Crew 3 audit: ensure script is consistently in the target language."""
-    if language == 'en':
+    if language == "en":
         return script_text
-    lang_name = language_config['name']
+    lang_name = language_config["name"]
     system = (
         f"You are a {lang_name} language consistency auditor for a podcast script.\n"
         f"Find any non-{lang_name} sentences (English) and translate them to natural {lang_name}.\n"
@@ -298,11 +307,14 @@ def _audit_script_language(script_text: str, language: str, language_config: dic
         if len(result) < len(script_text) * 0.5:
             logger.warning("  Script audit output too short -- keeping original")
             return script_text
-        orig_transitions = script_text.count('[TRANSITION]')
-        result_transitions = result.count('[TRANSITION]')
+        orig_transitions = script_text.count("[TRANSITION]")
+        result_transitions = result.count("[TRANSITION]")
         if orig_transitions > 0 and result_transitions < orig_transitions:
-            logger.warning("  Script audit lost [TRANSITION] markers (%d->%d) -- keeping original",
-                orig_transitions, result_transitions)
+            logger.warning(
+                "  Script audit lost [TRANSITION] markers (%d->%d) -- keeping original",
+                orig_transitions,
+                result_transitions,
+            )
             return script_text
         logger.info("  Script language audit complete (%d -> %d chars)", len(script_text), len(result))
         return result

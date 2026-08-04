@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 # Shared Infrastructure
 # ──────────────────────────────────────────────────────────────
 
+
 class RateLimiter:
     """Async token-bucket rate limiter.
 
@@ -87,9 +88,7 @@ class MetadataCache:
         )
         # Cleanup expired entries
         cutoff = time.time() - self.ttl_seconds
-        deleted = self.conn.execute(
-            "DELETE FROM metadata_cache WHERE fetched_at < ?", (cutoff,)
-        ).rowcount
+        deleted = self.conn.execute("DELETE FROM metadata_cache WHERE fetched_at < ?", (cutoff,)).rowcount
         self.conn.commit()
         if deleted:
             logger.info(f"MetadataCache: cleaned {deleted} expired entries")
@@ -107,8 +106,7 @@ class MetadataCache:
     def get(self, api_name: str, identifier: str) -> Optional[dict]:
         cutoff = time.time() - self.ttl_seconds
         row = self.conn.execute(
-            "SELECT data FROM metadata_cache "
-            "WHERE api_name = ? AND identifier = ? AND fetched_at > ?",
+            "SELECT data FROM metadata_cache WHERE api_name = ? AND identifier = ? AND fetched_at > ?",
             (api_name, identifier, cutoff),
         ).fetchone()
         if row:
@@ -120,8 +118,7 @@ class MetadataCache:
 
     def put(self, api_name: str, identifier: str, data: dict) -> None:
         self.conn.execute(
-            "INSERT OR REPLACE INTO metadata_cache "
-            "(api_name, identifier, data, fetched_at) VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO metadata_cache (api_name, identifier, data, fetched_at) VALUES (?, ?, ?, ?)",
             (api_name, identifier, json.dumps(data), time.time()),
         )
         self.conn.commit()
@@ -135,6 +132,7 @@ class MetadataCache:
 # ──────────────────────────────────────────────────────────────
 # OpenAlex Client
 # ──────────────────────────────────────────────────────────────
+
 
 class OpenAlexClient:
     """Client for the OpenAlex API (https://api.openalex.org).
@@ -200,11 +198,7 @@ class OpenAlexClient:
         pmid_raw = ids.get("pmid", "") or ""
         pmid = pmid_raw.replace("https://pubmed.ncbi.nlm.nih.gov/", "").strip("/")
 
-        concepts = [
-            c.get("display_name", "")
-            for c in raw.get("concepts", [])
-            if c.get("score", 0) > 0.3
-        ]
+        concepts = [c.get("display_name", "") for c in raw.get("concepts", []) if c.get("score", 0) > 0.3]
 
         return {
             "openalex_id": raw.get("id", ""),
@@ -222,9 +216,7 @@ class OpenAlexClient:
                 "is_oa": oa.get("is_oa", False),
                 "oa_status": oa.get("oa_status", ""),
             },
-            "abstract_text": self._reconstruct_abstract(
-                raw.get("abstract_inverted_index")
-            ),
+            "abstract_text": self._reconstruct_abstract(raw.get("abstract_inverted_index")),
         }
 
     async def get_work_by_doi(self, doi: str) -> Optional[dict]:
@@ -279,7 +271,7 @@ class OpenAlexClient:
         results = []
         # Process in batches of 50 (OpenAlex limit)
         for i in range(0, len(identifiers), 50):
-            batch = identifiers[i:i + 50]
+            batch = identifiers[i : i + 50]
             filter_str = "|".join(f"https://doi.org/{d}" for d in batch)
             try:
                 async with self.limiter:
@@ -297,10 +289,7 @@ class OpenAlexClient:
                 logger.warning(f"OpenAlex batch lookup failed: {e}")
         return results
 
-    async def search_works(
-        self, query: str, filters: Optional[dict] = None,
-        per_page: int = 25
-    ) -> List[dict]:
+    async def search_works(self, query: str, filters: Optional[dict] = None, per_page: int = 25) -> List[dict]:
         """Full-text search with optional filters.
 
         filters: dict of OpenAlex filter keys, e.g.
@@ -331,6 +320,7 @@ class OpenAlexClient:
 # ──────────────────────────────────────────────────────────────
 # Semantic Scholar Client
 # ──────────────────────────────────────────────────────────────
+
 
 class SemanticScholarClient:
     """Client for the Semantic Scholar Graph API.
@@ -402,9 +392,7 @@ class SemanticScholarClient:
             logger.warning(f"Semantic Scholar lookup failed for {paper_id}: {e}")
             return None
 
-    async def batch_get_papers(
-        self, paper_ids: List[str], fields: str = None
-    ) -> List[dict]:
+    async def batch_get_papers(self, paper_ids: List[str], fields: str = None) -> List[dict]:
         """Batch lookup up to 500 papers via POST."""
         if not paper_ids:
             return []
@@ -412,7 +400,7 @@ class SemanticScholarClient:
         batch_fields = fields or self.DEFAULT_FIELDS
         # Process in batches of 500
         for i in range(0, len(paper_ids), 500):
-            batch = paper_ids[i:i + 500]
+            batch = paper_ids[i : i + 500]
             try:
                 async with self.limiter:
                     resp = await self._http.post(
@@ -430,8 +418,7 @@ class SemanticScholarClient:
         return results
 
     async def search_papers(
-        self, query: str, fields_of_study: Optional[List[str]] = None,
-        year: Optional[str] = None, limit: int = 25
+        self, query: str, fields_of_study: Optional[List[str]] = None, year: Optional[str] = None, limit: int = 25
     ) -> List[dict]:
         """Relevance search with optional field/year filters."""
         try:
@@ -462,6 +449,7 @@ class SemanticScholarClient:
 # ──────────────────────────────────────────────────────────────
 # Crossref Client
 # ──────────────────────────────────────────────────────────────
+
 
 class CrossrefClient:
     """Client for the Crossref API (https://api.crossref.org).
@@ -576,6 +564,7 @@ class CrossrefClient:
 # ERIC Client
 # ──────────────────────────────────────────────────────────────
 
+
 class ERICClient:
     """Client for the ERIC API (https://api.ies.ed.gov/eric/).
 
@@ -620,10 +609,7 @@ class ERICClient:
                 pass
         return None
 
-    async def search(
-        self, query: str, max_results: int = 50,
-        filters: Optional[dict] = None
-    ) -> List[dict]:
+    async def search(self, query: str, max_results: int = 50, filters: Optional[dict] = None) -> List[dict]:
         """Search ERIC using Solr query syntax.
 
         filters: optional dict, e.g.
@@ -656,9 +642,11 @@ class ERICClient:
 # Aggregator
 # ──────────────────────────────────────────────────────────────
 
+
 @dataclass
 class EnrichedPaper:
     """Merged metadata from all API sources for a single paper."""
+
     doi: str = ""
     pmid: str = ""
     # OpenAlex

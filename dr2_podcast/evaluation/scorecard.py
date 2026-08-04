@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 # Metric parsers — each returns a partial dict merged into the scorecard
 # ---------------------------------------------------------------------------
 
+
 def _parse_screening_tiers(research_dir: Path) -> dict:
     """Count studies per tier from screening_results_aff/neg JSON files."""
     tiers = {"tier1": 0, "tier2": 0, "tier3": 0}
@@ -71,17 +72,13 @@ def _parse_log_metrics(log_path: Path) -> dict:
         metrics["articles_extracted"] = extracted
         metrics["articles_attempted"] = attempted
         if attempted > 0:
-            metrics["extraction_timeout_rate"] = round(
-                1 - extracted / attempted, 3
-            )
+            metrics["extraction_timeout_rate"] = round(1 - extracted / attempted, 3)
     else:
         metrics["articles_extracted"] = 0
         metrics["articles_attempted"] = 0
 
     # Section budget adherence ("Section <name>: XXXX/YYYY chars")
-    section_hits = re.findall(
-        r"Section (\w+):\s+(\d+)/(\d+) chars", text
-    )
+    section_hits = re.findall(r"Section (\w+):\s+(\d+)/(\d+) chars", text)
     if section_hits:
         adherences = []
         for _name, actual, budget in section_hits:
@@ -90,9 +87,7 @@ def _parse_log_metrics(log_path: Path) -> dict:
         metrics["section_adherence"] = adherences
 
     # Max deficit cascade ratio ("budget adjusted .* -> .* chars")
-    deficit_ratios = re.findall(
-        r"budget adjusted (\d+)\s*->\s*(\d+) chars", text
-    )
+    deficit_ratios = re.findall(r"budget adjusted (\d+)\s*->\s*(\d+) chars", text)
     if deficit_ratios:
         ratios = [int(new) / int(orig) for orig, new in deficit_ratios if int(orig) > 0]
         metrics["max_deficit_ratio"] = round(max(ratios), 3) if ratios else 1.0
@@ -192,10 +187,7 @@ def _parse_url_validation(research_dir: Path) -> dict:
                 }
         elif isinstance(data, list):
             total = len(data)
-            valid = sum(
-                1 for r in data
-                if isinstance(r, dict) and r.get("status") in ("valid", "ok", True)
-            )
+            valid = sum(1 for r in data if isinstance(r, dict) and r.get("status") in ("valid", "ok", True))
             return {
                 "url_validation_total": total,
                 "url_validation_valid": valid,
@@ -321,15 +313,11 @@ def _detect_regressions(current: dict, history: list[dict]) -> list[str]:
         if higher_better:
             # Regression if current is >20% below average
             if val < avg * 0.8:
-                regressions.append(
-                    f"{name} dropped to {val:.3f} (avg {avg:.3f}, -{(1 - val/avg)*100:.0f}%)"
-                )
+                regressions.append(f"{name} dropped to {val:.3f} (avg {avg:.3f}, -{(1 - val / avg) * 100:.0f}%)")
         else:
             # Regression if current is >20% above average
             if val > avg * 1.2:
-                regressions.append(
-                    f"{name} increased to {val:.3f} (avg {avg:.3f}, +{(val/avg - 1)*100:.0f}%)"
-                )
+                regressions.append(f"{name} increased to {val:.3f} (avg {avg:.3f}, +{(val / avg - 1) * 100:.0f}%)")
 
     return regressions
 
@@ -337,6 +325,7 @@ def _detect_regressions(current: dict, history: list[dict]) -> list[str]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def generate_scorecard(output_dir: str) -> dict:
     """Generate a deterministic run scorecard from pipeline artifacts.
@@ -413,9 +402,7 @@ def generate_scorecard(output_dir: str) -> dict:
                 "target_duration_min": target_dur,
                 "actual_duration_min": audio_dur,
                 "adherence_pct": (
-                    round(audio_dur / target_dur, 3)
-                    if audio_dur and target_dur and target_dur > 0
-                    else None
+                    round(audio_dur / target_dur, 3) if audio_dur and target_dur and target_dur > 0 else None
                 ),
             },
             "pipeline": {

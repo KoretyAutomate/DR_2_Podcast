@@ -6,7 +6,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from dr2_podcast.pipeline_crew import (
-    ProgressTracker, _estimate_task_tokens, _build_sot_injection_for_stage,
+    ProgressTracker,
+    _estimate_task_tokens,
+    _build_sot_injection_for_stage,
     _crew_kickoff_guarded,
 )
 
@@ -15,19 +17,25 @@ from dr2_podcast.pipeline_crew import (
 # ProgressTracker
 # ---------------------------------------------------------------------------
 
-class TestProgressTracker:
 
+class TestProgressTracker:
     @staticmethod
     def _make_metadata():
         return {
             "task1": {
-                "phase": "1", "name": "Blueprint", "agent": "producer",
-                "description": "Create blueprint", "estimated_duration_min": 5,
+                "phase": "1",
+                "name": "Blueprint",
+                "agent": "producer",
+                "description": "Create blueprint",
+                "estimated_duration_min": 5,
                 "dependencies": [],
             },
             "task2": {
-                "phase": "2", "name": "Script", "agent": "producer",
-                "description": "Write script", "estimated_duration_min": 10,
+                "phase": "2",
+                "name": "Script",
+                "agent": "producer",
+                "description": "Write script",
+                "estimated_duration_min": 10,
                 "dependencies": ["task1"],
             },
         }
@@ -40,9 +48,13 @@ class TestProgressTracker:
     def test_init_excludes_conditional(self):
         md = self._make_metadata()
         md["task3"] = {
-            "phase": "3", "name": "Translation", "agent": "producer",
-            "description": "Translate", "estimated_duration_min": 3,
-            "dependencies": [], "conditional": True,
+            "phase": "3",
+            "name": "Translation",
+            "agent": "producer",
+            "description": "Translate",
+            "estimated_duration_min": 3,
+            "dependencies": [],
+            "conditional": True,
         }
         tracker = ProgressTracker(md)
         # conditional task should not be counted
@@ -82,8 +94,8 @@ class TestProgressTracker:
 # _estimate_task_tokens
 # ---------------------------------------------------------------------------
 
-class TestEstimateTaskTokens:
 
+class TestEstimateTaskTokens:
     def test_english_token_estimate(self):
         task = SimpleNamespace(description="Test description " * 100, context=[])
         est = _estimate_task_tokens(task, None, "en")
@@ -110,11 +122,16 @@ class TestEstimateTaskTokens:
 # _build_sot_injection_for_stage
 # ---------------------------------------------------------------------------
 
-class TestBuildSotInjection:
 
+class TestBuildSotInjection:
     def test_stage_1_contains_summary(self, tmp_path):
         result = _build_sot_injection_for_stage(
-            1, None, None, "This is the summary.", None, "",
+            1,
+            None,
+            None,
+            "This is the summary.",
+            None,
+            "",
             {"name": "English"},
         )
         assert "SOURCE OF TRUTH SUMMARY" in result
@@ -128,7 +145,12 @@ class TestBuildSotInjection:
             "### 4.3 GRADE Assessment\nGRADE data here.\n"
         )
         result = _build_sot_injection_for_stage(
-            2, str(sot_file), None, "", None, "",
+            2,
+            str(sot_file),
+            None,
+            "",
+            None,
+            "",
             {"name": "English"},
         )
         assert "[SOT Stage 2" in result
@@ -137,7 +159,12 @@ class TestBuildSotInjection:
 
     def test_stage_2_missing_file(self):
         result = _build_sot_injection_for_stage(
-            2, "/nonexistent/file.md", None, "", None, "",
+            2,
+            "/nonexistent/file.md",
+            None,
+            "",
+            None,
+            "",
             {"name": "English"},
         )
         assert "[SOT Stage 2" in result
@@ -145,7 +172,12 @@ class TestBuildSotInjection:
 
     def test_stage_3_minimal(self):
         result = _build_sot_injection_for_stage(
-            3, None, None, "", None, "ARR: 5%, NNT: 20",
+            3,
+            None,
+            None,
+            "",
+            None,
+            "ARR: 5%, NNT: 20",
             {"name": "English"},
         )
         assert "[SOT Stage 3" in result
@@ -157,8 +189,8 @@ class TestBuildSotInjection:
 # _crew_kickoff_guarded
 # ---------------------------------------------------------------------------
 
-class TestCrewKickoffGuarded:
 
+class TestCrewKickoffGuarded:
     def test_success_first_try(self):
         kickoff_mock = MagicMock()
         crew_mock = MagicMock()
@@ -166,9 +198,19 @@ class TestCrewKickoffGuarded:
         crew_factory = lambda: crew_mock
         task = SimpleNamespace(description="Short task", context=[])
         _crew_kickoff_guarded(
-            crew_factory, task, None, "en",
-            None, None, "", "", "", {"name": "English"},
-            "test-crew", ctx_window=100000, max_tokens=16000,
+            crew_factory,
+            task,
+            None,
+            "en",
+            None,
+            None,
+            "",
+            "",
+            "",
+            {"name": "English"},
+            "test-crew",
+            ctx_window=100000,
+            max_tokens=16000,
         )
         kickoff_mock.assert_called_once()
 
@@ -186,10 +228,19 @@ class TestCrewKickoffGuarded:
         big_desc = "x" * 200000
         task = SimpleNamespace(description=big_desc, context=[])
         _crew_kickoff_guarded(
-            crew_factory, task, None, "en",
-            None, None, "summary text", "", "",
+            crew_factory,
+            task,
+            None,
+            "en",
+            None,
+            None,
+            "summary text",
+            "",
+            "",
             {"name": "English"},
-            "test-crew", ctx_window=8000, max_tokens=4000,
+            "test-crew",
+            ctx_window=8000,
+            max_tokens=4000,
         )
         # Should have been called once (at some stage)
         assert call_count["n"] >= 1

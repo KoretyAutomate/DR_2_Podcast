@@ -13,8 +13,8 @@ from dr2_podcast.sot_i18n import SOT_TEMPLATES, get_templates, t
 # Template parity — all keys present in both EN and JA
 # ---------------------------------------------------------------------------
 
-class TestTemplateParity:
 
+class TestTemplateParity:
     def _collect_keys(self, d, prefix=""):
         """Recursively collect all key paths from a nested dict."""
         keys = set()
@@ -49,11 +49,10 @@ class TestTemplateParity:
 # Placeholder name matching between EN and JA
 # ---------------------------------------------------------------------------
 
-_PLACEHOLDER_RE = re.compile(r'\{(\w+)(?:[^}]*)?\}')
+_PLACEHOLDER_RE = re.compile(r"\{(\w+)(?:[^}]*)?\}")
 
 
 class TestPlaceholderParity:
-
     def _extract_placeholders(self, text):
         """Extract {placeholder} names from a template string."""
         if not isinstance(text, str):
@@ -100,7 +99,6 @@ _CHINESE_ONLY_CHARS = set(
 
 
 class TestNoChinese:
-
     def _check_string(self, text, path):
         """Check a string for Chinese-only characters."""
         if not isinstance(text, str):
@@ -134,8 +132,8 @@ class TestNoChinese:
 # get_templates() fallback
 # ---------------------------------------------------------------------------
 
-class TestGetTemplates:
 
+class TestGetTemplates:
     def test_returns_en_for_en(self):
         tmpl = get_templates("en")
         assert tmpl is SOT_TEMPLATES["en"]
@@ -157,8 +155,8 @@ class TestGetTemplates:
 # t() function interpolation
 # ---------------------------------------------------------------------------
 
-class TestTFunction:
 
+class TestTFunction:
     def test_basic_lookup(self):
         tmpl = get_templates("en")
         result = t(tmpl, "abstract", "header")
@@ -171,16 +169,14 @@ class TestTFunction:
 
     def test_interpolation(self):
         tmpl = get_templates("en")
-        result = t(tmpl, "abstract", "methods",
-                   total_wide=100, total_screened=20, total_ft_ok=10)
+        result = t(tmpl, "abstract", "methods", total_wide=100, total_screened=20, total_ft_ok=10)
         assert "100" in result
         assert "20" in result
         assert "10" in result
 
     def test_ja_interpolation(self):
         tmpl = get_templates("ja")
-        result = t(tmpl, "abstract", "methods",
-                   total_wide=100, total_screened=20, total_ft_ok=10)
+        result = t(tmpl, "abstract", "methods", total_wide=100, total_screened=20, total_ft_ok=10)
         assert "100" in result
         assert "20" in result
         assert "10" in result
@@ -195,8 +191,8 @@ class TestTFunction:
 # Key JA translations (correctness of known-problematic terms)
 # ---------------------------------------------------------------------------
 
-class TestJACorrectTerms:
 
+class TestJACorrectTerms:
     @pytest.fixture
     def ja(self):
         return get_templates("ja")
@@ -225,9 +221,9 @@ class TestJACorrectTerms:
 
     def test_rct_correct(self, ja):
         """無作為化比較試験, NOT 随機化."""
-        screening = t(ja, "methods", "screening_body",
-                      aff_screened=0, fal_screened=0, total_screened=0,
-                      smart_model="test-model")
+        screening = t(
+            ja, "methods", "screening_body", aff_screened=0, fal_screened=0, total_screened=0, smart_model="test-model"
+        )
         assert "無作為化比較試験" in screening
 
     def test_ja_section_headers(self, ja):

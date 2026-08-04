@@ -6,11 +6,14 @@ Layer 3: pipeline_validators.validate_tts_readings (context-dependent hazard war
 
 See PLAN.md "TTS glossary + style-rules pipeline enforcement".
 """
+
 import pytest
 
 from dr2_podcast.audio import engine
 from dr2_podcast.audio.engine import (
-    apply_tts_glossary, clean_script_for_tts, _load_tts_glossary,
+    apply_tts_glossary,
+    clean_script_for_tts,
+    _load_tts_glossary,
 )
 from dr2_podcast.pipeline_validators import validate_tts_readings
 from dr2_podcast.prompt_strings import get_prompt
@@ -31,9 +34,13 @@ class TestApplyGlossary:
     def test_standalone_substitution(self):
         assert apply_tts_glossary("母数と仕方") == "ぼすうとしかた"
 
-    @pytest.mark.parametrize("compound", [
-        "酵母数", "奉仕方法",
-    ])
+    @pytest.mark.parametrize(
+        "compound",
+        [
+            "酵母数",
+            "奉仕方法",
+        ],
+    )
     def test_boundary_safety(self, compound):
         # Embeddable keys (母数/仕方) must NOT be substituted
         # inside a correctly-read compound — this is the regression the review
@@ -63,17 +70,20 @@ class TestApplyGlossary:
     # Ep09 listening round 2026-07-24: 五つ目→「ごつめ」, 建前→「けんまえ」,
     # 放っておけない→「はなっておけない」. Same family as the 2026-07-24 ep08
     # finding 4つ目→「よんつめ」. All context-free → glossary, not per-script kana.
-    @pytest.mark.parametrize("src,want", [
-        ("五つ目のパターン", "いつつめのパターン"),
-        ("五つ、高額の掲載料", "いつつ、高額の掲載料"),
-        ("六つ目、特許取得", "むっつめ、特許取得"),
-        ("5つ目のフレーズ", "いつつめのフレーズ"),
-        ("6つのフレーズ", "むっつのフレーズ"),
-        ("4つ目の選択肢", "よっつめの選択肢"),
-        ("建前としては", "たてまえとしては"),
-        ("放っておけない病気", "ほうっておけない病気"),
-        ("放っておくと悪化する", "ほうっておくと悪化する"),
-    ])
+    @pytest.mark.parametrize(
+        "src,want",
+        [
+            ("五つ目のパターン", "いつつめのパターン"),
+            ("五つ、高額の掲載料", "いつつ、高額の掲載料"),
+            ("六つ目、特許取得", "むっつめ、特許取得"),
+            ("5つ目のフレーズ", "いつつめのフレーズ"),
+            ("6つのフレーズ", "むっつのフレーズ"),
+            ("4つ目の選択肢", "よっつめの選択肢"),
+            ("建前としては", "たてまえとしては"),
+            ("放っておけない病気", "ほうっておけない病気"),
+            ("放っておくと悪化する", "ほうっておくと悪化する"),
+        ],
+    )
     def test_ep09_round_readings(self, src, want):
         assert apply_tts_glossary(src) == want
 
@@ -82,20 +92,26 @@ class TestApplyGlossary:
     # both in isolation and in its real line, so the key is the 3-char 十分か, NOT 十分.
     # Widening it to 十分 would flatten the 21 correctly-read occurrences in the corpus
     # and degrade their pitch accent for no gain.
-    @pytest.mark.parametrize("src,want", [
-        ("「何人いれば十分か」に決まった線はない", "「何人いればじゅうぶんか」に決まった線はない"),
-        ("効果量や信頼区間は十分か、再現性は", "効果量や信頼区間はじゅうぶんか、再現性は"),
-    ])
+    @pytest.mark.parametrize(
+        "src,want",
+        [
+            ("「何人いれば十分か」に決まった線はない", "「何人いればじゅうぶんか」に決まった線はない"),
+            ("効果量や信頼区間は十分か、再現性は", "効果量や信頼区間はじゅうぶんか、再現性は"),
+        ],
+    )
     def test_ep05_juubun_ka(self, src, want):
         assert apply_tts_glossary(src) == want
 
-    @pytest.mark.parametrize("src", [
-        "それだけでは不十分。",
-        "基本はこれで十分です。",
-        "まだデータが十分に集まっていない",
-        "生物学的妥当性は「十分条件」ではありません",
-        "用量反応は週百五十分くらいまで",
-    ])
+    @pytest.mark.parametrize(
+        "src",
+        [
+            "それだけでは不十分。",
+            "基本はこれで十分です。",
+            "まだデータが十分に集まっていない",
+            "生物学的妥当性は「十分条件」ではありません",
+            "用量反応は週百五十分くらいまで",
+        ],
+    )
     def test_juubun_ka_does_not_overreach(self, src):
         # No 十分か substring -> the entry must not fire. 週百五十分 is 150 MINUTES
         # (correctly ジュップン) and must never be rewritten.
@@ -114,10 +130,17 @@ class TestApplyGlossary:
     #   五つ目の -> イツツメノ ok | 五つめの -> ゴツメノ  BROKEN
     #   六つ目の -> ムッツメノ ok | 六つめの -> ロクツメノ BROKEN
     # So the ordinal family must be guarded against that rule.
-    @pytest.mark.parametrize("src", [
-        "一つ目のパターン", "二つ目のパターン", "三つ目のパターン", "四つ目のパターン",
-        "七つ目の場所", "3つ目の質問",
-    ])
+    @pytest.mark.parametrize(
+        "src",
+        [
+            "一つ目のパターン",
+            "二つ目のパターン",
+            "三つ目のパターン",
+            "四つ目のパターン",
+            "七つ目の場所",
+            "3つ目の質問",
+        ],
+    )
     def test_ordinal_plus_no_is_guarded(self, src):
         # The hazard is a KANJI numeral left in front of めの — that is what misreads
         # (五つめの -> ゴツメノ). A fully-kana ordinal is fine: verified 2026-07-28 via
@@ -125,15 +148,19 @@ class TestApplyGlossary:
         # CORRECT. So the invariant is "no kanji numeral + めの", not "no めの at all" —
         # the broader form failed once 三つ目/四つ目 gained their own safe keys.
         import re
+
         out = apply_tts_glossary(src)
         assert not re.search(r"[一二三四五六七八九十]つ?めの?", out), f"{src} -> {out}"
 
-    @pytest.mark.parametrize("src,want", [
-        ("五つ目のパターン", "いつつめのパターン"),   # safe key wins, kana is unambiguous
-        ("六つ目の場所", "むっつめの場所"),
-        ("4つ目の質問", "よっつめの質問"),
-        ("一つ目のパターン", "一つ目のパターン"),     # untouched — reads ヒトツメノ correctly
-    ])
+    @pytest.mark.parametrize(
+        "src,want",
+        [
+            ("五つ目のパターン", "いつつめのパターン"),  # safe key wins, kana is unambiguous
+            ("六つ目の場所", "むっつめの場所"),
+            ("4つ目の質問", "よっつめの質問"),
+            ("一つ目のパターン", "一つ目のパターン"),  # untouched — reads ヒトツメノ correctly
+        ],
+    )
     def test_ordinal_readings_after_guard(self, src, want):
         assert apply_tts_glossary(src) == want
 
@@ -180,17 +207,30 @@ class TestCleanScriptIntegration:
 # Layer 3 — context-dependent hazard validator
 # --------------------------------------------------------------------------- #
 class TestValidateReadings:
-    @pytest.mark.parametrize("text", [
-        "コインを投げて表が出た", "表と裏の関係", "リスクは大ありです",
-        "この料理は辛いです", "下の方を見てください", "あの方は医師です",
-    ])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "コインを投げて表が出た",
+            "表と裏の関係",
+            "リスクは大ありです",
+            "この料理は辛いです",
+            "下の方を見てください",
+            "あの方は医師です",
+        ],
+    )
     def test_flags_hazards(self, text):
         assert validate_tts_readings(text), f"should flag: {text}"
 
-    @pytest.mark.parametrize("text", [
-        "研究が発表された", "代表的な例です", "この方法が良い",
-        "両方とも正しい", "辛い経験でした",
-    ])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "研究が発表された",
+            "代表的な例です",
+            "この方法が良い",
+            "両方とも正しい",
+            "辛い経験でした",
+        ],
+    )
     def test_skips_safe(self, text):
         assert validate_tts_readings(text) == [], f"should NOT flag: {text}"
 
@@ -207,20 +247,19 @@ class TestValidatorWiredIntoFinalize:
     def test_finalize_script_emits_tts_reading_warning(self, monkeypatch, tmp_path, caplog):
         import logging
         from dr2_podcast import pipeline
+
         # Patch the LLM-backed neighbours to passthrough so _finalize_script runs
         # offline; the validate_tts_readings loop sits between them in the JA branch.
-        monkeypatch.setattr(pipeline, "_audit_script_language",
-                            lambda s, lang, cfg: s)
-        monkeypatch.setattr(pipeline, "_add_reaction_guidance",
-                            lambda s, cfg: s)
-        script = ("Host 1: コインを投げると表が出ることがあります。\n"
-                  "Host 2: なるほど、確率の話ですね。\n")
+        monkeypatch.setattr(pipeline, "_audit_script_language", lambda s, lang, cfg: s)
+        monkeypatch.setattr(pipeline, "_add_reaction_guidance", lambda s, cfg: s)
+        script = "Host 1: コインを投げると表が出ることがあります。\nHost 2: なるほど、確率の話ですね。\n"
         with caplog.at_level(logging.WARNING, logger=pipeline.logger.name):
             pipeline._finalize_script(
-                polished_text=script, polish_task=None, language="ja",
-                language_config={}, output_dir=tmp_path)
-        assert any("TTS_READING" in r.message for r in caplog.records), \
+                polished_text=script, polish_task=None, language="ja", language_config={}, output_dir=tmp_path
+            )
+        assert any("TTS_READING" in r.message for r in caplog.records), (
             "validate_tts_readings did not run inside _finalize_script"
+        )
 
 
 # --------------------------------------------------------------------------- #

@@ -17,68 +17,75 @@ def _smart_model_display() -> str:
     return SMART_MODEL.split("/", 1)[-1] if SMART_MODEL else "Smart LLM"
 
 
-def _extract_conclusion_status(grade_report: str, domain: str = "clinical",
-                               language: str = "en") -> tuple:
+def _extract_conclusion_status(grade_report: str, domain: str = "clinical", language: str = "en") -> tuple:
     """Extract evidence level, conclusion status, and executive summary.
 
     Supports both GRADE (clinical) and Evidence Quality (social science) levels.
     Uses i18n status_map when language != 'en'.
     """
     from dr2_podcast.sot_i18n import get_templates
+
     tmpl = get_templates(language)
     tmpl_status = tmpl["status_map"]
 
     if domain == "social_science":
         # Social science evidence quality levels
         m = re.search(
-            r'Final\s+Evidence\s+Quality[:\s]*\*{0,2}(STRONG|MODERATE_STRONG|MODERATE_WEAK|MODERATE|WEAK|VERY_WEAK)\*{0,2}',
-            grade_report, re.IGNORECASE)
+            r"Final\s+Evidence\s+Quality[:\s]*\*{0,2}(STRONG|MODERATE_STRONG|MODERATE_WEAK|MODERATE|WEAK|VERY_WEAK)\*{0,2}",
+            grade_report,
+            re.IGNORECASE,
+        )
         grade = m.group(1).strip().upper() if m else "Not Determined"
         status_map = tmpl_status.get("social_science", {})
     else:
         # Clinical GRADE levels
         m = re.search(
-            r'Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}',
-            grade_report, re.IGNORECASE)
+            r"Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}", grade_report, re.IGNORECASE
+        )
         grade = m.group(1).strip() if m else "Not Determined"
         status_map = tmpl_status.get("clinical", {})
     status = status_map.get(grade, tmpl_status.get("default_status", "Under Evaluation"))
 
-    m2 = re.search(r'Executive\s+Summary[#\s:]*\n+(.+?)(?:\n\n|\n#)',
-                   grade_report, re.DOTALL)
+    m2 = re.search(r"Executive\s+Summary[#\s:]*\n+(.+?)(?:\n\n|\n#)", grade_report, re.DOTALL)
     summary = m2.group(1).strip() if m2 else ""
 
     return grade, status, summary
+
 
 def _parse_grade_sections(audit_text: str) -> dict:
     """Split GRADE synthesis text into named subsections by ### headers."""
     sections = {}
     current_key = None
     current_lines = []
-    for line in audit_text.split('\n'):
-        if line.startswith('### '):
+    for line in audit_text.split("\n"):
+        if line.startswith("### "):
             if current_key is not None:
-                sections[current_key] = '\n'.join(current_lines).strip()
-            current_key = line.lstrip('#').strip().lower()
+                sections[current_key] = "\n".join(current_lines).strip()
+            current_key = line.lstrip("#").strip().lower()
             current_lines = []
         else:
             current_lines.append(line)
     if current_key is not None:
-        sections[current_key] = '\n'.join(current_lines).strip()
+        sections[current_key] = "\n".join(current_lines).strip()
     return sections
+
 
 def _format_study_characteristics_table(extractions: list) -> str:
     """Build a study characteristics table from DeepExtraction objects."""
     if not extractions:
         return "*No studies with full extraction data available.*\n"
     # Check if any extraction has enrichment metadata
-    has_metadata = any(getattr(ext, 'paper_metadata', None) for ext in extractions)
+    has_metadata = any(getattr(ext, "paper_metadata", None) for ext in extractions)
     if has_metadata:
-        rows = ["| # | Study | Design | N | Demographics | Follow-up | Funding | Bias Risk | Citations | FWCI | Tier |",
-                "|---|-------|--------|---|--------------|-----------|---------|-----------|-----------|------|------|"]
+        rows = [
+            "| # | Study | Design | N | Demographics | Follow-up | Funding | Bias Risk | Citations | FWCI | Tier |",
+            "|---|-------|--------|---|--------------|-----------|---------|-----------|-----------|------|------|",
+        ]
     else:
-        rows = ["| # | Study | Design | N | Demographics | Follow-up | Funding | Bias Risk | Tier |",
-                "|---|-------|--------|---|--------------|-----------|---------|-----------|------|"]
+        rows = [
+            "| # | Study | Design | N | Demographics | Follow-up | Funding | Bias Risk | Tier |",
+            "|---|-------|--------|---|--------------|-----------|---------|-----------|------|",
+        ]
     seen = set()
     idx = 0
     for ext in extractions:
@@ -87,11 +94,11 @@ def _format_study_characteristics_table(extractions: list) -> str:
             continue
         seen.add(key)
         idx += 1
-        _ellipsis = '\u2026' if len(ext.title) > 50 else ''
+        _ellipsis = "\u2026" if len(ext.title) > 50 else ""
         label = f"{ext.title[:50]}{_ellipsis}"
         if ext.pmid:
             label += f" ([PMID:{ext.pmid}](https://pubmed.ncbi.nlm.nih.gov/{ext.pmid}/))"
-        tier_label = f"T{ext.research_tier}" if getattr(ext, 'research_tier', None) else "N/A"
+        tier_label = f"T{ext.research_tier}" if getattr(ext, "research_tier", None) else "N/A"
         base = (
             f"| {idx} "
             f"| {label} "
@@ -103,13 +110,14 @@ def _format_study_characteristics_table(extractions: list) -> str:
             f"| {ext.risk_of_bias or 'N/A'} "
         )
         if has_metadata:
-            pm = getattr(ext, 'paper_metadata', None)
+            pm = getattr(ext, "paper_metadata", None)
             cite_str = str(pm.citation_count) if pm and pm.citation_count is not None else "N/A"
             fwci_str = f"{pm.fwci:.1f}" if pm and pm.fwci is not None else "N/A"
             base += f"| {cite_str} | {fwci_str} "
         base += f"| {tier_label} |"
         rows.append(base)
-    return '\n'.join(rows) + '\n'
+    return "\n".join(rows) + "\n"
+
 
 def _format_references(extractions: list, wide_net_records: list) -> str:
     """Build a numbered reference list from extraction metadata enriched by WideNetRecords."""
@@ -140,19 +148,30 @@ def _format_references(extractions: list, wide_net_records: list) -> str:
         if ext.doi:
             parts.append(f"DOI: {ext.doi}.")
         refs.append(" ".join(parts))
-    return '\n'.join(refs) + '\n' if refs else "*No references available.*\n"
+    return "\n".join(refs) + "\n" if refs else "*No references available.*\n"
+
 
 def _build_social_science_sot(
-    topic, pd, audit_text, aff_case_text, fal_case_text,
-    ev_quality, aff_cand, all_extractions, all_wide, impacts, metrics,
-    framing, search_date, aff_strategy, fal_strategy,
+    topic,
+    pd,
+    audit_text,
+    aff_case_text,
+    fal_case_text,
+    ev_quality,
+    aff_cand,
+    all_extractions,
+    all_wide,
+    impacts,
+    metrics,
+    framing,
+    search_date,
+    aff_strategy,
+    fal_strategy,
 ) -> str:
     """Build IMRaD SOT for social science topics (PECO, effect sizes, evidence quality)."""
     from dr2_podcast.research.effect_size_math import EffectSizeImpact
 
-    grade_level, conclusion_status, exec_summary = _extract_conclusion_status(
-        audit_text, domain="social_science"
-    )
+    grade_level, conclusion_status, exec_summary = _extract_conclusion_status(audit_text, domain="social_science")
 
     # Extract metrics
     aff_wide = metrics.get("aff_wide_net_total", 0)
@@ -169,27 +188,35 @@ def _build_social_science_sot(
 
     # Research question (PECO)
     peco = {}
-    if aff_strategy and hasattr(aff_strategy, 'peco'):
-        peco = aff_strategy.peco if isinstance(aff_strategy.peco, dict) else getattr(aff_strategy, 'peco', {})
+    if aff_strategy and hasattr(aff_strategy, "peco"):
+        peco = aff_strategy.peco if isinstance(aff_strategy.peco, dict) else getattr(aff_strategy, "peco", {})
     elif isinstance(aff_strategy, dict):
         peco = aff_strategy.get("peco", {})
     if peco:
-        out.append(f"**Research Question (PECO):** In {peco.get('P', 'the target population')}, "
-                   f"does exposure to {peco.get('E', 'the intervention')} compared to "
-                   f"{peco.get('C', 'no exposure')} affect {peco.get('O', 'outcomes')}?\n")
+        out.append(
+            f"**Research Question (PECO):** In {peco.get('P', 'the target population')}, "
+            f"does exposure to {peco.get('E', 'the intervention')} compared to "
+            f"{peco.get('C', 'no exposure')} affect {peco.get('O', 'outcomes')}?\n"
+        )
 
-    out.append(f"**Methods:** Systematic search of OpenAlex, ERIC, and Google Scholar identified "
-               f"{total_wide} records. After screening, {total_screened} studies were selected and "
-               f"{total_ft_ok} were fully extracted using the PECO framework.\n")
+    out.append(
+        f"**Methods:** Systematic search of OpenAlex, ERIC, and Google Scholar identified "
+        f"{total_wide} records. After screening, {total_screened} studies were selected and "
+        f"{total_ft_ok} were fully extracted using the PECO framework.\n"
+    )
 
     # Key finding (effect sizes)
     if impacts:
         es_list = [i for i in impacts if isinstance(i, EffectSizeImpact)]
         if es_list:
             avg_d = sum(abs(i.cohens_d or 0) for i in es_list) / len(es_list)
-            magnitude = "negligible" if avg_d < 0.2 else "small" if avg_d < 0.5 else "medium" if avg_d < 0.8 else "large"
-            out.append(f"**Key Finding:** Across {len(es_list)} studies with reported effect sizes, "
-                       f"the average magnitude was {magnitude} (mean |d| = {avg_d:.3f}).\n")
+            magnitude = (
+                "negligible" if avg_d < 0.2 else "small" if avg_d < 0.5 else "medium" if avg_d < 0.8 else "large"
+            )
+            out.append(
+                f"**Key Finding:** Across {len(es_list)} studies with reported effect sizes, "
+                f"the average magnitude was {magnitude} (mean |d| = {avg_d:.3f}).\n"
+            )
 
     out.append(f"**Evidence Quality:** {grade_level} \u2014 {conclusion_status}\n")
     if exec_summary:
@@ -201,8 +228,10 @@ def _build_social_science_sot(
         out.append(f"{framing}\n")
     else:
         out.append(f"This review examines the evidence for: *{topic}*.\n")
-    out.append("This review employs a dual-hypothesis design with parallel affirmative and "
-               "falsification research tracks, using the PECO (Population, Exposure, Comparison, Outcome) framework.\n")
+    out.append(
+        "This review employs a dual-hypothesis design with parallel affirmative and "
+        "falsification research tracks, using the PECO (Population, Exposure, Comparison, Outcome) framework.\n"
+    )
 
     # --- Methods ---
     out.append("\n## 3. Methods\n")
@@ -222,37 +251,41 @@ def _build_social_science_sot(
     out.append(f"**Extracted:** {total_ft_ok}\n")
 
     out.append(f"\n### 3.3 Statistical Analysis\n")
-    out.append("Effect sizes were standardized to Cohen's d using deterministic Python calculations. "
-               "Hedges' g correction was applied where sample sizes were available. "
-               "Odds ratios and correlation coefficients were converted to d for comparability.\n")
+    out.append(
+        "Effect sizes were standardized to Cohen's d using deterministic Python calculations. "
+        "Hedges' g correction was applied where sample sizes were available. "
+        "Odds ratios and correlation coefficients were converted to d for comparability.\n"
+    )
 
     # --- Results ---
     out.append("\n## 4. Results\n")
     out.append("### 4.1 Study Characteristics\n")
     if all_extractions:
-        has_metadata = any(getattr(ext, 'paper_metadata', None) for ext in all_extractions)
-        rows = ["| # | Study | Design | N | Setting | Demographics | Effect Size | Follow-up | Tier |",
-                "|---|-------|--------|---|---------|--------------|-------------|-----------|------|"]
+        has_metadata = any(getattr(ext, "paper_metadata", None) for ext in all_extractions)
+        rows = [
+            "| # | Study | Design | N | Setting | Demographics | Effect Size | Follow-up | Tier |",
+            "|---|-------|--------|---|---------|--------------|-------------|-----------|------|",
+        ]
         seen = set()
         idx = 0
         for ext in all_extractions:
-            key = getattr(ext, 'doi', None) or getattr(ext, 'title', '')
+            key = getattr(ext, "doi", None) or getattr(ext, "title", "")
             if key in seen:
                 continue
             seen.add(key)
             idx += 1
-            title_str = (getattr(ext, 'title', '') or '')[:50]
-            es_val = getattr(ext, 'effect_size_value', None)
-            es_type = getattr(ext, 'effect_size_type', None)
+            title_str = (getattr(ext, "title", "") or "")[:50]
+            es_val = getattr(ext, "effect_size_value", None)
+            es_type = getattr(ext, "effect_size_type", None)
             es_str = f"{es_type}={es_val}" if es_val is not None else "N/A"
-            setting = (getattr(ext, 'setting', None) or "N/A")[:30]
-            demo = (getattr(ext, 'demographics', None) or "N/A")[:30]
-            design = getattr(ext, 'study_design', None) or "N/A"
-            n = getattr(ext, 'sample_size_total', None) or "N/A"
-            fu = getattr(ext, 'follow_up_period', None) or "N/A"
-            tier = f"T{getattr(ext, 'research_tier', 'N/A')}" if getattr(ext, 'research_tier', None) else "N/A"
+            setting = (getattr(ext, "setting", None) or "N/A")[:30]
+            demo = (getattr(ext, "demographics", None) or "N/A")[:30]
+            design = getattr(ext, "study_design", None) or "N/A"
+            n = getattr(ext, "sample_size_total", None) or "N/A"
+            fu = getattr(ext, "follow_up_period", None) or "N/A"
+            tier = f"T{getattr(ext, 'research_tier', 'N/A')}" if getattr(ext, "research_tier", None) else "N/A"
             rows.append(f"| {idx} | {title_str} | {design} | {n} | {setting} | {demo} | {es_str} | {fu} | {tier} |")
-        out.append('\n'.join(rows) + '\n')
+        out.append("\n".join(rows) + "\n")
     else:
         out.append("*No studies with full extraction data available.*\n")
 
@@ -282,17 +315,17 @@ def _build_social_science_sot(
         seen = set()
         idx = 0
         for ext in all_extractions:
-            key = getattr(ext, 'doi', None) or getattr(ext, 'title', '')
+            key = getattr(ext, "doi", None) or getattr(ext, "title", "")
             if key in seen:
                 continue
             seen.add(key)
             idx += 1
-            title = getattr(ext, 'title', 'Untitled') or 'Untitled'
-            doi = getattr(ext, 'doi', None)
+            title = getattr(ext, "title", "Untitled") or "Untitled"
+            doi = getattr(ext, "doi", None)
             parts = [f"{idx}. *{title}*."]
             if doi:
                 parts.append(f"DOI: {doi}.")
-            url = getattr(ext, 'url', None)
+            url = getattr(ext, "url", None)
             if url:
                 parts.append(f"URL: {url}")
             out.append(" ".join(parts))
@@ -300,7 +333,8 @@ def _build_social_science_sot(
     else:
         out.append("*No references available.*\n")
 
-    return '\n'.join(out)
+    return "\n".join(out)
+
 
 def build_imrad_sot(
     topic: str,
@@ -321,6 +355,7 @@ def build_imrad_sot(
         language: "en" or "ja" -- selects pre-translated boilerplate templates.
     """
     from dr2_podcast.sot_i18n import get_templates, t
+
     tmpl = get_templates(language)
 
     pd = reports.get("pipeline_data", {})
@@ -340,7 +375,9 @@ def build_imrad_sot(
     all_extractions = aff_extractions + fal_extractions
     all_wide = aff_top + fal_top
 
-    _empty_rpt = type('_E', (), {'report': '', 'total_summaries': 0, 'total_urls_fetched': 0, 'duration_seconds': 0, 'sources': []})()
+    _empty_rpt = type(
+        "_E", (), {"report": "", "total_summaries": 0, "total_urls_fetched": 0, "duration_seconds": 0, "sources": []}
+    )()
     audit_text = strip_think_blocks(reports.get("audit", _empty_rpt).report)
     aff_case_text = strip_think_blocks(reports.get("lead", _empty_rpt).report)
     fal_case_text = strip_think_blocks(reports.get("counter", _empty_rpt).report)
@@ -348,13 +385,24 @@ def build_imrad_sot(
     # Dispatch to domain-specific SOT builder
     if domain == "social_science":
         return _build_social_science_sot(
-            topic, pd, audit_text, aff_case_text, fal_case_text,
-            ev_quality, aff_cand, all_extractions, all_wide, impacts, metrics,
-            framing, search_date, aff_strategy, fal_strategy,
+            topic,
+            pd,
+            audit_text,
+            aff_case_text,
+            fal_case_text,
+            ev_quality,
+            aff_cand,
+            all_extractions,
+            all_wide,
+            impacts,
+            metrics,
+            framing,
+            search_date,
+            aff_strategy,
+            fal_strategy,
         )
 
-    grade_level, conclusion_status, exec_summary = _extract_conclusion_status(
-        audit_text, language=language)
+    grade_level, conclusion_status, exec_summary = _extract_conclusion_status(audit_text, language=language)
     grade_sections = _parse_grade_sections(audit_text)
 
     m = metrics
@@ -373,13 +421,14 @@ def build_imrad_sot(
 
     # Summarize PICO for abstract
     pico_summary = ""
-    if aff_strategy and hasattr(aff_strategy, 'pico'):
+    if aff_strategy and hasattr(aff_strategy, "pico"):
         p = aff_strategy.pico
         pico_summary = tmpl["pico_summary_template"].format(
-            population=p.get('population', 'N/A'),
-            intervention=p.get('intervention', 'N/A'),
-            comparison=p.get('comparison', 'N/A'),
-            outcome=p.get('outcome', 'N/A'))
+            population=p.get("population", "N/A"),
+            intervention=p.get("intervention", "N/A"),
+            comparison=p.get("comparison", "N/A"),
+            outcome=p.get("outcome", "N/A"),
+        )
 
     # Determine representative NNT for abstract
     nnt_summary = ""
@@ -387,7 +436,8 @@ def build_imrad_sot(
         benefit = [i for i in impacts if i.direction == "benefit"]
         ref_impact = benefit[0] if benefit else impacts[0]
         nnt_summary = tmpl["nnt_summary_template"].format(
-            nnt=ref_impact.nnt, direction=ref_impact.direction, arr=ref_impact.arr)
+            nnt=ref_impact.nnt, direction=ref_impact.direction, arr=ref_impact.arr
+        )
 
     track_labels = tmpl["track_labels"]
 
@@ -396,13 +446,12 @@ def build_imrad_sot(
     out.append(t(tmpl, "abstract", "header"))
     if pico_summary:
         out.append(t(tmpl, "abstract", "pico_label", pico_summary=pico_summary))
-    out.append(t(tmpl, "abstract", "methods",
-                 total_wide=total_wide, total_screened=total_screened,
-                 total_ft_ok=total_ft_ok))
+    out.append(
+        t(tmpl, "abstract", "methods", total_wide=total_wide, total_screened=total_screened, total_ft_ok=total_ft_ok)
+    )
     if nnt_summary:
         out.append(t(tmpl, "abstract", "key_finding", nnt_summary=nnt_summary))
-    out.append(t(tmpl, "abstract", "evidence_quality",
-                 grade_level=grade_level, conclusion_status=conclusion_status))
+    out.append(t(tmpl, "abstract", "evidence_quality", grade_level=grade_level, conclusion_status=conclusion_status))
     if exec_summary:
         out.append(f"\n{exec_summary}\n")
 
@@ -413,19 +462,31 @@ def build_imrad_sot(
     else:
         out.append(t(tmpl, "introduction", "default_framing", topic=topic))
     out.append(t(tmpl, "introduction", "dual_hypothesis"))
-    if aff_strategy and hasattr(aff_strategy, 'pico'):
+    if aff_strategy and hasattr(aff_strategy, "pico"):
         p = aff_strategy.pico
-        out.append(t(tmpl, "introduction", "aff_hypothesis",
-                     population=p.get('population', 'the target population'),
-                     intervention=p.get('intervention', 'the intervention'),
-                     outcome=p.get('outcome', 'the primary outcome'),
-                     comparison=p.get('comparison', 'control')))
-    if fal_strategy and hasattr(fal_strategy, 'pico'):
+        out.append(
+            t(
+                tmpl,
+                "introduction",
+                "aff_hypothesis",
+                population=p.get("population", "the target population"),
+                intervention=p.get("intervention", "the intervention"),
+                outcome=p.get("outcome", "the primary outcome"),
+                comparison=p.get("comparison", "control"),
+            )
+        )
+    if fal_strategy and hasattr(fal_strategy, "pico"):
         fp = fal_strategy.pico
-        out.append(t(tmpl, "introduction", "fal_hypothesis",
-                     intervention=fp.get('intervention', 'the intervention'),
-                     outcome=fp.get('outcome', 'the primary outcome'),
-                     population=fp.get('population', 'the target population')))
+        out.append(
+            t(
+                tmpl,
+                "introduction",
+                "fal_hypothesis",
+                intervention=fp.get("intervention", "the intervention"),
+                outcome=fp.get("outcome", "the primary outcome"),
+                population=fp.get("population", "the target population"),
+            )
+        )
 
     # -- 2. METHODS --
     out.append(t(tmpl, "methods", "header"))
@@ -433,18 +494,24 @@ def build_imrad_sot(
     # 2.1 Search Strategy
     out.append(t(tmpl, "methods", "search_strategy_header"))
     for label_key, strategy in [("affirmative", aff_strategy), ("falsification", fal_strategy)]:
-        if not strategy or not hasattr(strategy, 'pico'):
+        if not strategy or not hasattr(strategy, "pico"):
             continue
         label = track_labels[label_key]
         out.append(t(tmpl, "methods", "track_header", label=label))
         p = strategy.pico
-        out.append(t(tmpl, "methods", "pico_framework",
-                     population=p.get('population', 'N/A'),
-                     intervention=p.get('intervention', 'N/A'),
-                     comparison=p.get('comparison', 'N/A'),
-                     outcome=p.get('outcome', 'N/A')))
+        out.append(
+            t(
+                tmpl,
+                "methods",
+                "pico_framework",
+                population=p.get("population", "N/A"),
+                intervention=p.get("intervention", "N/A"),
+                comparison=p.get("comparison", "N/A"),
+                outcome=p.get("outcome", "N/A"),
+            )
+        )
         # Tiered keyword plan (new architecture)
-        if hasattr(strategy, 'tier1'):
+        if hasattr(strategy, "tier1"):
             tier_label_list = tmpl["methods"]["tier_labels"]
             tier_map = [
                 (tier_label_list[0], strategy.tier1),
@@ -453,31 +520,25 @@ def build_imrad_sot(
             ]
             out.append(t(tmpl, "methods", "three_tier_header"))
             for tier_label, tier_kw in tier_map:
-                if hasattr(tier_kw, 'intervention') and tier_kw.intervention:
+                if hasattr(tier_kw, "intervention") and tier_kw.intervention:
                     out.append(f"\n*{tier_label}*\n")
-                    out.append(t(tmpl, "methods", "intervention_label",
-                                 terms=', '.join(tier_kw.intervention)))
-                    out.append(t(tmpl, "methods", "outcome_label",
-                                 terms=', '.join(tier_kw.outcome)))
+                    out.append(t(tmpl, "methods", "intervention_label", terms=", ".join(tier_kw.intervention)))
+                    out.append(t(tmpl, "methods", "outcome_label", terms=", ".join(tier_kw.outcome)))
                     if tier_kw.population:
-                        out.append(t(tmpl, "methods", "population_label",
-                                     terms=', '.join(tier_kw.population)))
-                    out.append(t(tmpl, "methods", "rationale_label",
-                                 rationale=tier_kw.rationale))
+                        out.append(t(tmpl, "methods", "population_label", terms=", ".join(tier_kw.population)))
+                    out.append(t(tmpl, "methods", "rationale_label", rationale=tier_kw.rationale))
             if strategy.auditor_approved:
-                out.append(t(tmpl, "methods", "auditor_approved",
-                             revision_count=strategy.revision_count))
+                out.append(t(tmpl, "methods", "auditor_approved", revision_count=strategy.revision_count))
             else:
-                out.append(t(tmpl, "methods", "auditor_not_approved",
-                             notes=strategy.auditor_notes[:200]))
+                out.append(t(tmpl, "methods", "auditor_not_approved", notes=strategy.auditor_notes[:200]))
         # Legacy: Boolean search strings (old architecture -- kept for backward compat)
-        elif hasattr(strategy, 'mesh_terms') and strategy.mesh_terms:
+        elif hasattr(strategy, "mesh_terms") and strategy.mesh_terms:
             mt = strategy.mesh_terms
             out.append(t(tmpl, "methods", "mesh_terms_header"))
             for cat, terms in mt.items():
                 if terms:
                     out.append(f"- *{cat.capitalize()}*: {', '.join(terms)}\n")
-        if hasattr(strategy, 'search_strings') and strategy.search_strings:
+        if hasattr(strategy, "search_strings") and strategy.search_strings:
             ss = strategy.search_strings
             out.append(t(tmpl, "methods", "boolean_search_header"))
             for db, query in ss.items():
@@ -490,28 +551,48 @@ def build_imrad_sot(
     aff_tier = pd.get("aff_highest_tier", 1)
     fal_tier = pd.get("fal_highest_tier", 1)
     tier_cascade = tmpl["methods"]["tier_cascade_labels"]
-    out.append(t(tmpl, "methods", "data_collection_body",
-                 search_date=search_date,
-                 aff_tier_label=tier_cascade.get(aff_tier, str(aff_tier)),
-                 fal_tier_label=tier_cascade.get(fal_tier, str(fal_tier))))
+    out.append(
+        t(
+            tmpl,
+            "methods",
+            "data_collection_body",
+            search_date=search_date,
+            aff_tier_label=tier_cascade.get(aff_tier, str(aff_tier)),
+            fal_tier_label=tier_cascade.get(fal_tier, str(fal_tier)),
+        )
+    )
     if aff_tier == 3 or fal_tier == 3:
         out.append(t(tmpl, "methods", "tier3_warning"))
-    out.append(t(tmpl, "methods", "track_records",
-                 aff_wide=aff_wide, fal_wide=fal_wide, total_wide=total_wide))
+    out.append(t(tmpl, "methods", "track_records", aff_wide=aff_wide, fal_wide=fal_wide, total_wide=total_wide))
 
     # 2.3 Screening & Selection
     out.append(t(tmpl, "methods", "screening_header"))
-    out.append(t(tmpl, "methods", "screening_body",
-                 aff_screened=aff_screened, fal_screened=fal_screened,
-                 total_screened=total_screened,
-                 smart_model=_smart_model_display()))
+    out.append(
+        t(
+            tmpl,
+            "methods",
+            "screening_body",
+            aff_screened=aff_screened,
+            fal_screened=fal_screened,
+            total_screened=total_screened,
+            smart_model=_smart_model_display(),
+        )
+    )
 
     # 2.4 Data Extraction
     out.append(t(tmpl, "methods", "extraction_header"))
-    out.append(t(tmpl, "methods", "extraction_body",
-                 aff_ft_ok=aff_ft_ok, aff_ft_err=aff_ft_err,
-                 fal_ft_ok=fal_ft_ok, fal_ft_err=fal_ft_err,
-                 total_ft_ok=total_ft_ok))
+    out.append(
+        t(
+            tmpl,
+            "methods",
+            "extraction_body",
+            aff_ft_ok=aff_ft_ok,
+            aff_ft_err=aff_ft_err,
+            fal_ft_ok=fal_ft_ok,
+            fal_ft_err=fal_ft_err,
+            total_ft_ok=total_ft_ok,
+        )
+    )
 
     # 2.5 Statistical Analysis
     out.append(t(tmpl, "methods", "stats_header"))
@@ -531,8 +612,7 @@ def build_imrad_sot(
         + prisma_rows["screened"].format(aff=aff_screened, fal=fal_screened, total=total_screened)
         + prisma_rows["fulltext"].format(aff=aff_ft_ok, fal=fal_ft_ok, total=total_ft_ok)
         + prisma_rows["errors"].format(aff=aff_ft_err, fal=fal_ft_err, total=total_ft_err)
-        + prisma_rows["included"].format(aff=len(aff_extractions), fal=len(fal_extractions),
-                                          total=len(all_extractions))
+        + prisma_rows["included"].format(aff=len(aff_extractions), fal=len(fal_extractions), total=len(all_extractions))
     )
     if prisma_from_grade:
         out.append(f"\n{prisma_from_grade}\n")
@@ -558,7 +638,7 @@ def build_imrad_sot(
                 f"| {i.study_id} | {i.cer:.3f} | {i.eer:.3f} | "
                 f"{i.arr:+.4f} | {i.rrr:+.2%} | {i.nnt:.1f} | {i.direction} |"
             )
-        out.append('\n'.join(rows) + "\n\n")
+        out.append("\n".join(rows) + "\n\n")
         for i in impacts:
             out.append(f"- **{i.study_id}**: {i.nnt_interpretation}\n")
     else:
@@ -593,8 +673,9 @@ def build_imrad_sot(
     if bv:
         out.append(bv + "\n")
     else:
-        out.append(t(tmpl, "discussion", "verdict_fallback",
-                     grade_level=grade_level, conclusion_status=conclusion_status))
+        out.append(
+            t(tmpl, "discussion", "verdict_fallback", grade_level=grade_level, conclusion_status=conclusion_status)
+        )
 
     # 4.5 Limitations
     out.append(t(tmpl, "discussion", "limitations_header"))
@@ -612,4 +693,4 @@ def build_imrad_sot(
     out.append(t(tmpl, "references", "header"))
     out.append(_format_references(all_extractions, all_wide))
 
-    return '\n'.join(out)
+    return "\n".join(out)

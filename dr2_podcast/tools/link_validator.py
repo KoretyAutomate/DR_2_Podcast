@@ -42,7 +42,7 @@ class LinkValidatorTool(BaseTool):
         try:
             # Use HEAD request for efficiency (doesn't download body)
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             }
             response = httpx.head(url, headers=headers, timeout=5, follow_redirects=True)
 
@@ -122,7 +122,7 @@ if __name__ == "__main__":
         "https://invalid-domain-that-does-not-exist-123456.com",  # Should fail
     ]
 
-    print("Testing Link Validator Tool\n" + "="*60)
+    print("Testing Link Validator Tool\n" + "=" * 60)
 
     validator = LinkValidatorTool()
     for url in test_urls:
@@ -130,11 +130,11 @@ if __name__ == "__main__":
         print(f"\nURL: {url}")
         print(f"Result: {result}")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
 
-    print("\n\nTesting Parallel Batch Validation\n" + "="*60)
+    print("\n\nTesting Parallel Batch Validation\n" + "=" * 60)
     batch_results = validate_multiple_urls_parallel(test_urls)
     for url, status in batch_results.items():
         print(f"\nURL: {url}")
         print(f"Result: {status}")
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)

@@ -15,6 +15,7 @@ Accuracy > TTS Quality only holds if the judge is actually competent at Japanese
 Usage:
     python -m dr2_podcast.tools.tts_reading_judge <report.json> [--out OUT] [--limit N]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -119,8 +120,7 @@ def judge_one(finding: dict, session: requests.Session) -> dict:
             # the reading the judge is asking for, there is nothing to fix either way.
             reason = "engine already produces the expected reading"
         if reason:
-            verdict = {**verdict, "verdict": "OK",
-                       "downgraded_from": "MISREAD", "downgrade_reason": reason}
+            verdict = {**verdict, "verdict": "OK", "downgraded_from": "MISREAD", "downgrade_reason": reason}
     return {**finding, "judge": verdict}
 
 
@@ -136,17 +136,18 @@ def judge_report(report: list[dict], limit: int | None = None) -> list[dict]:
             judged = list(pool.map(lambda f: judge_one(f, session), cands))
         misread = [j for j in judged if j["judge"].get("verdict") == "MISREAD"]
         errors = [j for j in judged if j["judge"].get("verdict") == "ERROR"]
-        out.append({
-            "script": ep["script"],
-            "judged": len(judged),
-            "misread": misread,
-            "n_misread": len(misread),
-            "n_ok": sum(1 for j in judged if j["judge"].get("verdict") == "OK"),
-            "n_error": len(errors),
-        })
+        out.append(
+            {
+                "script": ep["script"],
+                "judged": len(judged),
+                "misread": misread,
+                "n_misread": len(misread),
+                "n_ok": sum(1 for j in judged if j["judge"].get("verdict") == "OK"),
+                "n_error": len(errors),
+            }
+        )
         name = Path(ep["script"]).parent.name
-        print(f"{name:34} judged={len(judged):<4} MISREAD={len(misread):<4} "
-              f"ok={out[-1]['n_ok']:<4} err={len(errors)}")
+        print(f"{name:34} judged={len(judged):<4} MISREAD={len(misread):<4} ok={out[-1]['n_ok']:<4} err={len(errors)}")
     return out
 
 

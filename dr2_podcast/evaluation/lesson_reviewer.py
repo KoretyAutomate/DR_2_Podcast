@@ -40,6 +40,7 @@ _PHASE_TO_PROMPT_SECTION = {
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _load_pending() -> list[dict]:
     if _PENDING_PATH.exists():
         try:
@@ -72,6 +73,7 @@ def _save_promoted(lessons: list[dict]) -> None:
 # Step 1: Expire old lessons (>90 days)
 # ---------------------------------------------------------------------------
 
+
 def _expire_old(lessons: list[dict], max_age_days: int = 90) -> tuple[list[dict], int]:
     """Remove lessons older than max_age_days.  Returns (remaining, expired_count)."""
     cutoff = datetime.now() - timedelta(days=max_age_days)
@@ -92,6 +94,7 @@ def _expire_old(lessons: list[dict], max_age_days: int = 90) -> tuple[list[dict]
 # ---------------------------------------------------------------------------
 # Step 2: Check already-implemented
 # ---------------------------------------------------------------------------
+
 
 def _check_already_implemented(lessons: list[dict]) -> tuple[list[dict], int]:
     """Remove lessons whose observations are already reflected in prompt_strings.py."""
@@ -191,6 +194,7 @@ async def _deduplicate_async(lessons: list[dict]) -> tuple[list[dict], int]:
 # Step 4: Promote
 # ---------------------------------------------------------------------------
 
+
 def _promote(lessons: list[dict]) -> list[dict]:
     """Move surviving lessons to promoted format with suggested edit locations."""
     promoted = []
@@ -217,6 +221,7 @@ def _promote(lessons: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def check_threshold() -> bool:
     """Return True if pending lesson count >= 10."""
@@ -267,6 +272,7 @@ def run_review() -> dict:
     # Step 5: Telegram notification
     try:
         from dr2_podcast.evaluation.telegram_report import send_review_report
+
         send_review_report(summary)
     except Exception as e:
         logger.warning("Review Telegram notification failed: %s", e)
@@ -278,6 +284,7 @@ def run_review() -> dict:
 # CLI entry point: python -m dr2_podcast.evaluation.lesson_reviewer review
 # ---------------------------------------------------------------------------
 
+
 def _cli_review():
     """Print promoted lessons for manual review."""
     promoted = _load_promoted()
@@ -285,9 +292,9 @@ def _cli_review():
         print("No promoted lessons.")
         return
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"PROMOTED LESSONS ({len(promoted)})")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     for i, entry in enumerate(promoted, 1):
         print(f"  {i}. [{entry.get('phase_group', '?')}] {entry.get('observation', '')}")
@@ -304,9 +311,9 @@ def _cli_pending():
         print("No pending lessons.")
         return
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"PENDING LESSONS ({len(pending)})")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     for i, entry in enumerate(pending, 1):
         print(f"  {i}. [{entry.get('phase_group', '?')}] {entry.get('observation', '')}")

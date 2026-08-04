@@ -32,8 +32,7 @@ SOT_TEMPLATES = {
             ),
             "key_finding": "**Key Finding:** {nnt_summary}\n",
             "evidence_quality": (
-                "**Evidence Quality (GRADE):** {grade_level}  \n"
-                "**Conclusion:** {conclusion_status}\n"
+                "**Evidence Quality (GRADE):** {grade_level}  \n**Conclusion:** {conclusion_status}\n"
             ),
         },
         "introduction": {
@@ -165,8 +164,7 @@ SOT_TEMPLATES = {
             "study_selection_header": "### 3.1 Study Selection\n",
             "prisma_label": "**PRISMA Flow:**\n\n",
             "prisma_table_header": (
-                "| Stage | Affirmative | Falsification | Total |\n"
-                "|-------|-------------|---------------|-------|\n"
+                "| Stage | Affirmative | Falsification | Total |\n|-------|-------------|---------------|-------|\n"
             ),
             "prisma_rows": {
                 "identified": "| Records identified | {aff} | {fal} | {total} |\n",
@@ -192,8 +190,7 @@ SOT_TEMPLATES = {
             "grade_assessment_label": "\n**GRADE Assessment:**\n\n{text}\n",
             "verdict_header": "\n### 4.4 Balanced Verdict\n",
             "verdict_fallback": (
-                "**Evidence Quality (GRADE):** {grade_level}  \n"
-                "**Conclusion:** {conclusion_status}\n"
+                "**Evidence Quality (GRADE):** {grade_level}  \n**Conclusion:** {conclusion_status}\n"
             ),
             "limitations_header": "\n### 4.5 Limitations\n",
             "limitations_body": (
@@ -253,8 +250,7 @@ SOT_TEMPLATES = {
             "falsification": "Falsification",
         },
         "nnt_summary_template": (
-            "The primary quantitative finding is NNT = **{nnt:.1f}** "
-            "({direction}; ARR = {arr:+.4f})."
+            "The primary quantitative finding is NNT = **{nnt:.1f}** ({direction}; ARR = {arr:+.4f})."
         ),
         "pico_summary_template": (
             "**P** (Population): {population}  \n"
@@ -263,7 +259,6 @@ SOT_TEMPLATES = {
             "**O** (Outcome): {outcome}"
         ),
     },
-
     "ja": {
         "title": {
             "prefix": "# 情報源ドキュメント: {topic}\n",
@@ -281,10 +276,7 @@ SOT_TEMPLATES = {
                 "エビデンスの質はGRADEフレームワークで評価された。\n"
             ),
             "key_finding": "**主要所見:** {nnt_summary}\n",
-            "evidence_quality": (
-                "**エビデンスの質 (GRADE):** {grade_level}  \n"
-                "**結論:** {conclusion_status}\n"
-            ),
+            "evidence_quality": ("**エビデンスの質 (GRADE):** {grade_level}  \n**結論:** {conclusion_status}\n"),
         },
         "introduction": {
             "header": "\n---\n\n## 1. 序論\n",
@@ -413,8 +405,7 @@ SOT_TEMPLATES = {
             "study_selection_header": "### 3.1 研究選択\n",
             "prisma_label": "**PRISMAフロー:**\n\n",
             "prisma_table_header": (
-                "| 段階 | 肯定的トラック | 反証トラック | 合計 |\n"
-                "|------|----------------|--------------|------|\n"
+                "| 段階 | 肯定的トラック | 反証トラック | 合計 |\n|------|----------------|--------------|------|\n"
             ),
             "prisma_rows": {
                 "identified": "| 同定レコード数 | {aff} | {fal} | {total} |\n",
@@ -426,8 +417,7 @@ SOT_TEMPLATES = {
             "study_chars_header": "\n### 3.2 研究特性\n",
             "clinical_impact_header": "\n### 3.3 臨床的インパクト（決定論的数学）\n",
             "impact_table_header": (
-                "| 研究 | CER | EER | ARR | RRR | NNT | 方向性 |\n"
-                "|------|-----|-----|-----|-----|-----|--------|"
+                "| 研究 | CER | EER | ARR | RRR | NNT | 方向性 |\n|------|-----|-----|-----|-----|-----|--------|"
             ),
             "no_impact_data": "*CERとEERの両方を提供した研究がなく、NNT計算は利用できません。*\n",
         },
@@ -439,10 +429,7 @@ SOT_TEMPLATES = {
             "evidence_profile_label": "**エビデンスプロファイル:**\n\n{text}\n",
             "grade_assessment_label": "\n**GRADE評価:**\n\n{text}\n",
             "verdict_header": "\n### 4.4 総合的判定\n",
-            "verdict_fallback": (
-                "**エビデンスの質 (GRADE):** {grade_level}  \n"
-                "**結論:** {conclusion_status}\n"
-            ),
+            "verdict_fallback": ("**エビデンスの質 (GRADE):** {grade_level}  \n**結論:** {conclusion_status}\n"),
             "limitations_header": "\n### 4.5 限界\n",
             "limitations_body": (
                 "本統合には以下のパイプライン固有の限界が適用される:\n\n"
@@ -499,10 +486,7 @@ SOT_TEMPLATES = {
             "affirmative": "肯定的",
             "falsification": "反証",
         },
-        "nnt_summary_template": (
-            "主要な定量的所見はNNT = **{nnt:.1f}** "
-            "（{direction}; ARR = {arr:+.4f}）。"
-        ),
+        "nnt_summary_template": ("主要な定量的所見はNNT = **{nnt:.1f}** （{direction}; ARR = {arr:+.4f}）。"),
         "pico_summary_template": (
             "**P** (対象集団): {population}  \n"
             "**I** (介入): {intervention}  \n"

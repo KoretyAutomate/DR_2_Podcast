@@ -77,11 +77,7 @@ class SearxngClient:
         client: Async HTTP client for making requests
     """
 
-    def __init__(
-        self,
-        base_url: str = SEARXNG_URL,
-        timeout: float = DEFAULT_TIMEOUT
-    ):
+    def __init__(self, base_url: str = SEARXNG_URL, timeout: float = DEFAULT_TIMEOUT):
         """
         Initialize the SearXNG client.
 
@@ -89,17 +85,13 @@ class SearxngClient:
             base_url: Base URL of the SearXNG instance
             timeout: Request timeout in seconds
         """
-        self.base_url = base_url.rstrip('/')
+        self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.client: Optional[httpx.AsyncClient] = None
 
     async def __aenter__(self):
         """Async context manager entry."""
-        self.client = httpx.AsyncClient(
-            timeout=self.timeout,
-            headers={"User-Agent": USER_AGENT},
-            follow_redirects=True
-        )
+        self.client = httpx.AsyncClient(timeout=self.timeout, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -131,11 +123,7 @@ class SearxngClient:
             return False
 
     async def search(
-        self,
-        query: str,
-        engines: List[str] = None,
-        num_results: int = 5,
-        language: str = "en"
+        self, query: str, engines: List[str] = None, num_results: int = 5, language: str = "en"
     ) -> List[SearchResult]:
         """
         Perform a search query using SearXNG.
@@ -153,37 +141,29 @@ class SearxngClient:
             httpx.RequestError: If the request fails
         """
         if engines is None:
-            engines = ['google', 'bing', 'brave']
+            engines = ["google", "bing", "brave"]
 
         # Build search parameters
-        params = {
-            'q': query,
-            'format': 'json',
-            'language': language,
-            'engines': ','.join(engines)
-        }
+        params = {"q": query, "format": "json", "language": language, "engines": ",".join(engines)}
 
         try:
             if not self.client:
                 raise RuntimeError("Client not initialized. Use 'async with' context manager.")
 
-            response = await self.client.get(
-                f"{self.base_url}/search",
-                params=params
-            )
+            response = await self.client.get(f"{self.base_url}/search", params=params)
             response.raise_for_status()
 
             data = response.json()
             results = []
 
             # Parse search results
-            for item in data.get('results', [])[:num_results]:
+            for item in data.get("results", [])[:num_results]:
                 result = SearchResult(
-                    title=item.get('title', 'No title'),
-                    url=item.get('url', ''),
-                    snippet=item.get('content', ''),
-                    engine=item.get('engine'),
-                    score=item.get('score')
+                    title=item.get("title", "No title"),
+                    url=item.get("url", ""),
+                    snippet=item.get("content", ""),
+                    engine=item.get("engine"),
+                    score=item.get("score"),
                 )
                 results.append(result)
 
@@ -229,9 +209,7 @@ class DeepResearch:
     async def __aenter__(self):
         """Async context manager entry."""
         self.scraping_client = httpx.AsyncClient(
-            timeout=SCRAPING_TIMEOUT,
-            headers={"User-Agent": USER_AGENT},
-            follow_redirects=True
+            timeout=SCRAPING_TIMEOUT, headers={"User-Agent": USER_AGENT}, follow_redirects=True
         )
         return self
 
@@ -275,60 +253,32 @@ class DeepResearch:
             response.raise_for_status()
 
             # Parse HTML
-            soup = BeautifulSoup(response.text, 'lxml')
+            soup = BeautifulSoup(response.text, "lxml")
 
             # Extract title
-            title_tag = soup.find('title')
+            title_tag = soup.find("title")
             title = title_tag.get_text().strip() if title_tag else urlparse(url).netloc
 
             # Extract content
             content = self._extract_content(soup)
             word_count = len(content.split())
 
-            return ScrapedContent(
-                url=url,
-                title=title,
-                content=content,
-                word_count=word_count
-            )
+            return ScrapedContent(url=url, title=title, content=content, word_count=word_count)
 
         except httpx.TimeoutException:
             error_msg = f"Timeout while scraping {url}"
             logger.warning(error_msg)
-            return ScrapedContent(
-                url=url,
-                title="Timeout Error",
-                content="",
-                word_count=0,
-                error=error_msg
-            )
+            return ScrapedContent(url=url, title="Timeout Error", content="", word_count=0, error=error_msg)
         except httpx.HTTPStatusError as e:
             error_msg = f"HTTP {e.response.status_code} error for {url}"
             logger.warning(error_msg)
-            return ScrapedContent(
-                url=url,
-                title="HTTP Error",
-                content="",
-                word_count=0,
-                error=error_msg
-            )
+            return ScrapedContent(url=url, title="HTTP Error", content="", word_count=0, error=error_msg)
         except Exception as e:
             error_msg = f"Error scraping {url}: {str(e)}"
             logger.warning(error_msg)
-            return ScrapedContent(
-                url=url,
-                title="Scraping Error",
-                content="",
-                word_count=0,
-                error=error_msg
-            )
+            return ScrapedContent(url=url, title="Scraping Error", content="", word_count=0, error=error_msg)
 
-    async def deep_dive(
-        self,
-        query: str,
-        top_n: int = 5,
-        engines: List[str] = None
-    ) -> ResearchResult:
+    async def deep_dive(self, query: str, top_n: int = 5, engines: List[str] = None) -> ResearchResult:
         """
         Perform deep research on a query.
 
@@ -349,11 +299,7 @@ class DeepResearch:
         logger.info(f"Starting deep research for: {query}")
 
         # Perform search
-        search_results = await self.searxng_client.search(
-            query=query,
-            engines=engines,
-            num_results=top_n
-        )
+        search_results = await self.searxng_client.search(query=query, engines=engines, num_results=top_n)
 
         if not search_results:
             logger.warning("No search results found")
@@ -363,7 +309,7 @@ class DeepResearch:
                 scraped_pages=[],
                 total_results=0,
                 total_scraped=0,
-                errors=["No search results found"]
+                errors=["No search results found"],
             )
 
         # Extract URLs
@@ -386,5 +332,5 @@ class DeepResearch:
             scraped_pages=scraped_contents,
             total_results=len(search_results),
             total_scraped=len(successful_scrapes),
-            errors=errors
+            errors=errors,
         )

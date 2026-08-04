@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
+
 # load_dotenv() — called in __main__ block (avoid side effects on import)
 from crewai import Agent, Task, Crew, LLM as _BaseLLM
 from crewai.tools import tool
@@ -90,10 +91,7 @@ class LLM(_BaseLLM):
         configured_max = params.get("max_tokens")
         if configured_max and self.ctx_window > 0:
             # Estimate prompt tokens from message content length
-            total_chars = sum(
-                len(str(m.get("content", ""))) for m in params.get("messages", [])
-                if isinstance(m, dict)
-            )
+            total_chars = sum(len(str(m.get("content", ""))) for m in params.get("messages", []) if isinstance(m, dict))
             # Qwen3 tokenizer: ~2.5 chars/token for mixed EN/JA (Japanese ~1.5, English ~3-4)
             est_prompt_tokens = int(total_chars / 2.0) + 500  # 500-token buffer for overhead
             available = self.ctx_window - est_prompt_tokens
@@ -102,7 +100,10 @@ class LLM(_BaseLLM):
                 if capped < configured_max:
                     logging.getLogger(__name__).warning(
                         "  max_tokens capped: %d -> %d (prompt ~%d tokens, ctx %d)",
-                        configured_max, capped, est_prompt_tokens, self.ctx_window,
+                        configured_max,
+                        capped,
+                        est_prompt_tokens,
+                        self.ctx_window,
                     )
                     params["max_tokens"] = capped
         return params
@@ -110,6 +111,7 @@ class LLM(_BaseLLM):
 
 class InsufficientEvidenceError(RuntimeError):
     """Raised when the affirmative research track finds zero candidates."""
+
     pass
 
 
@@ -161,6 +163,7 @@ terms that were attempted.
 # Audio generation now uses Kokoro TTS (local, high-quality)
 # MetaVoice-1B has been deprecated in favor of Kokoro-82M
 
+
 # Setup logging (will be reconfigured after output_dir is created)
 def setup_logging(output_dir: Path):
     """Configure logging with timestamped output directory"""
@@ -169,26 +172,26 @@ def setup_logging(output_dir: Path):
 
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
+        format="%(asctime)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.FileHandler(output_path(output_dir, 'podcast_generation.log')),
-            logging.StreamHandler(sys.stdout)
+            logging.FileHandler(output_path(output_dir, "podcast_generation.log")),
+            logging.StreamHandler(sys.stdout),
         ],
-        force=True
+        force=True,
     )
 
     # Suppress DEBUG logs from libraries that are verbose
-    logging.getLogger('fontTools').setLevel(logging.WARNING)
-    logging.getLogger('PIL').setLevel(logging.WARNING)
-    logging.getLogger('weasyprint').setLevel(logging.WARNING)
-    logging.getLogger('matplotlib').setLevel(logging.WARNING)
+    logging.getLogger("fontTools").setLevel(logging.WARNING)
+    logging.getLogger("PIL").setLevel(logging.WARNING)
+    logging.getLogger("weasyprint").setLevel(logging.WARNING)
+    logging.getLogger("matplotlib").setLevel(logging.WARNING)
 
     # Redirect stdout and stderr to logger
     class StreamToLogger(object):
         def __init__(self, logger, level):
             self.logger = logger
             self.level = level
-            self.linebuf = ''
+            self.linebuf = ""
 
         def write(self, buf):
             for line in buf.rstrip().splitlines():
@@ -201,12 +204,14 @@ def setup_logging(output_dir: Path):
     # The StreamHandler(sys.stdout) above already routes logger output to stdout.
     # Replacing sys.stdout breaks weasyprint, asyncio internals, and subprocess I/O.
 
+
 # --- INITIALIZATION ---
 # load_dotenv() — called in __main__ block
 # Configuration loaded from .env
 script_dir = Path(__file__).resolve().parent.parent  # project root (one level up from package)
 base_output_dir = Path(OUTPUT_DIR_OVERRIDE) if OUTPUT_DIR_OVERRIDE else script_dir / "research_outputs"
 # base_output_dir.mkdir(exist_ok=True) — called in __main__ block
+
 
 # --- TIMESTAMPED OUTPUT DIRECTORY ---
 def create_timestamped_output_dir(base_dir: Path) -> Path:
@@ -230,9 +235,9 @@ def create_timestamped_output_dir(base_dir: Path) -> Path:
     for subdir in OUTPUT_SUBDIRS:
         (timestamped_dir / subdir).mkdir(exist_ok=True)
 
-    logger.info(f"\n{'='*60}")
+    logger.info(f"\n{'=' * 60}")
     logger.info(f"OUTPUT DIRECTORY: {timestamped_dir}")
-    logger.info(f"{'='*60}\n")
+    logger.info(f"{'=' * 60}\n")
 
     return timestamped_dir
 
@@ -314,6 +319,7 @@ def output_path(run_dir: Path, filename: str) -> Path:
         return subdir_path / filename
     return run_dir / filename
 
+
 # ================================================================
 # CHECKPOINT / RESUME UTILITIES
 # ================================================================
@@ -331,8 +337,8 @@ def _serialize_dataclass(obj):
     if isinstance(obj, dict):
         return {k: _serialize_dataclass(v) for k, v in obj.items()}
     # Dataclass instances — use dc_fields to convert
-    if hasattr(obj, '__dataclass_fields__'):
-        if hasattr(obj, 'to_dict'):
+    if hasattr(obj, "__dataclass_fields__"):
+        if hasattr(obj, "to_dict"):
             return obj.to_dict()
         result = {}
         for f in dc_fields(obj):
@@ -352,8 +358,11 @@ def _deserialize_pipeline_data(pd_dict):
     if not pd_dict:
         return pd_dict
     from dr2_podcast.research.clinical import (
-        TieredSearchPlan, TierKeywords, WideNetRecord,
-        DeepExtraction, PaperMetadata,
+        TieredSearchPlan,
+        TierKeywords,
+        WideNetRecord,
+        DeepExtraction,
+        PaperMetadata,
     )
     from dr2_podcast.research.clinical_math import ClinicalImpact
 
@@ -519,9 +528,7 @@ def load_checkpoint(output_dir_path):
     ps = data.get("pipeline_state", {})
     if "deep_reports" in ps and isinstance(ps["deep_reports"], dict):
         if "pipeline_data" in ps["deep_reports"]:
-            ps["deep_reports"]["pipeline_data"] = _deserialize_pipeline_data(
-                ps["deep_reports"]["pipeline_data"]
-            )
+            ps["deep_reports"]["pipeline_data"] = _deserialize_pipeline_data(ps["deep_reports"]["pipeline_data"])
 
     return data
 
@@ -547,7 +554,7 @@ def _load_resume_metadata(output_dir_path):
     return {
         "topic": m_topic.group(1),
         "language": m_lang.group(1) if m_lang else None,
-        "completed_phases": None,   # tracked by Prefect cache, not listed here
+        "completed_phases": None,  # tracked by Prefect cache, not listed here
         "timestamp": None,
     }
 
@@ -559,11 +566,12 @@ output_dir = Path(".")  # sentinel — reassigned in __main__
 
 # setup_logging(output_dir) — called in __main__ block
 
+
 # --- TOPIC CONFIGURATION ---
 def parse_arguments():
     """Parse command-line arguments for topic and language."""
     parser = argparse.ArgumentParser(
-        description='Generate a research-driven debate podcast on any scientific topic.',
+        description="Generate a research-driven debate podcast on any scientific topic.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -574,41 +582,31 @@ Environment variables:
   export PODCAST_TOPIC="your topic here"
   export PODCAST_LANGUAGE=ja
   python pipeline.py
-        """
+        """,
+    )
+    parser.add_argument("--topic", type=str, help="Scientific topic for podcast research and debate")
+    parser.add_argument(
+        "--language", type=str, choices=["en", "ja"], help="Language for podcast generation (en=English, ja=Japanese)"
+    )
+    parser.add_argument("--reuse-dir", type=str, help="Previous run output directory to reuse research from")
+    parser.add_argument(
+        "--crew3-only",
+        action="store_true",
+        help="Skip research phases, run Crew 3 (podcast production) only using reuse-dir research",
     )
     parser.add_argument(
-        '--topic',
+        "--check-supplemental",
+        action="store_true",
+        help="LLM decides if supplemental research is needed for the reused topic",
+    )
+    parser.add_argument(
+        "--resume",
         type=str,
-        help='Scientific topic for podcast research and debate'
-    )
-    parser.add_argument(
-        '--language',
-        type=str,
-        choices=['en', 'ja'],
-        help='Language for podcast generation (en=English, ja=Japanese)'
-    )
-    parser.add_argument(
-        '--reuse-dir',
-        type=str,
-        help='Previous run output directory to reuse research from'
-    )
-    parser.add_argument(
-        '--crew3-only',
-        action='store_true',
-        help='Skip research phases, run Crew 3 (podcast production) only using reuse-dir research'
-    )
-    parser.add_argument(
-        '--check-supplemental',
-        action='store_true',
-        help='LLM decides if supplemental research is needed for the reused topic'
-    )
-    parser.add_argument(
-        '--resume',
-        type=str,
-        metavar='OUTPUT_DIR',
-        help='Resume a previously failed pipeline run from the last completed phase'
+        metavar="OUTPUT_DIR",
+        help="Resume a previously failed pipeline run from the last completed phase",
     )
     return parser.parse_args()
+
 
 def get_topic(args):
     """
@@ -624,9 +622,10 @@ def get_topic(args):
         topic = os.getenv("PODCAST_TOPIC")
         logger.info(f"Using topic from environment: {topic}")
     else:
-        topic = 'scientific benefit of coffee intake to increase productivity during the day'
+        topic = "scientific benefit of coffee intake to increase productivity during the day"
         logger.info(f"Using default topic: {topic}")
     return topic
+
 
 def get_language(args):
     """
@@ -635,7 +634,7 @@ def get_language(args):
     2. Environment variable (PODCAST_LANGUAGE)
     3. Default language (English)
     """
-    lang_code = 'en' # Default
+    lang_code = "en"  # Default
     if args.language:
         lang_code = args.language
         logger.info(f"Using language from command-line: {SUPPORTED_LANGUAGES[lang_code]['name']}")
@@ -645,6 +644,7 @@ def get_language(args):
     else:
         logger.info(f"Using default language: {SUPPORTED_LANGUAGES[lang_code]['name']}")
     return lang_code
+
 
 args = None  # initialized in __main__
 topic_name = None  # initialized in __main__
@@ -670,6 +670,7 @@ ROLE_PERSONALITIES = {
         "reasoned skepticism when evidence is weak."
     ),
 }
+
 
 # --- ROLE ASSIGNMENT (Dynamic per session) ---
 def assign_roles() -> dict:
@@ -701,13 +702,14 @@ def assign_roles() -> dict:
         },
     }
 
-    logger.info(f"\n{'='*60}")
+    logger.info(f"\n{'=' * 60}")
     logger.info(f"SESSION ROLE ASSIGNMENT ({host_config}):")
     logger.info(f"  Presenter: {presenter_label} ({HOSTS[presenter_label]['gender']})")
     logger.info(f"  Questioner: {questioner_label} ({HOSTS[questioner_label]['gender']})")
-    logger.info(f"{'='*60}\n")
+    logger.info(f"{'=' * 60}\n")
 
     return role_assignment
+
 
 # SESSION_ROLES initialized in __main__ block (assign_roles() prints to stdout)
 SESSION_ROLES = {
@@ -720,10 +722,10 @@ def _truncate_at_boundary(text: str, max_len: int) -> str:
     """Truncate text at the last paragraph boundary before max_len."""
     if len(text) <= max_len:
         return text
-    cut = text[:max_len].rfind('\n\n')
+    cut = text[:max_len].rfind("\n\n")
     if cut > 0:
         return text[:cut]
-    cut = text[:max_len].rfind('\n')
+    cut = text[:max_len].rfind("\n")
     if cut > 0:
         return text[:cut]
     return text[:max_len]
@@ -731,14 +733,18 @@ def _truncate_at_boundary(text: str, max_len: int) -> str:
 
 # --- REUSE HELPER FUNCTIONS ---
 RESEARCH_ARTIFACTS = [
-    "source_of_truth.md", "SOURCE_OF_TRUTH.md",
+    "source_of_truth.md",
+    "SOURCE_OF_TRUTH.md",
     "research_sources.json",
-    "research_framing.md", "research_framing.pdf",
+    "research_framing.md",
+    "research_framing.pdf",
     "source_of_truth.pdf",
     "source_of_truth_ja.md",
     "source_of_truth_ja.pdf",
     "url_validation_results.json",
-    "affirmative_case.md", "falsification_case.md", "grade_synthesis.md",
+    "affirmative_case.md",
+    "falsification_case.md",
+    "grade_synthesis.md",
     "clinical_math.md",
     "search_strategy_aff.json",
     "search_strategy_neg.json",
@@ -894,7 +900,7 @@ def check_supplemental_needed(topic: str, reuse_dir: Path) -> dict:
         try:
             result = json.loads(content)
         except json.JSONDecodeError:
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            json_match = re.search(r"\{.*\}", content, re.DOTALL)
             result = json.loads(json_match.group()) if json_match else None
         if result:
             return {
@@ -914,12 +920,14 @@ def check_tts_dependencies():
     """Verify Kokoro TTS is installed."""
     try:
         import kokoro
+
         logger.info("✓ Kokoro TTS dependencies verified")
     except ImportError as e:
         logger.error(f"CRITICAL ERROR: Kokoro TTS not installed: {e}")
         logger.error("Install with: pip install kokoro>=0.9")
         logger.error("Audio generation cannot proceed without Kokoro.")
         sys.exit(1)
+
 
 # check_tts_dependencies() — called in __main__ block
 
@@ -928,31 +936,38 @@ def check_tts_dependencies():
 # length_unit: how script length is measured ('words' for space-delimited, 'chars' for character-based)
 # prompt_unit: singular label used in LLM prompts (e.g. "word", "character")
 SUPPORTED_LANGUAGES = {
-    'en': {
-        'name': 'English',
-        'tts_code': 'a',            # Kokoro American English
-        'instruction': 'Write all content in English.',
-        'speech_rate': 150,         # ~150 words/min conversational pace
-        'length_unit': 'words',
-        'prompt_unit': 'word',
+    "en": {
+        "name": "English",
+        "tts_code": "a",  # Kokoro American English
+        "instruction": "Write all content in English.",
+        "speech_rate": 150,  # ~150 words/min conversational pace
+        "length_unit": "words",
+        "prompt_unit": "word",
     },
-    'ja': {
-        'name': '日本語 (Japanese)',
-        'tts_code': 'j',            # AivisSpeech
-        'instruction': 'すべてのコンテンツを日本語で書いてください。(Write all content in Japanese.)',
-        'speech_rate': 350,         # ~350 chars/min (VOICEVOX-era calibration; re-tune for AivisSpeech)
-        'length_unit': 'chars',
-        'prompt_unit': 'character',
-    }
+    "ja": {
+        "name": "日本語 (Japanese)",
+        "tts_code": "j",  # AivisSpeech
+        "instruction": "すべてのコンテンツを日本語で書いてください。(Write all content in Japanese.)",
+        "speech_rate": 350,  # ~350 chars/min (VOICEVOX-era calibration; re-tune for AivisSpeech)
+        "length_unit": "chars",
+        "prompt_unit": "character",
+    },
 }
 
 # Target episode duration per podcast_length mode (in minutes)
-TARGET_MINUTES = {'short': 10, 'medium': 20, 'long': 30}
+TARGET_MINUTES = {"short": 10, "medium": 20, "long": 30}
 # SCRIPT_TOLERANCE imported from pipeline_script
 
 # --- All language/duration/channel/accessibility vars initialized in __main__ block ---
 language = None  # initialized in __main__
-language_config = {'name': '', 'tts_code': '', 'instruction': '', 'speech_rate': 0, 'length_unit': '', 'prompt_unit': ''}  # sentinel
+language_config = {
+    "name": "",
+    "tts_code": "",
+    "instruction": "",
+    "speech_rate": 0,
+    "length_unit": "",
+    "prompt_unit": "",
+}  # sentinel
 english_instruction = "Write all content in English."
 target_instruction = ""  # initialized in __main__
 language_instruction = ""  # initialized in __main__
@@ -1018,6 +1033,7 @@ accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL]["en"
 SMART_MODEL = os.environ.get("MODEL_NAME") or None
 SMART_BASE_URL = os.environ.get("LLM_BASE_URL") or None
 
+
 def get_final_model_string():
     model = SMART_MODEL
     base_url = SMART_BASE_URL
@@ -1038,6 +1054,7 @@ def get_final_model_string():
     logger.error("Start Ollama with: ollama serve")
     sys.exit(1)
 
+
 final_model_string = None  # initialized in __main__
 
 # LLM objects initialized in __main__ block (require network connection)
@@ -1053,6 +1070,7 @@ def summarize_report_with_fast_model(report_text: str, role: str, topic: str) ->
     """
     try:
         from openai import OpenAI
+
         client = OpenAI(base_url=os.environ["FAST_LLM_BASE_URL"], api_key="ollama")
         response = client.chat.completions.create(
             model=os.environ["FAST_MODEL_NAME"],
@@ -1068,10 +1086,7 @@ def summarize_report_with_fast_model(report_text: str, role: str, topic: str) ->
                 },
                 {
                     "role": "user",
-                    "content": (
-                        f"Summarize this {role} research report on '{topic}':\n\n"
-                        f"{report_text}"
-                    ),
+                    "content": (f"Summarize this {role} research report on '{topic}':\n\n{report_text}"),
                 },
             ],
             temperature=0.1,
@@ -1079,6 +1094,7 @@ def summarize_report_with_fast_model(report_text: str, role: str, topic: str) ->
             timeout=180,
         )
         from dr2_podcast.utils import safe_message_text
+
         summary = safe_message_text(response)
         if len(summary) > 200:
             logger.info(f"  ✓ {role} report summarized: {len(report_text)} → {len(summary)} chars")
@@ -1095,9 +1111,14 @@ def summarize_report_with_fast_model(report_text: str, role: str, topic: str) ->
 # _SOT_BLOCK_RE — imported from pipeline_crew
 
 
-def _call_smart_model(system: str, user: str, max_tokens: int = 4000,
-                      temperature: float = 0.1, timeout: int = 0,
-                      frequency_penalty: float = 0.0) -> str:
+def _call_smart_model(
+    system: str,
+    user: str,
+    max_tokens: int = 4000,
+    temperature: float = 0.1,
+    timeout: int = 0,
+    frequency_penalty: float = 0.0,
+) -> str:
     """Call the Smart Model (vLLM) directly via OpenAI API. Returns response text.
 
     Retries up to 3 times (4 total attempts) with exponential backoff + jitter.
@@ -1106,9 +1127,12 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000,
     frequency_penalty: penalize repeated tokens (0.0 = off, 0.3 = moderate anti-repetition).
     """
     if not SMART_MODEL or not SMART_BASE_URL:
-        raise RuntimeError("Pipeline not configured — SMART_MODEL/SMART_BASE_URL not set. Run via __main__ or set env vars.")
+        raise RuntimeError(
+            "Pipeline not configured — SMART_MODEL/SMART_BASE_URL not set. Run via __main__ or set env vars."
+        )
     import openai
     from openai import OpenAI
+
     # Disable Qwen3 thinking mode at the chat template level. This is the
     # proper way — a `/no_think` prefix is a soft hint the model can ignore,
     # and when vLLM runs with `--reasoning-parser qwen3` any stray <think>
@@ -1148,8 +1172,8 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000,
                 raw = getattr(msg, "reasoning_content", None) or ""
                 if raw:
                     logger.warning(
-                        "  WARNING: _call_smart_model() got content=None; "
-                        "recovered %d chars from reasoning_content", len(raw)
+                        "  WARNING: _call_smart_model() got content=None; recovered %d chars from reasoning_content",
+                        len(raw),
                     )
             text = raw.strip()
             # Strip <think>...</think> blocks (Qwen3 thinking mode safety net)
@@ -1158,20 +1182,25 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000,
         except (openai.BadRequestError, openai.AuthenticationError):
             # Non-transient errors — fast-fail, no retry
             raise
-        except (ConnectionError, TimeoutError, OSError,
-                openai.APIConnectionError, openai.APITimeoutError,
-                openai.InternalServerError) as e:
+        except (
+            ConnectionError,
+            TimeoutError,
+            OSError,
+            openai.APIConnectionError,
+            openai.APITimeoutError,
+            openai.InternalServerError,
+        ) as e:
             if attempt < max_retries:
-                base_wait = 5 * (2 ** attempt)  # 5, 10, 20
+                base_wait = 5 * (2**attempt)  # 5, 10, 20
                 jitter = random.uniform(-base_wait * 0.3, base_wait * 0.3)
                 wait = base_wait + jitter
                 logger.warning(
-                    f"  WARNING: _call_smart_model() attempt {attempt+1}/{max_retries+1} "
+                    f"  WARNING: _call_smart_model() attempt {attempt + 1}/{max_retries + 1} "
                     f"failed ({type(e).__name__}), retrying in {wait:.1f}s..."
                 )
                 time.sleep(wait)
             else:
-                logger.error(f"  ERROR: _call_smart_model() failed after {max_retries+1} attempts: {e}")
+                logger.error(f"  ERROR: _call_smart_model() failed after {max_retries + 1} attempts: {e}")
                 raise
 
 
@@ -1179,11 +1208,12 @@ def _call_smart_model(system: str, user: str, max_tokens: int = 4000,
 # Thin wrappers that inject module-level globals into the extracted implementations.
 
 
-
 def _translate_sot_pipelined(sot_content, language, language_config):
     """Wrapper — delegates to pipeline_translation with _call_smart_model."""
     return _translate_sot_pipelined_impl(
-        sot_content, language, language_config,
+        sot_content,
+        language,
+        language_config,
         _call_smart_model=_call_smart_model,
     )
 
@@ -1191,7 +1221,9 @@ def _translate_sot_pipelined(sot_content, language, language_config):
 def _translate_prompt(prompt_text, language, language_config):
     """Wrapper — delegates to pipeline_translation with _call_smart_model."""
     return _translate_prompt_impl(
-        prompt_text, language, language_config,
+        prompt_text,
+        language,
+        language_config,
         _call_smart_model=_call_smart_model,
     )
 
@@ -1210,8 +1242,7 @@ _BLUEPRINT_STRUCTURE_CONSTRAINT = (
 )
 
 
-def _translate_tasks_parallel(tasks_and_names, language, language_config,
-                              blueprint_task_ref=None):
+def _translate_tasks_parallel(tasks_and_names, language, language_config, blueprint_task_ref=None):
     """Translate multiple task descriptions in parallel using ThreadPoolExecutor.
 
     If *blueprint_task_ref* is provided, appends the structural format
@@ -1219,9 +1250,7 @@ def _translate_tasks_parallel(tasks_and_names, language, language_config,
     """
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
-            executor.submit(
-                _translate_prompt, task.description, language, language_config
-            ): (task, name)
+            executor.submit(_translate_prompt, task.description, language, language_config): (task, name)
             for task, name in tasks_and_names
         }
         for future in as_completed(futures):
@@ -1237,10 +1266,11 @@ def _translate_tasks_parallel(tasks_and_names, language, language_config,
 def _audit_script_language(script_text, language, language_config):
     """Wrapper — delegates to pipeline_translation with _call_smart_model."""
     return _audit_script_language_impl(
-        script_text, language, language_config,
+        script_text,
+        language,
+        language_config,
         _call_smart_model=_call_smart_model,
     )
-
 
 
 # --- Script functions (extracted to pipeline_script.py) ---
@@ -1251,7 +1281,8 @@ def _audit_script_language(script_text, language, language_config):
 def _add_reaction_guidance(script_text, language_config):
     """Wrapper — delegates to pipeline_script with _call_smart_model."""
     return _add_reaction_guidance_impl(
-        script_text, language_config,
+        script_text,
+        language_config,
         _call_smart_model=_call_smart_model,
     )
 
@@ -1259,7 +1290,8 @@ def _add_reaction_guidance(script_text, language_config):
 def _quick_content_audit(script_text, sot_content):
     """Wrapper — delegates to pipeline_script with _call_smart_model."""
     return _quick_content_audit_impl(
-        script_text, sot_content,
+        script_text,
+        sot_content,
         _call_smart_model=_call_smart_model,
         _truncate_at_boundary=_truncate_at_boundary,
     )
@@ -1268,18 +1300,29 @@ def _quick_content_audit(script_text, sot_content):
 def _validate_script(script_text, target_length, tolerance, language_config, sot_content, stage):
     """Wrapper — delegates to pipeline_script with _call_smart_model."""
     return _validate_script_impl(
-        script_text, target_length, tolerance, language_config, sot_content, stage,
+        script_text,
+        target_length,
+        tolerance,
+        language_config,
+        sot_content,
+        stage,
         _call_smart_model=_call_smart_model,
         _truncate_at_boundary=_truncate_at_boundary,
     )
 
 
-def _run_condense_pass(script_text, inventory, target_length, language_config,
-                       session_roles, topic_name, target_instruction):
+def _run_condense_pass(
+    script_text, inventory, target_length, language_config, session_roles, topic_name, target_instruction
+):
     """Wrapper — delegates to pipeline_script with _call_smart_model."""
     return _run_condense_pass_impl(
-        script_text, inventory, target_length, language_config,
-        session_roles, topic_name, target_instruction,
+        script_text,
+        inventory,
+        target_length,
+        language_config,
+        session_roles,
+        topic_name,
+        target_instruction,
         _call_smart_model=_call_smart_model,
     )
 
@@ -1288,10 +1331,10 @@ def _run_condense_pass(script_text, inventory, target_length, language_config,
 _run_trim_pass = _run_condense_pass
 
 
-
 # --- RESEARCH LIBRARY TOOLS ---
 # These tools let agents browse and read individual sources from the
 # deep research pre-scan that was saved to research_sources.json.
+
 
 @tool("ListResearchSources")
 def list_research_sources(role: str) -> str:
@@ -1321,11 +1364,7 @@ def list_research_sources(role: str) -> str:
     for s in sources:
         meta = s.get("metadata")
         study_tag = f" [{meta.get('study_type', 'general')}]" if meta and meta.get("study_type") else ""
-        lines.append(
-            f"[{s['index']}]{study_tag} \"{s['title']}\"\n"
-            f"    URL: {s['url']}\n"
-            f"    Goal: {s['goal']}"
-        )
+        lines.append(f'[{s["index"]}]{study_tag} "{s["title"]}"\n    URL: {s["url"]}\n    Goal: {s["goal"]}')
     return header + "\n\n".join(lines)
 
 
@@ -1361,7 +1400,7 @@ def read_research_source(role_and_index: str) -> str:
 
     sources = data[role_key]
     if idx < 0 or idx >= len(sources):
-        return f"Index {idx} out of range. {role_key} has {len(sources)} sources (0-{len(sources)-1})."
+        return f"Index {idx} out of range. {role_key} has {len(sources)} sources (0-{len(sources) - 1})."
 
     s = sources[idx]
     meta_section = ""
@@ -1419,12 +1458,13 @@ def _extract_sot_section(content: str, section_name: str) -> str | None:
         if line.startswith(f"## {prefix}"):
             capturing = True
             result.append(line)
-        elif capturing and re.match(r'^## \d+\.', line):
+        elif capturing and re.match(r"^## \d+\.", line):
             break  # next top-level section
         elif capturing:
             result.append(line)
 
     return "\n".join(result) if result else None
+
 
 @tool("ReadFullReport")
 def read_full_report(report_name: str) -> str:
@@ -1484,8 +1524,7 @@ def read_full_report(report_name: str) -> str:
     # Full document — truncate if too long
     if len(content) > 15000:
         return (
-            content[:15000]
-            + f"\n\n... [TRUNCATED — full report is {len(content)} chars. "
+            content[:15000] + f"\n\n... [TRUNCATED — full report is {len(content)} chars. "
             f"For SOT, use section reading: e.g. ReadFullReport('sot:discussion')] ..."
         )
     return content
@@ -1509,6 +1548,7 @@ code { font-family: monospace; background: #eee; padding: 1pt 3pt; }
 .header { text-align: center; font-size: 10pt; color: #666; margin-bottom: 12pt; }
 """
 
+
 def create_pdf(title, content, filename):
     """Convert markdown content to a styled PDF via weasyprint."""
     clean = strip_think_blocks(str(content))
@@ -1525,9 +1565,11 @@ def create_pdf(title, content, filename):
     logger.info(f"PDF Generated: {file_path}")
     return file_path
 
+
 # --- AGENTS ---
 # Initialize Link Validator Tool
 link_validator = LinkValidatorTool()
+
 
 @tool("ReadValidationResults")
 def read_validation_results(url: str) -> str:
@@ -1596,17 +1638,16 @@ def _create_agents_and_tasks():
         link_validator=link_validator,
     )
 
-    auditor_agent = result['auditor_agent']
-    producer_agent = result['producer_agent']
-    editor_agent = result['editor_agent']
-    framing_agent = result['framing_agent']
-    framing_task = result['framing_task']
-    script_task = result['script_task']
-    translation_task = result['translation_task']
-    polish_task = result['polish_task']
-    audit_task = result['audit_task']
-    blueprint_task = result['blueprint_task']
-
+    auditor_agent = result["auditor_agent"]
+    producer_agent = result["producer_agent"]
+    editor_agent = result["editor_agent"]
+    framing_agent = result["framing_agent"]
+    framing_task = result["framing_task"]
+    script_task = result["script_task"]
+    translation_task = result["translation_task"]
+    polish_task = result["polish_task"]
+    audit_task = result["audit_task"]
+    blueprint_task = result["blueprint_task"]
 
 
 # ================================================================
@@ -1620,7 +1661,10 @@ def _create_agents_and_tasks():
 def build_imrad_sot(topic, reports, ev_quality, aff_cand, domain="clinical", lang="en"):
     """Wrapper — delegates to pipeline_sot with output_dir and output_path."""
     return _build_imrad_sot_impl(
-        topic, reports, ev_quality, aff_cand,
+        topic,
+        reports,
+        ev_quality,
+        aff_cand,
         domain=domain,
         output_dir=output_dir,
         output_path_fn=output_path,
@@ -1628,10 +1672,10 @@ def build_imrad_sot(topic, reports, ev_quality, aff_cand, domain="clinical", lan
     )
 
 
-
 # ════════════════════════════════════════════════════════════════════════
 # SHARED PIPELINE FUNCTIONS  (T2.3 — deduplicated from 3 code paths)
 # ════════════════════════════════════════════════════════════════════════
+
 
 def _inject_blueprint_checklist(blueprint_task, script_task, script_base_desc):
     """Parse discussion points from blueprint and inject coverage checklist into script task.
@@ -1648,11 +1692,10 @@ def _inject_blueprint_checklist(blueprint_task, script_task, script_base_desc):
             for it in items:
                 checklist_lines.append(f"  {it['question']}")
                 checklist_lines.append(f"    -> {it['answer'][:120]}...")
-        checklist_block = '\n'.join(checklist_lines)
+        checklist_block = "\n".join(checklist_lines)
         script_task.description = script_base_desc + checklist_block
         script_base_desc = script_task.description  # CRITICAL: update base for retry tasks
-        logger.info("  Coverage checklist injected: %d items",
-                     sum(len(v) for v in inventory.values()))
+        logger.info("  Coverage checklist injected: %d items", sum(len(v) for v in inventory.values()))
     return inventory or {}, script_base_desc
 
 
@@ -1663,21 +1706,32 @@ def _run_script_draft(producer_agent, script_task, target_length_int, language_c
     """
     Crew(agents=[producer_agent], tasks=[script_task], verbose=True).kickoff()
     draft_text = strip_think_blocks(script_task.output.raw)
-    val = _validate_script(draft_text, target_length_int, SCRIPT_TOLERANCE,
-                           language_config, sot_content, stage='draft')
-    logger.info(f"    Draft: {val['word_count']} {language_config['length_unit']} — "
-          f"{'PASS' if val['pass'] else 'NEEDS WORK'}")
-    if not val['pass'] and any('TOO SHORT' in i for i in val['issues']):
-        logger.warning(f"    \u26a0 Draft short ({val['word_count']} {language_config['length_unit']}) — "
-              f"proceeding to polish (expansion removed; coverage checklist should prevent this)")
+    val = _validate_script(draft_text, target_length_int, SCRIPT_TOLERANCE, language_config, sot_content, stage="draft")
+    logger.info(
+        f"    Draft: {val['word_count']} {language_config['length_unit']} — {'PASS' if val['pass'] else 'NEEDS WORK'}"
+    )
+    if not val["pass"] and any("TOO SHORT" in i for i in val["issues"]):
+        logger.warning(
+            f"    \u26a0 Draft short ({val['word_count']} {language_config['length_unit']}) — "
+            f"proceeding to polish (expansion removed; coverage checklist should prevent this)"
+        )
     draft_count = _count_words(draft_text, language_config)
     return draft_text, draft_count
 
 
-def _run_sectional_draft(inventory, target_length_int, language_config,
-                         sot_content, session_roles, topic_name,
-                         target_instruction, channel_intro,
-                         *, _call_smart_model, target_min=30):
+def _run_sectional_draft(
+    inventory,
+    target_length_int,
+    language_config,
+    sot_content,
+    session_roles,
+    topic_name,
+    target_instruction,
+    channel_intro,
+    *,
+    _call_smart_model,
+    target_min=30,
+):
     """Phase 5: Generate script draft via 4 sequential section calls.
 
     Each section has its own word budget, coverage checklist items, and
@@ -1687,53 +1741,74 @@ def _run_sectional_draft(inventory, target_length_int, language_config,
     Returns (assembled_draft, total_count).
     """
     from dr2_podcast.pipeline_script import (
-        _allocate_section_budgets, _generate_section, _count_words,
-        _validate_script, SCRIPT_TOLERANCE)
+        _allocate_section_budgets,
+        _generate_section,
+        _count_words,
+        _validate_script,
+        SCRIPT_TOLERANCE,
+    )
 
     sections = _allocate_section_budgets(target_length_int, language_config, inventory)
-    length_unit = language_config['length_unit']
+    length_unit = language_config["length_unit"]
 
-    logger.info("  Sectional draft: %d sections, total budget %d %s",
-                len(sections), target_length_int, length_unit)
+    logger.info("  Sectional draft: %d sections, total budget %d %s", len(sections), target_length_int, length_unit)
     for s in sections:
-        logger.info("    %s: budget=%d %s, checklist=%d items",
-                     s['section_id'], s['word_budget'], length_unit,
-                     len(s.get('checklist_items', [])))
+        logger.info(
+            "    %s: budget=%d %s, checklist=%d items",
+            s["section_id"],
+            s["word_budget"],
+            length_unit,
+            len(s.get("checklist_items", [])),
+        )
 
     generated = []
     previous_lines = []
-    accumulated_deficit = 0   # positive = under-budget (later sections get more)
-    accumulated_surplus = 0   # positive = over-budget (later sections get less)
+    accumulated_deficit = 0  # positive = under-budget (later sections get more)
+    accumulated_surplus = 0  # positive = over-budget (later sections get less)
 
     for i, section_cfg in enumerate(sections):
-        original_budget = section_cfg['word_budget']
+        original_budget = section_cfg["word_budget"]
 
         # Redistribute deficit from prior sections (capped at 50% of original budget)
         if accumulated_deficit > 0:
             max_absorb = int(original_budget * 0.50)
             absorbed = min(accumulated_deficit, max_absorb)
-            section_cfg['word_budget'] += absorbed
+            section_cfg["word_budget"] += absorbed
             accumulated_deficit -= absorbed
-            logger.info("    %s: budget adjusted %d -> %d %s (absorbed %d deficit)",
-                         section_cfg['section_id'], original_budget,
-                         section_cfg['word_budget'], length_unit, absorbed)
+            logger.info(
+                "    %s: budget adjusted %d -> %d %s (absorbed %d deficit)",
+                section_cfg["section_id"],
+                original_budget,
+                section_cfg["word_budget"],
+                length_unit,
+                absorbed,
+            )
             if accumulated_deficit > 0:
-                logger.warning("    %d %s deficit could not be absorbed (cap: 50%% of original budget)",
-                               accumulated_deficit, length_unit)
+                logger.warning(
+                    "    %d %s deficit could not be absorbed (cap: 50%% of original budget)",
+                    accumulated_deficit,
+                    length_unit,
+                )
 
         # Compensate for surplus from prior over-budget sections
         if accumulated_surplus > 0:
-            pre_adjust = section_cfg['word_budget']
+            pre_adjust = section_cfg["word_budget"]
             max_reduce = int(original_budget * 0.30)  # don't shrink more than 30%
             reduction = min(accumulated_surplus, max_reduce)
-            section_cfg['word_budget'] -= reduction
+            section_cfg["word_budget"] -= reduction
             accumulated_surplus -= reduction
-            logger.info("    %s: budget reduced %d -> %d %s (compensating %d surplus)",
-                         section_cfg['section_id'], pre_adjust,
-                         section_cfg['word_budget'], length_unit, reduction)
+            logger.info(
+                "    %s: budget reduced %d -> %d %s (compensating %d surplus)",
+                section_cfg["section_id"],
+                pre_adjust,
+                section_cfg["word_budget"],
+                length_unit,
+                reduction,
+            )
 
         section_text, word_count, deficit = _generate_section(
-            section_cfg, previous_lines,
+            section_cfg,
+            previous_lines,
             _call_smart_model=_call_smart_model,
             language_config=language_config,
             session_roles=session_roles,
@@ -1742,57 +1817,74 @@ def _run_sectional_draft(inventory, target_length_int, language_config,
             target_min=target_min,
         )
 
-        status = 'OK'
-        if word_count < int(section_cfg['word_budget'] * 0.75):
-            status = 'SHORT'
-        elif word_count > int(section_cfg['word_budget'] * 1.15):
-            status = 'OVER'
-        logger.info("  Section %s: %d/%d %s — %s",
-                     section_cfg['section_id'], word_count,
-                     section_cfg['word_budget'], length_unit, status)
+        status = "OK"
+        if word_count < int(section_cfg["word_budget"] * 0.75):
+            status = "SHORT"
+        elif word_count > int(section_cfg["word_budget"] * 1.15):
+            status = "OVER"
+        logger.info(
+            "  Section %s: %d/%d %s — %s",
+            section_cfg["section_id"],
+            word_count,
+            section_cfg["word_budget"],
+            length_unit,
+            status,
+        )
 
         if deficit > 0:
             accumulated_deficit += deficit
             logger.warning("    Deficit %d %s carried forward", deficit, length_unit)
 
         # Track surplus from over-budget sections
-        surplus = max(0, word_count - section_cfg['word_budget'])
+        surplus = max(0, word_count - section_cfg["word_budget"])
         if surplus > 0:
             accumulated_surplus += surplus
-            logger.info("    Surplus %d %s carried forward (will reduce later budgets)",
-                         surplus, length_unit)
+            logger.info("    Surplus %d %s carried forward (will reduce later budgets)", surplus, length_unit)
 
         generated.append(section_text)
 
         # Update lead-in for next section
-        non_empty = [ln for ln in section_text.split('\n') if ln.strip()]
+        non_empty = [ln for ln in section_text.split("\n") if ln.strip()]
         previous_lines = non_empty[-5:] if non_empty else []
 
     if accumulated_deficit > 0:
-        logger.warning("  Unabsorbed deficit: %d %s (sections could not absorb full shortfall)",
-                        accumulated_deficit, length_unit)
+        logger.warning(
+            "  Unabsorbed deficit: %d %s (sections could not absorb full shortfall)", accumulated_deficit, length_unit
+        )
 
     # Assemble with [TRANSITION] markers between sections, [INTRO_END] after channel intro
-    assembled = '\n\n[TRANSITION]\n\n'.join(generated)
-    assembled = assembled.replace('[TRANSITION]', '[INTRO_END]', 1)  # first boundary = after channel intro
+    assembled = "\n\n[TRANSITION]\n\n".join(generated)
+    assembled = assembled.replace("[TRANSITION]", "[INTRO_END]", 1)  # first boundary = after channel intro
 
     total_count = _count_words(assembled, language_config)
-    val = _validate_script(assembled, target_length_int, SCRIPT_TOLERANCE,
-                           language_config, sot_content, stage='draft')
-    logger.info("  Assembled draft: %d %s — %s",
-                 total_count, length_unit, 'PASS' if val['pass'] else 'NEEDS WORK')
-    if not val['pass']:
-        for issue in val['issues']:
+    val = _validate_script(assembled, target_length_int, SCRIPT_TOLERANCE, language_config, sot_content, stage="draft")
+    logger.info("  Assembled draft: %d %s — %s", total_count, length_unit, "PASS" if val["pass"] else "NEEDS WORK")
+    if not val["pass"]:
+        for issue in val["issues"]:
             logger.warning("    %s", issue)
 
     return assembled, total_count
 
 
-def _run_polish_loop(draft_text, draft_count, inventory, target_length_int,
-                     language_config, sot_content, script_task, polish_task,
-                     editor_agent, translation_task, polish_base_desc,
-                     polish_expected, max_attempts=3, *,
-                     session_roles=None, topic_name=None, target_instruction=None):
+def _run_polish_loop(
+    draft_text,
+    draft_count,
+    inventory,
+    target_length_int,
+    language_config,
+    sot_content,
+    script_task,
+    polish_task,
+    editor_agent,
+    translation_task,
+    polish_base_desc,
+    polish_expected,
+    max_attempts=3,
+    *,
+    session_roles=None,
+    topic_name=None,
+    target_instruction=None,
+):
     """Phase 6: Pre-polish trim, polish loop with feedback, shrinkage guard.
 
     Returns (polished_text, final_polish_task).
@@ -1800,13 +1892,16 @@ def _run_polish_loop(draft_text, draft_count, inventory, target_length_int,
     # Pre-polish trim: if over-target, reduce before polish to prevent poor cuts
     if draft_count > target_length_int * (1 + SCRIPT_TOLERANCE) and inventory:
         logger.info(f"  Draft over target ({draft_count}/{target_length_int}) — running condense pass...")
-        draft_text = _run_condense_pass(draft_text, inventory, target_length_int,
-                                        language_config, session_roles, topic_name, target_instruction)
+        draft_text = _run_condense_pass(
+            draft_text, inventory, target_length_int, language_config, session_roles, topic_name, target_instruction
+        )
         draft_text = _deduplicate_script(draft_text, language_config)
         draft_count = _count_words(draft_text, language_config)
         logger.info(f"  Post-condense: {draft_count} {language_config['length_unit']}")
     elif draft_count < target_length_int * (1 - SCRIPT_TOLERANCE):
-        logger.warning(f"  \u26a0 Draft still under target ({draft_count}/{target_length_int}) — proceeding to polish anyway")
+        logger.warning(
+            f"  \u26a0 Draft still under target ({draft_count}/{target_length_int}) — proceeding to polish anyway"
+        )
 
     polish_feedback = ""
     current_polish = polish_task
@@ -1818,7 +1913,7 @@ def _run_polish_loop(draft_text, draft_count, inventory, target_length_int,
     for attempt in range(1, max_attempts + 1):
         if polish_feedback:
             fb = (
-                f"\n\nPREVIOUS ATTEMPT FEEDBACK (attempt {attempt-1}):\n{polish_feedback}\n"
+                f"\n\nPREVIOUS ATTEMPT FEEDBACK (attempt {attempt - 1}):\n{polish_feedback}\n"
                 f"Fix ALL issues listed above.\n"
             )
             current_polish = Task(
@@ -1831,27 +1926,32 @@ def _run_polish_loop(draft_text, draft_count, inventory, target_length_int,
                 current_polish.context = [script_task, translation_task]
         Crew(agents=[editor_agent], tasks=[current_polish], verbose=True).kickoff()
         polished = strip_think_blocks(current_polish.output.raw)
-        val = _validate_script(polished, target_length_int, SCRIPT_TOLERANCE,
-                               language_config, sot_content, stage='polish')
-        logger.info(f"    Polish attempt {attempt}: {val['word_count']} {language_config['length_unit']} — "
-              f"{'PASS' if val['pass'] else 'FAIL'}")
-        if val['pass']:
+        val = _validate_script(
+            polished, target_length_int, SCRIPT_TOLERANCE, language_config, sot_content, stage="polish"
+        )
+        logger.info(
+            f"    Polish attempt {attempt}: {val['word_count']} {language_config['length_unit']} — "
+            f"{'PASS' if val['pass'] else 'FAIL'}"
+        )
+        if val["pass"]:
             break
-        polish_feedback = val['feedback']
+        polish_feedback = val["feedback"]
 
     # Shrinkage guard
     polished_count = _count_words(polished, language_config)
     min_acceptable = int(target_length_int * (1 - SCRIPT_TOLERANCE))
     if polished_count < min_acceptable:
-        logger.warning(f"    \u26a0 Polish shrunk script below minimum ({polished_count} < {min_acceptable}) — using draft")
-        if draft_text.count('[TRANSITION]') + draft_text.count('[INTRO_END]') < 3:
-            draft_text = re.sub(r'(---\s*\n###\s*\*?\*?ACT)', r'[TRANSITION]\n\n\1', draft_text)
+        logger.warning(
+            f"    \u26a0 Polish shrunk script below minimum ({polished_count} < {min_acceptable}) — using draft"
+        )
+        if draft_text.count("[TRANSITION]") + draft_text.count("[INTRO_END]") < 3:
+            draft_text = re.sub(r"(---\s*\n###\s*\*?\*?ACT)", r"[TRANSITION]\n\n\1", draft_text)
         polished = draft_text
 
     # Speaker-label guard: if polish stripped Host 1:/Host 2: labels, TTS collapses
     # to a single voice (audio/engine.py:381-389 routes unlabeled lines to Speaker 2).
     # Fall back to the draft when the polished output has lost the dialogue structure.
-    _label_re = re.compile(r'(?m)^\s*Host\s*[12]\s*[:：]')
+    _label_re = re.compile(r"(?m)^\s*Host\s*[12]\s*[:：]")
     polished_labels = len(_label_re.findall(polished))
     draft_labels = len(_label_re.findall(draft_text))
     if draft_labels >= 6 and polished_labels < draft_labels * 0.5:
@@ -1877,15 +1977,15 @@ def _audit_requires_correction(audit_output: str) -> bool:
         return False
     t = audit_output
     # Overall verdict FAIL — English "**FAIL**" or Japanese "不合格"
-    if re.search(r'\bFAIL\b', t) or '不合格' in t:
+    if re.search(r"\bFAIL\b", t) or "不合格" in t:
         return True
     # HIGH-severity marker: "重大度: HIGH", "Severity: HIGH", "HIGH severity",
     # "(HIGH Severity)" — tolerant of ** wrapping and label language.
-    if re.search(r'(?:重大度|severity)[^\n]{0,12}HIGH', t, re.IGNORECASE):
+    if re.search(r"(?:重大度|severity)[^\n]{0,12}HIGH", t, re.IGNORECASE):
         return True
-    if re.search(r'HIGH[\s_*\-]{0,4}severity', t, re.IGNORECASE):
+    if re.search(r"HIGH[\s_*\-]{0,4}severity", t, re.IGNORECASE):
         return True
-    if re.search(r'\(\s*HIGH\b', t):
+    if re.search(r"\(\s*HIGH\b", t):
         return True
     return False
 
@@ -1899,7 +1999,7 @@ def _run_script_correction(audit_output, polished_text, language, language_confi
     uses its crew-based `_run_inline_correction`.
     """
     orig_tx = polished_text.count("[TRANSITION]") + polished_text.count("[INTRO_END]")
-    lang_rule = "\n出力は日本語のみ。中国語は使わないこと。" if language == 'ja' else ""
+    lang_rule = "\n出力は日本語のみ。中国語は使わないこと。" if language == "ja" else ""
     system = (
         "You are a precise podcast-script editor. Apply ONLY the corrections the accuracy "
         "audit specifies. Replace fabricated/misattributed citations with the correct "
@@ -1913,7 +2013,9 @@ def _run_script_correction(audit_output, polished_text, language, language_confi
         "Do NOT repeat an identical closing/sign-off line more than once. "
         "Output ONLY the full corrected script." + lang_rule
     )
-    user = f"ACCURACY AUDIT:\n{audit_output}\n\nSCRIPT TO CORRECT:\n{polished_text}\n\nOutput the full corrected script."
+    user = (
+        f"ACCURACY AUDIT:\n{audit_output}\n\nSCRIPT TO CORRECT:\n{polished_text}\n\nOutput the full corrected script."
+    )
     try:
         corrected = strip_think_blocks(_call_smart_model(system, user, max_tokens=16000, temperature=0.1))
     except Exception as e:
@@ -1938,6 +2040,7 @@ def _enforce_audit(audit_output, polished_text, sot_content, language, language_
     triggered) enforcement; this keeps the reuse branches consistent.
     """
     from dr2_podcast.pipeline_validators import validate_citations
+
     det = validate_citations(polished_text, sot_text=sot_content) if sot_content else []
     if det:
         logger.warning("  Citation gate flagged: %s", "; ".join(det))
@@ -1947,11 +2050,13 @@ def _enforce_audit(audit_output, polished_text, sot_content, language, language_
     aud = audit_output + (("\n\n## Citation issues\n" + "\n".join(f"- {i}" for i in det)) if det else "")
     corrected = _run_script_correction(aud, polished_text, language, language_config, output_dir)
     try:
-        with open(output_path(output_dir, "ACCURACY_CORRECTIONS.md"), 'w', encoding='utf-8') as f:
-            f.write(f"# Accuracy Corrections\n\n"
-                    f"- Audit verdict trigger: {_audit_requires_correction(audit_output)}\n"
-                    f"- Fabricated-citation trigger: {det or 'none'}\n"
-                    f"- Result: {'applied' if corrected else 'FAILED — kept original, manual review needed'}\n")
+        with open(output_path(output_dir, "ACCURACY_CORRECTIONS.md"), "w", encoding="utf-8") as f:
+            f.write(
+                f"# Accuracy Corrections\n\n"
+                f"- Audit verdict trigger: {_audit_requires_correction(audit_output)}\n"
+                f"- Fabricated-citation trigger: {det or 'none'}\n"
+                f"- Result: {'applied' if corrected else 'FAILED — kept original, manual review needed'}\n"
+            )
     except Exception:
         pass
     return corrected
@@ -1966,8 +2071,7 @@ def _run_accuracy_audit(audit_task, polish_task, auditor_agent, translation_task
     Crew(agents=[auditor_agent], tasks=[audit_task], verbose=True).kickoff()
 
 
-def _finalize_script(polished_text, polish_task, language, language_config, output_dir,
-                     corrected_text=None):
+def _finalize_script(polished_text, polish_task, language, language_config, output_dir, corrected_text=None):
     """Post-script: apply corrections, language audit, reaction guidance, save script_final.md.
 
     Returns final script_text ready for TTS.
@@ -1976,16 +2080,23 @@ def _finalize_script(polished_text, polish_task, language, language_config, outp
         script_text = corrected_text
         logger.info("Using drift-corrected script for audio generation")
     else:
-        script_text = polished_text if polished_text else (
-            polish_task.output.raw if hasattr(polish_task, 'output') and polish_task.output else "")
+        script_text = (
+            polished_text
+            if polished_text
+            else (polish_task.output.raw if hasattr(polish_task, "output") and polish_task.output else "")
+        )
 
     # Deterministic speaker-label normalization (Tier-1 gate). Canonicalizes
     # host_1：/full-width/**Host 1**/ホスト1 variants -> 'Host N:' BEFORE TTS, so
     # clean_script_for_tts and reaction-guidance regexes match and voice
     # assignment is correct. Fixes the sleep-week label-corruption class.
     from dr2_podcast.pipeline_validators import (
-        normalize_speaker_labels, check_speaker_alternation, detect_duplicate_blocks,
-        deduplicate_lines)
+        normalize_speaker_labels,
+        check_speaker_alternation,
+        detect_duplicate_blocks,
+        deduplicate_lines,
+    )
+
     script_text, _labels_fixed = normalize_speaker_labels(script_text)
     if _labels_fixed:
         logger.info(f"  Normalized {_labels_fixed} non-canonical speaker label(s)")
@@ -1995,12 +2106,13 @@ def _finalize_script(polished_text, polish_task, language, language_config, outp
     for _issue in check_speaker_alternation(script_text) + detect_duplicate_blocks(script_text):
         logger.warning(f"  STRUCTURAL: {_issue}")
 
-    if language != 'en':
+    if language != "en":
         script_text = _audit_script_language(script_text, language, language_config)
         # Layer 3: warn on CONTEXT-DEPENDENT TTS reading hazards the editor may
         # have missed (表/辛い/の方/大あり). Non-blocking — Layer 1 already fixed
         # the context-free misreadings deterministically in clean_script_for_tts.
         from dr2_podcast.pipeline_validators import validate_tts_readings
+
         for _issue in validate_tts_readings(script_text):
             logger.warning(f"  TTS_READING: {_issue}")
 
@@ -2009,6 +2121,7 @@ def _finalize_script(polished_text, polish_task, language, language_config, outp
     # so reuse branches that skip the flow still report it.
     try:
         from dr2_podcast.pipeline_validators import validate_grade_consistency
+
         _sot = output_path(output_dir, "research/source_of_truth_ja.md")
         if not Path(_sot).exists():
             _sot = output_path(output_dir, "research/source_of_truth.md")
@@ -2021,7 +2134,7 @@ def _finalize_script(polished_text, polish_task, language, language_config, outp
     logger.info("\nAdding reaction/emotion guidance to script...")
     script_text = _add_reaction_guidance(script_text, language_config)
 
-    with open(output_path(output_dir, "script_final.md"), 'w', encoding='utf-8') as f:
+    with open(output_path(output_dir, "script_final.md"), "w", encoding="utf-8") as f:
         f.write(script_text)
 
     return script_text
@@ -2033,13 +2146,13 @@ def _save_task_outputs(output_dir, task_output_list):
         try:
             if isinstance(source, str):
                 content = source
-            elif hasattr(source, 'output') and source.output and hasattr(source.output, 'raw'):
+            elif hasattr(source, "output") and source.output and hasattr(source.output, "raw"):
                 content = source.output.raw
             else:
                 content = None
             if content and content.strip():
                 outfile = output_path(output_dir, filename)
-                with open(outfile, 'w') as f:
+                with open(outfile, "w") as f:
                     f.write(content)
                 logger.info(f"  Saved {filename} ({len(content)} chars)")
         except Exception as e:
@@ -2054,7 +2167,7 @@ def _run_audio_pipeline(script_text, output_dir, language_config):
     logger.info("\n--- Generating Multi-Voice Podcast Audio (Kokoro TTS) ---")
     cleaned_script = clean_script_for_tts(script_text)
     script_file = output_path(output_dir, "script.txt")
-    with open(script_file, 'w') as f:
+    with open(script_file, "w") as f:
         f.write(cleaned_script)
 
     audio_output_path = output_path(output_dir, "audio.wav")
@@ -2063,8 +2176,8 @@ def _run_audio_pipeline(script_text, output_dir, language_config):
 
     try:
         tts_result = generate_audio_from_script(
-            cleaned_script, str(audio_output_path),
-            lang_code=language_config['tts_code'])
+            cleaned_script, str(audio_output_path), lang_code=language_config["tts_code"]
+        )
         if isinstance(tts_result, tuple):
             audio_file_path, transition_positions = tts_result
         else:
@@ -2075,6 +2188,7 @@ def _run_audio_pipeline(script_text, output_dir, language_config):
     except Exception as e:
         logger.error(f"\u2717 ERROR: Kokoro TTS failed with exception: {e}")
         import traceback
+
         traceback.print_exc()
         return None, None
 
@@ -2082,8 +2196,8 @@ def _run_audio_pipeline(script_text, output_dir, language_config):
         logger.info(f"Starting BGM Merging Phase...")
         try:
             mastered = post_process_audio(
-                str(audio_file), bgm_target="Interesting BGM.wav",
-                transition_positions_ms=transition_positions)
+                str(audio_file), bgm_target="Interesting BGM.wav", transition_positions_ms=transition_positions
+            )
             if mastered and os.path.exists(mastered) and mastered != str(audio_file):
                 audio_file = Path(mastered)
                 logger.info(f"\u2713 BGM Merging Complete: {audio_file}")
@@ -2091,7 +2205,7 @@ def _run_audio_pipeline(script_text, output_dir, language_config):
             logger.warning(f"\u26a0 BGM merging warning: {e}")
 
         try:
-            with wave.open(str(audio_file), 'r') as wav:
+            with wave.open(str(audio_file), "r") as wav:
                 frames = wav.getnframes()
                 rate = wav.getframerate()
                 duration_seconds = frames / float(rate)
@@ -2103,9 +2217,20 @@ def _run_audio_pipeline(script_text, output_dir, language_config):
     return audio_file, duration_minutes
 
 
-def _translate_and_inject_sot(sot_content, language, language_config, topic_name,
-                              output_dir, sot_path, sot_summary, grade_injection,
-                              blueprint_task, script_task, audit_task, translation_task):
+def _translate_and_inject_sot(
+    sot_content,
+    language,
+    language_config,
+    topic_name,
+    output_dir,
+    sot_path,
+    sot_summary,
+    grade_injection,
+    blueprint_task,
+    script_task,
+    audit_task,
+    translation_task,
+):
     """Translate SOT and inject summary into Crew 3 task descriptions.
 
     Returns (translated_sot_text, sot_translated_file, translated_summary).
@@ -2117,15 +2242,14 @@ def _translate_and_inject_sot(sot_content, language, language_config, topic_name
 
     if translated_sot:
         sot_translated_file = output_path(output_dir, f"source_of_truth_{language}.md")
-        with open(sot_translated_file, 'w', encoding='utf-8') as f:
+        with open(sot_translated_file, "w", encoding="utf-8") as f:
             f.write(translated_sot)
         logger.info(f"\u2713 Translated SOT saved ({len(translated_sot)} chars)")
         logger.info("  Summarizing translated SOT for Crew 3 context injection...")
         translated_summary = summarize_report_with_fast_model(translated_sot, "sot_translated", topic_name)
         if translated_summary:
             tl_injection = _build_sot_injection_for_stage(
-                1, sot_path, sot_translated_file,
-                sot_summary, translated_summary, grade_injection, language_config
+                1, sot_path, sot_translated_file, sot_summary, translated_summary, grade_injection, language_config
             )
             blueprint_task.description += tl_injection
             script_task.description += tl_injection
@@ -2133,11 +2257,14 @@ def _translate_and_inject_sot(sot_content, language, language_config, topic_name
         # CRITICAL: compact reference only — full 84KB SOT as context causes 27K+ tokens
         # → CrewAI context overflow → infinite summarizer loop (observed: 36 cycles, 9.6h wasted)
         from types import SimpleNamespace
-        translation_task.output = SimpleNamespace(raw=(
-            f"[Translation complete \u2014 {len(translated_sot):,} chars]\n"
-            f"Translated SOT saved: {sot_translated_file}\n"
-            f"Key research summary injected into task descriptions."
-        ))
+
+        translation_task.output = SimpleNamespace(
+            raw=(
+                f"[Translation complete \u2014 {len(translated_sot):,} chars]\n"
+                f"Translated SOT saved: {sot_translated_file}\n"
+                f"Key research summary injected into task descriptions."
+            )
+        )
     else:
         logger.warning(f"  Warning: Chunked translation produced no output \u2014 translated SOT not saved")
 
@@ -2149,10 +2276,11 @@ def _translate_and_inject_sot(sot_content, language, language_config, topic_name
 # Called by pipeline_flow.py tasks that need module-level context.
 # ================================================================
 
+
 def _save_session_metadata(output_dir, topic_name, language, language_config, session_roles):
     """Write session_metadata.txt to the run directory."""
     session_metadata = (
-        f"PODCAST SESSION METADATA\n{'='*60}\n\n"
+        f"PODCAST SESSION METADATA\n{'=' * 60}\n\n"
         f"Topic: {topic_name}\n\n"
         f"Language: {language_config['name']} ({language})\n\n"
         f"Role Assignments:\n"
@@ -2160,7 +2288,7 @@ def _save_session_metadata(output_dir, topic_name, language, language_config, se
         f"  {session_roles['questioner']['label']}: Questioner ({session_roles['questioner']['personality']})\n"
     )
     metadata_file = output_path(output_dir, "session_metadata.txt")
-    with open(metadata_file, 'w') as f:
+    with open(metadata_file, "w") as f:
         f.write(session_metadata)
     logger.info("Session metadata: %s", metadata_file)
 
@@ -2186,8 +2314,9 @@ def _build_grade_injection(output_dir_path, research_domain, deep_reports_dict):
     _grade_injection = ""
     if research_domain == "social_science":
         _eq_m = re.search(
-            r'Final\s+Evidence\s+Quality[:\s]*\*{0,2}(STRONG|MODERATE_STRONG|MODERATE_WEAK|MODERATE|WEAK|VERY_WEAK)\*{0,2}',
-            _audit_text, re.IGNORECASE,
+            r"Final\s+Evidence\s+Quality[:\s]*\*{0,2}(STRONG|MODERATE_STRONG|MODERATE_WEAK|MODERATE|WEAK|VERY_WEAK)\*{0,2}",
+            _audit_text,
+            re.IGNORECASE,
         )
         _eq_level = _eq_m.group(1).strip().upper() if _eq_m else "Not Determined"
         _grade_injection = f"\n\nEVIDENCE QUALITY LEVEL: {_eq_level}\n"
@@ -2198,8 +2327,9 @@ def _build_grade_injection(output_dir_path, research_domain, deep_reports_dict):
         _grade_injection += "- VERY_WEAK → 'Limited evidence hints at...'\n"
     else:
         _grade_m = re.search(
-            r'Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}',
-            _audit_text, re.IGNORECASE,
+            r"Final\s+(?:GRADE|Grade)[:\s]*\*{0,2}(High|Moderate|Low|Very\s+Low)\*{0,2}",
+            _audit_text,
+            re.IGNORECASE,
         )
         _grade_level = _grade_m.group(1).strip() if _grade_m else "Not Determined"
         _grade_injection = f"\n\nGRADE EVIDENCE LEVEL: {_grade_level}\n"
@@ -2232,13 +2362,13 @@ if __name__ == "__main__":
             print(f"ERROR: No {CHECKPOINT_FILE} or meta/session_metadata.txt found in {_resume_dir}")
             sys.exit(1)
         output_dir = _resume_dir
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print(f"RESUME MODE: Resuming from {_resume_dir.name}")
         completed = _resume_checkpoint.get("completed_phases")
         print(f"  Completed phases: {completed if completed is not None else 'tracked by Prefect cache'}")
         print(f"  Topic: {_resume_checkpoint['topic']}")
         print(f"  Last checkpoint: {_resume_checkpoint.get('timestamp') or 'n/a'}")
-        print(f"{'='*70}\n")
+        print(f"{'=' * 70}\n")
     else:
         output_dir = create_timestamped_output_dir(base_output_dir)
         logger.info(f"[OUTPUT_DIR] {output_dir}")
@@ -2256,16 +2386,16 @@ if __name__ == "__main__":
     language = get_language(args)
     language_config = SUPPORTED_LANGUAGES[language]
     english_instruction = "Write all content in English."
-    target_instruction = language_config['instruction']
-    language_instruction = language_config['instruction']
+    target_instruction = language_config["instruction"]
+    language_instruction = language_config["instruction"]
 
     length_mode = os.getenv("PODCAST_LENGTH", "long").lower()
-    _speech_rate = language_config['speech_rate']
-    _target_min = TARGET_MINUTES.get(length_mode, TARGET_MINUTES['long'])
+    _speech_rate = language_config["speech_rate"]
+    _target_min = TARGET_MINUTES.get(length_mode, TARGET_MINUTES["long"])
     target_length_int = _target_min * _speech_rate
     target_script = f"{target_length_int:,}"
-    target_unit_singular = language_config['prompt_unit']
-    target_unit_plural = language_config['length_unit']
+    target_unit_singular = language_config["prompt_unit"]
+    target_unit_plural = language_config["length_unit"]
     duration_label = f"{length_mode.capitalize()} ({_target_min} min)"
 
     channel_intro = os.getenv("PODCAST_CHANNEL_INTRO", "").strip()
@@ -2285,22 +2415,32 @@ if __name__ == "__main__":
     final_model_string = get_final_model_string()
 
     dgx_llm_strict = LLM(
-        model=final_model_string, base_url=SMART_BASE_URL, api_key="NA",
-        provider="openai", timeout=600, temperature=0.1, max_tokens=8000,
+        model=final_model_string,
+        base_url=SMART_BASE_URL,
+        api_key="NA",
+        provider="openai",
+        timeout=600,
+        temperature=0.1,
+        max_tokens=8000,
         stop=["<|im_end|>", "<|endoftext|>"],
         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
     dgx_llm_creative = LLM(
-        model=final_model_string, base_url=SMART_BASE_URL, api_key="NA",
-        provider="openai", timeout=600, temperature=0.7, max_tokens=16000,
-        frequency_penalty=0.15, stop=["<|im_end|>", "<|endoftext|>"],
+        model=final_model_string,
+        base_url=SMART_BASE_URL,
+        api_key="NA",
+        provider="openai",
+        timeout=600,
+        temperature=0.7,
+        max_tokens=16000,
+        frequency_penalty=0.15,
+        stop=["<|im_end|>", "<|endoftext|>"],
         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
 
     # Construct all Agent/Task objects with correct runtime values
     logger.info(f"Podcast Length Mode: {duration_label}")
     _create_agents_and_tasks()
-
 
     # ================================================================
     # REUSE MODE BRANCHING
@@ -2310,9 +2450,9 @@ if __name__ == "__main__":
 
     if args.reuse_dir:
         reuse_dir = Path(args.reuse_dir)
-        logger.info(f"\n{'='*70}")
+        logger.info(f"\n{'=' * 70}")
         logger.info(f"REUSE MODE: Reusing research from {reuse_dir.name}")
-        logger.info(f"{'='*70}")
+        logger.info(f"{'=' * 70}")
 
         if args.crew3_only:
             # --- CREW 3 ONLY: Skip research, run podcast production ---
@@ -2329,8 +2469,12 @@ if __name__ == "__main__":
             _copy_research_artifacts(reuse_dir, new_output_dir)
 
             # Warn about missing critical clinical artifacts
-            _critical_artifacts = ["grade_synthesis.md", "affirmative_case.md",
-                                   "falsification_case.md", "research_sources.json"]
+            _critical_artifacts = [
+                "grade_synthesis.md",
+                "affirmative_case.md",
+                "falsification_case.md",
+                "research_sources.json",
+            ]
             for _art in _critical_artifacts:
                 if not output_path(new_output_dir, _art).exists():
                     logger.warning(f"  ⚠ Missing clinical artifact '{_art}' — pipeline will rely on SOT content only")
@@ -2356,8 +2500,8 @@ if __name__ == "__main__":
 
             # Update task output_file paths to new dir
             for task_obj in [audit_task, blueprint_task]:
-                if hasattr(task_obj, '_original_output_file') or hasattr(task_obj, 'output_file'):
-                    old_path = getattr(task_obj, 'output_file', '')
+                if hasattr(task_obj, "_original_output_file") or hasattr(task_obj, "output_file"):
+                    old_path = getattr(task_obj, "output_file", "")
                     if old_path:
                         filename = Path(old_path).name
                         task_obj.output_file = str(output_path(new_output_dir, filename))
@@ -2370,18 +2514,25 @@ if __name__ == "__main__":
             if translation_task is not None and sot_content:
                 # Check for pre-translated SoT on disk (from template build)
                 _r_ja_path = output_path(new_output_dir, f"source_of_truth_{language}.md")
-                if language != 'en' and _r_ja_path.exists():
+                if language != "en" and _r_ja_path.exists():
                     _r_translated = _r_ja_path.read_text()
                     _r_sot_translated_file = _r_ja_path
-                    _r_tl_summary = summarize_report_with_fast_model(
-                        _r_translated, "sot_translated", topic_name)
+                    _r_tl_summary = summarize_report_with_fast_model(_r_translated, "sot_translated", topic_name)
                     logger.info("\u2713 Reuse: using existing template-built %s SoT", language.upper())
                 else:
                     _r_translated, _r_sot_translated_file, _r_tl_summary = _translate_and_inject_sot(
-                        sot_content, language, language_config, topic_name,
-                        new_output_dir, sot_path,
-                        _truncate_at_boundary(sot_content, 8000), "",
-                        blueprint_task, script_task, audit_task, translation_task
+                        sot_content,
+                        language,
+                        language_config,
+                        topic_name,
+                        new_output_dir,
+                        sot_path,
+                        _truncate_at_boundary(sot_content, 8000),
+                        "",
+                        blueprint_task,
+                        script_task,
+                        audit_task,
+                        translation_task,
                     )
                 if _r_sot_translated_file:
                     sot_translated_file = _r_sot_translated_file
@@ -2393,8 +2544,10 @@ if __name__ == "__main__":
             _reuse_polish_expected = polish_task.expected_output
 
             # Fix 10: runtime prompt translation removed — templates are pre-translated
-            if language != 'en':
-                logger.info(f"\n  Crew 3 task prompts: using pre-translated {language_config['name']} templates (no runtime translation)")
+            if language != "en":
+                logger.info(
+                    f"\n  Crew 3 task prompts: using pre-translated {language_config['name']} templates (no runtime translation)"
+                )
 
             _REUSE_MAX_ATTEMPTS = 3
 
@@ -2402,10 +2555,16 @@ if __name__ == "__main__":
             logger.info(f"\n  PHASE 4: EPISODE BLUEPRINT")
             _crew_kickoff_guarded(
                 lambda: Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True),
-                blueprint_task, translation_task, language,
-                sot_path, _r_sot_translated_file,
-                _truncate_at_boundary(sot_content, 8000), _r_tl_summary,
-                "", language_config, "Phase 4 Blueprint"
+                blueprint_task,
+                translation_task,
+                language,
+                sot_path,
+                _r_sot_translated_file,
+                _truncate_at_boundary(sot_content, 8000),
+                _r_tl_summary,
+                "",
+                language_config,
+                "Phase 4 Blueprint",
             )
 
             # Parse blueprint inventory for sectional draft
@@ -2415,46 +2574,70 @@ if __name__ == "__main__":
             # Phase 5: Script Draft (Sectional)
             logger.info(f"\n  PHASE 5: SCRIPT DRAFT (SECTIONAL)")
             _r_draft_text, _r_draft_count = _run_sectional_draft(
-                _r_inventory, target_length_int, language_config, sot_content,
-                SESSION_ROLES, topic_name, target_instruction, channel_intro,
-                _call_smart_model=_call_smart_model, target_min=_target_min)
+                _r_inventory,
+                target_length_int,
+                language_config,
+                sot_content,
+                SESSION_ROLES,
+                topic_name,
+                target_instruction,
+                channel_intro,
+                _call_smart_model=_call_smart_model,
+                target_min=_target_min,
+            )
+
             # Set script_task.output for polish loop
             class _FakeOutput:
                 def __init__(self, raw):
                     self.raw = raw
+
             script_task.output = _FakeOutput(_r_draft_text)
 
             # Phase 6: Script Polish
             logger.info(f"\n  PHASE 6: SCRIPT POLISH (audit loop)")
             _r_polished, polish_task = _run_polish_loop(
-                _r_draft_text, _r_draft_count, _r_inventory, target_length_int,
-                language_config, sot_content, script_task, polish_task,
-                editor_agent, translation_task, _reuse_polish_base_desc,
-                _reuse_polish_expected, _REUSE_MAX_ATTEMPTS,
-                session_roles=SESSION_ROLES, topic_name=topic_name,
-                target_instruction=target_instruction)
+                _r_draft_text,
+                _r_draft_count,
+                _r_inventory,
+                target_length_int,
+                language_config,
+                sot_content,
+                script_task,
+                polish_task,
+                editor_agent,
+                translation_task,
+                _reuse_polish_base_desc,
+                _reuse_polish_expected,
+                _REUSE_MAX_ATTEMPTS,
+                session_roles=SESSION_ROLES,
+                topic_name=topic_name,
+                target_instruction=target_instruction,
+            )
 
             # Phase 7: Accuracy Audit + enforcement (correct FAIL/HIGH/fabrication before audio)
             _run_accuracy_audit(audit_task, polish_task, auditor_agent, translation_task)
-            _r_audit = audit_task.output.raw if hasattr(audit_task, 'output') and audit_task.output else ""
+            _r_audit = audit_task.output.raw if hasattr(audit_task, "output") and audit_task.output else ""
             _r_corrected = _enforce_audit(_r_audit, _r_polished, sot_content, language, language_config, new_output_dir)
 
             # Finalize script (language audit, reaction guidance, save script_final.md)
             logger.info("\n--- Saving Outputs ---")
             script_text = _finalize_script(
-                _r_polished, polish_task, language, language_config, new_output_dir,
-                corrected_text=_r_corrected)
+                _r_polished, polish_task, language, language_config, new_output_dir, corrected_text=_r_corrected
+            )
 
-            _save_task_outputs(new_output_dir, [
-                ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
-                ("Episode Blueprint", blueprint_task, "EPISODE_BLUEPRINT.md"),
-                ("Script Draft", script_task, "script_draft.md"),
-                ("Accuracy Audit", audit_task, "accuracy_audit.md"),
-            ])
+            _save_task_outputs(
+                new_output_dir,
+                [
+                    ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
+                    ("Episode Blueprint", blueprint_task, "EPISODE_BLUEPRINT.md"),
+                    ("Script Draft", script_task, "script_draft.md"),
+                    ("Accuracy Audit", audit_task, "accuracy_audit.md"),
+                ],
+            )
 
             # Generate PDF for accuracy audit
             try:
-                acc_content = audit_task.output.raw if hasattr(audit_task, 'output') and audit_task.output else ""
+                acc_content = audit_task.output.raw if hasattr(audit_task, "output") and audit_task.output else ""
                 if acc_content:
                     create_pdf("Accuracy Audit", acc_content, "accuracy_audit.pdf")
             except Exception:
@@ -2465,19 +2648,20 @@ if __name__ == "__main__":
 
             # Session metadata
             session_metadata = (
-                f"PODCAST SESSION METADATA (REUSE: crew3_only)\n{'='*60}\n\n"
+                f"PODCAST SESSION METADATA (REUSE: crew3_only)\n{'=' * 60}\n\n"
                 f"Topic: {topic_name}\n"
                 f"Language: {language_config['name']} ({language})\n"
                 f"Reused from: {reuse_dir}\n"
             )
-            with open(output_path(new_output_dir, "session_metadata.txt"), 'w') as f:
+            with open(output_path(new_output_dir, "session_metadata.txt"), "w") as f:
                 f.write(session_metadata)
 
-            logger.info(f"\n{'='*70}")
+            logger.info(f"\n{'=' * 70}")
             logger.info("REUSE_COMPLETE: CREW3_ONLY")
-            logger.info(f"{'='*70}")
+            logger.info(f"{'=' * 70}")
             # This branch exits before the normal-path eval below — evaluate here
             from dr2_podcast.evaluation import run_self_evaluation
+
             run_self_evaluation(new_output_dir)
             sys.exit(0)
 
@@ -2489,7 +2673,7 @@ if __name__ == "__main__":
             logger.info(f"  Needs supplement: {result['needs_supplement']}")
             logger.info(f"  Reason: {result['reason']}")
 
-            if not result['needs_supplement']:
+            if not result["needs_supplement"]:
                 # Full reuse — copy everything
                 new_output_dir = create_timestamped_output_dir(base_output_dir)
                 logger.info(f"[OUTPUT_DIR] {new_output_dir}")
@@ -2498,20 +2682,21 @@ if __name__ == "__main__":
 
                 # Session metadata
                 session_metadata = (
-                    f"PODCAST SESSION METADATA (REUSE: full_reuse)\n{'='*60}\n\n"
+                    f"PODCAST SESSION METADATA (REUSE: full_reuse)\n{'=' * 60}\n\n"
                     f"Topic: {topic_name}\n"
                     f"Language: {language_config['name']} ({language})\n"
                     f"Reused from: {reuse_dir}\n"
                     f"Reason: {result['reason']}\n"
                 )
-                with open(output_path(new_output_dir, "session_metadata.txt"), 'w') as f:
+                with open(output_path(new_output_dir, "session_metadata.txt"), "w") as f:
                     f.write(session_metadata)
 
-                logger.info(f"\n{'='*70}")
+                logger.info(f"\n{'=' * 70}")
                 logger.info("REUSE_COMPLETE: NO_CHANGES")
-                logger.info(f"{'='*70}")
+                logger.info(f"{'=' * 70}")
                 # This branch exits before the normal-path eval below — evaluate here
                 from dr2_podcast.evaluation import run_self_evaluation
+
                 run_self_evaluation(new_output_dir)
                 sys.exit(0)
 
@@ -2527,11 +2712,11 @@ if __name__ == "__main__":
 
                 # Run supplemental research with BraveSearch
                 supp_text = ""
-                if result['queries']:
+                if result["queries"]:
                     brave_api_key = os.getenv("BRAVE_API_KEY", "")
                     if brave_api_key:
                         supp_parts = []
-                        for q in result['queries']:
+                        for q in result["queries"]:
                             query_str = q.get("query", q) if isinstance(q, dict) else str(q)
                             try:
                                 resp = httpx.get(
@@ -2543,7 +2728,9 @@ if __name__ == "__main__":
                                 if resp.status_code == 200:
                                     results = resp.json().get("web", {}).get("results", [])
                                     for r in results:
-                                        supp_parts.append(f"### {r.get('title', 'N/A')}\nURL: {r.get('url', '')}\n{r.get('description', '')}")
+                                        supp_parts.append(
+                                            f"### {r.get('title', 'N/A')}\nURL: {r.get('url', '')}\n{r.get('description', '')}"
+                                        )
                             except Exception as e:
                                 logger.warning(f"  Supplemental search failed for '{query_str}': {e}")
                         supp_text = "\n\n".join(supp_parts)
@@ -2562,11 +2749,8 @@ if __name__ == "__main__":
 
                 # Append supplemental findings to SOT
                 if supp_text:
-                    sot_content += (
-                        f"\n\n## Supplemental Research Findings\n\n"
-                        f"{supp_text}\n"
-                    )
-                    with open(output_path(new_output_dir, "source_of_truth.md"), 'w') as f:
+                    sot_content += f"\n\n## Supplemental Research Findings\n\n{supp_text}\n"
+                    with open(output_path(new_output_dir, "source_of_truth.md"), "w") as f:
                         f.write(sot_content)
                     logger.info(f"  Updated source_of_truth.md with supplemental findings ({len(sot_content)} chars)")
 
@@ -2582,7 +2766,7 @@ if __name__ == "__main__":
 
                 # Update output_file paths
                 for task_obj in [audit_task, blueprint_task]:
-                    old_path = getattr(task_obj, 'output_file', '')
+                    old_path = getattr(task_obj, "output_file", "")
                     if old_path:
                         filename = Path(old_path).name
                         task_obj.output_file = str(output_path(new_output_dir, filename))
@@ -2595,18 +2779,25 @@ if __name__ == "__main__":
                 if translation_task is not None and sot_content:
                     # Check for pre-translated SoT on disk (from template build)
                     _s_ja_path = output_path(new_output_dir, f"source_of_truth_{language}.md")
-                    if language != 'en' and _s_ja_path.exists():
+                    if language != "en" and _s_ja_path.exists():
                         _s_translated = _s_ja_path.read_text()
                         _s_sot_translated_file = _s_ja_path
-                        _s_tl_summary = summarize_report_with_fast_model(
-                            _s_translated, "sot_translated", topic_name)
+                        _s_tl_summary = summarize_report_with_fast_model(_s_translated, "sot_translated", topic_name)
                         logger.info("\u2713 Supplemental: using existing template-built %s SoT", language.upper())
                     else:
                         _s_translated, _s_sot_translated_file, _s_tl_summary = _translate_and_inject_sot(
-                            sot_content, language, language_config, topic_name,
-                            new_output_dir, sot_path,
-                            _truncate_at_boundary(sot_content, 8000), "",
-                            blueprint_task, script_task, audit_task, translation_task
+                            sot_content,
+                            language,
+                            language_config,
+                            topic_name,
+                            new_output_dir,
+                            sot_path,
+                            _truncate_at_boundary(sot_content, 8000),
+                            "",
+                            blueprint_task,
+                            script_task,
+                            audit_task,
+                            translation_task,
                         )
                     if _s_sot_translated_file:
                         sot_translated_file = _s_sot_translated_file
@@ -2618,8 +2809,10 @@ if __name__ == "__main__":
                 _supp_polish_expected = polish_task.expected_output
 
                 # Fix 10: runtime prompt translation removed — templates are pre-translated
-                if language != 'en':
-                    logger.info(f"\n  Crew 3 task prompts: using pre-translated {language_config['name']} templates (no runtime translation)")
+                if language != "en":
+                    logger.info(
+                        f"\n  Crew 3 task prompts: using pre-translated {language_config['name']} templates (no runtime translation)"
+                    )
 
                 _SUPP_MAX_ATTEMPTS = 3
 
@@ -2627,10 +2820,16 @@ if __name__ == "__main__":
                 logger.info(f"\n  PHASE 4: EPISODE BLUEPRINT")
                 _crew_kickoff_guarded(
                     lambda: Crew(agents=[producer_agent], tasks=[blueprint_task], verbose=True),
-                    blueprint_task, translation_task, language,
-                    sot_path, _s_sot_translated_file,
-                    _truncate_at_boundary(sot_content, 8000), _s_tl_summary,
-                    "", language_config, "Phase 4 Blueprint"
+                    blueprint_task,
+                    translation_task,
+                    language,
+                    sot_path,
+                    _s_sot_translated_file,
+                    _truncate_at_boundary(sot_content, 8000),
+                    _s_tl_summary,
+                    "",
+                    language_config,
+                    "Phase 4 Blueprint",
                 )
 
                 # Parse blueprint inventory for sectional draft
@@ -2640,62 +2839,89 @@ if __name__ == "__main__":
                 # Phase 5: Script Draft (Sectional)
                 logger.info(f"\n  PHASE 5: SCRIPT DRAFT (SECTIONAL)")
                 _s_draft_text, _s_draft_count = _run_sectional_draft(
-                    _s_inventory, target_length_int, language_config, sot_content,
-                    SESSION_ROLES, topic_name, target_instruction, channel_intro,
-                    _call_smart_model=_call_smart_model, target_min=_target_min)
+                    _s_inventory,
+                    target_length_int,
+                    language_config,
+                    sot_content,
+                    SESSION_ROLES,
+                    topic_name,
+                    target_instruction,
+                    channel_intro,
+                    _call_smart_model=_call_smart_model,
+                    target_min=_target_min,
+                )
+
                 # Set script_task.output for polish loop
                 class _FakeOutput:
                     def __init__(self, raw):
                         self.raw = raw
+
                 script_task.output = _FakeOutput(_s_draft_text)
 
                 # Phase 6: Script Polish
                 logger.info(f"\n  PHASE 6: SCRIPT POLISH (audit loop)")
                 _s_polished, polish_task = _run_polish_loop(
-                    _s_draft_text, _s_draft_count, _s_inventory, target_length_int,
-                    language_config, sot_content, script_task, polish_task,
-                    editor_agent, translation_task, _supp_polish_base_desc,
-                    _supp_polish_expected, _SUPP_MAX_ATTEMPTS,
-                    session_roles=SESSION_ROLES, topic_name=topic_name,
-                    target_instruction=target_instruction)
+                    _s_draft_text,
+                    _s_draft_count,
+                    _s_inventory,
+                    target_length_int,
+                    language_config,
+                    sot_content,
+                    script_task,
+                    polish_task,
+                    editor_agent,
+                    translation_task,
+                    _supp_polish_base_desc,
+                    _supp_polish_expected,
+                    _SUPP_MAX_ATTEMPTS,
+                    session_roles=SESSION_ROLES,
+                    topic_name=topic_name,
+                    target_instruction=target_instruction,
+                )
 
                 # Phase 7: Accuracy Audit + enforcement (correct FAIL/HIGH/fabrication before audio)
                 _run_accuracy_audit(audit_task, polish_task, auditor_agent, translation_task)
-                _s_audit = audit_task.output.raw if hasattr(audit_task, 'output') and audit_task.output else ""
-                _s_corrected = _enforce_audit(_s_audit, _s_polished, sot_content, language, language_config, new_output_dir)
+                _s_audit = audit_task.output.raw if hasattr(audit_task, "output") and audit_task.output else ""
+                _s_corrected = _enforce_audit(
+                    _s_audit, _s_polished, sot_content, language, language_config, new_output_dir
+                )
 
                 # Finalize script (language audit, reaction guidance, save script_final.md)
                 logger.info("\n--- Saving Outputs ---")
                 script_text = _finalize_script(
-                    _s_polished, polish_task, language, language_config, new_output_dir,
-                    corrected_text=_s_corrected)
+                    _s_polished, polish_task, language, language_config, new_output_dir, corrected_text=_s_corrected
+                )
 
-                _save_task_outputs(new_output_dir, [
-                    ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
-                    ("Episode Blueprint", blueprint_task, "EPISODE_BLUEPRINT.md"),
-                    ("Script Draft", script_task, "script_draft.md"),
-                    ("Accuracy Audit", audit_task, "accuracy_audit.md"),
-                ])
+                _save_task_outputs(
+                    new_output_dir,
+                    [
+                        ("Source of Truth (Translated)", translation_task, "source_of_truth.md"),
+                        ("Episode Blueprint", blueprint_task, "EPISODE_BLUEPRINT.md"),
+                        ("Script Draft", script_task, "script_draft.md"),
+                        ("Accuracy Audit", audit_task, "accuracy_audit.md"),
+                    ],
+                )
 
                 # TTS + BGM
                 _run_audio_pipeline(script_text, new_output_dir, language_config)
 
                 # Session metadata
                 session_metadata = (
-                    f"PODCAST SESSION METADATA (REUSE: supplemental)\n{'='*60}\n\n"
+                    f"PODCAST SESSION METADATA (REUSE: supplemental)\n{'=' * 60}\n\n"
                     f"Topic: {topic_name}\n"
                     f"Language: {language_config['name']} ({language})\n"
                     f"Reused from: {reuse_dir}\n"
                     f"Supplemental reason: {result['reason'] if isinstance(result, dict) else 'N/A'}\n"
                 )
-                with open(output_path(new_output_dir, "session_metadata.txt"), 'w') as f:
+                with open(output_path(new_output_dir, "session_metadata.txt"), "w") as f:
                     f.write(session_metadata)
 
-                logger.info(f"\n{'='*70}")
+                logger.info(f"\n{'=' * 70}")
                 logger.info("REUSE_COMPLETE: SUPPLEMENTAL")
-                logger.info(f"{'='*70}")
+                logger.info(f"{'=' * 70}")
                 # This branch exits before the normal-path eval below — evaluate here
                 from dr2_podcast.evaluation import run_self_evaluation
+
                 run_self_evaluation(new_output_dir)
                 sys.exit(0)
 
@@ -2756,4 +2982,5 @@ if __name__ == "__main__":
 
     # --- Self-evaluation loop (non-blocking) ---
     from dr2_podcast.evaluation import run_self_evaluation
+
     run_self_evaluation(output_dir)

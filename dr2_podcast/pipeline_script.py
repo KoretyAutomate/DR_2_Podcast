@@ -17,8 +17,7 @@ logger = logging.getLogger(__name__)
 SCRIPT_TOLERANCE = 0.10  # +/-10% around target length is acceptable
 
 
-def _add_reaction_guidance(script_text: str, language_config: dict,
-                           *, _call_smart_model) -> str:
+def _add_reaction_guidance(script_text: str, language_config: dict, *, _call_smart_model) -> str:
     """Insert ## [emotion, delivery cue] lines before key Host dialogue lines.
 
     Uses a two-phase approach:
@@ -56,10 +55,10 @@ def _add_reaction_guidance(script_text: str, language_config: dict,
 
     try:
         # Extract Host lines with their original line indices
-        all_lines = script_text.split('\n')
+        all_lines = script_text.split("\n")
         host_entries = []  # (original_line_index, line_text)
         for i, line in enumerate(all_lines):
-            if re.match(r'^\*{0,2}(?:Host\s+|ホスト\s*)\d\s*\*{0,2}\s*[:：]', line):
+            if re.match(r"^\*{0,2}(?:Host\s+|ホスト\s*)\d\s*\*{0,2}\s*[:：]", line):
                 host_entries.append((i, line))
 
         if not host_entries:
@@ -78,8 +77,7 @@ def _add_reaction_guidance(script_text: str, language_config: dict,
         user_prompt = (
             f"Generate emotion/delivery annotations for these {total_host_lines} "
             f"Host dialogue lines. Annotate approximately {total_host_lines * 2 // 5}-"
-            f"{total_host_lines * 3 // 5} of them (40-60%).\n\n"
-            + "\n".join(numbered_lines)
+            f"{total_host_lines * 3 // 5} of them (40-60%).\n\n" + "\n".join(numbered_lines)
         )
 
         result = _call_smart_model(
@@ -91,7 +89,7 @@ def _add_reaction_guidance(script_text: str, language_config: dict,
 
         # Parse LLM output: extract "NUMBER: [cue]" lines
         annotations = {}  # host_entry_index (1-based) -> cue text
-        for match in re.finditer(r'^(\d+)\s*:\s*(\[.+?\])\s*$', result, re.MULTILINE):
+        for match in re.finditer(r"^(\d+)\s*:\s*(\[.+?\])\s*$", result, re.MULTILINE):
             line_num = int(match.group(1))
             cue = match.group(2)
             if 1 <= line_num <= total_host_lines:
@@ -114,11 +112,15 @@ def _add_reaction_guidance(script_text: str, language_config: dict,
                 result_lines.append(f"## {insert_before[i]}")
             result_lines.append(line)
 
-        result = '\n'.join(result_lines)
+        result = "\n".join(result_lines)
         annotation_rate = len(annotations) / total_host_lines
 
-        logger.info("  Reaction guidance complete -- %d annotations added (%d%% of %d Host lines)",
-              len(annotations), int(annotation_rate * 100), total_host_lines)
+        logger.info(
+            "  Reaction guidance complete -- %d annotations added (%d%% of %d Host lines)",
+            len(annotations),
+            int(annotation_rate * 100),
+            total_host_lines,
+        )
         return result
 
     except Exception as e:
@@ -126,8 +128,7 @@ def _add_reaction_guidance(script_text: str, language_config: dict,
         return script_text
 
 
-def _quick_content_audit(script_text: str, sot_content: str,
-                         *, _call_smart_model, _truncate_at_boundary) -> str:
+def _quick_content_audit(script_text: str, sot_content: str, *, _call_smart_model, _truncate_at_boundary) -> str:
     """Check script for top-3 drift patterns against SOT. Returns issue string or None."""
     sot_excerpt = _truncate_at_boundary(sot_content, 4000)
     script_excerpt = _truncate_at_boundary(script_text, 4000)
@@ -143,10 +144,7 @@ def _quick_content_audit(script_text: str, sot_content: str,
     try:
         result = _call_smart_model(
             system=system,
-            user=(
-                f"SOURCE OF TRUTH (excerpt):\n{sot_excerpt}\n\n"
-                f"PODCAST SCRIPT (excerpt):\n{script_excerpt}"
-            ),
+            user=(f"SOURCE OF TRUTH (excerpt):\n{sot_excerpt}\n\nPODCAST SCRIPT (excerpt):\n{script_excerpt}"),
             max_tokens=200,
             temperature=0.1,
         )
@@ -158,9 +156,17 @@ def _quick_content_audit(script_text: str, sot_content: str,
         return None
 
 
-def _validate_script(script_text: str, target_length: int, tolerance: float,
-                     language_config: dict, sot_content: str, stage: str,
-                     *, _call_smart_model=None, _truncate_at_boundary=None) -> dict:
+def _validate_script(
+    script_text: str,
+    target_length: int,
+    tolerance: float,
+    language_config: dict,
+    sot_content: str,
+    stage: str,
+    *,
+    _call_smart_model=None,
+    _truncate_at_boundary=None,
+) -> dict:
     """
     Validate script for length, structure, repetition, and content accuracy.
     Returns: {'pass': bool, 'feedback': str, 'word_count': int, 'issues': list}
@@ -170,13 +176,15 @@ def _validate_script(script_text: str, target_length: int, tolerance: float,
     # Strip <think> blocks before measuring (Qwen3 safety net)
     script_text = strip_think_blocks(script_text)
 
-    length_unit = language_config['length_unit']
+    length_unit = language_config["length_unit"]
 
     # 1. Measure word/char count
-    if length_unit == 'chars':
-        count = len(re.sub(r'[\s\n\r\t\u3000\uff1a:\u300c\u300d\u3001\u3002\u30fb\uff08\uff09\-\u2014*#]', '', script_text))
+    if length_unit == "chars":
+        count = len(
+            re.sub(r"[\s\n\r\t\u3000\uff1a:\u300c\u300d\u3001\u3002\u30fb\uff08\uff09\-\u2014*#]", "", script_text)
+        )
     else:
-        content_only = re.sub(r'^[A-Za-z0-9_ ]+:\s*', '', script_text, flags=re.MULTILINE)
+        content_only = re.sub(r"^[A-Za-z0-9_ ]+:\s*", "", script_text, flags=re.MULTILINE)
         count = len(content_only.split())
 
     low = int(target_length * (1 - tolerance))
@@ -191,7 +199,7 @@ def _validate_script(script_text: str, target_length: int, tolerance: float,
     words = script_text.lower().split()
     consecutive = 1
     for i in range(1, len(words)):
-        if words[i] == words[i-1] and len(words[i]) > 2:
+        if words[i] == words[i - 1] and len(words[i]) > 2:
             consecutive += 1
             if consecutive >= 4:
                 issues.append(f"DEGENERATE REPETITION: '{words[i]}' repeated {consecutive}+ times consecutively")
@@ -200,43 +208,47 @@ def _validate_script(script_text: str, target_length: int, tolerance: float,
             consecutive = 1
 
     # 3. Structure check (for polish stage)
-    if stage == 'polish':
-        transition_count = script_text.count('[TRANSITION]') + script_text.count('[INTRO_END]')
+    if stage == "polish":
+        transition_count = script_text.count("[TRANSITION]") + script_text.count("[INTRO_END]")
         if transition_count < 3:
             issues.append(f"MISSING TRANSITIONS: only {transition_count} audio markers (need \u22653)")
 
     # 3b. Monologue detection — flag any single Host segment that is too long.
     # Long monologues break conversational flow, reduce reaction-guide coverage,
     # and produce monotone TTS audio.
-    max_segment = 400 if length_unit == 'chars' else 150  # chars for ja, words for en
-    host_re = re.compile(r'^(?:\*{0,2}(?:Host|ホスト)\s*\d\s*\*{0,2}|Speaker\s*\d)\s*[:：]', re.IGNORECASE)
+    max_segment = 400 if length_unit == "chars" else 150  # chars for ja, words for en
+    host_re = re.compile(r"^(?:\*{0,2}(?:Host|ホスト)\s*\d\s*\*{0,2}|Speaker\s*\d)\s*[:：]", re.IGNORECASE)
     current_seg_text = ""
     current_seg_host = ""
-    for sline in script_text.split('\n'):
+    for sline in script_text.split("\n"):
         sline_stripped = sline.strip()
         hm = host_re.match(sline_stripped)
         if hm:
             # Measure previous segment
             if current_seg_text:
-                seg_len = (len(re.sub(r'\s', '', current_seg_text))
-                           if length_unit == 'chars'
-                           else len(current_seg_text.split()))
+                seg_len = (
+                    len(re.sub(r"\s", "", current_seg_text))
+                    if length_unit == "chars"
+                    else len(current_seg_text.split())
+                )
                 if seg_len > max_segment:
                     issues.append(
                         f"MONOLOGUE: {current_seg_host} has a {seg_len}-{length_unit} "
                         f"segment (max {max_segment}). Break into dialogue exchanges."
                     )
                     break  # one warning is enough to trigger a retry
-            current_seg_host = hm.group(0).rstrip(':：').strip()
-            current_seg_text = sline_stripped[hm.end():].strip()
-        elif current_seg_text is not None and sline_stripped and not sline_stripped.startswith(('#', '[', '---')):
+            current_seg_host = hm.group(0).rstrip(":：").strip()
+            current_seg_text = sline_stripped[hm.end() :].strip()
+        elif current_seg_text is not None and sline_stripped and not sline_stripped.startswith(("#", "[", "---")):
             current_seg_text = f"{current_seg_text} {sline_stripped}".strip()
         else:
             # Marker, blank line, or section break — measure and reset
             if current_seg_text:
-                seg_len = (len(re.sub(r'\s', '', current_seg_text))
-                           if length_unit == 'chars'
-                           else len(current_seg_text.split()))
+                seg_len = (
+                    len(re.sub(r"\s", "", current_seg_text))
+                    if length_unit == "chars"
+                    else len(current_seg_text.split())
+                )
                 if seg_len > max_segment:
                     issues.append(
                         f"MONOLOGUE: {current_seg_host} has a {seg_len}-{length_unit} "
@@ -249,28 +261,28 @@ def _validate_script(script_text: str, target_length: int, tolerance: float,
     # 4. LLM content audit (only if Python checks pass -- saves tokens)
     if not issues and sot_content and _call_smart_model and _truncate_at_boundary:
         content_audit = _quick_content_audit(
-            script_text, sot_content,
-            _call_smart_model=_call_smart_model,
-            _truncate_at_boundary=_truncate_at_boundary)
+            script_text, sot_content, _call_smart_model=_call_smart_model, _truncate_at_boundary=_truncate_at_boundary
+        )
         if content_audit:
             issues.append(f"CONTENT: {content_audit}")
 
     return {
-        'pass': len(issues) == 0,
-        'feedback': '\n'.join(f"- {i}" for i in issues) if issues else 'PASS',
-        'word_count': count,
-        'issues': issues
+        "pass": len(issues) == 0,
+        "feedback": "\n".join(f"- {i}" for i in issues) if issues else "PASS",
+        "word_count": count,
+        "issues": issues,
     }
 
 
 # --- SCRIPT HELPERS ---
 
+
 def _count_words(text: str, language_config: dict) -> int:
     """Count words (English) or content characters (Japanese) in text."""
-    if language_config['length_unit'] == 'chars':
-        return len(re.sub(r'[\s\n\r\t\u3000\uff1a:\u300c\u300d\u3001\u3002\u30fb\uff08\uff09\-\u2014*#]', '', text))
+    if language_config["length_unit"] == "chars":
+        return len(re.sub(r"[\s\n\r\t\u3000\uff1a:\u300c\u300d\u3001\u3002\u30fb\uff08\uff09\-\u2014*#]", "", text))
     else:
-        content_only = re.sub(r'^[A-Za-z0-9_ ]+:\s*', '', text, flags=re.MULTILINE)
+        content_only = re.sub(r"^[A-Za-z0-9_ ]+:\s*", "", text, flags=re.MULTILINE)
         return len(content_only.split())
 
 
@@ -281,7 +293,7 @@ def _deduplicate_script(script_text: str, language_config: dict) -> str:
     that appear verbatim more than once. Keeps the first occurrence, removes
     duplicates. Preserves [TRANSITION] markers and ## annotations.
     """
-    lines = script_text.split('\n')
+    lines = script_text.split("\n")
     WINDOW_SIZE = 3  # minimum consecutive lines to detect as a block
 
     # Build set of line-block fingerprints (tuples of WINDOW_SIZE consecutive non-empty lines)
@@ -296,16 +308,18 @@ def _deduplicate_script(script_text: str, language_config: dict) -> str:
     for start in range(len(non_empty) - WINDOW_SIZE + 1):
         block = tuple(non_empty[start + j][1] for j in range(WINDOW_SIZE))
         # Skip blocks that are only markers/annotations
-        if all(l.startswith('[TRANSITION]') or l.startswith('[INTRO_END]') or l.startswith('## [') for l in block):
+        if all(l.startswith("[TRANSITION]") or l.startswith("[INTRO_END]") or l.startswith("## [") for l in block):
             continue
         if block in seen_blocks:
             first_pos = seen_blocks[block]
             # This is a duplicate -- mark for removal
             # But extend: keep scanning forward to find the full repeated span
             span = WINDOW_SIZE
-            while (start + span < len(non_empty)
-                   and first_pos + span < len(non_empty)
-                   and non_empty[start + span][1] == non_empty[first_pos + span][1]):
+            while (
+                start + span < len(non_empty)
+                and first_pos + span < len(non_empty)
+                and non_empty[start + span][1] == non_empty[first_pos + span][1]
+            ):
                 span += 1
             for j in range(span):
                 duplicate_line_indices.add(non_empty[start + j][0])
@@ -333,10 +347,10 @@ def _deduplicate_script(script_text: str, language_config: dict) -> str:
             blank_count = 0
             result_lines.append(line)
 
-    result = '\n'.join(result_lines)
+    result = "\n".join(result_lines)
     removed_count = len(duplicate_line_indices)
     removed_pct = removed_count / len(lines) * 100 if lines else 0
-    length_unit = language_config.get('length_unit', 'chars')
+    length_unit = language_config.get("length_unit", "chars")
     logger.info("  Deduplication: removed %d duplicate lines (%.0f%% of script)", removed_count, removed_pct)
     if removed_pct > 15:
         logger.warning("  Expansion produced %.0f%% duplicate content -- removed", removed_pct)
@@ -355,14 +369,14 @@ def _parse_blueprint_inventory(blueprint_text: str) -> dict:
     """
     # Try Section 5 first (new inline format)
     section_match = re.search(
-        r'(?:^|\n)(?:##\s*5\.?)\s*[^\n]+\n(.*?)(?=\n(?:##\s*\d+)|\Z)',
-        blueprint_text, re.DOTALL | re.IGNORECASE
+        r"(?:^|\n)(?:##\s*5\.?)\s*[^\n]+\n(.*?)(?=\n(?:##\s*\d+)|\Z)", blueprint_text, re.DOTALL | re.IGNORECASE
     )
     if not section_match:
         # Fall back to legacy Section 8
         section_match = re.search(
-            r'(?:^|\n)(?:##\s*8\.?|#8\.?|\*\*8\.\*\*)\s*Discussion Inventory[^\n]*\n(.*?)(?=\n(?:##\s*\d+|#\d+|\*\*\d+\.\*\*)|\Z)',
-            blueprint_text, re.DOTALL | re.IGNORECASE
+            r"(?:^|\n)(?:##\s*8\.?|#8\.?|\*\*8\.\*\*)\s*Discussion Inventory[^\n]*\n(.*?)(?=\n(?:##\s*\d+|#\d+|\*\*\d+\.\*\*)|\Z)",
+            blueprint_text,
+            re.DOTALL | re.IGNORECASE,
         )
     if not section_match:
         logger.warning("  blueprint Section 5/8 absent; coverage checklist skipped")
@@ -371,12 +385,12 @@ def _parse_blueprint_inventory(blueprint_text: str) -> dict:
     section_text = section_match.group(1)
 
     # Split by ### Act N headers
-    act_blocks = re.split(r'\n(?=###\s*Act\s+\d+)', section_text)
+    act_blocks = re.split(r"\n(?=###\s*Act\s+\d+)", section_text)
 
     inventory = {}
     for block in act_blocks:
         # Extract act label from header
-        act_header = re.match(r'###\s*(Act\s+\d+[^\n]*)', block)
+        act_header = re.match(r"###\s*(Act\s+\d+[^\n]*)", block)
         if not act_header:
             continue
         act_label = act_header.group(1).strip()
@@ -385,27 +399,29 @@ def _parse_blueprint_inventory(blueprint_text: str) -> dict:
 
         # Try new format first: - Q: ... \n  A: ... (no tier prefix)
         # Handles both plain (- Q:) and bold markdown (- **Q:**) variants
-        item_matches = list(re.finditer(
-            r'-\s*\*{0,2}Q:\*{0,2}\s*([^\n]+)\n\s*\*{0,2}A:\*{0,2}\s*([^\n]+(?:\n(?!\s*-|\n)[^\n]+)*)',
-            block
-        ))
+        item_matches = list(
+            re.finditer(
+                r"-\s*\*{0,2}Q:\*{0,2}\s*([^\n]+)\n\s*\*{0,2}A:\*{0,2}\s*([^\n]+(?:\n(?!\s*-|\n)[^\n]+)*)", block
+            )
+        )
 
         if item_matches:
             for m in item_matches:
                 question = m.group(1).strip()
                 answer = m.group(2).strip()
-                items.append({'question': question, 'answer': answer})
+                items.append({"question": question, "answer": answer})
         else:
             # Fall back to legacy format: - [Tier] Q: ... \n  A: ...
             # Also handles bold markdown: - [Tier] **Q:** ...
             legacy_matches = re.finditer(
-                r'-\s*\[(Basic|Context|Deep-dive|Unknown)\]\s*\*{0,2}Q:\*{0,2}\s*([^\n]+)\n\s*\*{0,2}A:\*{0,2}\s*([^\n]+(?:\n(?!\s*-|\n)[^\n]+)*)',
-                block, re.IGNORECASE
+                r"-\s*\[(Basic|Context|Deep-dive|Unknown)\]\s*\*{0,2}Q:\*{0,2}\s*([^\n]+)\n\s*\*{0,2}A:\*{0,2}\s*([^\n]+(?:\n(?!\s*-|\n)[^\n]+)*)",
+                block,
+                re.IGNORECASE,
             )
             for m in legacy_matches:
                 question = m.group(2).strip()
                 answer = m.group(3).strip()
-                items.append({'question': question, 'answer': answer})
+                items.append({"question": question, "answer": answer})
 
         if items:
             inventory[act_label] = items
@@ -421,34 +437,33 @@ def _parse_blueprint_inventory(blueprint_text: str) -> dict:
 
 # Percentages only — absolute budgets derived at runtime from target_length_int.
 _SECTION_BUDGET_PCT = {
-    'opening':   0.18,   # Channel Intro + Hook + Act 1
-    'evidence':  0.50,   # Act 2
-    'synthesis': 0.14,   # Act 3
-    'closing':   0.18,   # Act 4 + Wrap-up + One Action
+    "opening": 0.18,  # Channel Intro + Hook + Act 1
+    "evidence": 0.50,  # Act 2
+    "synthesis": 0.14,  # Act 3
+    "closing": 0.18,  # Act 4 + Wrap-up + One Action
 }
 
 # Map inventory act labels to section IDs.
 # Blueprint acts may have varied suffixes ("Act 1 — The Claim", "Act 1", etc.)
 # so we match on the act number.
-_ACT_NUM_TO_SECTION = {1: 'opening', 2: 'evidence', 3: 'synthesis', 4: 'closing'}
+_ACT_NUM_TO_SECTION = {1: "opening", 2: "evidence", 3: "synthesis", 4: "closing"}
 
 _SECTION_PACING = {
-    'opening':   'High energy opening that hooks the listener, then shift to genuine curiosity as Act 1 establishes emotional stakes.',
-    'evidence':  'Alternate between surprise/excitement for new findings and reflective pauses for nuance and limitations. Each study gets its own mini-arc.',
-    'synthesis': 'Measured and thoughtful — connect the dots across all studies. Build toward a clear, grounded takeaway.',
-    'closing':   'Practical urgency — translate science into action. Build momentum toward the One Action ending, then resolve with confidence.',
+    "opening": "High energy opening that hooks the listener, then shift to genuine curiosity as Act 1 establishes emotional stakes.",
+    "evidence": "Alternate between surprise/excitement for new findings and reflective pauses for nuance and limitations. Each study gets its own mini-arc.",
+    "synthesis": "Measured and thoughtful — connect the dots across all studies. Build toward a clear, grounded takeaway.",
+    "closing": "Practical urgency — translate science into action. Build momentum toward the One Action ending, then resolve with confidence.",
 }
 
 _SECTION_ACTS = {
-    'opening':   ['intro', 'hook', 'act1'],
-    'evidence':  ['act2'],
-    'synthesis': ['act3'],
-    'closing':   ['act4', 'wrapup', 'one_action'],
+    "opening": ["intro", "hook", "act1"],
+    "evidence": ["act2"],
+    "synthesis": ["act3"],
+    "closing": ["act4", "wrapup", "one_action"],
 }
 
 
-def _allocate_section_budgets(target_length: int, language_config: dict,
-                              inventory: dict) -> list[dict]:
+def _allocate_section_budgets(target_length: int, language_config: dict, inventory: dict) -> list[dict]:
     """Divide total word/char budget across 4 sections and assign checklist items.
 
     All budgets are derived from percentages × target_length — no hard-coded counts.
@@ -456,19 +471,19 @@ def _allocate_section_budgets(target_length: int, language_config: dict,
     """
     from dr2_podcast.prompt_strings import get_prompt
 
-    length_unit = language_config['length_unit']
-    language = 'ja' if length_unit == 'chars' else 'en'
+    length_unit = language_config["length_unit"]
+    language = "ja" if length_unit == "chars" else "en"
 
     # Build section configs with budgets
     sections = []
-    for section_id in ('opening', 'evidence', 'synthesis', 'closing'):
+    for section_id in ("opening", "evidence", "synthesis", "closing"):
         budget = int(_SECTION_BUDGET_PCT[section_id] * target_length)
 
         # Gather checklist items for this section from the inventory
         checklist_items = []
         for act_label, items in inventory.items():
             # Extract act number from label like "Act 1 — The Claim" or "Act 2"
-            act_num_match = re.search(r'Act\s+(\d+)', act_label, re.IGNORECASE)
+            act_num_match = re.search(r"Act\s+(\d+)", act_label, re.IGNORECASE)
             if act_num_match:
                 act_num = int(act_num_match.group(1))
                 if _ACT_NUM_TO_SECTION.get(act_num) == section_id:
@@ -477,27 +492,33 @@ def _allocate_section_budgets(target_length: int, language_config: dict,
         # Build act instructions from existing SCRIPT_PROMPTS
         act_instructions_parts = []
         for act in _SECTION_ACTS[section_id]:
-            if act in ('intro', 'hook', 'wrapup', 'one_action'):
+            if act in ("intro", "hook", "wrapup", "one_action"):
                 continue  # These are handled in the user prompt directly
             try:
-                act_key = act.replace('act', 'act')  # act1→act1, act2→act2, etc.
-                instr = get_prompt("script", act_key, language,
-                                   act2_min=f"{int(target_length * 0.45):,}",
-                                   target_unit_plural=length_unit,
-                                   core_target_or_default="the listener")
+                act_key = act.replace("act", "act")  # act1→act1, act2→act2, etc.
+                instr = get_prompt(
+                    "script",
+                    act_key,
+                    language,
+                    act2_min=f"{int(target_length * 0.45):,}",
+                    target_unit_plural=length_unit,
+                    core_target_or_default="the listener",
+                )
                 act_instructions_parts.append(instr)
             except (KeyError, TypeError):
                 pass
 
-        sections.append({
-            'section_id': section_id,
-            'acts': _SECTION_ACTS[section_id],
-            'word_budget': budget,
-            'length_unit': length_unit,
-            'checklist_items': checklist_items,
-            'pacing': _SECTION_PACING[section_id],
-            'act_instructions': '\n'.join(act_instructions_parts),
-        })
+        sections.append(
+            {
+                "section_id": section_id,
+                "acts": _SECTION_ACTS[section_id],
+                "word_budget": budget,
+                "length_unit": length_unit,
+                "checklist_items": checklist_items,
+                "pacing": _SECTION_PACING[section_id],
+                "act_instructions": "\n".join(act_instructions_parts),
+            }
+        )
 
     return sections
 
@@ -506,22 +527,28 @@ def _allocate_section_budgets(target_length: int, language_config: dict,
 
 # Map section_id to user prompt key in SECTION_GEN_PROMPTS
 _SECTION_USER_PROMPT_KEY = {
-    'opening':   'user_opening',
-    'evidence':  'user_evidence',
-    'synthesis': 'user_synthesis',
-    'closing':   'user_closing',
+    "opening": "user_opening",
+    "evidence": "user_evidence",
+    "synthesis": "user_synthesis",
+    "closing": "user_closing",
 }
 
 
 _JA_SUBSECTION_THRESHOLD = 3500  # chars — split JA sections above this into sub-calls
-_JA_SUBSECTION_MAX = 3000        # chars — max budget per sub-call
+_JA_SUBSECTION_MAX = 3000  # chars — max budget per sub-call
 
 
-def _generate_section(section_config: dict, previous_lines: list,
-                      *, _call_smart_model, language_config: dict,
-                      session_roles: dict, topic_name: str,
-                      channel_intro: str = '',
-                      target_min: int = 30) -> tuple:
+def _generate_section(
+    section_config: dict,
+    previous_lines: list,
+    *,
+    _call_smart_model,
+    language_config: dict,
+    session_roles: dict,
+    topic_name: str,
+    channel_intro: str = "",
+    target_min: int = 30,
+) -> tuple:
     """Generate one section of the podcast script via LLM call(s).
 
     For JA sections with budget > _JA_SUBSECTION_THRESHOLD, the section is
@@ -541,15 +568,16 @@ def _generate_section(section_config: dict, previous_lines: list,
         (section_text, word_count, deficit) where deficit is the shortfall
         from the budget (0 if at or over budget).
     """
-    section_id = section_config['section_id']
-    budget = section_config['word_budget']
-    length_unit = section_config['length_unit']
-    language = 'ja' if length_unit == 'chars' else 'en'
+    section_id = section_config["section_id"]
+    budget = section_config["word_budget"]
+    length_unit = section_config["length_unit"]
+    language = "ja" if length_unit == "chars" else "en"
 
     # Sub-section large JA sections into smaller calls
-    if length_unit == 'chars' and budget > _JA_SUBSECTION_THRESHOLD:
+    if length_unit == "chars" and budget > _JA_SUBSECTION_THRESHOLD:
         return _generate_section_subsplit(
-            section_config, previous_lines,
+            section_config,
+            previous_lines,
             _call_smart_model=_call_smart_model,
             language_config=language_config,
             session_roles=session_roles,
@@ -559,7 +587,8 @@ def _generate_section(section_config: dict, previous_lines: list,
         )
 
     return _generate_section_single(
-        section_config, previous_lines,
+        section_config,
+        previous_lines,
         _call_smart_model=_call_smart_model,
         language_config=language_config,
         session_roles=session_roles,
@@ -569,17 +598,23 @@ def _generate_section(section_config: dict, previous_lines: list,
     )
 
 
-def _generate_section_subsplit(section_config: dict, previous_lines: list,
-                               *, _call_smart_model, language_config: dict,
-                               session_roles: dict, topic_name: str,
-                               channel_intro: str = '',
-                               target_min: int = 30) -> tuple:
+def _generate_section_subsplit(
+    section_config: dict,
+    previous_lines: list,
+    *,
+    _call_smart_model,
+    language_config: dict,
+    session_roles: dict,
+    topic_name: str,
+    channel_intro: str = "",
+    target_min: int = 30,
+) -> tuple:
     """Split a large JA section into sub-calls and concatenate results."""
     import math
 
-    section_id = section_config['section_id']
-    budget = section_config['word_budget']
-    checklist_items = section_config.get('checklist_items', [])
+    section_id = section_config["section_id"]
+    budget = section_config["word_budget"]
+    checklist_items = section_config.get("checklist_items", [])
 
     # Determine sub-call count and per-call budget
     n_parts = max(2, math.ceil(budget / _JA_SUBSECTION_MAX))
@@ -590,8 +625,7 @@ def _generate_section_subsplit(section_config: dict, previous_lines: list,
     for i, item in enumerate(checklist_items):
         checklist_parts[i % n_parts].append(item)
 
-    logger.info("    Sub-sectioning %s: %d chars → %d parts × %d chars",
-                section_id, budget, n_parts, per_part_budget)
+    logger.info("    Sub-sectioning %s: %d chars → %d parts × %d chars", section_id, budget, n_parts, per_part_budget)
 
     all_texts = []
     running_lines = list(previous_lines)
@@ -604,37 +638,43 @@ def _generate_section_subsplit(section_config: dict, previous_lines: list,
             part_budget = budget - (per_part_budget * (n_parts - 1))
 
         sub_config = dict(section_config)
-        sub_config['word_budget'] = part_budget
-        sub_config['checklist_items'] = checklist_parts[part_idx]
+        sub_config["word_budget"] = part_budget
+        sub_config["checklist_items"] = checklist_parts[part_idx]
 
         sub_text, sub_count, _ = _generate_section_single(
-            sub_config, running_lines,
+            sub_config,
+            running_lines,
             _call_smart_model=_call_smart_model,
             language_config=language_config,
             session_roles=session_roles,
             topic_name=topic_name,
-            channel_intro=channel_intro if part_idx == 0 else '',
+            channel_intro=channel_intro if part_idx == 0 else "",
             target_min=target_min,
         )
 
-        logger.info("    Sub-part %d/%d: %d chars (budget %d)",
-                     part_idx + 1, n_parts, sub_count, part_budget)
+        logger.info("    Sub-part %d/%d: %d chars (budget %d)", part_idx + 1, n_parts, sub_count, part_budget)
 
         all_texts.append(sub_text)
         total_count += sub_count
         # Update continuity for next sub-call
-        running_lines = sub_text.strip().split('\n')
+        running_lines = sub_text.strip().split("\n")
 
-    combined = '\n\n'.join(all_texts)
+    combined = "\n\n".join(all_texts)
     deficit = max(0, budget - total_count)
     return combined, total_count, deficit
 
 
-def _generate_section_single(section_config: dict, previous_lines: list,
-                             *, _call_smart_model, language_config: dict,
-                             session_roles: dict, topic_name: str,
-                             channel_intro: str = '',
-                             target_min: int = 30) -> tuple:
+def _generate_section_single(
+    section_config: dict,
+    previous_lines: list,
+    *,
+    _call_smart_model,
+    language_config: dict,
+    session_roles: dict,
+    topic_name: str,
+    channel_intro: str = "",
+    target_min: int = 30,
+) -> tuple:
     """Generate one section of the podcast script via a single LLM call.
 
     Args:
@@ -652,47 +692,53 @@ def _generate_section_single(section_config: dict, previous_lines: list,
     """
     from dr2_podcast.prompt_strings import get_prompt
 
-    section_id = section_config['section_id']
-    budget = section_config['word_budget']
-    length_unit = section_config['length_unit']
-    language = 'ja' if length_unit == 'chars' else 'en'
+    section_id = section_config["section_id"]
+    budget = section_config["word_budget"]
+    length_unit = section_config["length_unit"]
+    language = "ja" if length_unit == "chars" else "en"
 
-    presenter = session_roles['presenter']['label']
-    questioner = session_roles['questioner']['label']
+    presenter = session_roles["presenter"]["label"]
+    questioner = session_roles["questioner"]["label"]
 
     # Build speakability rule for this language
-    speakability_rule = get_prompt('section_gen', 'speakability_rule', language)
+    speakability_rule = get_prompt("section_gen", "speakability_rule", language)
 
     # Build system prompt
-    system = get_prompt('section_gen', 'system', language,
-                        topic=topic_name,
-                        presenter=presenter,
-                        questioner=questioner,
-                        presenter_personality=session_roles['presenter']['personality'],
-                        questioner_personality=session_roles['questioner']['personality'],
-                        speakability_rule=speakability_rule)
+    system = get_prompt(
+        "section_gen",
+        "system",
+        language,
+        topic=topic_name,
+        presenter=presenter,
+        questioner=questioner,
+        presenter_personality=session_roles["presenter"]["personality"],
+        questioner_personality=session_roles["questioner"]["personality"],
+        speakability_rule=speakability_rule,
+    )
 
     # Build checklist block
     checklist_lines = []
-    for item in section_config.get('checklist_items', []):
+    for item in section_config.get("checklist_items", []):
         checklist_lines.append(f"  Q: {item['question']}")
         checklist_lines.append(f"    -> {item['answer'][:120]}...")
-    checklist_block = '\n'.join(checklist_lines) if checklist_lines else '(No checklist items for this section)'
+    checklist_block = "\n".join(checklist_lines) if checklist_lines else "(No checklist items for this section)"
 
     # Build lead-in from previous section
-    lead_in = '\n'.join(previous_lines[-5:]) if previous_lines else '(This is the first section — no prior context)'
+    lead_in = "\n".join(previous_lines[-5:]) if previous_lines else "(This is the first section — no prior context)"
 
     # Channel intro directive for opening section
-    if section_id == 'opening' and channel_intro:
-        channel_intro_directive = f"Start with this EXACT first line (including the speaker label):\n   {presenter}: {channel_intro}"
+    if section_id == "opening" and channel_intro:
+        channel_intro_directive = (
+            f"Start with this EXACT first line (including the speaker label):\n   {presenter}: {channel_intro}"
+        )
     else:
         channel_intro_directive = f"{presenter}: [Brief show intro — who you are and what the show is about]"
 
     # Budget percentage
-    budget_pct = str(round(budget / (target_min * language_config['speech_rate']) * 100))
+    budget_pct = str(round(budget / (target_min * language_config["speech_rate"]) * 100))
 
     # Estimate dialogue turn count (~25 content chars/turn for JA, ~15 words/turn for EN)
-    if length_unit == 'chars':
+    if length_unit == "chars":
         turn_count = str(max(10, budget // 25))
     else:
         turn_count = str(max(10, budget // 15))
@@ -707,35 +753,39 @@ def _generate_section_single(section_config: dict, previous_lines: list,
         turn_count=turn_count,
         presenter=presenter,
         questioner=questioner,
-        pacing=section_config['pacing'],
+        pacing=section_config["pacing"],
         checklist_block=checklist_block,
         lead_in=lead_in,
     )
-    if section_id == 'opening':
-        user_kwargs['channel_intro_directive'] = channel_intro_directive
-    user = get_prompt('section_gen', user_key, language, **user_kwargs)
+    if section_id == "opening":
+        user_kwargs["channel_intro_directive"] = channel_intro_directive
+    user = get_prompt("section_gen", user_key, language, **user_kwargs)
 
     # Calculate max_tokens: ~2 tokens/word for EN, ~2.5 tokens/char for JA, with buffer
-    if length_unit == 'chars':
+    if length_unit == "chars":
         max_tokens = int(budget * 2.5) + 500
     else:
         max_tokens = int(budget * 2) + 500
 
     # Attempt generation (up to 2 tries)
     floor = int(budget * 0.75)  # 25% under budget = retry threshold
-    section_text = ''
+    section_text = ""
     word_count = 0
 
     for attempt in range(1, 3):
         if attempt == 2:
             # Append retry feedback
-            retry_feedback = get_prompt('section_gen', 'retry_feedback', language,
-                                        actual_count=str(word_count),
-                                        length_unit=length_unit,
-                                        floor_count=str(floor),
-                                        presenter=presenter,
-                                        questioner=questioner)
-            user = user + '\n\n' + retry_feedback
+            retry_feedback = get_prompt(
+                "section_gen",
+                "retry_feedback",
+                language,
+                actual_count=str(word_count),
+                length_unit=length_unit,
+                floor_count=str(floor),
+                presenter=presenter,
+                questioner=questioner,
+            )
+            user = user + "\n\n" + retry_feedback
 
         result = _call_smart_model(
             system=system,
@@ -749,18 +799,26 @@ def _generate_section_single(section_config: dict, previous_lines: list,
 
         if word_count >= floor:
             break
-        logger.warning("  Section %s attempt %d: %d %s (need >=%d) — retrying",
-                        section_id, attempt, word_count, length_unit, floor)
+        logger.warning(
+            "  Section %s attempt %d: %d %s (need >=%d) — retrying", section_id, attempt, word_count, length_unit, floor
+        )
 
     # Calculate deficit for redistribution
     deficit = max(0, budget - word_count)
     return section_text, word_count, deficit
 
 
-def _run_condense_pass(script_text: str, inventory: dict, target_length: int,
-                       language_config: dict, session_roles: dict,
-                       topic_name: str, target_instruction: str,
-                       *, _call_smart_model) -> str:
+def _run_condense_pass(
+    script_text: str,
+    inventory: dict,
+    target_length: int,
+    language_config: dict,
+    session_roles: dict,
+    topic_name: str,
+    target_instruction: str,
+    *,
+    _call_smart_model,
+) -> str:
     """
     Condense an over-target script by rewriting verbose passages more concisely.
     Merges overlapping points, tightens language, reduces filler.
@@ -771,30 +829,38 @@ def _run_condense_pass(script_text: str, inventory: dict, target_length: int,
 
     current = _count_words(script_text, language_config)
     target_with_buffer = int(target_length * 1.05)  # condense to 105%, leave room for polish
-    length_unit = language_config['length_unit']
+    length_unit = language_config["length_unit"]
 
     if current <= target_with_buffer:
         return script_text  # already at or under target+buffer
 
-    presenter = session_roles['presenter']['label']
-    questioner = session_roles['questioner']['label']
+    presenter = session_roles["presenter"]["label"]
+    questioner = session_roles["questioner"]["label"]
     floor_count = int(target_length * 0.90)
 
-    system_prompt = get_prompt("condense", "system", "en",
-                               topic_name=topic_name,
-                               current_count=str(current),
-                               length_unit=length_unit,
-                               target_count=str(target_with_buffer),
-                               presenter=presenter,
-                               questioner=questioner,
-                               floor_count=str(floor_count),
-                               target_instruction=target_instruction)
+    system_prompt = get_prompt(
+        "condense",
+        "system",
+        "en",
+        topic_name=topic_name,
+        current_count=str(current),
+        length_unit=length_unit,
+        target_count=str(target_with_buffer),
+        presenter=presenter,
+        questioner=questioner,
+        floor_count=str(floor_count),
+        target_instruction=target_instruction,
+    )
 
-    user_prompt = get_prompt("condense", "user", "en",
-                             current_count=str(current),
-                             length_unit=length_unit,
-                             script_text=script_text,
-                             target_count=str(target_with_buffer))
+    user_prompt = get_prompt(
+        "condense",
+        "user",
+        "en",
+        current_count=str(current),
+        length_unit=length_unit,
+        script_text=script_text,
+        target_count=str(target_with_buffer),
+    )
 
     try:
         result = _call_smart_model(

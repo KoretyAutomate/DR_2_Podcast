@@ -20,8 +20,8 @@ from dr2_podcast.pipeline_sot import (
 # _extract_conclusion_status
 # ---------------------------------------------------------------------------
 
-class TestExtractConclusionStatus:
 
+class TestExtractConclusionStatus:
     # --- Clinical domain (GRADE) ---
 
     def test_clinical_high(self):
@@ -52,23 +52,17 @@ class TestExtractConclusionStatus:
     # --- Social science domain ---
 
     def test_social_science_strong(self):
-        grade, status, _ = _extract_conclusion_status(
-            "Final Evidence Quality: STRONG", "social_science"
-        )
+        grade, status, _ = _extract_conclusion_status("Final Evidence Quality: STRONG", "social_science")
         assert grade == "STRONG"
         assert status == "Scientifically Supported"
 
     def test_social_science_moderate(self):
-        grade, status, _ = _extract_conclusion_status(
-            "Final Evidence Quality: MODERATE", "social_science"
-        )
+        grade, status, _ = _extract_conclusion_status("Final Evidence Quality: MODERATE", "social_science")
         assert grade == "MODERATE"
         assert status == "Partially Supported \u2014 Further Research Recommended"
 
     def test_social_science_weak(self):
-        grade, status, _ = _extract_conclusion_status(
-            "Final Evidence Quality: WEAK", "social_science"
-        )
+        grade, status, _ = _extract_conclusion_status("Final Evidence Quality: WEAK", "social_science")
         assert grade == "WEAK"
         assert status == "Insufficient Evidence \u2014 More Research Needed"
 
@@ -76,11 +70,7 @@ class TestExtractConclusionStatus:
 
     def test_executive_summary_extracted(self):
         text = (
-            "Final GRADE: High\n"
-            "Executive Summary:\n"
-            "The evidence strongly supports the intervention.\n"
-            "\n"
-            "## Next Section"
+            "Final GRADE: High\nExecutive Summary:\nThe evidence strongly supports the intervention.\n\n## Next Section"
         )
         _, _, summary = _extract_conclusion_status(text, "clinical")
         assert "strongly supports" in summary
@@ -94,8 +84,8 @@ class TestExtractConclusionStatus:
 # _parse_grade_sections
 # ---------------------------------------------------------------------------
 
-class TestParseGradeSections:
 
+class TestParseGradeSections:
     def test_standard_sections(self):
         text = "### Evidence Profile\ntext1\n### GRADE Assessment\ntext2"
         result = _parse_grade_sections(text)
@@ -122,13 +112,20 @@ class TestParseGradeSections:
 # _format_study_characteristics_table
 # ---------------------------------------------------------------------------
 
+
 def _make_extraction(**overrides):
     """Create a minimal DeepExtraction-like object for table formatting."""
     defaults = dict(
-        pmid="12345678", doi="10.1000/test", title="Test Study Title",
-        study_design="RCT", sample_size_total=100,
-        demographics="Adults aged 30-60", follow_up_period="12 weeks",
-        funding_source="NIH", risk_of_bias="Low", research_tier=1,
+        pmid="12345678",
+        doi="10.1000/test",
+        title="Test Study Title",
+        study_design="RCT",
+        sample_size_total=100,
+        demographics="Adults aged 30-60",
+        follow_up_period="12 weeks",
+        funding_source="NIH",
+        risk_of_bias="Low",
+        research_tier=1,
         paper_metadata=None,
     )
     defaults.update(overrides)
@@ -136,7 +133,6 @@ def _make_extraction(**overrides):
 
 
 class TestFormatStudyCharacteristicsTable:
-
     def test_empty_list(self):
         result = _format_study_characteristics_table([])
         assert "No studies" in result
@@ -161,18 +157,21 @@ class TestFormatStudyCharacteristicsTable:
 # _format_references
 # ---------------------------------------------------------------------------
 
+
 def _make_wnr(**overrides):
     """Create a minimal WideNetRecord-like object for reference formatting."""
     defaults = dict(
-        pmid="12345678", title="Test Study Title",
-        authors="Smith J et al.", journal="Test Journal", year=2023,
+        pmid="12345678",
+        title="Test Study Title",
+        authors="Smith J et al.",
+        journal="Test Journal",
+        year=2023,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
 
 
 class TestFormatReferences:
-
     def test_empty_lists(self):
         result = _format_references([], [])
         assert "No references available" in result
@@ -205,22 +204,28 @@ class TestFormatReferences:
 # build_imrad_sot
 # ---------------------------------------------------------------------------
 
+
 def _make_report(report_text=""):
     """Create a minimal report-like object with .report attribute."""
     return SimpleNamespace(
-        report=report_text, total_summaries=0,
-        total_urls_fetched=0, duration_seconds=0, sources=[],
+        report=report_text,
+        total_summaries=0,
+        total_urls_fetched=0,
+        duration_seconds=0,
+        sources=[],
     )
 
 
 class TestBuildImradSot:
-
     def test_clinical_domain_sections(self):
         reports = {
             "pipeline_data": {
-                "aff_extractions": [], "fal_extractions": [],
-                "aff_top": [], "fal_top": [],
-                "impacts": [], "metrics": {},
+                "aff_extractions": [],
+                "fal_extractions": [],
+                "aff_top": [],
+                "fal_top": [],
+                "impacts": [],
+                "metrics": {},
                 "framing_context": "Test topic",
                 "search_date": "2026-01-01",
             },
@@ -228,8 +233,7 @@ class TestBuildImradSot:
             "lead": _make_report("Affirmative case."),
             "counter": _make_report("Falsification case."),
         }
-        result = build_imrad_sot("Test Topic", reports, "sufficient", 5,
-                                 domain="clinical")
+        result = build_imrad_sot("Test Topic", reports, "sufficient", 5, domain="clinical")
         assert "## Abstract" in result
         assert "## 1. Introduction" in result
         assert "## 2. Methods" in result
@@ -241,9 +245,12 @@ class TestBuildImradSot:
         reports = {
             "pipeline_data": {
                 "domain": "social_science",
-                "aff_extractions": [], "fal_extractions": [],
-                "aff_top": [], "fal_top": [],
-                "impacts": [], "metrics": {},
+                "aff_extractions": [],
+                "fal_extractions": [],
+                "aff_top": [],
+                "fal_top": [],
+                "impacts": [],
+                "metrics": {},
                 "framing_context": "Education topic",
                 "search_date": "2026-01-01",
             },
@@ -251,8 +258,9 @@ class TestBuildImradSot:
             "lead": _make_report("Affirmative case."),
             "counter": _make_report("Falsification case."),
         }
-        result = build_imrad_sot("Education Topic", reports, "sufficient", 5,
-                                 domain="clinical")  # domain auto-detected from pipeline_data
+        result = build_imrad_sot(
+            "Education Topic", reports, "sufficient", 5, domain="clinical"
+        )  # domain auto-detected from pipeline_data
         assert "## 1. Abstract" in result
         assert "## 2. Introduction" in result
         assert "## 3. Methods" in result
@@ -276,9 +284,12 @@ class TestBuildImradSot:
         """JA SoT should contain Japanese section headers."""
         reports = {
             "pipeline_data": {
-                "aff_extractions": [], "fal_extractions": [],
-                "aff_top": [], "fal_top": [],
-                "impacts": [], "metrics": {},
+                "aff_extractions": [],
+                "fal_extractions": [],
+                "aff_top": [],
+                "fal_top": [],
+                "impacts": [],
+                "metrics": {},
                 "framing_context": "テストトピック",
                 "search_date": "2026-01-01",
             },
@@ -286,8 +297,7 @@ class TestBuildImradSot:
             "lead": _make_report("肯定的ケースのテキスト"),
             "counter": _make_report("反証ケースのテキスト"),
         }
-        result = build_imrad_sot("Test Topic JA", reports, "sufficient", 5,
-                                 domain="clinical", language="ja")
+        result = build_imrad_sot("Test Topic JA", reports, "sufficient", 5, domain="clinical", language="ja")
         assert "## 要約" in result
         assert "## 1. 序論" in result
         assert "## 2. 方法" in result
@@ -299,9 +309,12 @@ class TestBuildImradSot:
         """JA SoT boilerplate should not contain Simplified Chinese characters."""
         reports = {
             "pipeline_data": {
-                "aff_extractions": [], "fal_extractions": [],
-                "aff_top": [], "fal_top": [],
-                "impacts": [], "metrics": {},
+                "aff_extractions": [],
+                "fal_extractions": [],
+                "aff_top": [],
+                "fal_top": [],
+                "impacts": [],
+                "metrics": {},
                 "framing_context": "",
                 "search_date": "2026-01-01",
             },
@@ -309,8 +322,7 @@ class TestBuildImradSot:
             "lead": _make_report("Aff case."),
             "counter": _make_report("Fal case."),
         }
-        result = build_imrad_sot("Chinese Test", reports, "sufficient", 5,
-                                 domain="clinical", language="ja")
+        result = build_imrad_sot("Chinese Test", reports, "sufficient", 5, domain="clinical", language="ja")
         # Check for known Chinese-only characters
         chinese_only = set("执补认效营维剂证结显临摄随筛杂混")
         found = [ch for ch in result if ch in chinese_only]
@@ -320,9 +332,12 @@ class TestBuildImradSot:
         """EN SoT should be identical whether language='en' is explicit or default."""
         reports = {
             "pipeline_data": {
-                "aff_extractions": [], "fal_extractions": [],
-                "aff_top": [], "fal_top": [],
-                "impacts": [], "metrics": {},
+                "aff_extractions": [],
+                "fal_extractions": [],
+                "aff_top": [],
+                "fal_top": [],
+                "impacts": [],
+                "metrics": {},
                 "framing_context": "Test",
                 "search_date": "2026-01-01",
             },
@@ -331,17 +346,19 @@ class TestBuildImradSot:
             "counter": _make_report("Fal."),
         }
         default_result = build_imrad_sot("Compat", reports, "sufficient", 5)
-        explicit_result = build_imrad_sot("Compat", reports, "sufficient", 5,
-                                          language="en")
+        explicit_result = build_imrad_sot("Compat", reports, "sufficient", 5, language="en")
         assert default_result == explicit_result
 
     def test_think_tags_stripped(self):
         """<think> blocks in report text should be stripped."""
         reports = {
             "pipeline_data": {
-                "aff_extractions": [], "fal_extractions": [],
-                "aff_top": [], "fal_top": [],
-                "impacts": [], "metrics": {},
+                "aff_extractions": [],
+                "fal_extractions": [],
+                "aff_top": [],
+                "fal_top": [],
+                "impacts": [],
+                "metrics": {},
                 "framing_context": "",
                 "search_date": "2026-01-01",
             },

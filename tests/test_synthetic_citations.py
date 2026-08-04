@@ -16,7 +16,6 @@ def _ext(title="", raw_facts=""):
 
 
 class TestDetectSyntheticCitations:
-
     def test_no_citations_in_report(self):
         """Report with no Author (YYYY) patterns returns (False, [])."""
         result = _detect_synthetic_citations("No citations here at all.", [_ext("Study")])
@@ -34,17 +33,13 @@ class TestDetectSyntheticCitations:
     def test_hallucinated_citation_not_in_extractions(self):
         """Citation whose author is NOT in any extraction is flagged."""
         extractions = [_ext(title="Jones meta-analysis")]
-        has_syn, flagged = _detect_synthetic_citations(
-            "Fakename (2021) reported improvements.", extractions
-        )
+        has_syn, flagged = _detect_synthetic_citations("Fakename (2021) reported improvements.", extractions)
         assert has_syn is True
         assert "Fakename (2021)" in flagged
 
     def test_empty_extractions_with_citations(self):
         """All citations are flagged when extractions list is empty."""
-        has_syn, flagged = _detect_synthetic_citations(
-            "Smith (2020) and Jones (2021) found results.", []
-        )
+        has_syn, flagged = _detect_synthetic_citations("Smith (2020) and Jones (2021) found results.", [])
         assert has_syn is True
         assert len(flagged) == 2
 
@@ -61,9 +56,7 @@ class TestDetectSyntheticCitations:
     def test_et_al_in_citation(self):
         """'et al.' variant is handled correctly and stripped during lookup."""
         extractions = [_ext(title="Johnson longitudinal study")]
-        has_syn, flagged = _detect_synthetic_citations(
-            "Johnson et al. (2023) showed benefits.", extractions
-        )
+        has_syn, flagged = _detect_synthetic_citations("Johnson et al. (2023) showed benefits.", extractions)
         assert has_syn is False
         assert flagged == []
 
@@ -73,17 +66,13 @@ class TestDetectSyntheticCitations:
             _ext(title="unrelated study"),
             _ext(title="Chen meta-analysis of caffeine"),
         ]
-        has_syn, flagged = _detect_synthetic_citations(
-            "Chen (2021) demonstrated efficacy.", extractions
-        )
+        has_syn, flagged = _detect_synthetic_citations("Chen (2021) demonstrated efficacy.", extractions)
         assert has_syn is False
 
     def test_author_name_in_raw_facts_not_flagged(self):
         """Author name found in raw_facts of an extraction is NOT flagged."""
         extractions = [_ext(title="some study", raw_facts="Lead investigator Lee reported")]
-        has_syn, flagged = _detect_synthetic_citations(
-            "Lee (2020) found significant results.", extractions
-        )
+        has_syn, flagged = _detect_synthetic_citations("Lee (2020) found significant results.", extractions)
         assert has_syn is False
 
     def test_citation_with_extreme_year_still_matched(self):

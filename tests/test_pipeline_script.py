@@ -2,8 +2,11 @@
 
 import pytest
 from dr2_podcast.pipeline_script import (
-    _count_words, _deduplicate_script, _parse_blueprint_inventory,
-    _validate_script, _add_reaction_guidance,
+    _count_words,
+    _deduplicate_script,
+    _parse_blueprint_inventory,
+    _validate_script,
+    _add_reaction_guidance,
 )
 
 
@@ -11,8 +14,8 @@ from dr2_podcast.pipeline_script import (
 # _count_words
 # ---------------------------------------------------------------------------
 
-class TestCountWords:
 
+class TestCountWords:
     def test_english_word_count(self, english_lang_config):
         text = "The quick brown fox jumps over the lazy dog"
         assert _count_words(text, english_lang_config) == 9
@@ -41,8 +44,8 @@ class TestCountWords:
 # _deduplicate_script
 # ---------------------------------------------------------------------------
 
-class TestDeduplicateScript:
 
+class TestDeduplicateScript:
     def test_removes_duplicated_block(self, english_lang_config):
         lines = [
             "Host 1: Line A content here",
@@ -97,8 +100,8 @@ class TestDeduplicateScript:
 # _parse_blueprint_inventory
 # ---------------------------------------------------------------------------
 
-class TestParseBlueprintInventory:
 
+class TestParseBlueprintInventory:
     def test_valid_section5(self, sample_blueprint):
         inv = _parse_blueprint_inventory(sample_blueprint)
         assert len(inv) > 0
@@ -131,19 +134,17 @@ class TestParseBlueprintInventory:
 # _validate_script
 # ---------------------------------------------------------------------------
 
-class TestValidateScript:
 
+class TestValidateScript:
     def test_over_length_fails(self, english_lang_config):
         script = " ".join(["word"] * 200)
-        result = _validate_script(script, 100, 0.10, english_lang_config,
-                                  "", "draft")
+        result = _validate_script(script, 100, 0.10, english_lang_config, "", "draft")
         assert not result["pass"]
         assert any("TOO LONG" in i for i in result["issues"])
 
     def test_under_length_fails(self, english_lang_config):
         script = "short script"
-        result = _validate_script(script, 1000, 0.10, english_lang_config,
-                                  "", "draft")
+        result = _validate_script(script, 1000, 0.10, english_lang_config, "", "draft")
         assert not result["pass"]
         assert any("TOO SHORT" in i for i in result["issues"])
 
@@ -151,15 +152,13 @@ class TestValidateScript:
         # 100 words, target 100, tolerance 0.10, but only 1 transition
         words = " ".join(["word"] * 100)
         script = words + "\n[TRANSITION]\n" + words
-        result = _validate_script(script, 200, 0.10, english_lang_config,
-                                  "", "polish")
+        result = _validate_script(script, 200, 0.10, english_lang_config, "", "polish")
         assert not result["pass"]
         assert any("MISSING TRANSITIONS" in i for i in result["issues"])
 
     def test_degenerate_repetition(self, english_lang_config):
         script = "the " * 5 + " ".join(["normal"] * 95)
-        result = _validate_script(script, 100, 0.10, english_lang_config,
-                                  "", "draft")
+        result = _validate_script(script, 100, 0.10, english_lang_config, "", "draft")
         assert not result["pass"]
         assert any("DEGENERATE REPETITION" in i for i in result["issues"])
 
@@ -167,8 +166,7 @@ class TestValidateScript:
         # Use varied words to avoid degenerate repetition detection
         words = ["alpha", "beta", "gamma", "delta", "epsilon"] * 20
         script = " ".join(words)
-        result = _validate_script(script, 100, 0.10, english_lang_config,
-                                  "", "draft")
+        result = _validate_script(script, 100, 0.10, english_lang_config, "", "draft")
         assert result["pass"]
         assert result["feedback"] == "PASS"
 
@@ -176,7 +174,12 @@ class TestValidateScript:
         words = ["alpha", "beta", "gamma", "delta", "epsilon"] * 20
         script = " ".join(words)
         result = _validate_script(
-            script, 100, 0.10, english_lang_config, "SOT content", "draft",
+            script,
+            100,
+            0.10,
+            english_lang_config,
+            "SOT content",
+            "draft",
             _call_smart_model=lambda **kw: "CLEAN",
             _truncate_at_boundary=lambda text, n: text[:n],
         )
@@ -186,7 +189,12 @@ class TestValidateScript:
         words = ["alpha", "beta", "gamma", "delta", "epsilon"] * 20
         script = " ".join(words)
         result = _validate_script(
-            script, 100, 0.10, english_lang_config, "SOT content", "draft",
+            script,
+            100,
+            0.10,
+            english_lang_config,
+            "SOT content",
+            "draft",
             _call_smart_model=lambda **kw: "Script overstates causation",
             _truncate_at_boundary=lambda text, n: text[:n],
         )
@@ -198,38 +206,27 @@ class TestValidateScript:
 # _add_reaction_guidance
 # ---------------------------------------------------------------------------
 
-class TestAddReactionGuidance:
 
+class TestAddReactionGuidance:
     def test_no_host_lines_returns_original(self, english_lang_config):
         script = "No host lines here.\nJust plain text."
-        result = _add_reaction_guidance(
-            script, english_lang_config,
-            _call_smart_model=lambda **kw: ""
-        )
+        result = _add_reaction_guidance(script, english_lang_config, _call_smart_model=lambda **kw: "")
         assert result == script
 
     def test_successful_annotation(self, english_lang_config):
-        script = (
-            "Host 1: Welcome to the show.\n"
-            "Host 2: Let's dive in.\n"
-            "Host 1: The evidence shows improvement.\n"
-        )
+        script = "Host 1: Welcome to the show.\nHost 2: Let's dive in.\nHost 1: The evidence shows improvement.\n"
 
         def mock_smart(**kw):
             return "1: [intrigued, building suspense]\n3: [authoritative, measured pace]"
 
-        result = _add_reaction_guidance(
-            script, english_lang_config,
-            _call_smart_model=mock_smart
-        )
+        result = _add_reaction_guidance(script, english_lang_config, _call_smart_model=mock_smart)
         assert "## [intrigued, building suspense]" in result
         assert "## [authoritative, measured pace]" in result
 
     def test_unparseable_llm_output_returns_original(self, english_lang_config):
         script = "Host 1: Hello.\nHost 2: Hi."
         result = _add_reaction_guidance(
-            script, english_lang_config,
-            _call_smart_model=lambda **kw: "No annotations to provide."
+            script, english_lang_config, _call_smart_model=lambda **kw: "No annotations to provide."
         )
         assert result == script
 
@@ -239,8 +236,5 @@ class TestAddReactionGuidance:
         def mock_fail(**kw):
             raise Exception("API error")
 
-        result = _add_reaction_guidance(
-            script, english_lang_config,
-            _call_smart_model=mock_fail
-        )
+        result = _add_reaction_guidance(script, english_lang_config, _call_smart_model=mock_fail)
         assert result == script

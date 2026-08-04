@@ -1,4 +1,5 @@
 """Shared utility functions for DR_2_Podcast pipeline."""
+
 import asyncio
 import ipaddress
 import logging
@@ -25,7 +26,7 @@ def strip_think_blocks(text: str) -> str:
         first_bracket = text.find("[")
         starts = [i for i in (first_brace, first_bracket) if i > 0]
         if starts:
-            text = text[min(starts):]
+            text = text[min(starts) :]
         else:
             text = ""
     return text.strip()
@@ -167,8 +168,7 @@ def safe_str(v):
 _utils_logger = logging.getLogger(__name__)
 
 
-async def async_call_smart(client, model, system, user, max_tokens=2048,
-                           temperature=0.3, timeout=300, no_think=True):
+async def async_call_smart(client, model, system, user, max_tokens=2048, temperature=0.3, timeout=300, no_think=True):
     """Shared async LLM call with retry logic for smart model.
 
     - Non-transient fast-fail (BadRequestError, AuthenticationError)
@@ -199,21 +199,26 @@ async def async_call_smart(client, model, system, user, max_tokens=2048,
             return safe_message_text(resp)
         except (openai.BadRequestError, openai.AuthenticationError):
             raise
-        except (ConnectionError, TimeoutError, OSError,
-                openai.APIConnectionError, openai.APITimeoutError,
-                openai.InternalServerError) as e:
+        except (
+            ConnectionError,
+            TimeoutError,
+            OSError,
+            openai.APIConnectionError,
+            openai.APITimeoutError,
+            openai.InternalServerError,
+        ) as e:
             if attempt < max_retries:
-                base_wait = 5 * (2 ** attempt)  # 5, 10, 20
+                base_wait = 5 * (2**attempt)  # 5, 10, 20
                 jitter = random.uniform(-base_wait * 0.3, base_wait * 0.3)
                 wait = base_wait + jitter
                 _utils_logger.warning(
                     "async_call_smart() attempt %d/%d failed (%s), retrying in %.1fs...",
-                    attempt + 1, max_retries + 1, type(e).__name__, wait
+                    attempt + 1,
+                    max_retries + 1,
+                    type(e).__name__,
+                    wait,
                 )
                 await asyncio.sleep(wait)
             else:
-                _utils_logger.error(
-                    "async_call_smart() failed after %d attempts: %s",
-                    max_retries + 1, e
-                )
+                _utils_logger.error("async_call_smart() failed after %d attempts: %s", max_retries + 1, e)
                 raise

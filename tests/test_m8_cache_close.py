@@ -5,12 +5,14 @@ Tests that PageCache and MetadataCache support:
 2. Idempotent close() (double close is safe)
 3. atexit registration (connection closed on interpreter shutdown)
 """
+
 import tempfile
 import os
 
 
 def test_page_cache_context_manager():
     from dr2_podcast.research.clinical import PageCache
+
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test_page.db")
         with PageCache(db_path=db_path) as cache:
@@ -23,6 +25,7 @@ def test_page_cache_context_manager():
 
 def test_page_cache_double_close():
     from dr2_podcast.research.clinical import PageCache
+
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test_page2.db")
         cache = PageCache(db_path=db_path)
@@ -34,6 +37,7 @@ def test_page_cache_double_close():
 
 def test_metadata_cache_context_manager():
     from dr2_podcast.research.metadata_clients import MetadataCache
+
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test_meta.db")
         with MetadataCache(db_path=db_path) as cache:
@@ -47,6 +51,7 @@ def test_metadata_cache_context_manager():
 
 def test_metadata_cache_double_close():
     from dr2_podcast.research.metadata_clients import MetadataCache
+
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test_meta2.db")
         cache = MetadataCache(db_path=db_path)

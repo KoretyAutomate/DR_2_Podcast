@@ -29,12 +29,27 @@ import re
 import sqlite3
 import time
 import datetime
-from dr2_podcast.utils import (strip_think_blocks, is_safe_url, safe_float, safe_int,
-                                safe_str, async_call_smart, safe_message_text,
-                                QWEN3_NO_THINK_EXTRA_BODY)
-from dr2_podcast.config import (SMART_MODEL, SMART_BASE_URL, FAST_MODEL, FAST_BASE_URL,
-                    SCRAPING_TIMEOUT, USER_AGENT, TIER_CASCADE_THRESHOLD,
-                    MIN_TIER3_STUDIES, MAX_TIER3_RATIO)
+from dr2_podcast.utils import (
+    strip_think_blocks,
+    is_safe_url,
+    safe_float,
+    safe_int,
+    safe_str,
+    async_call_smart,
+    safe_message_text,
+    QWEN3_NO_THINK_EXTRA_BODY,
+)
+from dr2_podcast.config import (
+    SMART_MODEL,
+    SMART_BASE_URL,
+    FAST_MODEL,
+    FAST_BASE_URL,
+    SCRAPING_TIMEOUT,
+    USER_AGENT,
+    TIER_CASCADE_THRESHOLD,
+    MIN_TIER3_STUDIES,
+    MAX_TIER3_RATIO,
+)
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -63,15 +78,32 @@ MAX_CONCURRENT_SUMMARIES = 10
 MAX_RESEARCH_ITERATIONS = 3
 
 JUNK_DOMAINS = {
-    "dictionary.com", "merriam-webster.com", "thefreedictionary.com",
-    "cambridge.org", "wiktionary.org", "vocabulary.com",
-    "thesaurus.com", "urbandictionary.com",
-    "facebook.com", "fb.com", "twitter.com", "instagram.com", "tiktok.com",
-    "pinterest.com", "reddit.com", "youtube.com", "support.google.com",
-    "lkong.com", "rctslabs.com",
-    "starbucks.com", "amazon.com", "walmart.com",
-    "dailythemedcrosswordanswers.com", "crosswordanswers.com",
+    "dictionary.com",
+    "merriam-webster.com",
+    "thefreedictionary.com",
+    "cambridge.org",
+    "wiktionary.org",
+    "vocabulary.com",
+    "thesaurus.com",
+    "urbandictionary.com",
+    "facebook.com",
+    "fb.com",
+    "twitter.com",
+    "instagram.com",
+    "tiktok.com",
+    "pinterest.com",
+    "reddit.com",
+    "youtube.com",
+    "support.google.com",
+    "lkong.com",
+    "rctslabs.com",
+    "starbucks.com",
+    "amazon.com",
+    "walmart.com",
+    "dailythemedcrosswordanswers.com",
+    "crosswordanswers.com",
 }
+
 
 def is_junk_url(url: str) -> bool:
     domain = urlparse(url).netloc.lower()
@@ -120,8 +152,7 @@ class PageCache:
         """Return a FetchedPage if cached and not expired, else None."""
         cutoff = time.time() - self.ttl_seconds
         row = self.conn.execute(
-            "SELECT url, title, content, word_count FROM page_cache WHERE url = ? AND fetched_at > ?",
-            (url, cutoff)
+            "SELECT url, title, content, word_count FROM page_cache WHERE url = ? AND fetched_at > ?", (url, cutoff)
         ).fetchone()
         if row:
             # Import here to avoid circular reference at class definition time
@@ -134,7 +165,7 @@ class PageCache:
             return
         self.conn.execute(
             "INSERT OR REPLACE INTO page_cache (url, title, content, word_count, fetched_at) VALUES (?, ?, ?, ?, ?)",
-            (page.url, page.title, page.content, page.word_count, time.time())
+            (page.url, page.title, page.content, page.word_count, time.time()),
         )
         self.conn.commit()
 
@@ -146,10 +177,12 @@ class PageCache:
 
 # --- Data Models ---
 
+
 @dataclass
 class ResearchQuery:
     query: str
     goal: str
+
 
 @dataclass
 class FetchedPage:
@@ -159,34 +192,41 @@ class FetchedPage:
     word_count: int
     error: Optional[str] = None
 
+
 from dr2_podcast.pipeline_types import StudyMetadata, SummarizedSource, SearchMetrics, ResearchReport
 
 
 # --- New Pipeline Data Models ---
 
+
 @dataclass
 class TierKeywords:
     """Plain keyword lists for one search tier — NO Boolean/MeSH syntax."""
-    intervention: List[str]   # exact terms for the intervention at this tier
-    outcome: List[str]        # outcome terms at this tier
-    population: List[str]     # population terms
-    rationale: str            # scientist's justification for this tier's scope
+
+    intervention: List[str]  # exact terms for the intervention at this tier
+    outcome: List[str]  # outcome terms at this tier
+    population: List[str]  # population terms
+    rationale: str  # scientist's justification for this tier's scope
+
 
 @dataclass
 class TieredSearchPlan:
     """Three-tier keyword plan produced by the scientist and approved by the Auditor."""
-    pico: Dict[str, str]       # P, I, C, O — used downstream in _build_case, screening
-    tier1: TierKeywords        # Exact folk/named terms → "Established evidence"
-    tier2: TierKeywords        # Canonical scientific synonyms, same substance → "Supporting evidence"
-    tier3: TierKeywords        # Active compound class / mechanism → "Speculative extrapolation"
-    role: str                  # "affirmative" | "adversarial"
+
+    pico: Dict[str, str]  # P, I, C, O — used downstream in _build_case, screening
+    tier1: TierKeywords  # Exact folk/named terms → "Established evidence"
+    tier2: TierKeywords  # Canonical scientific synonyms, same substance → "Supporting evidence"
+    tier3: TierKeywords  # Active compound class / mechanism → "Speculative extrapolation"
+    role: str  # "affirmative" | "adversarial"
     auditor_approved: bool = False
     auditor_notes: str = ""
     revision_count: int = 0
 
+
 @dataclass
 class WideNetRecord:
     """Lightweight screening record — no full text, just title + abstract metadata."""
+
     pmid: Optional[str]
     doi: Optional[str]
     title: str
@@ -198,14 +238,16 @@ class WideNetRecord:
     journal: Optional[str]
     authors: Optional[str]
     url: str
-    source_db: str                          # "pubmed", "cochrane_central", "scholar"
-    research_tier: Optional[int] = None    # 1=exact folk  2=scientific synonyms  3=compound class
+    source_db: str  # "pubmed", "cochrane_central", "scholar"
+    research_tier: Optional[int] = None  # 1=exact folk  2=scientific synonyms  3=compound class
     relevance_score: Optional[float] = None
     paper_metadata: Optional["PaperMetadata"] = None
+
 
 @dataclass
 class DeepExtraction:
     """Clinical variable extraction from full-text articles (Step 4)."""
+
     pmid: Optional[str]
     doi: Optional[str]
     title: str
@@ -217,9 +259,9 @@ class DeepExtraction:
     funding_source: Optional[str] = None
     conflicts_of_interest: Optional[str] = None
     biological_mechanism: Optional[str] = None
-    control_event_rate: Optional[float] = None      # CER — needed for Step 7
+    control_event_rate: Optional[float] = None  # CER — needed for Step 7
     experimental_event_rate: Optional[float] = None  # EER — needed for Step 7
-    outcome_is_adverse: Optional[bool] = None        # True = event is bad (default assumption)
+    outcome_is_adverse: Optional[bool] = None  # True = event is bad (default assumption)
     primary_outcome: Optional[str] = None
     secondary_outcomes: Optional[List[str]] = None
     blinding: Optional[str] = None
@@ -230,7 +272,7 @@ class DeepExtraction:
     sample_size_control: Optional[int] = None
     study_design: Optional[str] = None
     risk_of_bias: Optional[str] = None
-    research_tier: Optional[int] = None    # 1=folk 2=synonym 3=compound
+    research_tier: Optional[int] = None  # 1=folk 2=synonym 3=compound
     raw_facts: str = ""
     paper_metadata: Optional["PaperMetadata"] = None
 
@@ -252,6 +294,7 @@ class PaperMetadata:
 
     All fields optional — pipeline degrades gracefully if APIs are unreachable.
     """
+
     citation_count: Optional[int] = None
     influential_citation_count: Optional[int] = None
     fwci: Optional[float] = None
@@ -295,13 +338,11 @@ class PubMedClient:
     async def search(self, query: str, max_results: int = 10) -> List[Dict[str, str]]:
         """Legacy search — returns simple dicts for backward compatibility."""
         records = await self.search_extended(query, max_results=max_results)
-        return [
-            {"url": r["url"], "title": r.get("title", ""), "snippet": r.get("abstract", "")[:500]}
-            for r in records
-        ]
+        return [{"url": r["url"], "title": r.get("title", ""), "snippet": r.get("abstract", "")[:500]} for r in records]
 
-    async def search_extended(self, query: str, max_results: int = 500,
-                               sort: str = "relevance") -> List[Dict[str, Any]]:
+    async def search_extended(
+        self, query: str, max_results: int = 500, sort: str = "relevance"
+    ) -> List[Dict[str, Any]]:
         """Enhanced search returning rich article records with metadata.
 
         Returns list of dicts with: pmid, doi, title, abstract (full), study_type,
@@ -332,12 +373,8 @@ class PubMedClient:
 
                 # Step 2: efetch in batches of 200 (NCBI recommended max)
                 for batch_start in range(0, len(id_list), 200):
-                    batch_ids = id_list[batch_start:batch_start + 200]
-                    fetch_params = {
-                        "db": "pubmed",
-                        "id": ",".join(batch_ids),
-                        "retmode": "xml"
-                    }
+                    batch_ids = id_list[batch_start : batch_start + 200]
+                    fetch_params = {"db": "pubmed", "id": ",".join(batch_ids), "retmode": "xml"}
                     if self.api_key:
                         fetch_params["api_key"] = self.api_key
 
@@ -530,7 +567,9 @@ class SearchService:
                 results.append({"url": url, "title": title, "snippet": snippet})
         return results
 
-    async def search(self, query: str, max_results: int = 10, min_academic: int = MIN_ACADEMIC_RESULTS) -> List[Dict[str, str]]:
+    async def search(
+        self, query: str, max_results: int = 10, min_academic: int = MIN_ACADEMIC_RESULTS
+    ) -> List[Dict[str, str]]:
         academic_results = []
 
         # Tier 1a: PubMed
@@ -541,7 +580,7 @@ class SearchService:
         try:
             async with SearxngClient() as client:
                 if await client.validate_connection():
-                    raw = await client.search(query, engines=['google scholar'], num_results=max_results)
+                    raw = await client.search(query, engines=["google scholar"], num_results=max_results)
                     academic_results.extend(await self._extract_searxng_results(raw))
         except Exception as e:
             logger.error(f"Google Scholar search failed: {e}")
@@ -564,7 +603,7 @@ class SearchService:
         try:
             async with SearxngClient() as client:
                 if await client.validate_connection():
-                    raw = await client.search(query, engines=['google', 'bing', 'brave'], num_results=max_results)
+                    raw = await client.search(query, engines=["google", "bing", "brave"], num_results=max_results)
                     general_results.extend(await self._extract_searxng_results(raw))
         except Exception as e:
             logger.warning(f"SearXNG general search failed: {e}")
@@ -576,16 +615,18 @@ class SearchService:
                     resp = await http.get(
                         "https://api.search.brave.com/res/v1/web/search",
                         params={"q": query, "count": min(max_results, 20)},
-                        headers=headers
+                        headers=headers,
                     )
                     if resp.status_code == 200:
                         data = resp.json()
                         for r in data.get("web", {}).get("results", []):
-                            general_results.append({
-                                "url": r.get("url", ""),
-                                "title": r.get("title", ""),
-                                "snippet": r.get("description", "")
-                            })
+                            general_results.append(
+                                {
+                                    "url": r.get("url", ""),
+                                    "title": r.get("title", ""),
+                                    "snippet": r.get("description", ""),
+                                }
+                            )
             except Exception as e:
                 logger.warning(f"BraveSearch failed: {e}")
 
@@ -628,9 +669,10 @@ class ContentFetcher:
                     for tag in soup.find_all(["script", "style", "nav", "footer", "header", "aside", "iframe"]):
                         tag.decompose()
                     content_el = (
-                        soup.find("main") or soup.find("article") or
-                        soup.find("div", class_=re.compile(r"content|main-content|post-content|article")) or
-                        soup.find("body")
+                        soup.find("main")
+                        or soup.find("article")
+                        or soup.find("div", class_=re.compile(r"content|main-content|post-content|article"))
+                        or soup.find("body")
                     )
                     text = content_el.get_text(separator=" ", strip=True) if content_el else ""
                     max_chars = MAX_INPUT_TOKENS * 4
@@ -675,7 +717,7 @@ class FastWorker:
         if facts_text.upper().startswith("FACTS:"):
             facts_text = facts_text[6:].strip()
 
-        json_part = raw_text[marker_idx + len(marker):].strip()
+        json_part = raw_text[marker_idx + len(marker) :].strip()
 
         # Extract JSON using brace-depth tracking
         brace_start = json_part.find("{")
@@ -696,7 +738,7 @@ class FastWorker:
         if brace_end == -1:
             return facts_text, None
 
-        json_str = json_part[brace_start:brace_end + 1]
+        json_str = json_part[brace_start : brace_end + 1]
 
         try:
             data = json.loads(json_str)
@@ -723,8 +765,7 @@ class FastWorker:
     async def summarize(self, page: FetchedPage, goal: str, query: str) -> SummarizedSource:
         if page.error or not page.content.strip():
             return SummarizedSource(
-                url=page.url, title=page.title, summary="",
-                query=query, goal=goal, error=page.error or "Empty content"
+                url=page.url, title=page.title, summary="", query=query, goal=goal, error=page.error or "Empty content"
             )
         content = page.content[:_SMART_CONTENT_CHARS]
         system_prompt = (
@@ -756,25 +797,29 @@ class FastWorker:
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Source URL: {page.url}\n\nContent:\n{content}"}
+                        {"role": "user", "content": f"Source URL: {page.url}\n\nContent:\n{content}"},
                     ],
-                    max_tokens=1536, temperature=0.1, timeout=180
+                    max_tokens=1536,
+                    temperature=0.1,
+                    timeout=180,
                 )
                 raw_text = safe_message_text(resp)
                 facts_text, metadata = self._parse_metadata_from_response(raw_text)
                 return SummarizedSource(
-                    url=page.url, title=page.title, summary=facts_text,
-                    query=query, goal=goal, metadata=metadata
+                    url=page.url, title=page.title, summary=facts_text, query=query, goal=goal, metadata=metadata
                 )
             except Exception as e:
                 logger.warning(f"Fast model failed for {page.url}: {str(e)[:100]}")
-                return SummarizedSource(url=page.url, title=page.title, summary="", query=query, goal=goal, error=str(e)[:200])
+                return SummarizedSource(
+                    url=page.url, title=page.title, summary="", query=query, goal=goal, error=str(e)[:200]
+                )
 
     async def summarize_batch(self, pages: List[FetchedPage], goal: str, query: str) -> List[SummarizedSource]:
         return await asyncio.gather(*[self.summarize(page, goal, query) for page in pages])
 
 
 # --- Smart Model: The Researcher Agent ---
+
 
 class ResearchAgent:
     """
@@ -797,7 +842,7 @@ class ResearchAgent:
         fetcher: ContentFetcher,
         smart_model: str = SMART_MODEL,
         results_per_query: int = 5,
-        max_iterations: int = MAX_RESEARCH_ITERATIONS
+        max_iterations: int = MAX_RESEARCH_ITERATIONS,
     ):
         self.smart_client = smart_client
         self.smart_model = smart_model
@@ -813,8 +858,7 @@ class ResearchAgent:
         Delegates to the shared async_call_smart() helper in utils.py.
         """
         return await async_call_smart(
-            self.smart_client, self.smart_model, system, user,
-            max_tokens=max_tokens, temperature=temperature
+            self.smart_client, self.smart_model, system, user, max_tokens=max_tokens, temperature=temperature
         )
 
     def _parse_json_queries(self, raw: str) -> List[ResearchQuery]:
@@ -872,7 +916,7 @@ class ResearchAgent:
                 continue
 
             log(f"      [{rq.goal[:40]}] {len(good_pages)}/{len(pages)} fetched → summarizing...")
-            
+
             # Summarize with fast model
             if self.fast_worker:
                 batch = await self.fast_worker.summarize_batch(good_pages, rq.goal, rq.query)
@@ -885,11 +929,18 @@ class ResearchAgent:
                         summary = await self._call_smart(
                             f"Extract facts relevant to: '{rq.goal}'. Bulleted list only. Be concise.",
                             f"Source: {p.url}\n\n{content}",
-                            max_tokens=1024, temperature=0.1
+                            max_tokens=1024,
+                            temperature=0.1,
                         )
-                        batch.append(SummarizedSource(url=p.url, title=p.title, summary=summary, query=rq.query, goal=rq.goal))
+                        batch.append(
+                            SummarizedSource(url=p.url, title=p.title, summary=summary, query=rq.query, goal=rq.goal)
+                        )
                     except Exception as e:
-                        batch.append(SummarizedSource(url=p.url, title=p.title, summary="", query=rq.query, goal=rq.goal, error=str(e)[:200]))
+                        batch.append(
+                            SummarizedSource(
+                                url=p.url, title=p.title, summary="", query=rq.query, goal=rq.goal, error=str(e)[:200]
+                            )
+                        )
 
             good = sum(1 for s in batch if s.summary and not s.error)
             log(f"      [{rq.goal[:40]}] {good}/{len(good_pages)} summarized")
@@ -913,11 +964,11 @@ class ResearchAgent:
         total_fetched = 0
         total_errors = 0
 
-        log(f"\n  {'─'*60}")
+        log(f"\n  {'─' * 60}")
         log(f"  {role.upper()}: Starting iterative research")
         log(f"  Topic: {topic}")
         log(f"  Max iterations: {self.max_iterations}")
-        log(f"  {'─'*60}")
+        log(f"  {'─' * 60}")
 
         for iteration in range(self.max_iterations):
             log(f"\n  ── Iteration {iteration + 1}/{self.max_iterations} ──")
@@ -928,7 +979,7 @@ class ResearchAgent:
                     f"You are a {role}. {role_instructions}\n\n"
                     f"Topic: {topic}\n\n"
                     f"Generate 5-7 specific search queries to begin your research.\n"
-                    f"Return ONLY a JSON array: [{{\"query\": \"...\", \"goal\": \"...\"}}]"
+                    f'Return ONLY a JSON array: [{{"query": "...", "goal": "..."}}]'
                 )
             else:
                 evidence_summary = self._format_evidence_so_far(all_summaries)
@@ -940,13 +991,15 @@ class ResearchAgent:
                     f"Based on what you have, identify 3-5 specific GAPS in your evidence.\n"
                     f"Generate NEW targeted search queries to fill those gaps.\n"
                     f"If evidence is sufficient, return an empty array: []\n\n"
-                    f"Return ONLY a JSON array: [{{\"query\": \"...\", \"goal\": \"...\"}}]"
+                    f'Return ONLY a JSON array: [{{"query": "...", "goal": "..."}}]'
                 )
 
             log(f"    Planning: asking smart model for queries...")
             raw_plan = await self._call_smart(
                 "You are a research planning expert. Return ONLY valid JSON arrays.",
-                plan_prompt, max_tokens=2048, temperature=0.3
+                plan_prompt,
+                max_tokens=2048,
+                temperature=0.3,
             )
             queries = self._parse_json_queries(raw_plan)
 
@@ -960,9 +1013,7 @@ class ResearchAgent:
 
             # Step 2: Delegate search + summarization to workers
             log(f"    Delegating to search + summarize workers...")
-            batch_summaries, batch_fetched, batch_errors = await self._search_and_summarize(
-                queries, seen_urls, log
-            )
+            batch_summaries, batch_fetched, batch_errors = await self._search_and_summarize(queries, seen_urls, log)
             all_summaries.extend(batch_summaries)
             total_fetched += batch_fetched
             total_errors += batch_errors
@@ -1037,7 +1088,8 @@ class ResearchAgent:
             report_text = await self._call_smart(
                 report_system,
                 f"Topic: {topic}\nSources: {len(good_summaries)}\n\nEVIDENCE:\n\n{aggregated}",
-                max_tokens=8000, temperature=0.2
+                max_tokens=8000,
+                temperature=0.2,
             )
         except Exception as e:
             logger.error(f"Report synthesis failed: {e}")
@@ -1108,7 +1160,7 @@ class ResearchAgent:
             elif ch in "}]":
                 depth -= 1
                 if depth == 0:
-                    return text[:i + 1]
+                    return text[: i + 1]
         return text  # unclosed — return as-is for downstream repair
 
     def _parse_json_response(self, raw: str) -> Any:
@@ -1127,7 +1179,7 @@ class ResearchAgent:
         first_bracket = raw.find("[")
         starts = [i for i in (first_brace, first_bracket) if i >= 0]
         if starts:
-            raw = raw[min(starts):]
+            raw = raw[min(starts) :]
         # Truncate trailing text after JSON object closes (handles "extra data" errors)
         raw = self._truncate_after_json(raw)
         # Try parsing as-is
@@ -1184,7 +1236,9 @@ class ResearchAgent:
                 resp = await self.fast_worker.client.chat.completions.create(
                     model=self.fast_worker.model,
                     messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-                    max_tokens=512, temperature=0.2, timeout=60
+                    max_tokens=512,
+                    temperature=0.2,
+                    timeout=60,
                 )
                 raw = safe_message_text(resp)
             else:
@@ -1204,15 +1258,19 @@ class ResearchAgent:
     # ------------------------------------------------------------------ #
 
     async def _generate_tiered_keywords(
-        self, topic: str, role: str, framing_context: str,
-        decomposition: Optional[Dict], auditor_feedback: str = "",
-        log=logger.info
+        self,
+        topic: str,
+        role: str,
+        framing_context: str,
+        decomposition: Optional[Dict],
+        auditor_feedback: str = "",
+        log=logger.info,
     ) -> TieredSearchPlan:
         """Generate three-tier keyword plan as plain lists — NO Boolean/MeSH syntax."""
         log(f"    [Step 1] Generating tiered keywords ({role})...")
 
-        is_adversarial = (role == "adversarial")
-        is_social = getattr(self, '_domain', 'clinical') == "social_science"
+        is_adversarial = role == "adversarial"
+        is_social = getattr(self, "_domain", "clinical") == "social_science"
 
         framing_note = f"\n\nRESEARCH FRAMING:\n{framing_context[:3000]}" if framing_context else ""
 
@@ -1220,10 +1278,7 @@ class ResearchAgent:
         if decomposition and any(decomposition.values()):
             canonical = ", ".join(decomposition.get("canonical_terms", []))
             related = ", ".join(decomposition.get("related_concepts", []))
-            decomp_note = (
-                f"\n\nCANONICAL SCIENTIFIC TERMS: {canonical}"
-                f"\nRELATED CONCEPTS: {related}"
-            )
+            decomp_note = f"\n\nCANONICAL SCIENTIFIC TERMS: {canonical}\nRELATED CONCEPTS: {related}"
 
         revision_note = ""
         if auditor_feedback:
@@ -1246,29 +1301,27 @@ class ResearchAgent:
             )
             outcome_ex_t1 = (
                 "  Outcome: direct HARM or NULL outcome labels as they appear in clinical trial titles.\n"
-                "  Example for coffee: [\"sleep disruption\", \"anxiety\", \"caffeine dependence\", "
-                "\"jitteriness\", \"heart palpitation\"]\n"
+                '  Example for coffee: ["sleep disruption", "anxiety", "caffeine dependence", '
+                '"jitteriness", "heart palpitation"]\n'
             )
             outcome_ex_t2 = (
                 "  Outcome: SUPERSET of Tier 1 harm outcomes — include ALL Tier 1 harm terms PLUS "
                 "broader adverse-effect and null-result proxies.\n"
-                "  Example: [\"sleep disruption\", \"anxiety\", \"caffeine dependence\", \"jitteriness\", "
-                "\"heart palpitation\", \"cardiovascular risk\", \"hypertension\", \"null result\", "
-                "\"no significant effect\", \"withdrawal symptom\"]\n"
+                '  Example: ["sleep disruption", "anxiety", "caffeine dependence", "jitteriness", '
+                '"heart palpitation", "cardiovascular risk", "hypertension", "null result", '
+                '"no significant effect", "withdrawal symptom"]\n'
             )
         else:
-            role_header = (
-                "You are a systematic review scientist generating search keyword tiers.\n\n"
-            )
+            role_header = "You are a systematic review scientist generating search keyword tiers.\n\n"
             outcome_ex_t1 = (
                 "  Outcome: direct primary outcome labels as they appear in clinical trial titles.\n"
-                "  Example: [\"work productivity\", \"job performance\", \"occupational performance\"]\n"
+                '  Example: ["work productivity", "job performance", "occupational performance"]\n'
             )
             outcome_ex_t2 = (
                 "  Outcome: SUPERSET of Tier 1 outcomes. Include ALL Tier 1 outcome terms PLUS broader\n"
                 "    proxy outcomes and related clinical endpoints. Must be strictly broader, never narrower.\n"
-                "  Example: [\"work productivity\", \"job performance\", \"cognitive performance\", "
-                "\"alertness\", \"executive function\", \"mental performance\"]\n"
+                '  Example: ["work productivity", "job performance", "cognitive performance", '
+                '"alertness", "executive function", "mental performance"]\n'
             )
 
         if is_social:
@@ -1276,12 +1329,12 @@ class ResearchAgent:
             _framework = "PECO"
             _t1_exp = (
                 "  Exposure: exact folk/common names for *this specific exposure/factor* only.\n"
-                "  Example for screen time: [\"screen time\", \"smartphone use\", \"social media use\"]\n"
+                '  Example for screen time: ["screen time", "smartphone use", "social media use"]\n'
                 "  Do NOT include broader digital media — that belongs in Tier 3.\n"
             )
             _t3_exp = (
                 "  Exposure: broader conceptual category (source ambiguity accepted).\n"
-                "  Example: [\"digital media\", \"technology use\", \"internet exposure\", \"media consumption\"]\n"
+                '  Example: ["digital media", "technology use", "internet exposure", "media consumption"]\n'
                 "  These results require inference (e.g., any digital media -> screen time effect) and "
                 "will be flagged as speculative in the output.\n"
             )
@@ -1293,16 +1346,18 @@ class ResearchAgent:
             _framework = "PICO"
             _t1_exp = (
                 "  Intervention: exact folk/common names for *this specific substance* only.\n"
-                "  Example for coffee: [\"coffee\", \"coffee drinking\", \"coffee consumption\"]\n"
+                '  Example for coffee: ["coffee", "coffee drinking", "coffee consumption"]\n'
                 "  Do NOT include caffeine — caffeine also comes from tea, energy drinks, etc.\n"
             )
             _t3_exp = (
                 "  Intervention: active compound class / mechanism (source ambiguity accepted).\n"
-                "  Example: [\"caffeine\", \"methylxanthine\", \"adenosine antagonist\", \"caffeinated beverage\"]\n"
+                '  Example: ["caffeine", "methylxanthine", "adenosine antagonist", "caffeinated beverage"]\n'
                 "  These results require inference (e.g., caffeine from any source -> coffee effect) and "
                 "will be flagged as speculative in the output.\n"
             )
-            _fwk_json = '  "pico": {"population": "...", "intervention": "...", "comparison": "...", "outcome": "..."},\n'
+            _fwk_json = (
+                '  "pico": {"population": "...", "intervention": "...", "comparison": "...", "outcome": "..."},\n'
+            )
             _fwk_rule = "- Also produce a PICO summary.\n\n"
             _exp_label = "intervention"
 
@@ -1316,12 +1371,12 @@ class ResearchAgent:
             f"{_t1_exp}"
             f"{outcome_ex_t1}"
             "  Population: specific population relevant to the research question.\n"
-            "  Example: [\"working adults\", \"employees\"]\n\n"
+            '  Example: ["working adults", "employees"]\n\n'
             "TIER 2 — 'Supporting evidence' (broadened scope):\n"
             f"  {_exp_label.capitalize()}: <<INHERITED FROM TIER 1 — do not generate, will be copied automatically>>\n"
             f"{outcome_ex_t2}"
             "  Population: BROADER than Tier 1. Widen to more general populations.\n"
-            "  Example: [\"adults\", \"healthy adults\"]\n\n"
+            '  Example: ["adults", "healthy adults"]\n\n'
             "TIER 3 — 'Speculative extrapolation' (broader category):\n"
             f"{_t3_exp}"
             "  Outcome: <<INHERITED FROM TIER 2 — do not generate, will be copied automatically>>\n"
@@ -1341,7 +1396,7 @@ class ResearchAgent:
             '    "outcome": ["term1", "term2"],\n'
             '    "population": ["term1", "term2"],\n'
             '    "rationale": "Why these exact terms belong at Tier 1"\n'
-            '  },\n'
+            "  },\n"
             '  "tier2": {"outcome": ["all tier1 outcomes + broader terms"], "population": ["broader"], "rationale": "..."},\n'
             '  "tier3": {"intervention": ["compound class terms"], "rationale": "..."}\n'
             "}"
@@ -1409,17 +1464,19 @@ class ResearchAgent:
             logger.warning(f"Tier keyword generation parse failed: {e} — using fallback")
             fallback_terms = [w for w in topic.split() if len(w) > 3][:4]
             return TieredSearchPlan(
-                pico={"population": "general", "intervention": topic,
-                      "comparison": "control", "outcome": "primary outcome"},
+                pico={
+                    "population": "general",
+                    "intervention": topic,
+                    "comparison": "control",
+                    "outcome": "primary outcome",
+                },
                 tier1=TierKeywords(intervention=fallback_terms, outcome=[], population=[], rationale="fallback"),
                 tier2=TierKeywords(intervention=fallback_terms, outcome=[], population=[], rationale="fallback"),
                 tier3=TierKeywords(intervention=fallback_terms, outcome=[], population=[], rationale="fallback"),
                 role=role,
             )
 
-    async def _audit_tier_plan(
-        self, plan: TieredSearchPlan, topic: str, log=logger.info
-    ) -> tuple:
+    async def _audit_tier_plan(self, plan: TieredSearchPlan, topic: str, log=logger.info) -> tuple:
         """Auditor reviews all three tiers in one call. Returns (approved: bool, notes: str)."""
         log(f"    [Auditor] Reviewing tier keyword plan ({plan.role})...")
 
@@ -1456,7 +1513,8 @@ class ResearchAgent:
             "(e.g., 'sleep disruption', 'anxiety', 'null result', 'cardiovascular risk'). "
             "Benefit-oriented outcomes (e.g., 'productivity', 'performance') are WRONG for this track. "
             "Check that outcomes target adverse effects and contradicting evidence.\n"
-            if plan.role == "adversarial" else ""
+            if plan.role == "adversarial"
+            else ""
         )
 
         user = (
@@ -1495,8 +1553,7 @@ class ResearchAgent:
             return False, f"Rejected: auditor response could not be parsed ({type(e).__name__})"
 
     async def _formulate_tiered_strategy(
-        self, topic: str, role: str, framing_context: str,
-        decomposition: Optional[Dict], log=logger.info
+        self, topic: str, role: str, framing_context: str, decomposition: Optional[Dict], log=logger.info
     ) -> TieredSearchPlan:
         """Step 1: Scientist generates tier keywords, Auditor reviews; loop until approved."""
         MAX_REVISIONS = 2
@@ -1505,8 +1562,7 @@ class ResearchAgent:
         for attempt in range(MAX_REVISIONS + 1):
             log(f"\n    [Step 1] Generating tier keywords (attempt {attempt + 1}/{MAX_REVISIONS + 1})...")
             plan = await self._generate_tiered_keywords(
-                topic, role, framing_context, decomposition,
-                auditor_feedback=feedback, log=log
+                topic, role, framing_context, decomposition, auditor_feedback=feedback, log=log
             )
             approved, feedback = await self._audit_tier_plan(plan, topic, log=log)
             plan.revision_count = attempt
@@ -1528,15 +1584,20 @@ class ResearchAgent:
 
     def _build_tier_query(self, tier: TierKeywords, extra_filters: str = "") -> str:
         """Deterministic PubMed Boolean builder — no LLM. AND between groups, OR within groups."""
+
         def group(terms: List[str]) -> str:
             quoted = [f'"{t}"[Title/Abstract]' for t in terms if t.strip()]
             return "(" + " OR ".join(quoted) + ")" if quoted else ""
 
-        parts = [g for g in [
-            group(tier.intervention),
-            group(tier.outcome),
-            group(tier.population),
-        ] if g]
+        parts = [
+            g
+            for g in [
+                group(tier.intervention),
+                group(tier.outcome),
+                group(tier.population),
+            ]
+            if g
+        ]
 
         query = " AND ".join(parts)
         if extra_filters and query:
@@ -1547,15 +1608,13 @@ class ResearchAgent:
     #  STEP 2 — Tiered cascade search                                      #
     # ------------------------------------------------------------------ #
 
-    async def _tiered_search(
-        self, plan: TieredSearchPlan, log=logger.info
-    ) -> tuple:
+    async def _tiered_search(self, plan: TieredSearchPlan, log=logger.info) -> tuple:
         """Step 2: Run tiered PubMed cascade. Stop when pool >= TIER_THRESHOLD.
 
         Returns:
             (List[WideNetRecord], int) — records and highest tier reached.
         """
-        if getattr(self, '_domain', 'clinical') == "social_science":
+        if getattr(self, "_domain", "clinical") == "social_science":
             return await self._tiered_search_social(plan, log)
         log(f"    [Step 2] Tiered cascade search ({plan.role})...")
         all_records: List[WideNetRecord] = []
@@ -1596,21 +1655,23 @@ class ResearchAgent:
                         seen_pmids.add(pmid)
                     if url:
                         seen_urls.add(url)
-                    all_records.append(WideNetRecord(
-                        pmid=pmid,
-                        doi=art.get("doi"),
-                        title=art.get("title", ""),
-                        abstract=art.get("abstract", ""),
-                        study_type=art.get("study_type", "other"),
-                        sample_size=None,
-                        primary_objective=None,
-                        year=art.get("year"),
-                        journal=art.get("journal"),
-                        authors=art.get("authors"),
-                        url=url,
-                        source_db="pubmed",
-                        research_tier=tier_num,
-                    ))
+                    all_records.append(
+                        WideNetRecord(
+                            pmid=pmid,
+                            doi=art.get("doi"),
+                            title=art.get("title", ""),
+                            abstract=art.get("abstract", ""),
+                            study_type=art.get("study_type", "other"),
+                            sample_size=None,
+                            primary_objective=None,
+                            year=art.get("year"),
+                            journal=art.get("journal"),
+                            authors=art.get("authors"),
+                            url=url,
+                            source_db="pubmed",
+                            research_tier=tier_num,
+                        )
+                    )
                     added += 1
                     log("[STUDY_FOUND]")
                 log(f"    [Tier {tier_num}] +{added} new records (pool: {len(all_records)})")
@@ -1629,7 +1690,7 @@ class ResearchAgent:
             try:
                 async with SearxngClient() as client:
                     if await client.validate_connection():
-                        raw = await client.search(scholar_query, engines=['google scholar'], num_results=100)
+                        raw = await client.search(scholar_query, engines=["google scholar"], num_results=100)
                         scholar_added = 0
                         for r in raw:
                             url = r.get("url", "") if isinstance(r, dict) else getattr(r, "url", "")
@@ -1638,15 +1699,23 @@ class ResearchAgent:
                             seen_urls.add(url)
                             title = r.get("title", "") if isinstance(r, dict) else getattr(r, "title", "")
                             snippet = r.get("content", "") if isinstance(r, dict) else getattr(r, "snippet", "")
-                            all_records.append(WideNetRecord(
-                                pmid=None, doi=None,
-                                title=title, abstract=snippet,
-                                study_type="other",
-                                sample_size=None, primary_objective=None,
-                                year=None, journal=None, authors=None,
-                                url=url, source_db="scholar",
-                                research_tier=1,
-                            ))
+                            all_records.append(
+                                WideNetRecord(
+                                    pmid=None,
+                                    doi=None,
+                                    title=title,
+                                    abstract=snippet,
+                                    study_type="other",
+                                    sample_size=None,
+                                    primary_objective=None,
+                                    year=None,
+                                    journal=None,
+                                    authors=None,
+                                    url=url,
+                                    source_db="scholar",
+                                    research_tier=1,
+                                )
+                            )
                             scholar_added += 1
                             log("[STUDY_FOUND]")
                         log(f"    [Scholar] +{scholar_added} records (Tier 1 keywords)")
@@ -1662,7 +1731,9 @@ class ResearchAgent:
                 if not tier_kw.intervention:
                     continue
                 intervention_only = TierKeywords(
-                    intervention=tier_kw.intervention, outcome=[], population=[],
+                    intervention=tier_kw.intervention,
+                    outcome=[],
+                    population=[],
                     rationale="fallback-intervention-only",
                 )
                 query = self._build_tier_query(intervention_only, filters)
@@ -1682,16 +1753,23 @@ class ResearchAgent:
                             seen_pmids.add(pmid)
                         if url:
                             seen_urls.add(url)
-                        all_records.append(WideNetRecord(
-                            pmid=pmid, doi=art.get("doi"),
-                            title=art.get("title", ""),
-                            abstract=art.get("abstract", ""),
-                            study_type=art.get("study_type", "other"),
-                            sample_size=None, primary_objective=None,
-                            year=art.get("year"), journal=art.get("journal"),
-                            authors=art.get("authors"), url=url,
-                            source_db="pubmed", research_tier=tier_num,
-                        ))
+                        all_records.append(
+                            WideNetRecord(
+                                pmid=pmid,
+                                doi=art.get("doi"),
+                                title=art.get("title", ""),
+                                abstract=art.get("abstract", ""),
+                                study_type=art.get("study_type", "other"),
+                                sample_size=None,
+                                primary_objective=None,
+                                year=art.get("year"),
+                                journal=art.get("journal"),
+                                authors=art.get("authors"),
+                                url=url,
+                                source_db="pubmed",
+                                research_tier=tier_num,
+                            )
+                        )
                         log("[STUDY_FOUND]")
                 except Exception as e:
                     logger.error(f"Tier {tier_num} fallback search failed: {e}")
@@ -1719,9 +1797,7 @@ class ResearchAgent:
 
         return all_records[:500], highest_tier
 
-    async def _tiered_search_social(
-        self, plan: TieredSearchPlan, log=logger.info
-    ) -> tuple:
+    async def _tiered_search_social(self, plan: TieredSearchPlan, log=logger.info) -> tuple:
         """Step 2: Search OpenAlex + ERIC + Scholar for social science topics."""
         log(f"    [Step 2] Social science search ({plan.role})...")
         all_records: List[WideNetRecord] = []
@@ -1769,18 +1845,23 @@ class ResearchAgent:
                         src = pri_loc.get("source")
                         if isinstance(src, dict):
                             journal_name = src.get("display_name")
-                    all_records.append(WideNetRecord(
-                        pmid=None, doi=oa_doi or None,
-                        title=title,
-                        abstract=oa.get("abstract_text", "") or "",
-                        study_type=oa.get("type", "other"),
-                        sample_size=None, primary_objective=None,
-                        year=oa.get("publication_year"),
-                        journal=journal_name,
-                        authors=None,
-                        url=url, source_db="openalex",
-                        research_tier=tier_num,
-                    ))
+                    all_records.append(
+                        WideNetRecord(
+                            pmid=None,
+                            doi=oa_doi or None,
+                            title=title,
+                            abstract=oa.get("abstract_text", "") or "",
+                            study_type=oa.get("type", "other"),
+                            sample_size=None,
+                            primary_objective=None,
+                            year=oa.get("publication_year"),
+                            journal=journal_name,
+                            authors=None,
+                            url=url,
+                            source_db="openalex",
+                            research_tier=tier_num,
+                        )
+                    )
                     added += 1
                     log("[STUDY_FOUND]")
                 log(f"    [Tier {tier_num}] OpenAlex: +{added} records")
@@ -1805,18 +1886,23 @@ class ResearchAgent:
                         seen_urls.add(url)
                     er_authors = er.get("author", [])
                     author_str = ", ".join(er_authors) if er_authors else None
-                    all_records.append(WideNetRecord(
-                        pmid=None, doi=None,
-                        title=title,
-                        abstract=er.get("description", ""),
-                        study_type="other",
-                        sample_size=None, primary_objective=None,
-                        year=er.get("year"),
-                        journal=er.get("source", ""),
-                        authors=author_str,
-                        url=url, source_db="eric",
-                        research_tier=tier_num,
-                    ))
+                    all_records.append(
+                        WideNetRecord(
+                            pmid=None,
+                            doi=None,
+                            title=title,
+                            abstract=er.get("description", ""),
+                            study_type="other",
+                            sample_size=None,
+                            primary_objective=None,
+                            year=er.get("year"),
+                            journal=er.get("source", ""),
+                            authors=author_str,
+                            url=url,
+                            source_db="eric",
+                            research_tier=tier_num,
+                        )
+                    )
                     added += 1
                     log("[STUDY_FOUND]")
                 log(f"    [Tier {tier_num}] ERIC: +{added} records")
@@ -1834,7 +1920,7 @@ class ResearchAgent:
             try:
                 async with SearxngClient() as client:
                     if await client.validate_connection():
-                        raw = await client.search(scholar_query, engines=['google scholar'], num_results=100)
+                        raw = await client.search(scholar_query, engines=["google scholar"], num_results=100)
                         scholar_added = 0
                         for r in raw:
                             url = r.get("url", "") if isinstance(r, dict) else getattr(r, "url", "")
@@ -1843,15 +1929,23 @@ class ResearchAgent:
                             seen_urls.add(url)
                             title = r.get("title", "") if isinstance(r, dict) else getattr(r, "title", "")
                             snippet = r.get("content", "") if isinstance(r, dict) else getattr(r, "snippet", "")
-                            all_records.append(WideNetRecord(
-                                pmid=None, doi=None,
-                                title=title, abstract=snippet,
-                                study_type="other",
-                                sample_size=None, primary_objective=None,
-                                year=None, journal=None, authors=None,
-                                url=url, source_db="scholar",
-                                research_tier=1,
-                            ))
+                            all_records.append(
+                                WideNetRecord(
+                                    pmid=None,
+                                    doi=None,
+                                    title=title,
+                                    abstract=snippet,
+                                    study_type="other",
+                                    sample_size=None,
+                                    primary_objective=None,
+                                    year=None,
+                                    journal=None,
+                                    authors=None,
+                                    url=url,
+                                    source_db="scholar",
+                                    research_tier=1,
+                                )
+                            )
                             scholar_added += 1
                             log("[STUDY_FOUND]")
                         log(f"    [Scholar] +{scholar_added} records")
@@ -1892,18 +1986,23 @@ class ResearchAgent:
                     resp = await self.fast_worker.client.chat.completions.create(
                         model=self.fast_worker.model,
                         messages=[
-                            {"role": "system", "content": (
-                                "Extract from this abstract:\n"
-                                '- study_type: RCT | meta-analysis | systematic-review | cohort | '
-                                'case-control | cross-sectional | case-report | in-vitro | animal-model | '
-                                'review | guideline | other\n'
-                                '- sample_size: "n=X" or null\n'
-                                '- primary_objective: one sentence or null\n'
-                                'Return JSON only: {"study_type":"...","sample_size":"...","primary_objective":"..."}'
-                            )},
-                            {"role": "user", "content": f"Title: {record.title}\n\nAbstract: {record.abstract[:2000]}"}
+                            {
+                                "role": "system",
+                                "content": (
+                                    "Extract from this abstract:\n"
+                                    "- study_type: RCT | meta-analysis | systematic-review | cohort | "
+                                    "case-control | cross-sectional | case-report | in-vitro | animal-model | "
+                                    "review | guideline | other\n"
+                                    '- sample_size: "n=X" or null\n'
+                                    "- primary_objective: one sentence or null\n"
+                                    'Return JSON only: {"study_type":"...","sample_size":"...","primary_objective":"..."}'
+                                ),
+                            },
+                            {"role": "user", "content": f"Title: {record.title}\n\nAbstract: {record.abstract[:2000]}"},
                         ],
-                        max_tokens=256, temperature=0.1, timeout=180
+                        max_tokens=256,
+                        temperature=0.1,
+                        timeout=180,
                     )
                     raw = safe_message_text(resp)
                     # Parse JSON from response
@@ -1919,8 +2018,12 @@ class ResearchAgent:
         return list(results)
 
     async def _screen_and_prioritize(
-        self, records: List[WideNetRecord], strategy: TieredSearchPlan,
-        max_select: int = 20, topic: str = "", log=logger.info
+        self,
+        records: List[WideNetRecord],
+        strategy: TieredSearchPlan,
+        max_select: int = 20,
+        topic: str = "",
+        log=logger.info,
     ) -> List[WideNetRecord]:
         """Step 3: Smart model screens wide net records → top 20 with tier-aware priority."""
         if not records:
@@ -1950,7 +2053,12 @@ class ResearchAgent:
             else:
                 tier_intervention = ", ".join(strategy.tier3.intervention)
             screened[tier_num] = await self._screen_chunk(
-                tier_records, 0, pico_str, max_select, topic, log,
+                tier_records,
+                0,
+                pico_str,
+                max_select,
+                topic,
+                log,
                 intervention_override=tier_intervention,
             )
             log(f"    [Step 3] Tier {tier_num}: {len(screened[tier_num])} passed screening")
@@ -1976,29 +2084,38 @@ class ResearchAgent:
 
         selected.extend(screened[3][:tier3_slots])
 
-        log(f"    [Step 3] Final selection: T1={sum(1 for s in selected if s.research_tier==1)}, "
-            f"T2={sum(1 for s in selected if s.research_tier==2)}, "
-            f"T3={sum(1 for s in selected if s.research_tier==3)}, total={len(selected)}")
+        log(
+            f"    [Step 3] Final selection: T1={sum(1 for s in selected if s.research_tier == 1)}, "
+            f"T2={sum(1 for s in selected if s.research_tier == 2)}, "
+            f"T3={sum(1 for s in selected if s.research_tier == 3)}, total={len(selected)}"
+        )
 
         return selected
 
     async def _screen_chunk(
-        self, records: List[WideNetRecord], offset: int,
-        pico_str: str, max_select: int, topic: str, log,
-        intervention_override: str = ""
+        self,
+        records: List[WideNetRecord],
+        offset: int,
+        pico_str: str,
+        max_select: int,
+        topic: str,
+        log,
+        intervention_override: str = "",
     ) -> List[WideNetRecord]:
         """Screen a chunk of records with the smart model."""
         compact = []
         for i, r in enumerate(records):
-            compact.append({
-                "idx": offset + i,
-                "title": r.title[:150],
-                "type": r.study_type,
-                "n": r.sample_size,
-                "year": r.year,
-                "journal": r.journal,
-                "abstract": r.abstract[:300],
-            })
+            compact.append(
+                {
+                    "idx": offset + i,
+                    "title": r.title[:150],
+                    "type": r.study_type,
+                    "n": r.sample_size,
+                    "year": r.year,
+                    "journal": r.journal,
+                    "abstract": r.abstract[:300],
+                }
+            )
 
         # Extract intervention text for relevance gate
         if intervention_override:
@@ -2060,19 +2177,33 @@ class ResearchAgent:
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning(f"Screening parse failed: {e}, applying fallback with keyword filter")
             # Fallback: keyword relevance filter + study type priority
-            _kw_words = set(
-                w.lower() for w in re.findall(r'\w{3,}', intervention_text)
-            ) - {'the', 'and', 'for', 'with', 'from', 'pico', 'intervention'}
+            _kw_words = set(w.lower() for w in re.findall(r"\w{3,}", intervention_text)) - {
+                "the",
+                "and",
+                "for",
+                "with",
+                "from",
+                "pico",
+                "intervention",
+            }
+
             def _fallback_relevant(r):
                 if not _kw_words:
                     return True
                 text = f"{(r.title or '').lower()} {(r.abstract or '')[:500].lower()}"
                 return any(w in text for w in _kw_words)
+
             relevant = [r for r in records if _fallback_relevant(r)]
             if len(relevant) < 5:
                 relevant = records  # filter too aggressive, use all
-            priority = {"meta-analysis": 0, "systematic-review": 1, "RCT": 2,
-                        "clinical-trial": 3, "cohort": 4, "observational": 5}
+            priority = {
+                "meta-analysis": 0,
+                "systematic-review": 1,
+                "RCT": 2,
+                "clinical-trial": 3,
+                "cohort": 4,
+                "observational": 5,
+            }
             sorted_records = sorted(relevant, key=lambda r: priority.get(r.study_type, 99))
             return sorted_records[:max_select]
 
@@ -2083,7 +2214,7 @@ class ResearchAgent:
             cache_path = Path(output_dir) / "meta" / "extraction_cache.json"
             if cache_path.exists():
                 try:
-                    with open(cache_path, 'r') as f:
+                    with open(cache_path, "r") as f:
                         return json.load(f)
                 except (json.JSONDecodeError, OSError):
                     return {}
@@ -2091,7 +2222,7 @@ class ResearchAgent:
             legacy_path = Path(output_dir) / "extraction_cache.json"
             if legacy_path.exists():
                 try:
-                    with open(legacy_path, 'r') as f:
+                    with open(legacy_path, "r") as f:
                         return json.load(f)
                 except (json.JSONDecodeError, OSError):
                     return {}
@@ -2100,7 +2231,7 @@ class ResearchAgent:
             cache_path = Path(__file__).resolve().parents[2] / "research_outputs" / "extraction_cache.json"
             if cache_path.exists():
                 try:
-                    with open(cache_path, 'r') as f:
+                    with open(cache_path, "r") as f:
                         return json.load(f)
                 except (json.JSONDecodeError, OSError):
                     return {}
@@ -2115,7 +2246,7 @@ class ResearchAgent:
             # Anchor to project root, not CWD — CLI and web UI launch from different dirs
             cache_path = Path(__file__).resolve().parents[2] / "research_outputs" / "extraction_cache.json"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, 'w') as f:
+        with open(cache_path, "w") as f:
             json.dump(cache, f, indent=2)
 
     @staticmethod
@@ -2164,14 +2295,13 @@ class ResearchAgent:
         return d
 
     async def _deep_extract_batch(
-        self, articles, records: List[WideNetRecord], pico: Dict[str, str],
-        log=logger.info, output_dir: str = None
+        self, articles, records: List[WideNetRecord], pico: Dict[str, str], log=logger.info, output_dir: str = None
     ) -> List[DeepExtraction]:
         """Step 4: Extract clinical variables from full-text articles using fast model.
         Uses PMID-keyed cache to ensure identical NNT across runs for the same paper."""
         log(f"    [Step 4] Deep extraction from {len(articles)} articles (Smart Model)...")
         semaphore = asyncio.Semaphore(3)  # Reduced from 6 to avoid overloading model server
-        is_social = getattr(self, '_domain', 'clinical') == "social_science"
+        is_social = getattr(self, "_domain", "clinical") == "social_science"
 
         # Load extraction cache
         extraction_cache = self._load_extraction_cache(output_dir)
@@ -2186,15 +2316,18 @@ class ResearchAgent:
                 cache_hits += 1
                 log(f"    [Cache hit] {record.title[:50]}...")
                 return self._extraction_from_cache(record, extraction_cache[cache_key])
-            text = getattr(article, 'full_text', '') or ''
+            text = getattr(article, "full_text", "") or ""
             # Fall back to abstract if full-text is empty or too short
             if len(text.strip()) < 200 and record.abstract:
                 text = record.abstract
             if not text.strip():
                 return DeepExtraction(
-                    pmid=record.pmid, doi=record.doi, title=record.title,
-                    url=record.url, research_tier=record.research_tier,
-                    raw_facts="No content available"
+                    pmid=record.pmid,
+                    doi=record.doi,
+                    title=record.title,
+                    url=record.url,
+                    research_tier=record.research_tier,
+                    raw_facts="No content available",
                 )
 
             async with semaphore:
@@ -2267,24 +2400,32 @@ class ResearchAgent:
                     # is too small for reliable 19-field JSON extraction from full-text
                     messages = [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Title: {record.title}\n\nContent:\n{content}"}
+                        {"role": "user", "content": f"Title: {record.title}\n\nContent:\n{content}"},
                     ]
                     try:
                         resp = await self.smart_client.chat.completions.create(
-                            model=self.smart_model, messages=messages,
-                            max_tokens=2048, temperature=0.1, timeout=180,
+                            model=self.smart_model,
+                            messages=messages,
+                            max_tokens=2048,
+                            temperature=0.1,
+                            timeout=180,
                             extra_body=QWEN3_NO_THINK_EXTRA_BODY,
                         )
                     except openai.BadRequestError as ctx_err:
                         if "context length" not in str(ctx_err).lower():
                             raise
                         # Token-dense content (tables, citations) — retry with quarter
-                        content = content[:len(content) // 4]
-                        logger.info(f"    Context length exceeded, retrying with {len(content)} chars for {record.title[:50]}")
+                        content = content[: len(content) // 4]
+                        logger.info(
+                            f"    Context length exceeded, retrying with {len(content)} chars for {record.title[:50]}"
+                        )
                         messages[1]["content"] = f"Title: {record.title}\n\nContent:\n{content}"
                         resp = await self.smart_client.chat.completions.create(
-                            model=self.smart_model, messages=messages,
-                            max_tokens=2048, temperature=0.1, timeout=180,
+                            model=self.smart_model,
+                            messages=messages,
+                            max_tokens=2048,
+                            temperature=0.1,
+                            timeout=180,
                             extra_body=QWEN3_NO_THINK_EXTRA_BODY,
                         )
 
@@ -2340,15 +2481,16 @@ class ResearchAgent:
                 except Exception as e:
                     logger.warning(f"Deep extraction failed for {record.title[:50]}: {e}")
                     return DeepExtraction(
-                        pmid=record.pmid, doi=record.doi, title=record.title,
-                        url=record.url, research_tier=record.research_tier,
+                        pmid=record.pmid,
+                        doi=record.doi,
+                        title=record.title,
+                        url=record.url,
+                        research_tier=record.research_tier,
                         raw_facts=f"Extraction failed: {str(e)[:100]}",
                         paper_metadata=record.paper_metadata,
                     )
 
-        results = await asyncio.gather(*[
-            extract_one(art, rec) for art, rec in zip(articles, records)
-        ])
+        results = await asyncio.gather(*[extract_one(art, rec) for art, rec in zip(articles, records)])
         good = sum(1 for r in results if r.raw_facts and "failed" not in r.raw_facts.lower())
         log(f"    [Step 4] Extracted data from {good}/{len(results)} articles (cache hits: {cache_hits})")
 
@@ -2365,8 +2507,7 @@ class ResearchAgent:
         return list(results)
 
     async def _build_case(
-        self, topic: str, strategy: TieredSearchPlan,
-        extractions: List[DeepExtraction], case_type: str, log=logger.info
+        self, topic: str, strategy: TieredSearchPlan, extractions: List[DeepExtraction], case_type: str, log=logger.info
     ) -> str:
         """Step 5/6: Smart model builds affirmative or falsification case from extraction data."""
         log(f"    [Step {'5' if case_type == 'affirmative' else '6'}] Building {case_type} case...")
@@ -2442,7 +2583,8 @@ class ResearchAgent:
             report = await self._call_smart(
                 system,
                 f"Topic: {topic}\n\nEXTRACTED STUDY DATA:\n\n{extractions_text}",
-                max_tokens=6000, temperature=0.2
+                max_tokens=6000,
+                temperature=0.2,
             )
             has_synthetic, flagged = _detect_synthetic_citations(report, extractions)
             if has_synthetic:
@@ -2450,9 +2592,7 @@ class ResearchAgent:
                     "\n\n---\n"
                     "⚠ **SYNTHETIC CITATION WARNING** — the following references were cited but "
                     f"not found in the {len(extractions)} retrieved studies. "
-                    "They may be hallucinated:\n"
-                    + "\n".join(f"- {r}" for r in flagged)
-                    + "\n---\n"
+                    "They may be hallucinated:\n" + "\n".join(f"- {r}" for r in flagged) + "\n---\n"
                 )
                 report = warning + report
                 if not extractions:
@@ -2463,12 +2603,10 @@ class ResearchAgent:
             return f"# {case_type.title()} Case: {topic}\n\n*Case synthesis failed ({e}).*\n\n{extractions_text}"
 
 
-_CITATION_RE = re.compile(r'\b([A-Z][a-z]+(?:\s+et\s+al\.)?)\s+\((\d{4})\)')
+_CITATION_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+et\s+al\.)?)\s+\((\d{4})\)")
 
 
-def _detect_synthetic_citations(
-    report: str, extractions: list
-) -> tuple:
+def _detect_synthetic_citations(report: str, extractions: list) -> tuple:
     """Cross-check cited references against retrieved study corpus.
 
     Returns:
@@ -2481,17 +2619,13 @@ def _detect_synthetic_citations(
         # No studies were input → any citation is hallucinated
         return True, [f"{a} ({y})" for a, y in found]
     # Build corpus of known author/title text from extractions
-    known = " ".join(
-        f"{ex.title or ''} {ex.raw_facts or ''}" for ex in extractions
-    ).lower()
-    flagged = [
-        f"{a} ({y})" for a, y in found
-        if a.replace("et al.", "").strip().lower() not in known
-    ]
+    known = " ".join(f"{ex.title or ''} {ex.raw_facts or ''}" for ex in extractions).lower()
+    flagged = [f"{a} ({y})" for a, y in found if a.replace("et al.", "").strip().lower() not in known]
     return bool(flagged), flagged
 
 
 # --- Orchestrator: Full Pipeline ---
+
 
 class Orchestrator:
     """
@@ -2527,12 +2661,10 @@ class Orchestrator:
         fetcher = ContentFetcher(max_concurrent=15, cache=self._page_cache)
 
         self.lead_researcher = ResearchAgent(
-            self.smart_client, fast_worker, search_svc, fetcher,
-            smart_model, results_per_query, max_iterations
+            self.smart_client, fast_worker, search_svc, fetcher, smart_model, results_per_query, max_iterations
         )
         self.counter_researcher = ResearchAgent(
-            self.smart_client, fast_worker, search_svc, fetcher,
-            smart_model, results_per_query, max_iterations
+            self.smart_client, fast_worker, search_svc, fetcher, smart_model, results_per_query, max_iterations
         )
         self.fast_model_available = fast_model_available
 
@@ -2543,6 +2675,7 @@ class Orchestrator:
         # Social science clients (OpenAlex + ERIC)
         if domain == "social_science":
             from dr2_podcast.research.metadata_clients import OpenAlexClient, ERICClient, MetadataCache
+
             self._metadata_cache = MetadataCache()
             self.openalex = OpenAlexClient(cache=self._metadata_cache)
             self.eric = ERICClient(cache=self._metadata_cache)
@@ -2553,10 +2686,12 @@ class Orchestrator:
 
         # Full-text fetcher for Step 4
         from dr2_podcast.research.fulltext_fetcher import FullTextFetcher
+
         self.fulltext_fetcher = FullTextFetcher(max_concurrent=5, cache=self._page_cache)
 
-    async def run(self, topic: str, framing_context: str = "", progress_callback=None,
-                  output_dir: str = None) -> Dict[str, ResearchReport]:
+    async def run(
+        self, topic: str, framing_context: str = "", progress_callback=None, output_dir: str = None
+    ) -> Dict[str, ResearchReport]:
         """Run the full 7-step clinical research pipeline.
 
         Args:
@@ -2571,9 +2706,13 @@ class Orchestrator:
         from dr2_podcast.research import clinical_math
 
         if not SMART_MODEL or not SMART_BASE_URL:
-            raise RuntimeError("MODEL_NAME and LLM_BASE_URL environment variables must be set before running the pipeline")
+            raise RuntimeError(
+                "MODEL_NAME and LLM_BASE_URL environment variables must be set before running the pipeline"
+            )
         if self.fast_model_available and (not FAST_MODEL or not FAST_BASE_URL):
-            raise RuntimeError("FAST_MODEL_NAME and FAST_LLM_BASE_URL environment variables must be set before running the pipeline")
+            raise RuntimeError(
+                "FAST_MODEL_NAME and FAST_LLM_BASE_URL environment variables must be set before running the pipeline"
+            )
 
         start_time = time.time()
 
@@ -2583,14 +2722,14 @@ class Orchestrator:
                 progress_callback(msg)
 
         mode = "DUAL-MODEL" if self.fast_model_available else "SINGLE-MODEL"
-        log(f"\n{'='*70}")
+        log(f"\n{'=' * 70}")
         domain_label = "Social Science" if self.domain == "social_science" else "Clinical"
         log(f"DEEP RESEARCH AGENT - Evidence-Based {domain_label} Pipeline ({mode})")
-        log(f"{'='*70}")
+        log(f"{'=' * 70}")
         log(f"Topic: {topic}")
         if framing_context:
             log(f"Research framing provided: {len(framing_context)} chars")
-        log(f"{'='*70}")
+        log(f"{'=' * 70}")
 
         # Counters for metrics
         aff_wide_net_total = 0
@@ -2603,9 +2742,9 @@ class Orchestrator:
         fal_fulltext_err = 0
 
         # --- Phase 0: Concept Decomposition (C2) ---
-        log(f"\n{'='*70}")
+        log(f"\n{'=' * 70}")
         log(f"PHASE 0: CONCEPT DECOMPOSITION")
-        log(f"{'='*70}")
+        log(f"{'=' * 70}")
         decomposition = await self.lead_researcher._decompose_topic(topic, framing_context)
         if decomposition.get("canonical_terms"):
             log(f"  Canonical terms: {', '.join(decomposition['canonical_terms'])}")
@@ -2616,25 +2755,23 @@ class Orchestrator:
         async def affirmative_track():
             nonlocal aff_wide_net_total, aff_screened_in, aff_fulltext_ok, aff_fulltext_err
 
-            log(f"\n{'='*70}")
+            log(f"\n{'=' * 70}")
             log(f"STEP 1a: TIERED KEYWORD GENERATION + AUDITOR GATE (Affirmative)")
-            log(f"{'='*70}")
+            log(f"{'=' * 70}")
             plan = await self.lead_researcher._formulate_tiered_strategy(
                 topic, "affirmative", framing_context, decomposition, log=log
             )
 
-            log(f"\n{'='*70}")
+            log(f"\n{'=' * 70}")
             log(f"STEP 2a: TIERED CASCADE SEARCH (Affirmative)")
-            log(f"{'='*70}")
+            log(f"{'=' * 70}")
             records, aff_highest_tier = await self.lead_researcher._tiered_search(plan, log)
             aff_wide_net_total = len(records)
 
-            log(f"\n{'='*70}")
+            log(f"\n{'=' * 70}")
             log(f"STEP 3a: SCREENING ({len(records)} → top 20) (Affirmative)")
-            log(f"{'='*70}")
-            top_records = await self.lead_researcher._screen_and_prioritize(
-                records, plan, topic=topic, log=log
-            )
+            log(f"{'=' * 70}")
+            top_records = await self.lead_researcher._screen_and_prioritize(records, plan, topic=topic, log=log)
             aff_screened_in = len(top_records)
 
             # Metadata enrichment (optional — degrades gracefully)
@@ -2645,9 +2782,9 @@ class Orchestrator:
                 log(f"    ⚠ Filtering out {len(retracted)} retracted paper(s) from affirmative track")
                 top_records = [r for r in top_records if not (r.paper_metadata and r.paper_metadata.is_retracted)]
 
-            log(f"\n{'='*70}")
+            log(f"\n{'=' * 70}")
             log(f"STEP 4a: DEEP EXTRACTION ({len(top_records)} articles) (Affirmative)")
-            log(f"{'='*70}")
+            log(f"{'=' * 70}")
             fulltexts = await self.fulltext_fetcher.fetch_all(top_records)
             aff_fulltext_ok = sum(1 for ft in fulltexts if not ft.error)
             aff_fulltext_err = sum(1 for ft in fulltexts if ft.error)
@@ -2657,12 +2794,10 @@ class Orchestrator:
                 fulltexts, top_records, plan.pico, log, output_dir=output_dir
             )
 
-            log(f"\n{'='*70}")
+            log(f"\n{'=' * 70}")
             log(f"STEP 5a: AFFIRMATIVE CASE")
-            log(f"{'='*70}")
-            case_report = await self.lead_researcher._build_case(
-                topic, plan, extractions, "affirmative", log
-            )
+            log(f"{'=' * 70}")
+            case_report = await self.lead_researcher._build_case(topic, plan, extractions, "affirmative", log)
 
             return plan, records, top_records, extractions, case_report, aff_highest_tier
 
@@ -2670,25 +2805,23 @@ class Orchestrator:
         async def falsification_track():
             nonlocal fal_wide_net_total, fal_screened_in, fal_fulltext_ok, fal_fulltext_err
 
-            log(f"\n{'='*70}")
+            log(f"\n{'=' * 70}")
             log(f"STEP 1b: TIERED KEYWORD GENERATION + AUDITOR GATE (Falsification)")
-            log(f"{'='*70}")
+            log(f"{'=' * 70}")
             plan = await self.counter_researcher._formulate_tiered_strategy(
                 topic, "adversarial", framing_context, decomposition, log=log
             )
 
-            log(f"\n{'='*70}")
+            log(f"\n{'=' * 70}")
             log(f"STEP 2b: TIERED CASCADE SEARCH (Falsification)")
-            log(f"{'='*70}")
+            log(f"{'=' * 70}")
             records, fal_highest_tier = await self.counter_researcher._tiered_search(plan, log)
             fal_wide_net_total = len(records)
 
-            log(f"\n{'='*70}")
+            log(f"\n{'=' * 70}")
             log(f"STEP 3b: SCREENING ({len(records)} → top 20) (Falsification)")
-            log(f"{'='*70}")
-            top_records = await self.counter_researcher._screen_and_prioritize(
-                records, plan, topic=topic, log=log
-            )
+            log(f"{'=' * 70}")
+            top_records = await self.counter_researcher._screen_and_prioritize(records, plan, topic=topic, log=log)
             fal_screened_in = len(top_records)
 
             # Metadata enrichment (optional — degrades gracefully)
@@ -2699,9 +2832,9 @@ class Orchestrator:
                 log(f"    ⚠ Filtering out {len(retracted)} retracted paper(s) from falsification track")
                 top_records = [r for r in top_records if not (r.paper_metadata and r.paper_metadata.is_retracted)]
 
-            log(f"\n{'='*70}")
+            log(f"\n{'=' * 70}")
             log(f"STEP 4b: DEEP EXTRACTION ({len(top_records)} articles) (Falsification)")
-            log(f"{'='*70}")
+            log(f"{'=' * 70}")
             fulltexts = await self.fulltext_fetcher.fetch_all(top_records)
             fal_fulltext_ok = sum(1 for ft in fulltexts if not ft.error)
             fal_fulltext_err = sum(1 for ft in fulltexts if ft.error)
@@ -2711,38 +2844,40 @@ class Orchestrator:
                 fulltexts, top_records, plan.pico, log, output_dir=output_dir
             )
 
-            log(f"\n{'='*70}")
+            log(f"\n{'=' * 70}")
             log(f"STEP 5b: FALSIFICATION CASE")
-            log(f"{'='*70}")
-            case_report = await self.counter_researcher._build_case(
-                topic, plan, extractions, "falsification", log
-            )
+            log(f"{'=' * 70}")
+            case_report = await self.counter_researcher._build_case(topic, plan, extractions, "falsification", log)
 
             return plan, records, top_records, extractions, case_report, fal_highest_tier
 
         # --- Run both tracks in parallel ---
-        log(f"\n{'='*70}")
+        log(f"\n{'=' * 70}")
         log(f"RUNNING AFFIRMATIVE & FALSIFICATION TRACKS IN PARALLEL")
-        log(f"{'='*70}")
+        log(f"{'=' * 70}")
 
-        (aff_strategy, aff_records, aff_top, aff_extractions, aff_case, aff_highest_tier), \
-        (fal_strategy, fal_records, fal_top, fal_extractions, fal_case, fal_highest_tier) = await asyncio.gather(
-            affirmative_track(), falsification_track()
-        )
+        (
+            (aff_strategy, aff_records, aff_top, aff_extractions, aff_case, aff_highest_tier),
+            (fal_strategy, fal_records, fal_top, fal_extractions, fal_case, fal_highest_tier),
+        ) = await asyncio.gather(affirmative_track(), falsification_track())
 
         # --- Step 6: Deterministic Math ---
-        log(f"\n{'='*70}")
+        log(f"\n{'=' * 70}")
         all_extractions = aff_extractions + fal_extractions
         if self.domain == "social_science":
-            from dr2_podcast.research.effect_size_math import batch_calculate as es_batch_calculate, format_effect_size_report
+            from dr2_podcast.research.effect_size_math import (
+                batch_calculate as es_batch_calculate,
+                format_effect_size_report,
+            )
+
             log(f"STEP 6: DETERMINISTIC MATH (Effect Size)")
-            log(f"{'='*70}")
+            log(f"{'=' * 70}")
             impacts = es_batch_calculate(all_extractions)
             math_report = format_effect_size_report(impacts)
             log(f"    Calculated effect sizes for {len(impacts)} studies")
         else:
             log(f"STEP 6: DETERMINISTIC MATH (ARR/NNT)")
-            log(f"{'='*70}")
+            log(f"{'=' * 70}")
             impacts = clinical_math.batch_calculate(all_extractions)
             math_report = clinical_math.format_math_report(impacts)
             log(f"    Calculated clinical impact for {len(impacts)} studies with CER+EER data")
@@ -2751,9 +2886,9 @@ class Orchestrator:
                     log(f"      {imp.study_id}: NNT={imp.nnt:.1f} ({imp.direction})")
 
         # --- Step 8: GRADE Synthesis ---
-        log(f"\n{'='*70}")
+        log(f"\n{'=' * 70}")
         log(f"STEP 7: GRADE SYNTHESIS")
-        log(f"{'='*70}")
+        log(f"{'=' * 70}")
 
         search_date = datetime.date.today().isoformat()
         total_wide = aff_wide_net_total + fal_wide_net_total
@@ -2762,10 +2897,18 @@ class Orchestrator:
         total_ft_err = aff_fulltext_err + fal_fulltext_err
 
         audit_text = await self._grade_synthesis(
-            topic, aff_case, fal_case, math_report,
-            aff_strategy, fal_strategy,
-            total_wide, total_screened, total_ft_ok, total_ft_err,
-            search_date, log,
+            topic,
+            aff_case,
+            fal_case,
+            math_report,
+            aff_strategy,
+            fal_strategy,
+            total_wide,
+            total_screened,
+            total_ft_ok,
+            total_ft_err,
+            search_date,
+            log,
             aff_extractions=aff_extractions,
             fal_extractions=fal_extractions,
         )
@@ -2773,8 +2916,13 @@ class Orchestrator:
         # --- Save intermediate artifacts ---
         if output_dir:
             self._save_artifacts(
-                output_dir, aff_strategy, fal_strategy,
-                aff_records, fal_records, aff_top, fal_top,
+                output_dir,
+                aff_strategy,
+                fal_strategy,
+                aff_records,
+                fal_records,
+                aff_top,
+                fal_top,
                 math_report,
                 aff_highest_tier=aff_highest_tier,
                 fal_highest_tier=fal_highest_tier,
@@ -2785,7 +2933,9 @@ class Orchestrator:
         aff_sources = self._extractions_to_sources(aff_extractions, "affirmative")
         fal_sources = self._extractions_to_sources(fal_extractions, "falsification")
 
-        db_list = ["OpenAlex", "ERIC", "Google Scholar"] if self.domain == "social_science" else ["PubMed", "Google Scholar"]
+        db_list = (
+            ["OpenAlex", "ERIC", "Google Scholar"] if self.domain == "social_science" else ["PubMed", "Google Scholar"]
+        )
 
         combined_metrics = SearchMetrics(
             search_date=search_date,
@@ -2806,7 +2956,8 @@ class Orchestrator:
 
         lead_duration = time.time() - start_time
         lead_report = ResearchReport(
-            topic=topic, role="Lead Researcher",
+            topic=topic,
+            role="Lead Researcher",
             sources=aff_sources,
             report=aff_case,
             iterations_used=0,
@@ -2833,7 +2984,8 @@ class Orchestrator:
         )
 
         counter_report = ResearchReport(
-            topic=topic, role="Counter Researcher",
+            topic=topic,
+            role="Counter Researcher",
             sources=fal_sources,
             report=fal_case,
             iterations_used=0,
@@ -2860,7 +3012,8 @@ class Orchestrator:
         )
 
         audit_report = ResearchReport(
-            topic=topic, role="Auditor",
+            topic=topic,
+            role="Auditor",
             sources=aff_sources + fal_sources,
             report=audit_text,
             iterations_used=0,
@@ -2872,7 +3025,7 @@ class Orchestrator:
         )
 
         total_time = time.time() - start_time
-        log(f"\n{'='*70}")
+        log(f"\n{'=' * 70}")
         log(f"ALL RESEARCH COMPLETE in {total_time:.0f}s")
         log(f"  Affirmative: {len(aff_extractions)} studies from {aff_wide_net_total} candidates")
         log(f"  Falsification: {len(fal_extractions)} studies from {fal_wide_net_total} candidates")
@@ -2880,7 +3033,7 @@ class Orchestrator:
         math_detail = "effect size data" if self.domain == "social_science" else "NNT data"
         log(f"  {math_label}: {len(impacts)} studies with {math_detail}")
         log(f"  Total articles analyzed: {len(all_extractions)}")
-        log(f"{'='*70}\n")
+        log(f"{'=' * 70}\n")
 
         # Close social science clients if used
         if self.domain == "social_science":
@@ -2921,10 +3074,19 @@ class Orchestrator:
         }
 
     async def _grade_synthesis(
-        self, topic: str, aff_case: str, fal_case: str, math_report: str,
-        aff_strategy: TieredSearchPlan, fal_strategy: TieredSearchPlan,
-        total_wide: int, total_screened: int, total_ft_ok: int, total_ft_err: int,
-        search_date: str, log=logger.info,
+        self,
+        topic: str,
+        aff_case: str,
+        fal_case: str,
+        math_report: str,
+        aff_strategy: TieredSearchPlan,
+        fal_strategy: TieredSearchPlan,
+        total_wide: int,
+        total_screened: int,
+        total_ft_ok: int,
+        total_ft_err: int,
+        search_date: str,
+        log=logger.info,
         aff_extractions: Optional[List[DeepExtraction]] = None,
         fal_extractions: Optional[List[DeepExtraction]] = None,
     ) -> str:
@@ -3024,7 +3186,11 @@ class Orchestrator:
                 "- Note that absence of evidence is not evidence of absence"
             )
 
-        db_names = "OpenAlex, ERIC, Google Scholar" if self.domain == "social_science" else "PubMed (MeSH Boolean), Google Scholar"
+        db_names = (
+            "OpenAlex, ERIC, Google Scholar"
+            if self.domain == "social_science"
+            else "PubMed (MeSH Boolean), Google Scholar"
+        )
         combined_input = (
             f"TOPIC: {topic}\n\n"
             f"=== SEARCH METHODOLOGY ===\n"
@@ -3039,14 +3205,9 @@ class Orchestrator:
         )
 
         # Append external metadata signals if available
-        metadata_summary = self._summarize_metadata_for_grade(
-            aff_extractions or [], fal_extractions or []
-        )
+        metadata_summary = self._summarize_metadata_for_grade(aff_extractions or [], fal_extractions or [])
         if metadata_summary:
-            combined_input += (
-                f"\n=== EXTERNAL METADATA (API-Sourced) ===\n"
-                f"{metadata_summary}\n"
-            )
+            combined_input += f"\n=== EXTERNAL METADATA (API-Sourced) ===\n{metadata_summary}\n"
 
         if len(combined_input) > 80000:
             combined_input = combined_input[:80000] + "\n\n[...truncated...]"
@@ -3054,11 +3215,10 @@ class Orchestrator:
         try:
             resp = await self.smart_client.chat.completions.create(
                 model=self.smart_model,
-                messages=[
-                    {"role": "system", "content": audit_system},
-                    {"role": "user", "content": combined_input}
-                ],
-                max_tokens=8000, temperature=0.2, timeout=300,
+                messages=[{"role": "system", "content": audit_system}, {"role": "user", "content": combined_input}],
+                max_tokens=8000,
+                temperature=0.2,
+                timeout=300,
                 extra_body=QWEN3_NO_THINK_EXTRA_BODY,
             )
             audit_text = safe_message_text(resp)
@@ -3067,9 +3227,7 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"GRADE synthesis failed: {e}")
             return (
-                f"# GRADE Synthesis: {topic}\n\n"
-                f"*GRADE synthesis failed ({e}). Raw inputs below.*\n\n"
-                f"{combined_input}"
+                f"# GRADE Synthesis: {topic}\n\n*GRADE synthesis failed ({e}). Raw inputs below.*\n\n{combined_input}"
             )
 
     @staticmethod
@@ -3093,30 +3251,33 @@ class Orchestrator:
                 funding_source=ex.funding_source,
                 research_tier=ex.research_tier,
             )
-            sources.append(SummarizedSource(
-                url=ex.url,
-                title=ex.title,
-                summary=ex.raw_facts,
-                query=role,
-                goal=role,
-                metadata=metadata,
-            ))
+            sources.append(
+                SummarizedSource(
+                    url=ex.url,
+                    title=ex.title,
+                    summary=ex.raw_facts,
+                    query=role,
+                    goal=role,
+                    metadata=metadata,
+                )
+            )
         if filtered_count := original_count - len(sources):
             logger.info(f"Filtered {filtered_count} {role} sources with empty URLs")
         return sources
 
     @staticmethod
-    async def _enrich_with_metadata(
-        records: List[WideNetRecord], log=logger.info
-    ) -> List[WideNetRecord]:
+    async def _enrich_with_metadata(records: List[WideNetRecord], log=logger.info) -> List[WideNetRecord]:
         """Enrich WideNetRecords with metadata from OpenAlex, Semantic Scholar, Crossref.
 
         Optional — returns records unchanged on failure. All API errors are caught.
         """
         try:
             from dr2_podcast.research.metadata_clients import (
-                MetadataCache, OpenAlexClient, SemanticScholarClient,
-                CrossrefClient, enrich_papers_metadata,
+                MetadataCache,
+                OpenAlexClient,
+                SemanticScholarClient,
+                CrossrefClient,
+                enrich_papers_metadata,
             )
         except ImportError:
             log("    [Metadata] metadata_clients not available — skipping enrichment")
@@ -3133,7 +3294,9 @@ class Orchestrator:
                 try:
                     papers = [{"doi": r.doi or "", "pmid": r.pmid or ""} for r in records]
                     enriched = await enrich_papers_metadata(
-                        papers, openalex_client=oa_client, s2_client=s2_client,
+                        papers,
+                        openalex_client=oa_client,
+                        s2_client=s2_client,
                         crossref_client=cr_client,
                     )
 
@@ -3195,9 +3358,7 @@ class Orchestrator:
                         industry_funded.append(f"  - {label}: funded by {src}")
                         break
             if pm.has_clinical_trial_number and pm.clinical_trial_numbers:
-                trial_registered.append(
-                    f"  - {label}: {', '.join(pm.clinical_trial_numbers)}"
-                )
+                trial_registered.append(f"  - {label}: {', '.join(pm.clinical_trial_numbers)}")
             if pm.is_corrected:
                 corrected.append(f"  - {label}")
 
@@ -3216,9 +3377,12 @@ class Orchestrator:
     @staticmethod
     def _save_artifacts(
         output_dir: str,
-        aff_strategy: TieredSearchPlan, fal_strategy: TieredSearchPlan,
-        aff_records: List[WideNetRecord], fal_records: List[WideNetRecord],
-        aff_top: List[WideNetRecord], fal_top: List[WideNetRecord],
+        aff_strategy: TieredSearchPlan,
+        fal_strategy: TieredSearchPlan,
+        aff_records: List[WideNetRecord],
+        fal_records: List[WideNetRecord],
+        aff_top: List[WideNetRecord],
+        fal_top: List[WideNetRecord],
         math_report: str,
         aff_highest_tier: int = 1,
         fal_highest_tier: int = 1,
@@ -3230,6 +3394,7 @@ class Orchestrator:
         """
         import dataclasses
         from pathlib import Path
+
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
 
@@ -3241,9 +3406,9 @@ class Orchestrator:
             _out = out
 
         # Strategy files — TieredSearchPlan serialized via dataclasses.asdict
-        with open(_out / "search_strategy_aff.json", 'w') as f:
+        with open(_out / "search_strategy_aff.json", "w") as f:
             json.dump(dataclasses.asdict(aff_strategy), f, indent=2)
-        with open(_out / "search_strategy_neg.json", 'w') as f:
+        with open(_out / "search_strategy_neg.json", "w") as f:
             json.dump(dataclasses.asdict(fal_strategy), f, indent=2)
 
         # Screening decisions (one file per track) — full candidate list for debugging
@@ -3280,24 +3445,21 @@ class Orchestrator:
                 "by_source_db": by_source,
                 # Full record lists for debugging
                 "selected_records": [_record_to_dict(r, True) for r in top],
-                "all_candidates": [
-                    _record_to_dict(r, id(r) in selected_set) for r in records
-                ],
+                "all_candidates": [_record_to_dict(r, id(r) in selected_set) for r in records],
             }
 
-        with open(_out / "screening_results_aff.json", 'w') as f:
-            json.dump(_screening_payload(aff_records, aff_top, aff_highest_tier),
-                      f, indent=2, ensure_ascii=False)
-        with open(_out / "screening_results_neg.json", 'w') as f:
-            json.dump(_screening_payload(fal_records, fal_top, fal_highest_tier),
-                      f, indent=2, ensure_ascii=False)
+        with open(_out / "screening_results_aff.json", "w") as f:
+            json.dump(_screening_payload(aff_records, aff_top, aff_highest_tier), f, indent=2, ensure_ascii=False)
+        with open(_out / "screening_results_neg.json", "w") as f:
+            json.dump(_screening_payload(fal_records, fal_top, fal_highest_tier), f, indent=2, ensure_ascii=False)
 
         # Math report
-        with open(_out / "clinical_math.md", 'w') as f:
+        with open(_out / "clinical_math.md", "w") as f:
             f.write(math_report)
 
 
 # --- Convenience functions ---
+
 
 async def run_deep_research(
     topic: str,
@@ -3307,15 +3469,16 @@ async def run_deep_research(
     fast_model_available: bool = True,
     framing_context: str = "",
     output_dir: str = None,
-    domain: str = "clinical"
+    domain: str = "clinical",
 ) -> "DeepResearchResult":
     from dr2_podcast.pipeline_types import DeepResearchResult  # noqa: F811 — local import to avoid circular
+
     orchestrator = Orchestrator(
         brave_api_key=brave_api_key,
         results_per_query=results_per_query,
         max_iterations=max_iterations,
         fast_model_available=fast_model_available,
-        domain=domain
+        domain=domain,
     )
     return await orchestrator.run(topic, framing_context=framing_context, output_dir=output_dir)
 
@@ -3323,6 +3486,7 @@ async def run_deep_research(
 async def main():
     """Test the evidence-based clinical research pipeline."""
     import os
+
     topic = "does coffee intake improve cognitive performance and productivity?"
     brave_key = os.getenv("BRAVE_API_KEY", "")
 
@@ -3339,6 +3503,7 @@ async def main():
         logger.warning("Fast model not available. Using smart-only mode.")
 
     from pathlib import Path
+
     output_dir = Path("research_outputs/test_deep_agent")
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3347,11 +3512,15 @@ async def main():
         brave_api_key=brave_key,
         results_per_query=5,
         fast_model_available=fast_available,
-        output_dir=str(output_dir)
+        output_dir=str(output_dir),
     )
 
     # Save reports
-    report_filenames = {"lead": "affirmative_case.md", "counter": "falsification_case.md", "audit": "grade_synthesis.md"}
+    report_filenames = {
+        "lead": "affirmative_case.md",
+        "counter": "falsification_case.md",
+        "audit": "grade_synthesis.md",
+    }
     for role, report in reports.items():
         filename = output_dir / report_filenames.get(role, f"{role}.md")
         with open(filename, "w") as f:

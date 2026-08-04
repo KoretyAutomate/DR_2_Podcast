@@ -12,18 +12,23 @@ Each episode's own accuracy_audit.md already contains FAIL + exact corrections
 
 Backup: scripts/script_final.pre_remediation_2026-07-05.md per episode.
 """
+
 import sys
 from pathlib import Path
 
 sys.path.insert(0, "/home/korety/Project/DR_2_Podcast")
 import dr2_podcast.pipeline as P
 from dr2_podcast.pipeline import (
-    SUPPORTED_LANGUAGES, _run_script_correction, _run_audio_pipeline,
+    SUPPORTED_LANGUAGES,
+    _run_script_correction,
+    _run_audio_pipeline,
     _audit_requires_correction,
 )
 from dr2_podcast.pipeline_script import _deduplicate_script
 from dr2_podcast.pipeline_validators import (
-    validate_citations, validate_script_structure, normalize_speaker_labels,
+    validate_citations,
+    validate_script_structure,
+    normalize_speaker_labels,
 )
 
 CFG = SUPPORTED_LANGUAGES["ja"]
@@ -32,23 +37,22 @@ P.language_config = CFG
 ROOT = Path("/home/korety/Project/DR_2_Podcast/research_outputs")
 
 EPISODES = {
-    "Mon-概観":   "Ep016_睡眠は身体に良いのか_概観",
-    "Tue-寿命":   "Ep017_睡眠時間と寿命_U字曲線",
-    "Wed-脳":     "Ep018_睡眠と脳_グリンパティック系と認知症",
-    "Thu-代謝":   "Ep019_睡眠と代謝_血糖と食欲",
+    "Mon-概観": "Ep016_睡眠は身体に良いのか_概観",
+    "Tue-寿命": "Ep017_睡眠時間と寿命_U字曲線",
+    "Wed-脳": "Ep018_睡眠と脳_グリンパティック系と認知症",
+    "Thu-代謝": "Ep019_睡眠と代謝_血糖と食欲",
     "Fri-ホルモン": "Ep020_睡眠とホルモン_テストステロンと成長ホルモン",
-    "Sat-行動":   "Ep021_睡眠を妨げる習慣_カフェインと光と室温",
+    "Sat-行動": "Ep021_睡眠を妨げる習慣_カフェインと光と室温",
 }
 
 summary = {}
 for day, d in EPISODES.items():
-    print(f"\n{'='*70}\n=== {day}  ({d}) ===\n{'='*70}")
+    print(f"\n{'=' * 70}\n=== {day}  ({d}) ===\n{'=' * 70}")
     base = ROOT / d
     sf = base / "scripts" / "script_final.md"
     try:
         orig = sf.read_text(encoding="utf-8")
-        (base / "scripts" / "script_final.pre_remediation_2026-07-05.md").write_text(
-            orig, encoding="utf-8")
+        (base / "scripts" / "script_final.pre_remediation_2026-07-05.md").write_text(orig, encoding="utf-8")
         audit = (base / "research" / "accuracy_audit.md").read_text(encoding="utf-8")
         sot = (base / "research" / "source_of_truth.md").read_text(encoding="utf-8")
 
@@ -87,9 +91,10 @@ for day, d in EPISODES.items():
         }
     except Exception as e:
         import traceback
+
         traceback.print_exc()
         summary[day] = {"error": f"{type(e).__name__}: {e}"}
 
-print(f"\n{'='*70}\n=== REMEDIATION SUMMARY ===\n{'='*70}")
+print(f"\n{'=' * 70}\n=== REMEDIATION SUMMARY ===\n{'=' * 70}")
 for day, s in summary.items():
     print(f"  {day}: {s}")

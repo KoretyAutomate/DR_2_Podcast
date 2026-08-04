@@ -48,10 +48,12 @@ logger = logging.getLogger(__name__)
 # AudioMixer — merged from audio_mixer.py (T4.1)
 # ---------------------------------------------------------------------------
 
+
 class AudioMixer:
     """
     Mixes voice and background music with ducking capabilities.
     """
+
     def __init__(self):
         pass
 
@@ -71,7 +73,7 @@ class AudioMixer:
                 music = music * repeats
 
             # Trim music to exact length of voice (plus maybe a small fade out tail)
-            music = music[:len(voice) + 2000]  # + 2s tail
+            music = music[: len(voice) + 2000]  # + 2s tail
 
             # 2. Lower volume of music ("ducking")
             voice = effects.normalize(voice)
@@ -95,11 +97,18 @@ class AudioMixer:
             logger.error(f"Failed to mix audio: {e}")
             return False
 
-    def mix_podcast_pro(self, voice_path: str, music_path: str, output_path: str,
-                        pre_roll_ms: int = 4000, post_roll_ms: int = 6000,
-                        transition_positions_ms: list = None,
-                        voice_ducking_db: int = -20, transition_bump_db: int = -10,
-                        transition_duration_ms: int = 1500) -> bool:
+    def mix_podcast_pro(
+        self,
+        voice_path: str,
+        music_path: str,
+        output_path: str,
+        pre_roll_ms: int = 4000,
+        post_roll_ms: int = 6000,
+        transition_positions_ms: list = None,
+        voice_ducking_db: int = -20,
+        transition_bump_db: int = -10,
+        transition_duration_ms: int = 1500,
+    ) -> bool:
         """
         Pro-grade podcast mixing with BGM-only intro/outro and transition bumps.
 
@@ -124,19 +133,17 @@ class AudioMixer:
             if len(music) < total_duration + 2000:
                 repeats = ((total_duration + 2000) // len(music)) + 1
                 music = music * repeats
-            music = music[:total_duration + 2000]
+            music = music[: total_duration + 2000]
 
             # Normalize both tracks
             voice = effects.normalize(voice)
             music = effects.normalize(music)
 
             # --- 1. PRE-ROLL: BGM only, fading from full volume down to ducked ---
-            pre_roll = music[:pre_roll_ms].fade(
-                to_gain=voice_ducking_db, start=0, duration=pre_roll_ms
-            )
+            pre_roll = music[:pre_roll_ms].fade(to_gain=voice_ducking_db, start=0, duration=pre_roll_ms)
 
             # --- 2. MAIN SECTION: ducked BGM under voice ---
-            main_music = (music[pre_roll_ms:pre_roll_ms + len(voice)] + voice_ducking_db)
+            main_music = music[pre_roll_ms : pre_roll_ms + len(voice)] + voice_ducking_db
 
             # --- 3. TRANSITION BUMPS: brief volume increases at marked positions ---
             if transition_positions_ms:
@@ -151,13 +158,10 @@ class AudioMixer:
 
             # --- 4. POST-ROLL: BGM fading up from ducked to full, then fading out ---
             post_start = pre_roll_ms + len(voice)
-            post_music = music[post_start:post_start + post_roll_ms] + voice_ducking_db
+            post_music = music[post_start : post_start + post_roll_ms] + voice_ducking_db
             # Fade up from ducked to full volume over first half
             fade_up_duration = min(post_roll_ms // 2, 3000)
-            post_music = post_music.fade(
-                from_gain=0, to_gain=abs(voice_ducking_db),
-                start=0, duration=fade_up_duration
-            )
+            post_music = post_music.fade(from_gain=0, to_gain=abs(voice_ducking_db), start=0, duration=fade_up_duration)
             # Fade out over second half
             post_music = post_music.fade_out(post_roll_ms - fade_up_duration)
 
@@ -181,19 +185,22 @@ class AudioMixer:
 
             final_mix.export(output_path, format="wav")
             logger.info(f"Pro-mixed audio saved to: {output_path}")
-            logger.info(f"  Total duration: {len(final_mix) / 1000:.1f}s "
-                        f"(pre-roll {pre_roll_ms/1000:.1f}s + voice {len(voice)/1000:.1f}s + "
-                        f"post-roll {post_roll_ms/1000:.1f}s)")
+            logger.info(
+                f"  Total duration: {len(final_mix) / 1000:.1f}s "
+                f"(pre-roll {pre_roll_ms / 1000:.1f}s + voice {len(voice) / 1000:.1f}s + "
+                f"post-roll {post_roll_ms / 1000:.1f}s)"
+            )
             return True
 
         except Exception as e:
             logger.error(f"Pro mixing failed: {e}, falling back to basic mix")
             return self.mix_podcast(voice_path, music_path, output_path)
 
+
 # Voice Configuration
-VOICE_HOST_1 = 'am_fenrir'  # American Male (The Expert) - default English
-VOICE_HOST_2 = 'af_heart'   # American Female (The Skeptic) - default English
-LANG_CODE = 'a'  # American English (default)
+VOICE_HOST_1 = "am_fenrir"  # American Male (The Expert) - default English
+VOICE_HOST_2 = "af_heart"  # American Female (The Skeptic) - default English
+LANG_CODE = "a"  # American English (default)
 
 # Per-speaker RMS normalization target (~-22dBFS)
 # Controls inter-speaker volume balance; downstream pydub normalize handles absolute level
@@ -201,8 +208,8 @@ _TARGET_RMS = 0.08
 
 # Per-language voice mapping for Kokoro TTS
 VOICE_MAP = {
-    'a': {'host1': 'am_fenrir', 'host2': 'af_heart'},     # English
-    'j': {'host1': 'jm_kumo',   'host2': 'jf_alpha'},    # Japanese
+    "a": {"host1": "am_fenrir", "host2": "af_heart"},  # English
+    "j": {"host1": "jm_kumo", "host2": "jf_alpha"},  # Japanese
 }
 
 # ---------------------------------------------------------------------------
@@ -212,6 +219,7 @@ VOICE_MAP = {
 # /version). Default port 10101. Voices are Style-Bert-VITS2 models (natural/emotional).
 # URL aliased to preserve existing call-site names; single source of truth is config.TTS_API_URL.
 _AIVISSPEECH_API_URL = TTS_API_URL
+
 
 def _get_tts_speaker_ids_int():
     """Speaker (style) IDs as integers — for engines that use numeric IDs (AivisSpeech, VOICEVOX et al.).
@@ -226,18 +234,21 @@ def _get_tts_speaker_ids_int():
         )
         return None, None
 
+
 def _aivisspeech_available():
     """Check if the AivisSpeech engine is reachable."""
     try:
         import requests
+
         resp = requests.get(f"{_AIVISSPEECH_API_URL}/version", timeout=3)
         return resp.status_code == 200
     except Exception:
         return False
 
 
-def _call_aivisspeech_segment(text: str, speaker_id: int, speed_scale: float = None,
-                              intonation_scale: float = None) -> tuple:
+def _call_aivisspeech_segment(
+    text: str, speaker_id: int, speed_scale: float = None, intonation_scale: float = None
+) -> tuple:
     """Call AivisSpeech API (two-step: audio_query → synthesis). Returns (audio_np, sample_rate) or (None, None).
 
     speed_scale overrides the global TTS_SPEED_SCALE for this segment (per-voice cadence).
@@ -259,9 +270,7 @@ def _call_aivisspeech_segment(text: str, speaker_id: int, speed_scale: float = N
         q_resp.raise_for_status()
         query_data = q_resp.json()
         query_data["speedScale"] = TTS_SPEED_SCALE if speed_scale is None else speed_scale
-        query_data["intonationScale"] = (
-            TTS_INTONATION_SCALE if intonation_scale is None else intonation_scale
-        )
+        query_data["intonationScale"] = TTS_INTONATION_SCALE if intonation_scale is None else intonation_scale
 
         # Step 2: Synthesize audio
         synth_resp = requests.post(
@@ -314,8 +323,9 @@ def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
     logger.info("AIVISSPEECH — JAPANESE AUDIO GENERATION")
     logger.info("=" * 60)
     logger.info(f"API endpoint: {_AIVISSPEECH_API_URL}")
-    _rand_note = (f" [random-voice: {'SWAPPED' if _voice_swapped else 'no-swap'}]"
-                  if TTS_RANDOM_VOICE else " [random-voice: off]")
+    _rand_note = (
+        f" [random-voice: {'SWAPPED' if _voice_swapped else 'no-swap'}]" if TTS_RANDOM_VOICE else " [random-voice: off]"
+    )
     logger.info(f"Voices: Speaker1 → speaker_id={host1_id}, Speaker2 → speaker_id={host2_id}{_rand_note}")
 
     # Health check
@@ -329,10 +339,10 @@ def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
     logger.info("✓ AivisSpeech API is healthy")
 
     # Parse script — strict Speaker N: pattern only
-    speaker_pattern = re.compile(r'^(Speaker\s*(\d+))\s*[:：]\s*(.*)', re.IGNORECASE)
+    speaker_pattern = re.compile(r"^(Speaker\s*(\d+))\s*[:：]\s*(.*)", re.IGNORECASE)
     speaker_map = {}
 
-    lines = script_text.split('\n')
+    lines = script_text.split("\n")
     audio_segments = []
     sample_rate = None
     transition_positions_ms = []
@@ -365,7 +375,7 @@ def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
                     sample_rate = sr_chunk if sr_chunk is not None else 24000
                     logger.info(f"  Sample rate: {sample_rate} Hz")
                 segment_audio = np.concatenate(chunk_audios)
-                rms = np.sqrt(np.mean(segment_audio ** 2))
+                rms = np.sqrt(np.mean(segment_audio**2))
                 if rms > 1e-6:
                     segment_audio = segment_audio * (_TARGET_RMS / rms)
                     segment_audio = np.clip(segment_audio, -1.0, 1.0)
@@ -380,9 +390,9 @@ def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
         line = line.strip()
         if not line:
             continue
-        if line.startswith('##'):
+        if line.startswith("##"):
             continue
-        if re.match(r'^-{3,}$', line):
+        if re.match(r"^-{3,}$", line):
             continue
 
         if line in MARKER_SILENCE:
@@ -391,7 +401,7 @@ def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
             silence_sec = MARKER_SILENCE[line]
             silence_samples = int(silence_sec * _sr)
             audio_segments.append(np.zeros(silence_samples, dtype=np.float32))
-            if line == '[TRANSITION]':
+            if line == "[TRANSITION]":
                 position_ms = int((cumulative_samples / _sr) * 1000)
                 transition_positions_ms.append(position_ms)
                 logger.info(f"  [TRANSITION] marker at {position_ms}ms")
@@ -420,7 +430,7 @@ def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
             buffer_text = text_after
         else:
             if current_speaker is None:
-                if line and not line.startswith('['):
+                if line and not line.startswith("["):
                     logger.info(f"  Channel intro (Speaker 2): {line[:60]}...")
                     current_speaker = 2
                     buffer_text = line
@@ -476,7 +486,7 @@ _TTS_ENGINES = {
 
 def _chunk_japanese_text(text: str, max_chars: int = 80) -> list:
     """Split Japanese text at sentence-end punctuation to keep each TTS call under max_chars."""
-    sentences = re.split(r'(?<=[。！？\n])', text)
+    sentences = re.split(r"(?<=[。！？\n])", text)
     chunks, current = [], ""
     for s in sentences:
         if len(current) + len(s) > max_chars and current:
@@ -489,7 +499,7 @@ def _chunk_japanese_text(text: str, max_chars: int = 80) -> list:
     return [c for c in chunks if c]
 
 
-def generate_audio_from_script(script_text: str, output_filename: str = "final_podcast.wav", lang_code: str = 'a'):
+def generate_audio_from_script(script_text: str, output_filename: str = "final_podcast.wav", lang_code: str = "a"):
     """
     Parses a script looking for 'Speaker 1:' and 'Speaker 2:' lines,
     generates audio segments, and stitches them together.
@@ -516,16 +526,13 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
     """
     # Select engine by language. Engine registry dispatches HTTP-based engines;
     # Kokoro runs inline below (in-process, shares this function's state).
-    engine_name = TTS_ENGINE_JA if lang_code == 'j' else TTS_ENGINE_EN
+    engine_name = TTS_ENGINE_JA if lang_code == "j" else TTS_ENGINE_EN
     logger.info(f"Selected TTS engine: {engine_name} (lang_code={lang_code})")
 
     if engine_name != "kokoro":
         adapter = _TTS_ENGINES.get(engine_name)
         if adapter is None:
-            logger.error(
-                f"Unknown TTS engine '{engine_name}'. "
-                f"Registered: {sorted(_TTS_ENGINES.keys()) + ['kokoro']}"
-            )
+            logger.error(f"Unknown TTS engine '{engine_name}'. Registered: {sorted(_TTS_ENGINES.keys()) + ['kokoro']}")
             return None
         return adapter(script_text, output_filename)
 
@@ -535,16 +542,16 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
     logger.info("=" * 60)
 
     # Resolve voices for this language
-    voices = VOICE_MAP.get(lang_code, VOICE_MAP['a'])
-    voice_host_1 = voices['host1']
-    voice_host_2 = voices['host2']
+    voices = VOICE_MAP.get(lang_code, VOICE_MAP["a"])
+    voice_host_1 = voices["host1"]
+    voice_host_2 = voices["host2"]
 
     # 1. Initialize Pipeline
-    device = 'cpu'
+    device = "cpu"
     if torch.cuda.is_available():
         try:
             torch.zeros(1).cuda()
-            device = 'cuda'
+            device = "cuda"
         except RuntimeError:
             logger.warning("  CUDA reported available but kernel execution failed, falling back to CPU")
     logger.info(f"Device: {device}")
@@ -555,9 +562,9 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         pipeline = KPipeline(lang_code=lang_code, device=device)
         logger.info("✓ Kokoro pipeline initialized")
     except RuntimeError as e:
-        if 'CUDA' in str(e) and device == 'cuda':
+        if "CUDA" in str(e) and device == "cuda":
             logger.warning(f"  CUDA init failed, retrying on CPU: {e}")
-            device = 'cpu'
+            device = "cpu"
             pipeline = KPipeline(lang_code=lang_code, device=device)
             logger.info("✓ Kokoro pipeline initialized (CPU fallback)")
         else:
@@ -568,11 +575,11 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         return None
 
     # 2. Parse Script — strict Speaker N: pattern only (no greedy name matching)
-    speaker_pattern = re.compile(r'^(Speaker\s*(\d+))\s*[:：]\s*(.*)', re.IGNORECASE)
+    speaker_pattern = re.compile(r"^(Speaker\s*(\d+))\s*[:：]\s*(.*)", re.IGNORECASE)
     speaker_map = {}  # "Speaker 1" → 1, "Speaker 2" → 2
 
     sample_rate = 24000  # Kokoro standard
-    lines = script_text.split('\n')
+    lines = script_text.split("\n")
     audio_segments = []
     silence_gap = np.zeros(int(0.3 * sample_rate), dtype=np.float32)  # 300ms silence
     transition_positions_ms = []  # Track [TRANSITION] positions for pro mixer
@@ -588,7 +595,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         if buffer_text and current_speaker:
             voice = voice_host_1 if current_speaker == 1 else voice_host_2
             try:
-                generator = pipeline(buffer_text, voice=voice, speed=1.0, split_pattern=r'\n+')
+                generator = pipeline(buffer_text, voice=voice, speed=1.0, split_pattern=r"\n+")
                 chunk_list = []
                 for _, _, audio in generator:
                     chunk_list.append(audio)
@@ -596,7 +603,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
                 if chunk_list:
                     segment_audio = np.concatenate(chunk_list)
                     # Per-speaker RMS normalization
-                    rms = np.sqrt(np.mean(segment_audio ** 2))
+                    rms = np.sqrt(np.mean(segment_audio**2))
                     if rms > 1e-6:
                         segment_audio = segment_audio * (_TARGET_RMS / rms)
                         segment_audio = np.clip(segment_audio, -1.0, 1.0)
@@ -612,11 +619,11 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             continue
 
         # Skip ## comment lines (guidance, metadata)
-        if line.startswith('##'):
+        if line.startswith("##"):
             continue
 
         # Skip section separators (--- between topics) — not end of dialogue
-        if re.match(r'^-{3,}$', line):
+        if re.match(r"^-{3,}$", line):
             continue
 
         # Check for audio markers ([TRANSITION], [PAUSE], [BEAT])
@@ -625,7 +632,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             silence_sec = MARKER_SILENCE[line]
             silence_samples = int(silence_sec * sample_rate)
             audio_segments.append(np.zeros(silence_samples, dtype=np.float32))
-            if line == '[TRANSITION]':
+            if line == "[TRANSITION]":
                 position_ms = int((cumulative_samples / sample_rate) * 1000)
                 transition_positions_ms.append(position_ms)
                 logger.info(f"  [TRANSITION] marker at {position_ms}ms")
@@ -635,8 +642,8 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         # Check for Speaker Switch — strict "Speaker N:" pattern only
         match = speaker_pattern.match(line)
         if match:
-            name = match.group(1).strip()    # "Speaker 1" or "Speaker 2"
-            slot = int(match.group(2))        # 1 or 2
+            name = match.group(1).strip()  # "Speaker 1" or "Speaker 2"
+            slot = int(match.group(2))  # 1 or 2
             text_after = match.group(3).strip()
 
             if name not in speaker_map:
@@ -661,7 +668,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             if current_speaker is None:
                 # Channel intro line (before any Speaker label) — synthesize as
                 # Speaker 2 (the presenter/narrator role) instead of skipping.
-                if line and not line.startswith('['):
+                if line and not line.startswith("["):
                     logger.info(f"  Channel intro (Speaker 2): {line[:60]}...")
                     current_speaker = 2
                     buffer_text = line
@@ -704,8 +711,9 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
         return None
 
 
-def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav",
-                       transition_positions_ms: list = None) -> str:
+def post_process_audio(
+    wav_path: str, bgm_target: str = "Interesting BGM.wav", transition_positions_ms: list = None
+) -> str:
     """
     Post-process raw TTS output: select background music from library or generate it, then mix.
 
@@ -746,12 +754,12 @@ def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav",
                 logger.info(f"Selected specific BGM from library: {bgm_target}")
 
             elif bgm_target.endswith(".wav"):
-                 # Requested specific file but not found
-                 logger.warning(f"Requested BGM '{bgm_target}' not found in library.")
-                 default_bgm = BGM_LIBRARY_DIR / "Interesting BGM.wav"
-                 if default_bgm.exists():
-                     music_path = str(default_bgm)
-                     logger.warning(f"Falling back to default: Interesting BGM.wav")
+                # Requested specific file but not found
+                logger.warning(f"Requested BGM '{bgm_target}' not found in library.")
+                default_bgm = BGM_LIBRARY_DIR / "Interesting BGM.wav"
+                if default_bgm.exists():
+                    music_path = str(default_bgm)
+                    logger.warning(f"Falling back to default: Interesting BGM.wav")
 
         # 2. No BGM available — return voice-only
         if not music_path:
@@ -765,8 +773,11 @@ def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav",
 
         # Try pro mixing with pre/post roll and transition bumps
         from dr2_podcast.config import VOICE_DUCKING_DB
+
         success = mixer.mix_podcast_pro(
-            wav_path, music_path, mixed_path,
+            wav_path,
+            music_path,
+            mixed_path,
             transition_positions_ms=transition_positions_ms or [],
             voice_ducking_db=VOICE_DUCKING_DB,
         )
@@ -783,14 +794,19 @@ def post_process_audio(wav_path: str, bgm_target: str = "Interesting BGM.wav",
 
 
 # Audio markers recognized by TTS engine — inserted by editor in Phase 6
-AUDIO_MARKERS = {'[TRANSITION]': '___TRANSITION___', '[INTRO_END]': '___INTRO_END___', '[PAUSE]': '___PAUSE___', '[BEAT]': '___BEAT___'}
+AUDIO_MARKERS = {
+    "[TRANSITION]": "___TRANSITION___",
+    "[INTRO_END]": "___INTRO_END___",
+    "[PAUSE]": "___PAUSE___",
+    "[BEAT]": "___BEAT___",
+}
 
 # Silence duration (seconds) for each marker type
 MARKER_SILENCE = {
-    '[TRANSITION]': 1.5,
-    '[INTRO_END]': 2.5,
-    '[PAUSE]': 0.8,
-    '[BEAT]': 0.3,
+    "[TRANSITION]": 1.5,
+    "[INTRO_END]": 2.5,
+    "[PAUSE]": 0.8,
+    "[BEAT]": 0.3,
 }
 
 
@@ -804,7 +820,7 @@ MARKER_SILENCE = {
 # ---------------------------------------------------------------------------
 _TTS_GLOSSARY_PATH = Path(__file__).resolve().parent.parent / "data" / "tts_glossary.json"
 _tts_glossary_cache = None  # None = unloaded; dict once loaded (empty dicts = no-op)
-_KANJI_CLASS = r'々一-鿿㐀-䶿'  # CJK ideographs + 々
+_KANJI_CLASS = r"々一-鿿㐀-䶿"  # CJK ideographs + 々
 
 # Stage directions / performance cues: annotations written for a human reader
 # that TTS otherwise speaks aloud as words ("（笑）" is heard as "わらい").
@@ -813,12 +829,25 @@ _KANJI_CLASS = r'々一-鿿㐀-䶿'  # CJK ideographs + 々
 # spoken (（治療必要数）, （アブストラクト）, （Cohen's d）, （例えば 9 時間以上）).
 # Only whole-parenthetical matches of these cues, plus 〜ながら action cues, go.
 _STAGE_DIRECTION_CUES = [
-    '笑', '笑い', '苦笑', '微笑', '爆笑', '失笑', 'ため息', 'ためいき',
-    '咳払い', '間', '沈黙', '拍手', '拍手音', '効果音', 'BGM', '会話再開',
+    "笑",
+    "笑い",
+    "苦笑",
+    "微笑",
+    "爆笑",
+    "失笑",
+    "ため息",
+    "ためいき",
+    "咳払い",
+    "間",
+    "沈黙",
+    "拍手",
+    "拍手音",
+    "効果音",
+    "BGM",
+    "会話再開",
 ]
 _STAGE_DIRECTION_RE = re.compile(
-    r'[（(]\s*(?:' + '|'.join(re.escape(c) for c in _STAGE_DIRECTION_CUES)
-    + r'|[^）)（(]{1,8}ながら)\s*[）)]'
+    r"[（(]\s*(?:" + "|".join(re.escape(c) for c in _STAGE_DIRECTION_CUES) + r"|[^）)（(]{1,8}ながら)\s*[）)]"
 )
 
 
@@ -843,8 +872,7 @@ def _load_tts_glossary():
         for val in list(safe.values()) + [g["to"] for g in guarded.values()]:
             for key in all_keys:
                 if key in val:
-                    raise ValueError(
-                        f"glossary not idempotent: value {val!r} contains key {key!r}")
+                    raise ValueError(f"glossary not idempotent: value {val!r} contains key {key!r}")
         _tts_glossary_cache = {"safe": safe, "guarded": guarded}
         logger.info(f"TTS glossary loaded: {len(safe)} safe + {len(guarded)} guarded entries")
     except Exception as e:
@@ -875,7 +903,7 @@ def apply_tts_glossary(text: str) -> str:
                 text = text.replace(g, ph)
                 placeholders[ph] = g
         if spec.get("no_kanji_prefix"):
-            text, n = re.subn(rf'(?<![{_KANJI_CLASS}]){re.escape(key)}', spec["to"], text)
+            text, n = re.subn(rf"(?<![{_KANJI_CLASS}]){re.escape(key)}", spec["to"], text)
         else:
             n = text.count(key)
             text = text.replace(key, spec["to"])
@@ -916,7 +944,7 @@ def clean_script_for_tts(script_text: str) -> str:
 
     # Strip ## comment lines (guidance, metadata, LLM preamble) — must happen
     # BEFORE markdown # removal below, which would strip the ## prefix leaving bare text
-    clean = re.sub(r'^##.*$', '', clean, flags=re.MULTILINE)
+    clean = re.sub(r"^##.*$", "", clean, flags=re.MULTILINE)
 
     # Drop furigana reading annotations: 漢字（かな） is a pronunciation guide for a
     # reader, but TTS pronounces the kanji correctly on its own — reading the
@@ -925,53 +953,59 @@ def clean_script_for_tts(script_text: str) -> str:
     # PURE hiragana directly after a kanji run — katakana parentheticals (e.g.
     # "要約（アブストラクト）") are glosses/synonyms carrying new information and
     # must be read aloud, not furigana, so they're left untouched.
-    clean = re.sub(r'([一-鿿㐀-䶿々]+)（[぀-ゟー]+）', r'\1', clean)
+    clean = re.sub(r"([一-鿿㐀-䶿々]+)（[぀-ゟー]+）", r"\1", clean)
 
     # Drop stage directions / performance cues (（笑）（拍手）（頷きながら）) — these
     # are reader annotations, not dialogue, and the furigana strip above does not
     # catch them (it only matches kanji-then-pure-hiragana). Curated cue list, so
     # content glosses like （治療必要数）/（アブストラクト） are left to be spoken.
-    clean = _STAGE_DIRECTION_RE.sub('', clean)
+    clean = _STAGE_DIRECTION_RE.sub("", clean)
 
     # Layer 1: deterministic reading glossary — force CONFIRMED-misread words to
     # hiragana (after furigana-strip above so 漢字（かな） pairs collapse first).
     clean = apply_tts_glossary(clean)
 
     # Remove markdown formatting
-    clean = re.sub(r'\*\*', '', clean)  # Bold
-    clean = re.sub(r'[*#\[\]]', '', clean)  # Italics, headers, brackets (NOT underscores — protects ___TRANSITION___ placeholders)
+    clean = re.sub(r"\*\*", "", clean)  # Bold
+    clean = re.sub(
+        r"[*#\[\]]", "", clean
+    )  # Italics, headers, brackets (NOT underscores — protects ___TRANSITION___ placeholders)
 
     # Rename Japanese speaker labels "ホストN:" → "Speaker N:" (before English conversion)
-    clean = re.sub(r'^\*{0,2}ホスト\s*(\d)\s*\*{0,2}\s*[:：]', r'Speaker \1:', clean, flags=re.MULTILINE)
+    clean = re.sub(r"^\*{0,2}ホスト\s*(\d)\s*\*{0,2}\s*[:：]", r"Speaker \1:", clean, flags=re.MULTILINE)
 
     # Rename speaker labels "Host N:" → "Speaker N:" so that any remaining
     # "Host 1" / "Host 2" in dialogue text can be safely stripped.
     # Case/underscore-insensitive: also catches malformed 'host_1：' / 'HOST 1:'
     # labels that the pipeline normalizer is the first line of defense against
     # (the sleep-week Tue episode leaked lowercase host_1： into TTS).
-    clean = re.sub(r'^\*{0,2}host[ _]*(\d)[ _]*\*{0,2}\s*[:：]', r'Speaker \1:',
-                   clean, flags=re.MULTILINE | re.IGNORECASE)
-    clean = re.sub(r'Host [12]', '', clean, flags=re.IGNORECASE)
+    clean = re.sub(
+        r"^\*{0,2}host[ _]*(\d)[ _]*\*{0,2}\s*[:：]", r"Speaker \1:", clean, flags=re.MULTILINE | re.IGNORECASE
+    )
+    clean = re.sub(r"Host [12]", "", clean, flags=re.IGNORECASE)
 
     # Normalize unicode punctuation to ASCII
     unicode_map = {
-        '\u2018': "'", '\u2019': "'",  # Smart quotes
-        '\u201c': '"', '\u201d': '"',  # Smart double quotes
-        '\u2014': ' - ', '\u2013': ' - ',  # Em/en dash
-        '\u2026': '...',  # Ellipsis
+        "\u2018": "'",
+        "\u2019": "'",  # Smart quotes
+        "\u201c": '"',
+        "\u201d": '"',  # Smart double quotes
+        "\u2014": " - ",
+        "\u2013": " - ",  # Em/en dash
+        "\u2026": "...",  # Ellipsis
     }
     for old, new in unicode_map.items():
         clean = clean.replace(old, new)
 
     # Normalize whitespace within lines, but preserve line breaks
-    clean = re.sub(r'[^\S\n]+', ' ', clean)  # collapse spaces/tabs but keep \n
-    clean = re.sub(r'\n{3,}', '\n\n', clean)  # collapse excessive blank lines
+    clean = re.sub(r"[^\S\n]+", " ", clean)  # collapse spaces/tabs but keep \n
+    clean = re.sub(r"\n{3,}", "\n\n", clean)  # collapse excessive blank lines
 
     # Strip spaces at Latin↔Japanese boundaries (the JA engine otherwise inserts an
     # audible pause between e.g. "AI ラボ員達" or "DHA 配合").
-    _JP = r'\u3005\u3040-\u309F\u30A0-\u30FF\u3400-\u4DBF\u4E00-\u9FFF'
-    clean = re.sub(rf'(?<=[A-Za-z0-9])[ \t]+(?=[{_JP}])', '', clean)
-    clean = re.sub(rf'(?<=[{_JP}])[ \t]+(?=[A-Za-z0-9])', '', clean)
+    _JP = r"\u3005\u3040-\u309F\u30A0-\u30FF\u3400-\u4DBF\u4E00-\u9FFF"
+    clean = re.sub(rf"(?<=[A-Za-z0-9])[ \t]+(?=[{_JP}])", "", clean)
+    clean = re.sub(rf"(?<=[{_JP}])[ \t]+(?=[A-Za-z0-9])", "", clean)
 
     clean = clean.strip()
 

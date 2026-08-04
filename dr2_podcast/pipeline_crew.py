@@ -20,40 +20,42 @@ logger = logging.getLogger(__name__)
 
 
 _SOT_BLOCK_RE = re.compile(
-    r'\n\nSOURCE OF TRUTH SUMMARY[^\n]*\n.*?--- END SOT ---\n'
-    r'|\n\n\[SOT Stage \d[^\n]*\n.*?--- END SOT ---\n',
-    re.DOTALL
+    r"\n\nSOURCE OF TRUTH SUMMARY[^\n]*\n.*?--- END SOT ---\n"
+    r"|\n\n\[SOT Stage \d[^\n]*\n.*?--- END SOT ---\n",
+    re.DOTALL,
 )
 
 
-def _estimate_task_tokens(task, translation_task_obj=None, language='en'):
+def _estimate_task_tokens(task, translation_task_obj=None, language="en"):
     """Rough estimate of input tokens for a CrewAI task (description + context chain outputs).
 
     Qwen3 tokenizer: Japanese/Chinese ~1.5 chars/token, other languages ~3-4 chars/token.
     Adds 2000-token buffer for agent system prompt overhead.
     """
-    chars_per_tok = 1 if language in ('ja', 'zh') else 4
-    total_chars = len(task.description or '')
-    for ctx_task in (task.context or []):
-        raw = getattr(getattr(ctx_task, 'output', None), 'raw', '') or ''
+    chars_per_tok = 1 if language in ("ja", "zh") else 4
+    total_chars = len(task.description or "")
+    for ctx_task in task.context or []:
+        raw = getattr(getattr(ctx_task, "output", None), "raw", "") or ""
         total_chars += len(raw)
     return total_chars // chars_per_tok + 2000
 
 
-def _build_sot_injection_for_stage(stage, sot_file, translated_sot_file,
-                                    sot_summary, translated_sot_summary,
-                                    grade_numbers_text, language_config):
+def _build_sot_injection_for_stage(
+    stage, sot_file, translated_sot_file, sot_summary, translated_sot_summary, grade_numbers_text, language_config
+):
     """Return SOT injection text for a context-degradation stage.
 
     Stage 1: Full target-language fast-model summary + file path    (~3K tokens)
     Stage 2: IMRaD Abstract + GRADE section from file + path         (~1.5K tokens)
     Stage 3: File path + pre-extracted GRADE/clinical numbers only   (~300 tokens)
     """
-    target_file = str(translated_sot_file or sot_file or '')
-    lang_name = language_config.get('name', 'target language') if isinstance(language_config, dict) else str(language_config)
+    target_file = str(translated_sot_file or sot_file or "")
+    lang_name = (
+        language_config.get("name", "target language") if isinstance(language_config, dict) else str(language_config)
+    )
 
     if stage == 1:
-        summary = (translated_sot_summary or sot_summary or '')
+        summary = translated_sot_summary or sot_summary or ""
         return (
             f"\n\nSOURCE OF TRUTH SUMMARY ({lang_name}):\n"
             f"Use this as your primary research reference.\n\n"
@@ -62,16 +64,20 @@ def _build_sot_injection_for_stage(stage, sot_file, translated_sot_file,
             f"--- END SOT ---\n"
         )
     elif stage == 2:
-        abstract_text = ''
-        grade_text = ''
+        abstract_text = ""
+        grade_text = ""
         if target_file and Path(target_file).exists():
             try:
-                raw = Path(target_file).read_text(encoding='utf-8')
-                m = re.search(r'(?:## 1\.|##\s*Abstract)(.*?)(?=\n## |\Z)', raw, re.DOTALL | re.IGNORECASE)
+                raw = Path(target_file).read_text(encoding="utf-8")
+                m = re.search(r"(?:## 1\.|##\s*Abstract)(.*?)(?=\n## |\Z)", raw, re.DOTALL | re.IGNORECASE)
                 if m:
                     abstract_text = m.group(1).strip()[:2000]
                 # Try GRADE (clinical) or Evidence Quality Synthesis (social science)
-                m = re.search(r'(?:### 4\.3|###\s*GRADE|##\s*GRADE|###\s*Evidence\s+Quality\s+Synthesis)(.*?)(?=\n### |\n## |\Z)', raw, re.DOTALL | re.IGNORECASE)
+                m = re.search(
+                    r"(?:### 4\.3|###\s*GRADE|##\s*GRADE|###\s*Evidence\s+Quality\s+Synthesis)(.*?)(?=\n### |\n## |\Z)",
+                    raw,
+                    re.DOTALL | re.IGNORECASE,
+                )
                 if m:
                     grade_text = m.group(1).strip()[:1000]
             except Exception:
@@ -93,10 +99,21 @@ def _build_sot_injection_for_stage(stage, sot_file, translated_sot_file,
         )
 
 
-def _crew_kickoff_guarded(crew_factory_fn, task, translation_task_obj, language,
-                           sot_file, translated_sot_file, sot_summary, translated_sot_summary,
-                           grade_numbers_text, language_config, crew_name,
-                           ctx_window=32768, max_tokens=16000):
+def _crew_kickoff_guarded(
+    crew_factory_fn,
+    task,
+    translation_task_obj,
+    language,
+    sot_file,
+    translated_sot_file,
+    sot_summary,
+    translated_sot_summary,
+    grade_numbers_text,
+    language_config,
+    crew_name,
+    ctx_window=32768,
+    max_tokens=16000,
+):
     """Run a crew kickoff with pre-emptive 3-stage context-budget check.
 
     Before kickoff, estimates input tokens. If over budget, degrades the SOT
@@ -114,8 +131,13 @@ def _crew_kickoff_guarded(crew_factory_fn, task, translation_task_obj, language,
         est = _estimate_task_tokens(task, translation_task_obj, language)
         if est <= budget or stage == 3:
             if stage > 1:
-                logger.warning("  %s: SOT stage %d selected (est %s tokens, budget %s)",
-                      crew_name, stage, f"{est:,}", f"{budget:,}")
+                logger.warning(
+                    "  %s: SOT stage %d selected (est %s tokens, budget %s)",
+                    crew_name,
+                    stage,
+                    f"{est:,}",
+                    f"{budget:,}",
+                )
             try:
                 crew_factory_fn().kickoff()
             except SystemExit as e:
@@ -128,18 +150,30 @@ def _crew_kickoff_guarded(crew_factory_fn, task, translation_task_obj, language,
                 ) from e
             return
         # Over budget -- degrade to next stage
-        logger.warning("  %s: Stage %d est %s tokens > budget %s. Degrading to stage %d...",
-              crew_name, stage, f"{est:,}", f"{budget:,}", stage + 1)
-        base_desc = _SOT_BLOCK_RE.sub('', task.description)
+        logger.warning(
+            "  %s: Stage %d est %s tokens > budget %s. Degrading to stage %d...",
+            crew_name,
+            stage,
+            f"{est:,}",
+            f"{budget:,}",
+            stage + 1,
+        )
+        base_desc = _SOT_BLOCK_RE.sub("", task.description)
         task.description = base_desc + _build_sot_injection_for_stage(
-            stage + 1, sot_file, translated_sot_file,
-            sot_summary, translated_sot_summary, grade_numbers_text, language_config
+            stage + 1,
+            sot_file,
+            translated_sot_file,
+            sot_summary,
+            translated_sot_summary,
+            grade_numbers_text,
+            language_config,
         )
 
 
 # ---------------------------------------------------------------------------
 # Agent & Task definitions
 # ---------------------------------------------------------------------------
+
 
 def create_agents_and_tasks(
     *,
@@ -184,10 +218,7 @@ def create_agents_and_tasks(
                 'Tone: Think "Radiolab" or "Science Vs" - warm, story-driven, accessible.'
             ),
             "exemplar": "Radiolab, Science Vs",
-            "editor_depth": (
-                "Your audience is curious but not specialist. "
-                "Ensure all terms are defined on first use."
-            ),
+            "editor_depth": ("Your audience is curious but not specialist. Ensure all terms are defined on first use."),
         },
         "moderate": {
             "identity": (
@@ -206,34 +237,32 @@ def create_agents_and_tasks(
                 'Tone: Think "Huberman Lab" or "Lex Fridman" - intellectual, curious, deep-diving.'
             ),
             "exemplar": "Huberman Lab, Lex Fridman",
-            "editor_depth": (
-                "Your audience has advanced degrees - they want depth, not hand-holding."
-            ),
+            "editor_depth": ("Your audience has advanced degrees - they want depth, not hand-holding."),
         },
     }
     _tone = _TONE_BY_LEVEL[accessibility_level]
 
     auditor_agent = Agent(
-        role='Scientific Auditor',
-        goal=f'Grade the research quality with a Reliability Scorecard. Do NOT write content - GRADE it. {english_instruction}',
+        role="Scientific Auditor",
+        goal=f"Grade the research quality with a Reliability Scorecard. Do NOT write content - GRADE it. {english_instruction}",
         backstory=(
-            f'You are a harsh peer reviewer. You do not write content; you GRADE it.\n\n'
-            f'YOUR TASKS:\n'
-            f'  1. Link Check: If a claim has no URL or a broken URL, REJECT it.\n'
-            f'  2. Strength Rating: Assign a score (1-10) to the main claims:\n'
-            f'       10 = Meta-analysis from top journal\n'
-            f'       7-9 = Human RCT with good sample size\n'
-            f'       4-6 = Observational/cohort study\n'
-            f'       1-3 = Animal model or speculation\n'
-            f'  3. The Caveat Box: Explicitly list why the findings might be wrong:\n'
+            f"You are a harsh peer reviewer. You do not write content; you GRADE it.\n\n"
+            f"YOUR TASKS:\n"
+            f"  1. Link Check: If a claim has no URL or a broken URL, REJECT it.\n"
+            f"  2. Strength Rating: Assign a score (1-10) to the main claims:\n"
+            f"       10 = Meta-analysis from top journal\n"
+            f"       7-9 = Human RCT with good sample size\n"
+            f"       4-6 = Observational/cohort study\n"
+            f"       1-3 = Animal model or speculation\n"
+            f"  3. The Caveat Box: Explicitly list why the findings might be wrong:\n"
             f'       (e.g., "Mouse study only", "Sample size n=12", "Conflicts of interest")\n'
-            f'  4. Consensus Check: Verify consensus from pre-scanned sources in the Research Library.\n'
-            f'  5. Source Validation: Use ReadResearchSource to read source content. Verify claims match sources. REJECT misrepresented sources.\n'
-            f'\n'
-            f'You have access to a Research Library containing all sources from the deep research pre-scan. '
-            f'Use ListResearchSources to browse available sources, then ReadResearchSource to read specific ones in detail.\n\n'
+            f"  4. Consensus Check: Verify consensus from pre-scanned sources in the Research Library.\n"
+            f"  5. Source Validation: Use ReadResearchSource to read source content. Verify claims match sources. REJECT misrepresented sources.\n"
+            f"\n"
+            f"You have access to a Research Library containing all sources from the deep research pre-scan. "
+            f"Use ListResearchSources to browse available sources, then ReadResearchSource to read specific ones in detail.\n\n"
             f'OUTPUT: A structured Markdown report with a "Reliability Scorecard". '
-            f'{english_instruction}'
+            f"{english_instruction}"
         ),
         tools=[list_research_sources, read_research_source, read_full_report, link_validator],
         llm=dgx_llm_strict,
@@ -242,47 +271,50 @@ def create_agents_and_tasks(
     )
 
     producer_agent = Agent(
-        role='Podcast Producer',
+        role="Podcast Producer",
         goal=(
             f'Transform research into an engaging, in-depth teaching conversation on "{topic_name}". '
-            f'Audience approach: {accessibility_instruction} {english_instruction}'
+            f"Audience approach: {accessibility_instruction} {english_instruction}"
         ),
         backstory=(
-            f'{_tone["identity"]}\n\n'
-            f'CRITICAL RULES:\n'
-            f'  1. TERMINOLOGY: {accessibility_instruction}\n'
-            f'  2. LENGTH: Generate AT LEAST {target_script} {target_unit_plural} (approx {_target_min} min). '
-            f'Aim for {int(target_length_int * 1.2):,} {target_unit_plural} --- more content is better than less.\n'
+            f"{_tone['identity']}\n\n"
+            f"CRITICAL RULES:\n"
+            f"  1. TERMINOLOGY: {accessibility_instruction}\n"
+            f"  2. LENGTH: Generate AT LEAST {target_script} {target_unit_plural} (approx {_target_min} min). "
+            f"Aim for {int(target_length_int * 1.2):,} {target_unit_plural} --- more content is better than less.\n"
             f'  3. FORMAT: Script MUST use "{SESSION_ROLES["presenter"]["label"]}:" (Presenter) '
             f'     and "{SESSION_ROLES["questioner"]["label"]}:" (Questioner).\n'
-            f'  4. DIALOGUE DYNAMIC: The Presenter is a domain expert who explains systematically.\n'
-            f'     The Questioner is a well-read generalist who has prepared for this episode:\n'
-            f'     - Asks methodologically informed questions (sample size, control groups, effect sizes)\n'
-            f'     - Connects findings to related fields or common knowledge\n'
-            f'     - Pushes back with reasoned skepticism, not just surprise\n'
-            f'     - Occasionally tosses out a hypothesis for the Presenter to confirm, refine, or correct\n'
-            f'     - Does NOT simply react with emotions --- every response adds intellectual substance\n'
-            f'     BALANCE: The Questioner contributes ~20-30%% of substantive content per exchange.\n'
-            f'     They open doors; the Presenter walks through them.\n'
-            f'  5. DEPTH: Cover 3-4 main aspects of the topic thoroughly with mechanisms, evidence, and implications.\n'
-            f'  6. NO QUIZ-SHOW: The Presenter must NEVER validate the Questioner with grading phrases '
+            f"  4. DIALOGUE DYNAMIC: The Presenter is a domain expert who explains systematically.\n"
+            f"     The Questioner is a well-read generalist who has prepared for this episode:\n"
+            f"     - Asks methodologically informed questions (sample size, control groups, effect sizes)\n"
+            f"     - Connects findings to related fields or common knowledge\n"
+            f"     - Pushes back with reasoned skepticism, not just surprise\n"
+            f"     - Occasionally tosses out a hypothesis for the Presenter to confirm, refine, or correct\n"
+            f"     - Does NOT simply react with emotions --- every response adds intellectual substance\n"
+            f"     BALANCE: The Questioner contributes ~20-30%% of substantive content per exchange.\n"
+            f"     They open doors; the Presenter walks through them.\n"
+            f"  5. DEPTH: Cover 3-4 main aspects of the topic thoroughly with mechanisms, evidence, and implications.\n"
+            f"  6. NO QUIZ-SHOW: The Presenter must NEVER validate the Questioner with grading phrases "
             f'like "Exactly!", "Correct!", "That\'s right!". Every response must advance the conversation '
-            f'with new information, a new angle, or a qualification.\n'
-            f'  7. NO FABRICATION: Only cite studies, authors, years, and numbers that appear in the '
+            f"with new information, a new angle, or a qualification.\n"
+            f"  7. NO FABRICATION: Only cite studies, authors, years, and numbers that appear in the "
             f'Blueprint / Source-of-Truth. NEVER invent an author-year (e.g. "Vandewalle 2007"), a PMID, '
-            f'or a statistic. If unsure of the source, describe the finding qualitatively without a '
-            f'citation. Match the confidence you convey to the evidence grade --- do not upgrade a '
-            f'LOW/MODERATE finding into a settled fact.\n'
-            f'\n'
-            f'Your dialogue should dive into nuance, trade-offs, and practical implications. '
-            f'{english_instruction}\n\n'
-            f'DIALOGUE RULE: Hosts must NEVER address each other by name inside dialogue --- '
+            f"or a statistic. If unsure of the source, describe the finding qualitatively without a "
+            f"citation. Match the confidence you convey to the evidence grade --- do not upgrade a "
+            f"LOW/MODERATE finding into a settled fact.\n"
+            f"\n"
+            f"Your dialogue should dive into nuance, trade-offs, and practical implications. "
+            f"{english_instruction}\n\n"
+            f"DIALOGUE RULE: Hosts must NEVER address each other by name inside dialogue --- "
             f'no personal names, no "Host 1", no "Host 2" spoken aloud. '
-            f'Names are only used as speaker LABELS before the colon, never within the dialogue itself.'
-            + (f'\n\nLANGUAGE WARNING: When generating Japanese output, you MUST stay in Japanese throughout. '
-               f'Do NOT switch to Chinese. '
-               f'Avoid Kanji that is only used in Chinese (e.g., use \u6c17 instead of \u6c14, \u697d instead of \u4e50).'
-               if language == 'ja' else '')
+            f"Names are only used as speaker LABELS before the colon, never within the dialogue itself."
+            + (
+                f"\n\nLANGUAGE WARNING: When generating Japanese output, you MUST stay in Japanese throughout. "
+                f"Do NOT switch to Chinese. "
+                f"Avoid Kanji that is only used in Chinese (e.g., use \u6c17 instead of \u6c14, \u697d instead of \u4e50)."
+                if language == "ja"
+                else ""
+            )
         ),
         llm=dgx_llm_creative,
         verbose=True,
@@ -291,50 +323,50 @@ def create_agents_and_tasks(
     )
 
     editor_agent = Agent(
-        role='Podcast Editor',
+        role="Podcast Editor",
         goal=(
             f'Polish the "{topic_name}" script for natural verbal delivery for the target audience. '
-            f'Target: Exactly {target_script} {target_unit_plural} ({_target_min} minutes). '
-            f'{target_instruction}'
+            f"Target: Exactly {target_script} {target_unit_plural} ({_target_min} minutes). "
+            f"{target_instruction}"
         ),
         backstory=(
-            f'Editor for quality podcasts ({_tone["exemplar"]}). '
-            f'{_tone["editor_depth"]}\n\n'
-            f'EDITING RULES:\n'
-            f'  - TERMINOLOGY: {accessibility_instruction}\n'
-            f'  - Ensure the questioner\'s questions feel natural and audience-aligned\n'
-            f'  - Japanese: drop unnecessary 「ほう」/「かた」 that add no meaning '
-            f'(e.g. 「言い切ってくれる人のほうを」→「言い切ってくれる人を」); keep only genuinely '
-            f'comparative 「〜のほうが」/「〜たほうが」 and lexical 両方・一方・方法・見え方・やり方\n'
-            f'  - Target exactly {target_script} {target_unit_plural} for {_target_min}-minute runtime.\n'
-            f'  - Ensure the opening follows the 3-part structure: welcome -> hook question -> topic shift\n'
-            f'  - Dialogue flow: presenter provides expert depth, questioner contributes informed perspective and probing questions\n'
-            f'\n'
-            f'If script is at or near target: refine for natural delivery without changing length significantly.\n'
-            f'If script is over target: trim repetition and redundant examples to hit target. DO NOT trim factual content.\n'
-            f'{target_instruction}'
+            f"Editor for quality podcasts ({_tone['exemplar']}). "
+            f"{_tone['editor_depth']}\n\n"
+            f"EDITING RULES:\n"
+            f"  - TERMINOLOGY: {accessibility_instruction}\n"
+            f"  - Ensure the questioner's questions feel natural and audience-aligned\n"
+            f"  - Japanese: drop unnecessary 「ほう」/「かた」 that add no meaning "
+            f"(e.g. 「言い切ってくれる人のほうを」→「言い切ってくれる人を」); keep only genuinely "
+            f"comparative 「〜のほうが」/「〜たほうが」 and lexical 両方・一方・方法・見え方・やり方\n"
+            f"  - Target exactly {target_script} {target_unit_plural} for {_target_min}-minute runtime.\n"
+            f"  - Ensure the opening follows the 3-part structure: welcome -> hook question -> topic shift\n"
+            f"  - Dialogue flow: presenter provides expert depth, questioner contributes informed perspective and probing questions\n"
+            f"\n"
+            f"If script is at or near target: refine for natural delivery without changing length significantly.\n"
+            f"If script is over target: trim repetition and redundant examples to hit target. DO NOT trim factual content.\n"
+            f"{target_instruction}"
         ),
         llm=dgx_llm_creative,
-        verbose=True
+        verbose=True,
     )
 
     framing_agent = Agent(
-        role='Research Framing Specialist',
-        goal=f'Define the research scope, core questions, and evidence criteria for investigating {topic_name}. {english_instruction}',
+        role="Research Framing Specialist",
+        goal=f"Define the research scope, core questions, and evidence criteria for investigating {topic_name}. {english_instruction}",
         backstory=(
-            'You are a senior research methodologist who designs investigation frameworks. '
-            'Before any evidence is gathered, you establish:\n'
-            '  1. Core research questions that must be answered\n'
-            '  2. Scope boundaries (what is in/out of scope)\n'
-            '  3. Evidence criteria (what counts as strong/weak evidence)\n'
-            '  4. Suggested search directions and keywords\n'
-            '  5. Hypotheses to test\n\n'
-            'Your framing document guides all downstream research, ensuring systematic '
-            'coverage rather than ad-hoc searching. You do NOT search for evidence yourself --- '
-            'you define WHAT to look for and HOW to evaluate it.'
+            "You are a senior research methodologist who designs investigation frameworks. "
+            "Before any evidence is gathered, you establish:\n"
+            "  1. Core research questions that must be answered\n"
+            "  2. Scope boundaries (what is in/out of scope)\n"
+            "  3. Evidence criteria (what counts as strong/weak evidence)\n"
+            "  4. Suggested search directions and keywords\n"
+            "  5. Hypotheses to test\n\n"
+            "Your framing document guides all downstream research, ensuring systematic "
+            "coverage rather than ad-hoc searching. You do NOT search for evidence yourself --- "
+            "you define WHAT to look for and HOW to evaluate it."
         ),
         llm=dgx_llm_strict,
-        verbose=True
+        verbose=True,
     )
 
     # --- TASKS ---
@@ -367,7 +399,7 @@ def create_agents_and_tasks(
             f"evidence criteria, search directions, and hypotheses. {english_instruction}"
         ),
         agent=framing_agent,
-        output_file=os.path.relpath(output_path_fn(output_dir, "research_framing.md"))
+        output_file=os.path.relpath(output_path_fn(output_dir, "research_framing.md")),
     )
 
     # Build channel intro directive for script
@@ -393,50 +425,64 @@ def create_agents_and_tasks(
 
     script_task = Task(
         description=(
-            f"Using the Episode Blueprint, write a comprehensive {target_script}-{target_unit_singular} podcast dialogue about \"{topic_name}\" "
+            f'Using the Episode Blueprint, write a comprehensive {target_script}-{target_unit_singular} podcast dialogue about "{topic_name}" '
             f"featuring {SESSION_ROLES['presenter']['label']} (presenter) and {SESSION_ROLES['questioner']['label']} (questioner).\n\n"
             f"SCRIPT STRUCTURE (follow this EXACTLY):\n\n"
             + _channel_intro_directive
-            + get_prompt("script", "hook", language,
-                         target_unit_plural=target_unit_plural,
-                         presenter=SESSION_ROLES['presenter']['label'],
-                         questioner=SESSION_ROLES['questioner']['label'])
+            + get_prompt(
+                "script",
+                "hook",
+                language,
+                target_unit_plural=target_unit_plural,
+                presenter=SESSION_ROLES["presenter"]["label"],
+                questioner=SESSION_ROLES["questioner"]["label"],
+            )
             + get_prompt("script", "act1", language)
-            + get_prompt("script", "act2", language,
-                         act2_min=f"{_act2_min:,}",
-                         target_unit_plural=target_unit_plural)
-            + get_prompt("script", "act3", language,
-                         core_target_or_default=_core_target_or_default)
-            + get_prompt("script", "act4", language,
-                         core_target_or_default=_core_target_or_default)
-            + get_prompt("script", "length_note", language,
-                         target_script=target_script,
-                         target_unit_plural=target_unit_plural)
-            + get_prompt("script", "wrapup", language,
-                         target_unit_plural=target_unit_plural)
-            + get_prompt("script", "one_action", language,
-                         target_unit_plural=target_unit_plural,
-                         presenter=SESSION_ROLES['presenter']['label'],
-                         questioner=SESSION_ROLES['questioner']['label'],
-                         one_action_tail=_one_action_tail)
+            + get_prompt("script", "act2", language, act2_min=f"{_act2_min:,}", target_unit_plural=target_unit_plural)
+            + get_prompt("script", "act3", language, core_target_or_default=_core_target_or_default)
+            + get_prompt("script", "act4", language, core_target_or_default=_core_target_or_default)
+            + get_prompt(
+                "script", "length_note", language, target_script=target_script, target_unit_plural=target_unit_plural
+            )
+            + get_prompt("script", "wrapup", language, target_unit_plural=target_unit_plural)
+            + get_prompt(
+                "script",
+                "one_action",
+                language,
+                target_unit_plural=target_unit_plural,
+                presenter=SESSION_ROLES["presenter"]["label"],
+                questioner=SESSION_ROLES["questioner"]["label"],
+                one_action_tail=_one_action_tail,
+            )
             + get_prompt("script", "personality", language)
-            + get_prompt("script", "character_roles", language,
-                         presenter=SESSION_ROLES['presenter']['label'],
-                         questioner=SESSION_ROLES['questioner']['label'],
-                         presenter_personality=SESSION_ROLES['presenter']['personality'],
-                         questioner_personality=SESSION_ROLES['questioner']['personality']) +
-            f"Format STRICTLY as:\n"
+            + get_prompt(
+                "script",
+                "character_roles",
+                language,
+                presenter=SESSION_ROLES["presenter"]["label"],
+                questioner=SESSION_ROLES["questioner"]["label"],
+                presenter_personality=SESSION_ROLES["presenter"]["personality"],
+                questioner_personality=SESSION_ROLES["questioner"]["personality"],
+            )
+            + f"Format STRICTLY as:\n"
             f"{SESSION_ROLES['presenter']['label']}: [dialogue]\n"
             f"{SESSION_ROLES['questioner']['label']}: [dialogue]\n\n"
-            + get_prompt("script", "target_length", language,
-                         target_script=target_script,
-                         target_unit_plural=target_unit_plural,
-                         target_min=str(_target_min),
-                         aim_target=f"{int(target_length_int * 1.2):,}")
-            + (f"\nCRITICAL LANGUAGE RULE: You are writing in Japanese. "
-               f"Do NOT use Chinese at any point. Every sentence must be in Japanese. "
-               f"Use standard Japanese kanji only (\u6c17 not \u6c14, \u697d not \u4e50).\n"
-               if language == 'ja' else '')
+            + get_prompt(
+                "script",
+                "target_length",
+                language,
+                target_script=target_script,
+                target_unit_plural=target_unit_plural,
+                target_min=str(_target_min),
+                aim_target=f"{int(target_length_int * 1.2):,}",
+            )
+            + (
+                f"\nCRITICAL LANGUAGE RULE: You are writing in Japanese. "
+                f"Do NOT use Chinese at any point. Every sentence must be in Japanese. "
+                f"Use standard Japanese kanji only (\u6c17 not \u6c14, \u697d not \u4e50).\n"
+                if language == "ja"
+                else ""
+            )
             + f"{target_instruction}"
         ),
         expected_output=(
@@ -447,18 +493,21 @@ def create_agents_and_tasks(
             f"{target_instruction}"
         ),
         agent=producer_agent,
-        context=[]
+        context=[],
     )
 
     # --- SOT TRANSLATION TASK (only when language != 'en') ---
     translation_task = None
-    if language != 'en':
+    if language != "en":
         translation_task = Task(
             description=(
-                (f"ABSOLUTE RULE: Output MUST be in Japanese ONLY. NEVER use Chinese at any point.\n"
-                 f"WRONG: \u6267\u884c\u529f\u80fd -> CORRECT: \u5b9f\u884c\u6a5f\u80fd; WRONG: \u8865\u5145 -> CORRECT: \u88dc\u5145; WRONG: \u8ba4\u77e5 -> CORRECT: \u8a8d\u77e5\n"
-                 f"If unsure of the Japanese term, keep the English term --- NEVER use Chinese.\n\n"
-                 if language == 'ja' else '')
+                (
+                    f"ABSOLUTE RULE: Output MUST be in Japanese ONLY. NEVER use Chinese at any point.\n"
+                    f"WRONG: \u6267\u884c\u529f\u80fd -> CORRECT: \u5b9f\u884c\u6a5f\u80fd; WRONG: \u8865\u5145 -> CORRECT: \u88dc\u5145; WRONG: \u8ba4\u77e5 -> CORRECT: \u8a8d\u77e5\n"
+                    f"If unsure of the Japanese term, keep the English term --- NEVER use Chinese.\n\n"
+                    if language == "ja"
+                    else ""
+                )
                 + f"Translate the entire Source-of-Truth document about {topic_name} into {language_config['name']}.\n\n"
                 f"TRANSLATION RULES:\n"
                 f"- Translate ALL sections faithfully: Executive Summary, Key Claims, Evidence, Bibliography\n"
@@ -480,7 +529,7 @@ def create_agents_and_tasks(
 
     polish_task = Task(
         description=(
-            f"Polish the \"{topic_name}\" dialogue for natural spoken delivery for the target audience.\n\n"
+            f'Polish the "{topic_name}" dialogue for natural spoken delivery for the target audience.\n\n'
             + get_prompt("polish", "audience_level", language, terminology_rule=accessibility_instruction)
             + f"- Target length: {target_script} {target_unit_plural} (acceptable range: "
             f"{int(target_length_int * (1 - SCRIPT_TOLERANCE)):,}–{int(target_length_int * (1 + SCRIPT_TOLERANCE)):,})\n\n"
@@ -489,14 +538,15 @@ def create_agents_and_tasks(
             f"  - {SESSION_ROLES['questioner']['label']} (Questioner): asks bridging questions, occasionally pushes back\n\n"
             f"VERIFY 8-PART STRUCTURE (all must be present):\n"
             f"  1. Channel Intro\n"
-            f"  2. Hook (provocative question)\n"
-            + get_prompt("polish", "structure_acts", language) +
-            f"  7. Wrap-up\n"
+            f"  2. Hook (provocative question)\n" + get_prompt("polish", "structure_acts", language) + f"  7. Wrap-up\n"
             f"  8. One Action Ending\n\n"
-            + (f"CHANNEL INTRO VERIFICATION:\n"
-               f"The Channel Intro MUST contain this EXACT text: \"{channel_intro}\"\n"
-               f"Do NOT rephrase, modify, or remove it.\n\n"
-               if channel_intro else '')
+            + (
+                f"CHANNEL INTRO VERIFICATION:\n"
+                f'The Channel Intro MUST contain this EXACT text: "{channel_intro}"\n'
+                f"Do NOT rephrase, modify, or remove it.\n\n"
+                if channel_intro
+                else ""
+            )
             + f"TRANSITION MARKERS:\n"
             f"Insert audio markers on their own line between major sections:\n"
             f"  - After Channel Intro, before Act 1: use [INTRO_END] (not [TRANSITION])\n"
@@ -515,16 +565,24 @@ def create_agents_and_tasks(
             f"Format:\n{SESSION_ROLES['presenter']['label']}: [dialogue]\n"
             f"{SESSION_ROLES['questioner']['label']}: [dialogue]\n\n"
             f"Remove meta-tags, markdown, stage directions. Dialogue only (plus [TRANSITION] and [INTRO_END] markers).\n"
-            + get_prompt("polish", "length_section", language,
-                         target_script=target_script,
-                         target_unit_plural=target_unit_plural,
-                         range_low=f"{int(target_length_int * (1 - SCRIPT_TOLERANCE)):,}",
-                         range_high=f"{int(target_length_int * (1 + SCRIPT_TOLERANCE)):,}")
-            + "\n" + get_prompt("polish", "reading_tone_rules", language)
-            + (f"\nCRITICAL: Output MUST be in Japanese only. Do NOT switch to Chinese. "
-               f"Keep speaker labels exactly as 'Host 1:' and 'Host 2:' --- do NOT replace them with Japanese names. "
-               f"Avoid Kanji that is only used in Chinese (e.g., use \u6c17 instead of \u6c14, \u697d instead of \u4e50). "
-               if language == 'ja' else '')
+            + get_prompt(
+                "polish",
+                "length_section",
+                language,
+                target_script=target_script,
+                target_unit_plural=target_unit_plural,
+                range_low=f"{int(target_length_int * (1 - SCRIPT_TOLERANCE)):,}",
+                range_high=f"{int(target_length_int * (1 + SCRIPT_TOLERANCE)):,}",
+            )
+            + "\n"
+            + get_prompt("polish", "reading_tone_rules", language)
+            + (
+                f"\nCRITICAL: Output MUST be in Japanese only. Do NOT switch to Chinese. "
+                f"Keep speaker labels exactly as 'Host 1:' and 'Host 2:' --- do NOT replace them with Japanese names. "
+                f"Avoid Kanji that is only used in Chinese (e.g., use \u6c17 instead of \u6c14, \u697d instead of \u4e50). "
+                if language == "ja"
+                else ""
+            )
             + f"{target_instruction}"
         ),
         expected_output=(
@@ -534,7 +592,7 @@ def create_agents_and_tasks(
             f"{target_instruction}"
         ),
         agent=editor_agent,
-        context=[script_task]
+        context=[script_task],
     )
 
     audit_task = Task(
@@ -559,9 +617,12 @@ def create_agents_and_tasks(
             f"8. **GRADE fidelity (ALWAYS HIGH)**: The confidence the script conveys must match the "
             f"SOT's GRADE. If the SOT grades a claim LOW/MODERATE but the script frames it as "
             f"'moderate-to-high' or settled, flag it HIGH.\n"
-            + (f"9. **Language consistency**: Flag any non-{language_config['name']} sentences that should be in {language_config['name']}. "
-               f"(Exclude scientific abbreviations: ARR, NNT, GRADE, RCT, CI, HR, OR)\n\n"
-               if language != 'en' else '\n')
+            + (
+                f"9. **Language consistency**: Flag any non-{language_config['name']} sentences that should be in {language_config['name']}. "
+                f"(Exclude scientific abbreviations: ARR, NNT, GRADE, RCT, CI, HR, OR)\n\n"
+                if language != "en"
+                else "\n"
+            )
             + f"OUTPUT FORMAT:\n"
             f"# Accuracy Check: {topic_name}\n\n"
             f"## Overall Assessment\n"
@@ -583,7 +644,7 @@ def create_agents_and_tasks(
         ),
         agent=auditor_agent,
         context=[polish_task],
-        output_file=os.path.relpath(output_path_fn(output_dir, "accuracy_audit.md"))
+        output_file=os.path.relpath(output_path_fn(output_dir, "accuracy_audit.md")),
     )
 
     # --- Audience context for blueprint & script prompts ---
@@ -594,17 +655,19 @@ def create_agents_and_tasks(
         _audience_context += f"CHANNEL MISSION: {channel_mission}\n"
 
     _audience_context_block = (
-        _audience_context + "Tailor the value proposition to this specific audience.\n"
-    ) if _audience_context else ""
+        (_audience_context + "Tailor the value proposition to this specific audience.\n") if _audience_context else ""
+    )
 
     # Content framework hint based on channel mission
     _framework_hint = ""
-    if channel_mission and any(kw in channel_mission.lower() for kw in ("actionable", "practical", "protocol", "how-to", "how to")):
+    if channel_mission and any(
+        kw in channel_mission.lower() for kw in ("actionable", "practical", "protocol", "how-to", "how to")
+    ):
         _framework_hint = "Note: The channel mission suggests PPP (Problem-Proof-Protocol) may be a good fit.\n"
 
     blueprint_task = Task(
         description=(
-            f"Create an Episode Blueprint for the podcast episode on \"{topic_name}\".\n\n"
+            f'Create an Episode Blueprint for the podcast episode on "{topic_name}".\n\n'
             f"RESEARCH WORKFLOW — Follow these two passes:\n\n"
             f"Pass 1 (Full Read): Start by reading the complete Source of Truth:\n"
             f"  ReadFullReport('sot')\n"
@@ -641,39 +704,50 @@ def create_agents_and_tasks(
             f"Choose ONE:\n"
             f"- [PPP] Problem-Proof-Protocol --- if the topic has a clear actionable outcome\n"
             f"- [QEI] Question-Evidence-Insight --- if the topic is exploratory with no single recommendation\n\n"
-            + get_prompt("blueprint", "section5_intro", language,
-                        core_target_or_default=core_target or "curious listener")
+            + get_prompt(
+                "blueprint", "section5_intro", language, core_target_or_default=core_target or "curious listener"
+            )
             + get_prompt("blueprint", "act1_header", language)
             + get_prompt("blueprint", "act1_description", language)
             + "\n"
-            + get_prompt("blueprint", "act1_discussion", language,
-                         core_target_or_default=core_target or "curious listener")
+            + get_prompt(
+                "blueprint", "act1_discussion", language, core_target_or_default=core_target or "curious listener"
+            )
             + "\n"
             + get_prompt("blueprint", "act2_header", language)
             + get_prompt("blueprint", "act2_description", language)
             + "\n"
-            + get_prompt("blueprint", "act2_bad_example", language) + "\n"
-            + get_prompt("blueprint", "act2_good_example", language) + "\n\n"
+            + get_prompt("blueprint", "act2_bad_example", language)
+            + "\n"
+            + get_prompt("blueprint", "act2_good_example", language)
+            + "\n\n"
             + get_prompt("blueprint", "act2_sub_structure", language)
             + "\n"
-            + get_prompt("blueprint", "act2_discussion", language,
-                         core_target_or_default=core_target or "curious listener")
+            + get_prompt(
+                "blueprint", "act2_discussion", language, core_target_or_default=core_target or "curious listener"
+            )
             + "\n"
             + get_prompt("blueprint", "act3_header", language)
-            + get_prompt("blueprint", "act3_description", language,
-                         core_target_or_default=core_target or "curious listener")
+            + get_prompt(
+                "blueprint", "act3_description", language, core_target_or_default=core_target or "curious listener"
+            )
             + "\n"
-            + get_prompt("blueprint", "act3_discussion", language,
-                         core_target_or_default=core_target or "curious listener")
+            + get_prompt(
+                "blueprint", "act3_discussion", language, core_target_or_default=core_target or "curious listener"
+            )
             + "\n"
             + get_prompt("blueprint", "act4_header", language)
-            + get_prompt("blueprint", "act4_description", language,
-                         core_target_or_default=core_target or "curious listener")
+            + get_prompt(
+                "blueprint", "act4_description", language, core_target_or_default=core_target or "curious listener"
+            )
             + "\n"
-            + get_prompt("blueprint", "act4_bad_example", language) + "\n"
-            + get_prompt("blueprint", "act4_good_example", language) + "\n\n"
-            + get_prompt("blueprint", "act4_discussion", language,
-                         core_target_or_default=core_target or "curious listener")
+            + get_prompt("blueprint", "act4_bad_example", language)
+            + "\n"
+            + get_prompt("blueprint", "act4_good_example", language)
+            + "\n\n"
+            + get_prompt(
+                "blueprint", "act4_discussion", language, core_target_or_default=core_target or "curious listener"
+            )
             + "\n"
             + f"## 6. GRADE-Informed Framing Guide\n"
             f"For each major claim in the episode, specify the appropriate framing language.\n"
@@ -712,7 +786,7 @@ def create_agents_and_tasks(
         ),
         agent=producer_agent,
         context=[],
-        output_file=os.path.relpath(output_path_fn(output_dir, "EPISODE_BLUEPRINT.md"))
+        output_file=os.path.relpath(output_path_fn(output_dir, "EPISODE_BLUEPRINT.md")),
     )
 
     # --- CONTEXT CHAIN: script_task always depends on blueprint_task ---
@@ -726,16 +800,16 @@ def create_agents_and_tasks(
         audit_task.context = [polish_task, translation_task]
 
     return {
-        'auditor_agent': auditor_agent,
-        'producer_agent': producer_agent,
-        'editor_agent': editor_agent,
-        'framing_agent': framing_agent,
-        'framing_task': framing_task,
-        'script_task': script_task,
-        'translation_task': translation_task,
-        'polish_task': polish_task,
-        'audit_task': audit_task,
-        'blueprint_task': blueprint_task,
+        "auditor_agent": auditor_agent,
+        "producer_agent": producer_agent,
+        "editor_agent": editor_agent,
+        "framing_agent": framing_agent,
+        "framing_task": framing_task,
+        "script_task": script_task,
+        "translation_task": translation_task,
+        "polish_task": polish_task,
+        "audit_task": audit_task,
+        "blueprint_task": blueprint_task,
     }
 
 
@@ -756,78 +830,78 @@ PHASE_MARKERS = [
 ]
 
 TASK_METADATA = {
-    'framing_task': {
-        'name': 'Research Framing',
-        'phase': '0',
-        'estimated_duration_min': 2,
-        'description': 'Defining scope, questions, and evidence criteria',
-        'agent': 'Research Framing Specialist',
-        'dependencies': [],
-        'crew': 1
+    "framing_task": {
+        "name": "Research Framing",
+        "phase": "0",
+        "estimated_duration_min": 2,
+        "description": "Defining scope, questions, and evidence criteria",
+        "agent": "Research Framing Specialist",
+        "dependencies": [],
+        "crew": 1,
     },
-    'clinical_research': {
-        'name': 'Clinical Research (7-Step Pipeline)',
-        'phase': '1',
-        'estimated_duration_min': 6,
-        'description': 'PICO strategy, wide net, screening, extraction, cases, math, GRADE synthesis',
-        'agent': 'Dual-Model Pipeline',
-        'dependencies': ['framing_task'],
-        'crew': 'procedural'
+    "clinical_research": {
+        "name": "Clinical Research (7-Step Pipeline)",
+        "phase": "1",
+        "estimated_duration_min": 6,
+        "description": "PICO strategy, wide net, screening, extraction, cases, math, GRADE synthesis",
+        "agent": "Dual-Model Pipeline",
+        "dependencies": ["framing_task"],
+        "crew": "procedural",
     },
-    'source_validation': {
-        'name': 'Source Validation',
-        'phase': '2',
-        'estimated_duration_min': 1,
-        'description': 'Batch HEAD requests to validate all cited URLs',
-        'agent': 'Automated',
-        'dependencies': ['clinical_research'],
-        'crew': 'procedural'
+    "source_validation": {
+        "name": "Source Validation",
+        "phase": "2",
+        "estimated_duration_min": 1,
+        "description": "Batch HEAD requests to validate all cited URLs",
+        "agent": "Automated",
+        "dependencies": ["clinical_research"],
+        "crew": "procedural",
     },
-    'translation_task': {
-        'name': 'Report Translation',
-        'phase': '3',
-        'estimated_duration_min': 3,
-        'description': 'Translate SOT to target language (conditional)',
-        'agent': 'Podcast Producer',
-        'dependencies': ['source_validation'],
-        'crew': 2,
-        'conditional': True
+    "translation_task": {
+        "name": "Report Translation",
+        "phase": "3",
+        "estimated_duration_min": 3,
+        "description": "Translate SOT to target language (conditional)",
+        "agent": "Podcast Producer",
+        "dependencies": ["source_validation"],
+        "crew": 2,
+        "conditional": True,
     },
-    'blueprint_task': {
-        'name': 'Show Outline',
-        'phase': '4',
-        'estimated_duration_min': 3,
-        'description': 'Developing show outline, citations, and narrative arc',
-        'agent': 'Podcast Producer',
-        'dependencies': ['translation_task'],
-        'crew': 3
+    "blueprint_task": {
+        "name": "Show Outline",
+        "phase": "4",
+        "estimated_duration_min": 3,
+        "description": "Developing show outline, citations, and narrative arc",
+        "agent": "Podcast Producer",
+        "dependencies": ["translation_task"],
+        "crew": 3,
     },
-    'script_task': {
-        'name': 'Script Writing',
-        'phase': '5',
-        'estimated_duration_min': 6,
-        'description': 'Script writing and conversation generation',
-        'agent': 'Podcast Producer',
-        'dependencies': ['blueprint_task'],
-        'crew': 3
+    "script_task": {
+        "name": "Script Writing",
+        "phase": "5",
+        "estimated_duration_min": 6,
+        "description": "Script writing and conversation generation",
+        "agent": "Podcast Producer",
+        "dependencies": ["blueprint_task"],
+        "crew": 3,
     },
-    'polish_task': {
-        'name': 'Script Polish',
-        'phase': '6',
-        'estimated_duration_min': 5,
-        'description': 'Script polishing for natural verbal delivery',
-        'agent': 'Podcast Editor',
-        'dependencies': ['script_task'],
-        'crew': 3
+    "polish_task": {
+        "name": "Script Polish",
+        "phase": "6",
+        "estimated_duration_min": 5,
+        "description": "Script polishing for natural verbal delivery",
+        "agent": "Podcast Editor",
+        "dependencies": ["script_task"],
+        "crew": 3,
     },
-    'audit_task': {
-        'name': 'Accuracy Audit',
-        'phase': '7',
-        'estimated_duration_min': 3,
-        'description': 'Advisory drift detection against Source-of-Truth',
-        'agent': 'Scientific Auditor',
-        'dependencies': ['polish_task'],
-        'crew': 3
+    "audit_task": {
+        "name": "Accuracy Audit",
+        "phase": "7",
+        "estimated_duration_min": 3,
+        "description": "Advisory drift detection against Source-of-Truth",
+        "agent": "Scientific Auditor",
+        "dependencies": ["polish_task"],
+        "crew": 3,
     },
 }
 
@@ -838,39 +912,43 @@ def display_workflow_plan(topic_name, language_config, output_dir):
     Shows Phases 0-8 with durations, dependencies, and total time estimate.
     Phase 2b is marked as conditional.
     """
-    logger.info("\n" + "="*70)
-    logger.info(" "*20 + "PODCAST GENERATION WORKFLOW")
-    logger.info("="*70)
+    logger.info("\n" + "=" * 70)
+    logger.info(" " * 20 + "PODCAST GENERATION WORKFLOW")
+    logger.info("=" * 70)
     logger.info("\nTopic: %s", topic_name)
-    logger.info("Language: %s", language_config['name'])
+    logger.info("Language: %s", language_config["name"])
     logger.info("Output Directory: %s", output_dir)
-    logger.info("\n" + "-"*70)
+    logger.info("\n" + "-" * 70)
     logger.info("%-6s %-40s %-12s %-25s", "PHASE", "TASK NAME", "EST TIME", "AGENT")
-    logger.info("-"*70)
+    logger.info("-" * 70)
 
     total_duration = 0
     for task_name, metadata in TASK_METADATA.items():
-        phase = metadata['phase']
-        name = metadata['name']
-        duration = metadata['estimated_duration_min']
-        agent = metadata['agent']
-        is_conditional = metadata.get('conditional', False)
+        phase = metadata["phase"]
+        name = metadata["name"]
+        duration = metadata["estimated_duration_min"]
+        agent = metadata["agent"]
+        is_conditional = metadata.get("conditional", False)
 
         if not is_conditional:
             total_duration += duration
 
         conditional_marker = " [CONDITIONAL]" if is_conditional else ""
         logger.info("%-6s %-40s %3d min       %-25s%s", phase, name, duration, agent, conditional_marker)
-        logger.info("       |-- %s", metadata['description'])
-        if metadata['dependencies']:
-            deps_str = ', '.join(["Phase %s" % TASK_METADATA[d]['phase'] for d in metadata['dependencies'] if d in TASK_METADATA])
+        logger.info("       |-- %s", metadata["description"])
+        if metadata["dependencies"]:
+            deps_str = ", ".join(
+                ["Phase %s" % TASK_METADATA[d]["phase"] for d in metadata["dependencies"] if d in TASK_METADATA]
+            )
             logger.info("          Dependencies: %s", deps_str)
         logger.info("")
 
-    logger.info("-"*70)
-    logger.info("TOTAL ESTIMATED TIME: %d minutes (~%dh %dm)", total_duration, total_duration // 60, total_duration % 60)
+    logger.info("-" * 70)
+    logger.info(
+        "TOTAL ESTIMATED TIME: %d minutes (~%dh %dm)", total_duration, total_duration // 60, total_duration % 60
+    )
     logger.info("  (+ up to 4 min if gap-fill triggers)")
-    logger.info("="*70 + "\n")
+    logger.info("=" * 70 + "\n")
 
 
 class ProgressTracker:
@@ -878,11 +956,12 @@ class ProgressTracker:
     Real-time progress tracking for CrewAI task execution.
     Tracks current phase, elapsed time, and estimated remaining time.
     """
+
     def __init__(self, task_metadata: dict):
         self.task_metadata = task_metadata
         self.task_names = list(task_metadata.keys())
         self.current_task_index = 0
-        self.total_phases = len([m for m in task_metadata.values() if not m.get('conditional', False)])
+        self.total_phases = len([m for m in task_metadata.values() if not m.get("conditional", False)])
         self.start_time = None
         self.task_start_time = None
         self.completed_tasks = []
@@ -890,9 +969,9 @@ class ProgressTracker:
     def start_workflow(self):
         """Mark workflow start time"""
         self.start_time = time.time()
-        logger.info("\n" + "="*70)
+        logger.info("\n" + "=" * 70)
         logger.info("WORKFLOW EXECUTION STARTED")
-        logger.info("="*70 + "\n")
+        logger.info("=" * 70 + "\n")
 
     def task_started(self, task_index: int):
         """Called when a task begins"""
@@ -905,16 +984,18 @@ class ProgressTracker:
 
         metadata = self.task_metadata[task_name]
 
-        logger.info("\n" + "="*70)
-        logger.info("PHASE %s/%d: %s", metadata['phase'], self.total_phases, metadata['name'].upper())
-        logger.info("="*70)
-        logger.info("Agent: %s", metadata['agent'])
-        logger.info("Description: %s", metadata['description'])
-        logger.info("Estimated Duration: %d minutes", metadata['estimated_duration_min'])
-        if metadata['dependencies']:
-            deps_str = ', '.join([self.task_metadata[d]['name'] for d in metadata['dependencies'] if d in self.task_metadata])
+        logger.info("\n" + "=" * 70)
+        logger.info("PHASE %s/%d: %s", metadata["phase"], self.total_phases, metadata["name"].upper())
+        logger.info("=" * 70)
+        logger.info("Agent: %s", metadata["agent"])
+        logger.info("Description: %s", metadata["description"])
+        logger.info("Estimated Duration: %d minutes", metadata["estimated_duration_min"])
+        if metadata["dependencies"]:
+            deps_str = ", ".join(
+                [self.task_metadata[d]["name"] for d in metadata["dependencies"] if d in self.task_metadata]
+            )
             logger.info("Dependencies: %s", deps_str)
-        logger.info("-"*70)
+        logger.info("-" * 70)
 
     def task_completed(self, task_index: int):
         """Called when a task completes"""
@@ -925,10 +1006,7 @@ class ProgressTracker:
 
         task_name = self.task_names[task_index]
         elapsed_task = time.time() - self.task_start_time
-        self.completed_tasks.append({
-            'name': task_name,
-            'duration': elapsed_task
-        })
+        self.completed_tasks.append({"name": task_name, "duration": elapsed_task})
 
         # Calculate progress
         progress_pct = (len(self.completed_tasks) / self.total_phases) * 100
@@ -941,35 +1019,42 @@ class ProgressTracker:
 
         metadata = self.task_metadata[task_name]
 
-        logger.info("\n" + "="*70)
-        logger.info("PHASE %s/%d COMPLETED", metadata['phase'], self.total_phases)
-        logger.info("="*70)
+        logger.info("\n" + "=" * 70)
+        logger.info("PHASE %s/%d COMPLETED", metadata["phase"], self.total_phases)
+        logger.info("=" * 70)
         logger.info("Task Duration: %.1f minutes (%.0f seconds)", elapsed_task / 60, elapsed_task)
         logger.info("Total Elapsed: %.1f minutes", elapsed_total / 60)
-        logger.info("Progress: %.1f%% complete (%d/%d tasks)", progress_pct, len(self.completed_tasks), self.total_phases)
+        logger.info(
+            "Progress: %.1f%% complete (%d/%d tasks)", progress_pct, len(self.completed_tasks), self.total_phases
+        )
         logger.info("Estimated Remaining: %.1f minutes", estimated_remaining / 60)
-        logger.info("="*70 + "\n")
+        logger.info("=" * 70 + "\n")
 
     def workflow_completed(self):
         """Called when entire workflow finishes"""
         total_time = time.time() - self.start_time
 
-        logger.info("\n" + "="*70)
-        logger.info(" "*22 + "WORKFLOW COMPLETED")
-        logger.info("="*70)
+        logger.info("\n" + "=" * 70)
+        logger.info(" " * 22 + "WORKFLOW COMPLETED")
+        logger.info("=" * 70)
         logger.info("\nTotal Execution Time: %.1f minutes (%.2f hours)", total_time / 60, total_time / 3600)
         logger.info("Tasks Completed: %d/%d", len(self.completed_tasks), self.total_phases)
 
         logger.info("\n%s", "Task Performance Summary".center(70))
-        logger.info("-"*70)
+        logger.info("-" * 70)
         for i, task_info in enumerate(self.completed_tasks, 1):
-            task_name = task_info['name']
-            duration = task_info['duration']
-            estimated = self.task_metadata[task_name]['estimated_duration_min'] * 60
+            task_name = task_info["name"]
+            duration = task_info["duration"]
+            estimated = self.task_metadata[task_name]["estimated_duration_min"] * 60
             variance = ((duration - estimated) / estimated) * 100 if estimated > 0 else 0
 
-            logger.info("%d. %-40s %6.1f min (est: %.1f min, %+.0f%%)",
-                  i, self.task_metadata[task_name]['name'],
-                  duration / 60, estimated / 60, variance)
+            logger.info(
+                "%d. %-40s %6.1f min (est: %.1f min, %+.0f%%)",
+                i,
+                self.task_metadata[task_name]["name"],
+                duration / 60,
+                estimated / 60,
+                variance,
+            )
 
-        logger.info("="*70 + "\n")
+        logger.info("=" * 70 + "\n")

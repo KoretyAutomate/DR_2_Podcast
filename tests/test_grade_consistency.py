@@ -5,6 +5,7 @@ GRADE "中程度から高い" against a basis of LOW, and projected "年間数�
 prevented cases against a computed NNT = inf. The LLM auditor graded the run
 FAIL but missed both.
 """
+
 import pytest
 from dr2_podcast.pipeline_validators import validate_grade_consistency
 

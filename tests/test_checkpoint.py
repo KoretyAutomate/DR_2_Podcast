@@ -12,6 +12,7 @@ class TestSerializeDataclass:
 
     def test_serialize_deep_extraction(self):
         from dr2_podcast.research.clinical import DeepExtraction, PaperMetadata
+
         de = DeepExtraction(
             pmid="12345678",
             doi="10.1234/test",
@@ -29,6 +30,7 @@ class TestSerializeDataclass:
             ),
         )
         from dr2_podcast.pipeline import _serialize_dataclass
+
         result = _serialize_dataclass(de)
         assert isinstance(result, dict)
         assert result["pmid"] == "12345678"
@@ -40,19 +42,20 @@ class TestSerializeDataclass:
 
     def test_serialize_tiered_search_plan(self):
         from dr2_podcast.research.clinical import TieredSearchPlan, TierKeywords
+
         plan = TieredSearchPlan(
             pico={"P": "adults", "I": "caffeine", "C": "placebo", "O": "cognition"},
             tier1=TierKeywords(
-                intervention=["coffee"], outcome=["memory"],
-                population=["adults"], rationale="exact terms"
+                intervention=["coffee"], outcome=["memory"], population=["adults"], rationale="exact terms"
             ),
             tier2=TierKeywords(
-                intervention=["caffeine"], outcome=["cognition"],
-                population=["humans"], rationale="scientific synonyms"
+                intervention=["caffeine"], outcome=["cognition"], population=["humans"], rationale="scientific synonyms"
             ),
             tier3=TierKeywords(
-                intervention=["methylxanthines"], outcome=["cognitive performance"],
-                population=["healthy adults"], rationale="compound class"
+                intervention=["methylxanthines"],
+                outcome=["cognitive performance"],
+                population=["healthy adults"],
+                rationale="compound class",
             ),
             role="affirmative",
             auditor_approved=True,
@@ -60,6 +63,7 @@ class TestSerializeDataclass:
             revision_count=1,
         )
         from dr2_podcast.pipeline import _serialize_dataclass
+
         result = _serialize_dataclass(plan)
         assert isinstance(result, dict)
         assert result["pico"]["I"] == "caffeine"
@@ -68,15 +72,19 @@ class TestSerializeDataclass:
 
     def test_serialize_clinical_impact(self):
         from dr2_podcast.research.clinical_math import ClinicalImpact
+
         impact = ClinicalImpact(
             study_id="PMID:12345",
-            cer=0.15, eer=0.10,
-            arr=0.05, rrr=0.333,
+            cer=0.15,
+            eer=0.10,
+            arr=0.05,
+            rrr=0.333,
             nnt=20.0,
             nnt_interpretation="Treat 20 patients to prevent 1 event",
             direction="benefit",
         )
         from dr2_podcast.pipeline import _serialize_dataclass
+
         result = _serialize_dataclass(impact)
         assert isinstance(result, dict)
         assert result["nnt"] == 20.0
@@ -84,6 +92,7 @@ class TestSerializeDataclass:
 
     def test_serialize_wide_net_record(self):
         from dr2_podcast.research.clinical import WideNetRecord
+
         wnr = WideNetRecord(
             pmid="99999",
             doi="10.9999/test",
@@ -101,17 +110,20 @@ class TestSerializeDataclass:
             relevance_score=0.85,
         )
         from dr2_podcast.pipeline import _serialize_dataclass
+
         result = _serialize_dataclass(wnr)
         assert result["pmid"] == "99999"
         assert result["research_tier"] == 2
 
     def test_serialize_list_of_dataclasses(self):
         from dr2_podcast.research.clinical import DeepExtraction
+
         items = [
             DeepExtraction(pmid="1", doi=None, title="Study 1", url="https://example.com/1"),
             DeepExtraction(pmid="2", doi=None, title="Study 2", url="https://example.com/2"),
         ]
         from dr2_podcast.pipeline import _serialize_dataclass
+
         result = _serialize_dataclass(items)
         assert isinstance(result, list)
         assert len(result) == 2
@@ -120,6 +132,7 @@ class TestSerializeDataclass:
 
     def test_serialize_none_and_primitives(self):
         from dr2_podcast.pipeline import _serialize_dataclass
+
         assert _serialize_dataclass(None) is None
         assert _serialize_dataclass("hello") == "hello"
         assert _serialize_dataclass(42) == 42
@@ -128,6 +141,7 @@ class TestSerializeDataclass:
 
     def test_serialize_nested_dict(self):
         from dr2_podcast.pipeline import _serialize_dataclass
+
         result = _serialize_dataclass({"key": [1, 2, 3], "nested": {"a": "b"}})
         assert result == {"key": [1, 2, 3], "nested": {"a": "b"}}
 
@@ -142,8 +156,12 @@ class TestDeserializePipelineData:
         original = {
             "aff_extractions": [
                 DeepExtraction(
-                    pmid="111", doi="10.1/a", title="Study A", url="https://a.com",
-                    effect_size="OR 1.5", research_tier=1,
+                    pmid="111",
+                    doi="10.1/a",
+                    title="Study A",
+                    url="https://a.com",
+                    effect_size="OR 1.5",
+                    research_tier=1,
                     paper_metadata=PaperMetadata(citation_count=10),
                 ),
             ],
@@ -199,9 +217,14 @@ class TestDeserializePipelineData:
         original = {
             "impacts": [
                 ClinicalImpact(
-                    study_id="PMID:1", cer=0.2, eer=0.1,
-                    arr=0.1, rrr=0.5, nnt=10.0,
-                    nnt_interpretation="Treat 10...", direction="benefit",
+                    study_id="PMID:1",
+                    cer=0.2,
+                    eer=0.1,
+                    arr=0.1,
+                    rrr=0.5,
+                    nnt=10.0,
+                    nnt_interpretation="Treat 10...",
+                    direction="benefit",
                 ),
             ],
             "aff_extractions": [],
@@ -219,6 +242,7 @@ class TestDeserializePipelineData:
 
     def test_empty_pipeline_data(self):
         from dr2_podcast.pipeline import _deserialize_pipeline_data
+
         assert _deserialize_pipeline_data({}) == {}
         assert _deserialize_pipeline_data(None) is None
 
@@ -228,10 +252,8 @@ class TestSaveLoadCheckpoint:
 
     def test_save_creates_checkpoint_file(self, tmp_output_dir):
         from dr2_podcast.pipeline import save_checkpoint, CHECKPOINT_FILE
-        save_checkpoint(
-            tmp_output_dir, 0, "test topic", "en",
-            {"framing_output": "some framing text"}
-        )
+
+        save_checkpoint(tmp_output_dir, 0, "test topic", "en", {"framing_output": "some framing text"})
         ckpt_path = tmp_output_dir / CHECKPOINT_FILE
         assert ckpt_path.exists()
 
@@ -244,6 +266,7 @@ class TestSaveLoadCheckpoint:
 
     def test_save_accumulates_phases(self, tmp_output_dir):
         from dr2_podcast.pipeline import save_checkpoint, CHECKPOINT_FILE
+
         save_checkpoint(tmp_output_dir, 0, "topic", "en", {"a": "1"})
         save_checkpoint(tmp_output_dir, 1, "topic", "en", {"b": "2"})
         save_checkpoint(tmp_output_dir, 2, "topic", "en", {"c": "3"})
@@ -253,6 +276,7 @@ class TestSaveLoadCheckpoint:
 
     def test_save_does_not_duplicate_phases(self, tmp_output_dir):
         from dr2_podcast.pipeline import save_checkpoint, CHECKPOINT_FILE
+
         save_checkpoint(tmp_output_dir, 0, "topic", "en", {})
         save_checkpoint(tmp_output_dir, 0, "topic", "en", {})
 
@@ -261,6 +285,7 @@ class TestSaveLoadCheckpoint:
 
     def test_load_valid_checkpoint(self, tmp_output_dir):
         from dr2_podcast.pipeline import save_checkpoint, load_checkpoint
+
         save_checkpoint(tmp_output_dir, 0, "my topic", "ja", {"key": "val"})
         result = load_checkpoint(tmp_output_dir)
         assert result is not None
@@ -271,17 +296,20 @@ class TestSaveLoadCheckpoint:
 
     def test_load_missing_checkpoint(self, tmp_output_dir):
         from dr2_podcast.pipeline import load_checkpoint
+
         result = load_checkpoint(tmp_output_dir)
         assert result is None
 
     def test_load_corrupt_json(self, tmp_output_dir):
         from dr2_podcast.pipeline import load_checkpoint, CHECKPOINT_FILE
+
         (tmp_output_dir / CHECKPOINT_FILE).write_text("not valid json{{{")
         result = load_checkpoint(tmp_output_dir)
         assert result is None
 
     def test_load_missing_required_keys(self, tmp_output_dir):
         from dr2_podcast.pipeline import load_checkpoint, CHECKPOINT_FILE
+
         (tmp_output_dir / CHECKPOINT_FILE).write_text(json.dumps({"topic": "x"}))
         result = load_checkpoint(tmp_output_dir)
         assert result is None
@@ -289,6 +317,7 @@ class TestSaveLoadCheckpoint:
     def test_checkpoint_json_has_required_keys(self, tmp_output_dir):
         """Test criterion: checkpoint.json has keys: topic, language, completed_phases, timestamp."""
         from dr2_podcast.pipeline import save_checkpoint, CHECKPOINT_FILE
+
         save_checkpoint(tmp_output_dir, 1, "effects of caffeine", "en", {})
 
         data = json.loads((tmp_output_dir / CHECKPOINT_FILE).read_text())
@@ -344,6 +373,7 @@ class TestSaveLoadCheckpoint:
         # pipeline_data should have been deserialized back to dataclasses
         from dr2_podcast.research.clinical import TieredSearchPlan as TSP, DeepExtraction as DE
         from dr2_podcast.research.clinical_math import ClinicalImpact as CI
+
         assert isinstance(pd["aff_strategy"], TSP)
         assert isinstance(pd["aff_extractions"][0], DE)
         assert isinstance(pd["impacts"][0], CI)
@@ -356,6 +386,7 @@ class TestResumeArgParsing:
         """Verify parse_arguments() accepts --resume."""
         from dr2_podcast.pipeline import parse_arguments
         import sys
+
         old_argv = sys.argv
         try:
             sys.argv = ["pipeline.py", "--resume", "research_outputs/2026-02-28_12-00-00"]
@@ -368,6 +399,7 @@ class TestResumeArgParsing:
         """Verify --resume defaults to None."""
         from dr2_podcast.pipeline import parse_arguments
         import sys
+
         old_argv = sys.argv
         try:
             sys.argv = ["pipeline.py", "--topic", "test"]
@@ -383,12 +415,14 @@ class TestPhaseSkipLogic:
     def test_no_checkpoint_means_no_phases_done(self, tmp_output_dir):
         """Without a checkpoint, no phases should be marked complete."""
         from dr2_podcast.pipeline import load_checkpoint
+
         ckpt = load_checkpoint(tmp_output_dir)
         assert ckpt is None
 
     def test_saved_phases_are_completed(self, tmp_output_dir):
         """Saved phases should appear in completed_phases set."""
         from dr2_podcast.pipeline import save_checkpoint, load_checkpoint
+
         save_checkpoint(tmp_output_dir, 0, "topic", "en", {})
         save_checkpoint(tmp_output_dir, 1, "topic", "en", {})
         ckpt = load_checkpoint(tmp_output_dir)

@@ -1,4 +1,5 @@
 """Centralized configuration for DR_2_Podcast pipeline."""
+
 import os
 from dotenv import load_dotenv
 
@@ -51,6 +52,7 @@ TTS_RANDOM_VOICE = os.environ.get("TTS_RANDOM_VOICE", "1") not in ("0", "false",
 # chosen after a direct A/B listen (2026-07-03).
 TTS_SPEED_SCALE = float(os.environ.get("TTS_SPEED_SCALE", "1.1"))
 
+
 # Per-voice speedScale overrides, keyed by integer voice/style ID. Any voice not
 # listed falls back to TTS_SPEED_SCALE. わかな (1138003200) reads rushed at the
 # global 1.1, so she renders at 1.0 (user request, 2026-07-14). Format: "id:speed,id:speed".
@@ -69,6 +71,7 @@ def _parse_speed_overrides(raw: str) -> dict:
             continue
     return out
 
+
 TTS_SPEED_OVERRIDES = _parse_speed_overrides(os.environ.get("TTS_SPEED_OVERRIDES", "1138003200:1.0"))
 
 # Per-voice intonationScale overrides — same "id:value" format and same fallback rule as
@@ -77,9 +80,7 @@ TTS_SPEED_OVERRIDES = _parse_speed_overrides(os.environ.get("TTS_SPEED_OVERRIDES
 # 「わかなの声のトーンの起伏が少し激し過ぎる」— "a LITTLE too much", so she renders at 0.85,
 # a noticeable flattening rather than a monotone.
 TTS_INTONATION_SCALE = float(os.environ.get("TTS_INTONATION_SCALE", "1.0"))
-TTS_INTONATION_OVERRIDES = _parse_speed_overrides(
-    os.environ.get("TTS_INTONATION_OVERRIDES", "1138003200:0.85")
-)
+TTS_INTONATION_OVERRIDES = _parse_speed_overrides(os.environ.get("TTS_INTONATION_OVERRIDES", "1138003200:0.85"))
 
 # --- Timeouts (seconds) ---
 LLM_TIMEOUT = 300

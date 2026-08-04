@@ -8,15 +8,17 @@ Renders a short Japanese 2-speaker dialogue through the real engine path:
 Config is forced here so the test is deterministic regardless of .env state.
 (load_dotenv default override=False, so these win over .env.)
 """
+
 import os
 import sys
 
 os.environ["TTS_ENGINE_JA"] = "aivisspeech"
 os.environ["TTS_API_URL"] = "http://localhost:10101"
-os.environ["TTS_HOST1_ID"] = "1937616896"   # にせ ノーマル (male)
-os.environ["TTS_HOST2_ID"] = "1717361472"   # みちのくあいり 標準 (female)
+os.environ["TTS_HOST1_ID"] = "1937616896"  # にせ ノーマル (male)
+os.environ["TTS_HOST2_ID"] = "1717361472"  # みちのくあいり 標準 (female)
 
 import logging
+
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 from pathlib import Path

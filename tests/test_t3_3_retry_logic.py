@@ -26,13 +26,13 @@ os.environ.setdefault("FAST_MODEL_NAME", "test-fast")
 os.environ.setdefault("FAST_LLM_BASE_URL", "http://localhost:9999/v1")
 
 
-
 class TestCallSmartRetry(unittest.TestCase):
     """Tests for _call_smart() in clinical_research.py (async, ResearchAgent)."""
 
     def setUp(self):
         """Create a ResearchAgent instance with mocked clients."""
         from dr2_podcast.research.clinical import ResearchAgent
+
         self.agent = ResearchAgent.__new__(ResearchAgent)
         self.agent.smart_client = AsyncMock()
         self.agent.smart_model = "test-model"
@@ -100,9 +100,7 @@ class TestCallSmartRetry(unittest.TestCase):
 
         # Should have been called exactly once (no retries)
         self.assertEqual(
-            self.agent.smart_client.chat.completions.create.call_count,
-            1,
-            "Should NOT retry on BadRequestError"
+            self.agent.smart_client.chat.completions.create.call_count, 1, "Should NOT retry on BadRequestError"
         )
         print("  PASS: BadRequestError raises immediately without retry")
 
@@ -122,17 +120,13 @@ class TestCallSmartRetry(unittest.TestCase):
             self._run(self.agent._call_smart("system", "user"))
 
         self.assertEqual(
-            self.agent.smart_client.chat.completions.create.call_count,
-            1,
-            "Should NOT retry on AuthenticationError"
+            self.agent.smart_client.chat.completions.create.call_count, 1, "Should NOT retry on AuthenticationError"
         )
         print("  PASS: AuthenticationError raises immediately without retry")
 
     def test_raises_after_all_retries_exhausted(self):
         """_call_smart raises after 4 total attempts (1 + 3 retries)."""
-        self.agent.smart_client.chat.completions.create = AsyncMock(
-            side_effect=ConnectionError("Connection refused")
-        )
+        self.agent.smart_client.chat.completions.create = AsyncMock(side_effect=ConnectionError("Connection refused"))
 
         async def mock_sleep(t):
             pass  # Skip actual sleeping
@@ -142,9 +136,7 @@ class TestCallSmartRetry(unittest.TestCase):
                 self._run(self.agent._call_smart("system", "user"))
 
         self.assertEqual(
-            self.agent.smart_client.chat.completions.create.call_count,
-            4,
-            "Should attempt exactly 4 times total"
+            self.agent.smart_client.chat.completions.create.call_count, 4, "Should attempt exactly 4 times total"
         )
         self.assertIn("Connection refused", str(ctx.exception))
         print("  PASS: Raises ConnectionError after 4 attempts")
@@ -156,9 +148,11 @@ class TestCallSmartRetry(unittest.TestCase):
         transient_errors = [
             (openai.APIConnectionError, {"request": MagicMock()}, "APIConnectionError"),
             (openai.APITimeoutError, {"request": MagicMock()}, "APITimeoutError"),
-            (openai.InternalServerError,
-             {"message": "Internal server error", "response": MagicMock(status_code=500), "body": None},
-             "InternalServerError"),
+            (
+                openai.InternalServerError,
+                {"message": "Internal server error", "response": MagicMock(status_code=500), "body": None},
+                "InternalServerError",
+            ),
         ]
 
         for error_class, error_kwargs, error_name in transient_errors:
@@ -178,6 +172,7 @@ class TestCallSmartRetry(unittest.TestCase):
                     if call_count == 1:
                         raise err_cls(**err_kw)
                     return mock_resp
+
                 return side_effect
 
             side_fn = self._run(make_side_effect(error_class, error_kwargs))
@@ -200,6 +195,7 @@ class TestCallSmartModelRetry(unittest.TestCase):
     def setUp(self):
         """Set module globals so _call_smart_model doesn't raise RuntimeError."""
         import dr2_podcast.pipeline as _p
+
         self._orig_model = _p.SMART_MODEL
         self._orig_url = _p.SMART_BASE_URL
         _p.SMART_MODEL = "test-model"
@@ -207,6 +203,7 @@ class TestCallSmartModelRetry(unittest.TestCase):
 
     def tearDown(self):
         import dr2_podcast.pipeline as _p
+
         _p.SMART_MODEL = self._orig_model
         _p.SMART_BASE_URL = self._orig_url
 
@@ -232,9 +229,9 @@ class TestCallSmartModelRetry(unittest.TestCase):
         mock_client = MagicMock()
         mock_client.chat.completions.create = mock_create
 
-        with patch("time.sleep", side_effect=mock_sleep), \
-             patch("openai.OpenAI", return_value=mock_client):
+        with patch("time.sleep", side_effect=mock_sleep), patch("openai.OpenAI", return_value=mock_client):
             from dr2_podcast.pipeline import _call_smart_model
+
             result = _call_smart_model("system", "user")
 
         self.assertEqual(result, "success")
@@ -271,6 +268,7 @@ class TestCallSmartModelRetry(unittest.TestCase):
 
         with patch("openai.OpenAI", return_value=mock_client):
             from dr2_podcast.pipeline import _call_smart_model
+
             with self.assertRaises(openai.BadRequestError):
                 _call_smart_model("system", "user")
 
@@ -297,6 +295,7 @@ class TestCallSmartModelRetry(unittest.TestCase):
 
         with patch("openai.OpenAI", return_value=mock_client):
             from dr2_podcast.pipeline import _call_smart_model
+
             with self.assertRaises(openai.AuthenticationError):
                 _call_smart_model("system", "user")
 
@@ -318,9 +317,9 @@ class TestCallSmartModelRetry(unittest.TestCase):
         def mock_sleep(t):
             pass
 
-        with patch("time.sleep", side_effect=mock_sleep), \
-             patch("openai.OpenAI", return_value=mock_client):
+        with patch("time.sleep", side_effect=mock_sleep), patch("openai.OpenAI", return_value=mock_client):
             from dr2_podcast.pipeline import _call_smart_model
+
             with self.assertRaises(TimeoutError):
                 _call_smart_model("system", "user")
 

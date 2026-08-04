@@ -6,6 +6,7 @@ Regression anchors from the 2026-07-05 sleep-week investigation:
   - Fri: fabricated citations 'Vandewalle 2007' / 'Pillai 2014'.
   - Mon: identical closing line repeated 3-4 times.
 """
+
 import json
 import textwrap
 
@@ -78,13 +79,16 @@ def test_no_labels_flagged():
 # --------------------------------------------------------------------------- #
 def _write_sot(tmp_path):
     sot = tmp_path / "sot.md"
-    sot.write_text(textwrap.dedent(
-        """
+    sot.write_text(
+        textwrap.dedent(
+            """
         ## References
         1. Leproult et al.. *Effect of 1 week of sleep restriction on testosterone*. JAMA. (2011). PMID: [21632481](https://pubmed.ncbi.nlm.nih.gov/21632481/).
         5. Van Cauter et al.. *Age-related changes in slow wave sleep*. JAMA. (2000). PMID: [10938176](https://pubmed.ncbi.nlm.nih.gov/10938176/).
         """
-    ), encoding="utf-8")
+        ),
+        encoding="utf-8",
+    )
     return str(sot)
 
 
@@ -119,16 +123,15 @@ def test_no_whitelist_never_flags():
 def test_allcaps_and_nonauthor_not_flagged(tmp_path):
     sot = _write_sot(tmp_path)
     # trial name / acronym / journal should not be treated as authors
-    script = ("Host 1: PREDIMED 2013 と VITAL 2018 の試験。\n"
-              "Host 2: Nature 2015 に掲載されました。")
+    script = "Host 1: PREDIMED 2013 と VITAL 2018 の試験。\nHost 2: Nature 2015 に掲載されました。"
     assert validate_citations(script, sot_path=sot) == []
 
 
 def test_pmids_loaded_from_sources_json(tmp_path):
     sj = tmp_path / "src.json"
-    sj.write_text(json.dumps({"lead": [
-        {"url": "https://pubmed.ncbi.nlm.nih.gov/21632481/", "title": "x"}]}),
-        encoding="utf-8")
+    sj.write_text(
+        json.dumps({"lead": [{"url": "https://pubmed.ncbi.nlm.nih.gov/21632481/", "title": "x"}]}), encoding="utf-8"
+    )
     # no SOT -> no author whitelist -> no flags even though json exists
     assert validate_citations("Host 1: Foo (2020).", sources_json_path=str(sj)) == []
 
@@ -167,8 +170,7 @@ def test_deduplicate_keeps_short_backchannels():
 # --------------------------------------------------------------------------- #
 def test_validate_script_structure_normalizes_and_flags(tmp_path):
     sot = _write_sot(tmp_path)
-    script = ("host_1：Vandewalle et al. (2007) の話。\n"
-              "host_2：なるほど。")
+    script = "host_1：Vandewalle et al. (2007) の話。\nhost_2：なるほど。"
     r = validate_script_structure(script, sot_path=sot)
     assert r["labels_fixed"] == 2
     assert r["normalized_text"].startswith("Host 1: ")

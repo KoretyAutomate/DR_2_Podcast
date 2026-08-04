@@ -16,6 +16,7 @@ from dr2_podcast.research.clinical import ResearchAgent, PubMedClient
 # ResearchAgent._parse_json_response
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def agent():
     """Create a bare ResearchAgent instance (no clients needed for parsing)."""
@@ -24,7 +25,6 @@ def agent():
 
 
 class TestParseJsonResponse:
-
     def test_clean_json(self, agent):
         result = agent._parse_json_response('{"key": "value", "num": 42}')
         assert result == {"key": "value", "num": 42}
@@ -65,10 +65,12 @@ class TestParseJsonResponse:
         assert len(result) == 2
 
     def test_template_echo_nulled_out(self, agent):
-        raw = json.dumps({
-            "study_design": "parallel RCT | crossover RCT | meta-analysis",
-            "sample_size": "200",
-        })
+        raw = json.dumps(
+            {
+                "study_design": "parallel RCT | crossover RCT | meta-analysis",
+                "sample_size": "200",
+            }
+        )
         result = agent._parse_json_response(raw)
         assert result["study_design"] is None
         assert result["sample_size"] == "200"
@@ -208,7 +210,6 @@ def pubmed_client():
 
 
 class TestParseArticlesXml:
-
     def test_two_articles(self, pubmed_client):
         articles = pubmed_client._parse_articles_xml(TWO_ARTICLES_XML)
         assert len(articles) == 2

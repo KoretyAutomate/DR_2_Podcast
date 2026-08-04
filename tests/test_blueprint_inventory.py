@@ -24,7 +24,6 @@ from dr2_podcast.pipeline import (
 
 
 class TestParseBlueprintInventoryMock:
-
     def test_returns_nonempty_dict(self, sample_blueprint):
         result = _parse_blueprint_inventory(sample_blueprint)
         assert isinstance(result, dict)
@@ -36,38 +35,38 @@ class TestParseBlueprintInventoryMock:
 
     def test_act1_key_found(self, sample_blueprint):
         result = _parse_blueprint_inventory(sample_blueprint)
-        act1_keys = [k for k in result if 'Act 1' in k]
+        act1_keys = [k for k in result if "Act 1" in k]
         assert len(act1_keys) == 1
 
     def test_items_have_no_tier_key(self, sample_blueprint):
         """New format items should not have a 'tier' key."""
         result = _parse_blueprint_inventory(sample_blueprint)
-        act1_key = next(k for k in result if 'Act 1' in k)
+        act1_key = next(k for k in result if "Act 1" in k)
         for item in result[act1_key]:
-            assert 'tier' not in item
+            assert "tier" not in item
 
     def test_items_have_question_and_answer(self, sample_blueprint):
         result = _parse_blueprint_inventory(sample_blueprint)
-        act1_key = next(k for k in result if 'Act 1' in k)
+        act1_key = next(k for k in result if "Act 1" in k)
         for item in result[act1_key]:
-            assert 'question' in item
-            assert 'answer' in item
+            assert "question" in item
+            assert "answer" in item
 
     def test_question_text_extracted(self, sample_blueprint):
         result = _parse_blueprint_inventory(sample_blueprint)
-        act1_key = next(k for k in result if 'Act 1' in k)
+        act1_key = next(k for k in result if "Act 1" in k)
         first = result[act1_key][0]
-        assert len(first['question']) > 5
+        assert len(first["question"]) > 5
 
     def test_answer_text_extracted(self, sample_blueprint):
         result = _parse_blueprint_inventory(sample_blueprint)
-        act1_key = next(k for k in result if 'Act 1' in k)
+        act1_key = next(k for k in result if "Act 1" in k)
         first = result[act1_key][0]
-        assert len(first['answer']) > 10
+        assert len(first["answer"]) > 10
 
     def test_act1_has_three_items(self, sample_blueprint):
         result = _parse_blueprint_inventory(sample_blueprint)
-        act1_key = next(k for k in result if 'Act 1' in k)
+        act1_key = next(k for k in result if "Act 1" in k)
         assert len(result[act1_key]) == 3
 
     def test_no_section5_or_8_returns_empty_dict(self):
@@ -90,14 +89,14 @@ class TestParseBlueprintInventoryLegacy:
     def test_legacy_items_have_no_tier(self, sample_blueprint_legacy):
         """Even legacy items should be returned without tier key."""
         result = _parse_blueprint_inventory(sample_blueprint_legacy)
-        act1_key = next(k for k in result if 'Act 1' in k)
+        act1_key = next(k for k in result if "Act 1" in k)
         for item in result[act1_key]:
-            assert 'tier' not in item
+            assert "tier" not in item
 
     def test_legacy_question_extracted(self, sample_blueprint_legacy):
         result = _parse_blueprint_inventory(sample_blueprint_legacy)
-        act1_key = next(k for k in result if 'Act 1' in k)
-        assert any('coffee' in it['question'].lower() for it in result[act1_key])
+        act1_key = next(k for k in result if "Act 1" in k)
+        assert any("coffee" in it["question"].lower() for it in result[act1_key])
 
 
 # ── Test B: Coverage checklist injection logic ───────────────────────────
@@ -115,38 +114,37 @@ class TestCoverageChecklistInjection:
             for it in items:
                 checklist_lines.append(f"  {it['question']}")
                 checklist_lines.append(f"    -> {it['answer'][:120]}...")
-        return '\n'.join(checklist_lines)
+        return "\n".join(checklist_lines)
 
     def test_all_items_included(self, sample_inventory):
         desc = self._build_checklist(sample_inventory)
-        assert 'Does coffee really improve brain function?' in desc
-        assert 'What neuroimaging studies' in desc
-        assert 'Can tolerance be managed' in desc
+        assert "Does coffee really improve brain function?" in desc
+        assert "What neuroimaging studies" in desc
+        assert "Can tolerance be managed" in desc
 
     def test_checklist_has_header(self, sample_inventory):
         desc = self._build_checklist(sample_inventory)
-        assert 'COVERAGE CHECKLIST' in desc
+        assert "COVERAGE CHECKLIST" in desc
 
     def test_checklist_contains_question_text(self, sample_inventory):
         desc = self._build_checklist(sample_inventory)
-        assert 'Does coffee really improve brain function?' in desc
+        assert "Does coffee really improve brain function?" in desc
 
     def test_checklist_contains_answer_text(self, sample_inventory):
         desc = self._build_checklist(sample_inventory)
-        assert 'multiple RCTs' in desc
+        assert "multiple RCTs" in desc
 
     def test_no_tier_labels_in_output(self, sample_inventory):
         desc = self._build_checklist(sample_inventory)
-        assert '[Basic]' not in desc
-        assert '[Context]' not in desc
-        assert '[Deep-dive]' not in desc
+        assert "[Basic]" not in desc
+        assert "[Context]" not in desc
+        assert "[Deep-dive]" not in desc
 
 
 # ── Test C: _count_words ─────────────────────────────────────────────────
 
 
 class TestCountWords:
-
     def test_english_word_count(self, english_lang_config):
         text = "Hello world this is a test"
         assert _count_words(text, english_lang_config) == 6
@@ -170,7 +168,6 @@ class TestCountWords:
 
 
 class TestDeduplicateScript:
-
     def test_no_duplicates_unchanged(self, english_lang_config):
         text = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5"
         result = _deduplicate_script(text, english_lang_config)
@@ -191,15 +188,7 @@ class TestDeduplicateScript:
         assert result.count("Welcome to the show") == 1
 
     def test_transition_markers_preserved(self, english_lang_config):
-        text = (
-            "[TRANSITION]\n"
-            "## [Act 2]\n"
-            "[TRANSITION]\n"
-            "\n"
-            "[TRANSITION]\n"
-            "## [Act 2]\n"
-            "[TRANSITION]\n"
-        )
+        text = "[TRANSITION]\n## [Act 2]\n[TRANSITION]\n\n[TRANSITION]\n## [Act 2]\n[TRANSITION]\n"
         result = _deduplicate_script(text, english_lang_config)
         # Transition blocks are explicitly excluded from deduplication
         assert result.count("[TRANSITION]") >= 2
@@ -221,45 +210,49 @@ class TestPipelineCodeState:
     def _load_pipeline_source(self):
         import dr2_podcast.pipeline as pipeline
         import inspect
+
         self.source = inspect.getsource(pipeline)
 
     def test_expansion_functions_removed(self):
-        assert '_run_script_expansion' not in self.source
-        assert '_expand_act' not in self.source
-        assert '_analyze_acts' not in self.source
-        assert 'ACT_ALLOCATIONS' not in self.source
+        assert "_run_script_expansion" not in self.source
+        assert "_expand_act" not in self.source
+        assert "_analyze_acts" not in self.source
+        assert "ACT_ALLOCATIONS" not in self.source
 
     def test_parse_blueprint_inventory_exists(self):
         """Function must be importable from pipeline (re-exported from pipeline_script)."""
         import dr2_podcast.pipeline as pipeline
-        assert callable(getattr(pipeline, '_parse_blueprint_inventory', None))
+
+        assert callable(getattr(pipeline, "_parse_blueprint_inventory", None))
 
     def test_run_condense_pass_exists(self):
         """Function must be importable from pipeline."""
         import dr2_podcast.pipeline as pipeline
-        assert callable(getattr(pipeline, '_run_condense_pass', None))
+
+        assert callable(getattr(pipeline, "_run_condense_pass", None))
 
     def test_run_trim_pass_alias_exists(self):
         """Backward-compatible alias must exist."""
         import dr2_podcast.pipeline as pipeline
-        assert callable(getattr(pipeline, '_run_trim_pass', None))
+
+        assert callable(getattr(pipeline, "_run_trim_pass", None))
 
     def test_at_least_in_prompts(self):
         """'AT LEAST' appears in agent/task prompts (now in pipeline_crew)."""
         import dr2_podcast.pipeline_crew as pipeline_crew
         import inspect
+
         crew_source = inspect.getsource(pipeline_crew)
-        assert 'AT LEAST' in crew_source
+        assert "AT LEAST" in crew_source
 
     def test_shrinkage_guard_uses_min_acceptable(self):
-        assert 'min_acceptable' in self.source
+        assert "min_acceptable" in self.source
 
 
 # ── Test F: _run_condense_pass (via _run_trim_pass alias) with mocked LLM ──
 
 
 class TestRunCondensePass:
-
     LONG_SCRIPT = (
         "Host: Welcome to Science Unpacked. Today we examine coffee.\n\n"
         "Guest: Great topic. Coffee is the most widely consumed psychoactive substance.\n\n"
@@ -281,24 +274,30 @@ class TestRunCondensePass:
 
     CONDENSE_INVENTORY = {
         "Act 1 --- Evidence & Nuance": [
-            {'question': 'What neuroimaging studies support caffeine mechanisms?',
-             'answer': 'PET studies show dose-dependent adenosine receptor occupancy.'},
-            {'question': 'How do habitual users differ from non-habitual?',
-             'answer': 'Non-habitual drinkers show larger acute effects.'},
-            {'question': 'What dose range shows cognitive benefits?',
-             'answer': '200-400mg is the established optimal range.'},
+            {
+                "question": "What neuroimaging studies support caffeine mechanisms?",
+                "answer": "PET studies show dose-dependent adenosine receptor occupancy.",
+            },
+            {
+                "question": "How do habitual users differ from non-habitual?",
+                "answer": "Non-habitual drinkers show larger acute effects.",
+            },
+            {
+                "question": "What dose range shows cognitive benefits?",
+                "answer": "200-400mg is the established optimal range.",
+            },
         ],
     }
 
     SESSION_ROLES = {
-        'presenter': {'label': 'Host'},
-        'questioner': {'label': 'Guest'},
+        "presenter": {"label": "Host"},
+        "questioner": {"label": "Guest"},
     }
 
     def test_returns_string(self, english_lang_config):
         """Condense pass returns a string even when LLM call is mocked."""
         condensed_text = "Host: Welcome. Guest: Short answer. Host: One Action for today."
-        with patch('dr2_podcast.pipeline._call_smart_model', return_value=condensed_text):
+        with patch("dr2_podcast.pipeline._call_smart_model", return_value=condensed_text):
             result = _run_trim_pass(
                 script_text=self.LONG_SCRIPT,
                 inventory=self.CONDENSE_INVENTORY,
@@ -313,7 +312,7 @@ class TestRunCondensePass:
     def test_result_shorter_than_input(self, english_lang_config):
         """Mocked LLM returns shorter text, condense pass should use it."""
         short = "Host: Coffee helps cognition. Guest: Agreed. Host: One Action."
-        with patch('dr2_podcast.pipeline._call_smart_model', return_value=short):
+        with patch("dr2_podcast.pipeline._call_smart_model", return_value=short):
             result = _run_trim_pass(
                 script_text=self.LONG_SCRIPT,
                 inventory=self.CONDENSE_INVENTORY,
@@ -323,9 +322,7 @@ class TestRunCondensePass:
                 topic_name="Coffee and Cognition",
                 target_instruction="Keep the One Action ending.",
             )
-        assert _count_words(result, english_lang_config) < _count_words(
-            self.LONG_SCRIPT, english_lang_config
-        )
+        assert _count_words(result, english_lang_config) < _count_words(self.LONG_SCRIPT, english_lang_config)
 
     def test_no_condense_when_under_target(self, english_lang_config):
         """Script already under target should be returned unchanged."""
@@ -342,7 +339,7 @@ class TestRunCondensePass:
 
     def test_llm_failure_returns_original(self, english_lang_config):
         """If LLM call raises, condense pass should return the original script."""
-        with patch('dr2_podcast.pipeline._call_smart_model', side_effect=Exception("LLM down")):
+        with patch("dr2_podcast.pipeline._call_smart_model", side_effect=Exception("LLM down")):
             result = _run_trim_pass(
                 script_text=self.LONG_SCRIPT,
                 inventory=self.CONDENSE_INVENTORY,

@@ -16,6 +16,7 @@ Covered failure classes:
 All functions are pure (no I/O except the optional source-file reads in
 validate_citations) and safe to call anywhere in the pipeline.
 """
+
 from __future__ import annotations
 import json
 import re
@@ -28,10 +29,10 @@ from pathlib import Path
 # Matches any speaker-label variant at line start: Host 1:, Host 1：, **Host 1**:,
 # host_1：, ホスト1：, ホスト 1:, Speaker 1:  (case-insensitive, underscore/space tolerant)
 _SPK_ANY = re.compile(
-    r'^[ \t]*\*{0,2}\s*(?:host|ホスト|speaker)[ _]*([12])[ _]*\*{0,2}\s*[:：]',
+    r"^[ \t]*\*{0,2}\s*(?:host|ホスト|speaker)[ _]*([12])[ _]*\*{0,2}\s*[:：]",
     re.IGNORECASE,
 )
-_SPK_CANON = re.compile(r'^Host ([12]):')
+_SPK_CANON = re.compile(r"^Host ([12]):")
 
 
 def normalize_speaker_labels(text: str) -> tuple[str, int]:
@@ -47,7 +48,7 @@ def normalize_speaker_labels(text: str) -> tuple[str, int]:
     for line in text.split("\n"):
         m = _SPK_ANY.match(line)
         if m:
-            rest = line[m.end():].lstrip()
+            rest = line[m.end() :].lstrip()
             newline = f"Host {m.group(1)}: {rest}".rstrip() if rest else f"Host {m.group(1)}:"
             if newline != line:
                 fixed += 1
@@ -57,16 +58,14 @@ def normalize_speaker_labels(text: str) -> tuple[str, int]:
     return "\n".join(out), fixed
 
 
-def check_speaker_alternation(text: str, max_run: int = 6,
-                              single_voice_ratio: float = 0.85) -> list[str]:
+def check_speaker_alternation(text: str, max_run: int = 6, single_voice_ratio: float = 0.85) -> list[str]:
     """Flag structural speaker defects. Run AFTER normalize_speaker_labels.
 
     - SPEAKER_RUN: more than ``max_run`` consecutive same-speaker turns (a
       mislabeled block, e.g. the Saturday sleep episode's 40 Host-1 turns).
     - SINGLE_VOICE: one speaker owns more than ``single_voice_ratio`` of all turns.
     """
-    turns = [m.group(1) for line in text.split("\n")
-             if (m := _SPK_CANON.match(line))]
+    turns = [m.group(1) for line in text.split("\n") if (m := _SPK_CANON.match(line))]
     if not turns:
         return ["NO_SPEAKER_LABELS: no canonical 'Host N:' turns found"]
     issues = []
@@ -76,44 +75,73 @@ def check_speaker_alternation(text: str, max_run: int = 6,
         maxrun = max(maxrun, run)
     if maxrun > max_run:
         issues.append(
-            f"SPEAKER_RUN: {maxrun} consecutive same-speaker turns "
-            f"(max {max_run}) — likely a mislabeled block")
+            f"SPEAKER_RUN: {maxrun} consecutive same-speaker turns (max {max_run}) — likely a mislabeled block"
+        )
     dom = max(Counter(turns).values()) / len(turns)
     if dom > single_voice_ratio:
         issues.append(
             f"SINGLE_VOICE: {int(dom * 100)}% of {len(turns)} turns are one "
-            f"speaker (max {int(single_voice_ratio * 100)}%)")
+            f"speaker (max {int(single_voice_ratio * 100)}%)"
+        )
     return issues
 
 
 # --------------------------------------------------------------------------- #
 # 2. Citations
 # --------------------------------------------------------------------------- #
-_YEAR = r'(?:18|19|20)\d\d'
+_YEAR = r"(?:18|19|20)\d\d"
 # Author-year in a script: "Vandewalle et al. (2007)", "Zhong et al., 2022",
 # "Leproult & Van Cauter 2011", "Winer (2019)". Surname is Title-case (first
 # upper, then lowercase) so ALLCAPS acronyms / trial names (RCT, PREDIMED, VITAL)
 # do NOT match.
 _CITE = re.compile(
-    r'\b([A-Z][a-zÀ-ſ]{2,}(?:\s+[A-Z][a-zÀ-ſ]+)?)'  # surname (opt. "Van Cauter")
-    r'(?:\s*(?:et\s*al\.?|&\s*[A-Z][a-zÀ-ſ]+|and\s+[A-Z][a-zÀ-ſ]+))?'
-    r'\s*[,\s]?\s*[\(（]?(' + _YEAR + r')[\)）]?'
+    r"\b([A-Z][a-zÀ-ſ]{2,}(?:\s+[A-Z][a-zÀ-ſ]+)?)"  # surname (opt. "Van Cauter")
+    r"(?:\s*(?:et\s*al\.?|&\s*[A-Z][a-zÀ-ſ]+|and\s+[A-Z][a-zÀ-ſ]+))?"
+    r"\s*[,\s]?\s*[\(（]?(" + _YEAR + r")[\)）]?"
 )
 
 # Title-case English words that legitimately precede a year but are NOT authors
 # (journals, orgs, trial names, generic nouns). Kept lowercase for comparison.
 _NONAUTHOR = {
-    "nature", "science", "cell", "lancet", "cochrane", "harvard", "oxford",
-    "day", "week", "act", "study", "table", "figure", "since", "before",
-    "after", "around", "about", "the", "in", "by", "december", "january",
-    "february", "march", "april", "may", "june", "july", "august",
-    "september", "october", "november",
+    "nature",
+    "science",
+    "cell",
+    "lancet",
+    "cochrane",
+    "harvard",
+    "oxford",
+    "day",
+    "week",
+    "act",
+    "study",
+    "table",
+    "figure",
+    "since",
+    "before",
+    "after",
+    "around",
+    "about",
+    "the",
+    "in",
+    "by",
+    "december",
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
 }
 
 
-def _load_source_whitelist(sot_path: str | None,
-                           sources_json_path: str | None,
-                           sot_text: str | None = None) -> tuple[set, set, set]:
+def _load_source_whitelist(
+    sot_path: str | None, sources_json_path: str | None, sot_text: str | None = None
+) -> tuple[set, set, set]:
     """Build (author_surnames, (surname, year) pairs, PMIDs) from the retrieved
     sources. Authoritative source = the SOT reference list, whose format is:
     ``N. Surname et al.. *Title*. Journal. (YEAR). PMID: [12345](url).``
@@ -130,12 +158,12 @@ def _load_source_whitelist(sot_path: str | None,
         _sot = Path(sot_path).read_text(encoding="utf-8")
     if _sot:
         for line in _sot.split("\n"):
-            ref = re.match(r'\s*\d+\.\s+([A-Z][^*.]+?)\.{1,2}\s*\*', line)
+            ref = re.match(r"\s*\d+\.\s+([A-Z][^*.]+?)\.{1,2}\s*\*", line)
             if not ref:
                 continue
-            year = re.search(r'[\(（](\d{4})[\)）]', line)
-            pm = re.search(r'PMID:\s*\[?(\d+)', line)
-            first = re.match(r'([A-Z][a-zA-ZÀ-ſ\-]{2,})', ref.group(1).strip())
+            year = re.search(r"[\(（](\d{4})[\)）]", line)
+            pm = re.search(r"PMID:\s*\[?(\d+)", line)
+            first = re.match(r"([A-Z][a-zA-ZÀ-ſ\-]{2,})", ref.group(1).strip())
             if first:
                 sn = first.group(1).lower()
                 surnames.add(sn)
@@ -159,15 +187,15 @@ def _load_source_whitelist(sot_path: str | None,
         for e in entries:
             if not isinstance(e, dict):
                 continue
-            pm = re.search(r'/(\d{6,9})/?', str(e.get("url", "")))
+            pm = re.search(r"/(\d{6,9})/?", str(e.get("url", "")))
             if pm:
                 pmids.add(pm.group(1))
     return surnames, pairs, pmids
 
 
-def validate_citations(script_text: str, sot_path: str | None = None,
-                       sources_json_path: str | None = None,
-                       sot_text: str | None = None) -> list[str]:
+def validate_citations(
+    script_text: str, sot_path: str | None = None, sources_json_path: str | None = None, sot_text: str | None = None
+) -> list[str]:
     """Flag Author-year citations in the script that are not backed by any
     retrieved source. Catches PURE fabrications (surname absent from the source
     corpus, e.g. 'Vandewalle 2007', 'Pillai 2014') deterministically. Author
@@ -187,15 +215,15 @@ def validate_citations(script_text: str, sot_path: str | None = None,
         return []
     issues, seen = [], set()
     for m in _CITE.finditer(script_text):
-        sn = re.match(r'[A-Za-zÀ-ſ]+', m.group(1)).group(0).lower()
+        sn = re.match(r"[A-Za-zÀ-ſ]+", m.group(1)).group(0).lower()
         yr = m.group(2)
         if sn in _NONAUTHOR or sn in seen:
             continue
         seen.add(sn)
         if sn not in surnames:
             issues.append(
-                f"FABRICATED_CITATION: '{m.group(1).strip()} ({yr})' — "
-                f"surname not found in any retrieved source")
+                f"FABRICATED_CITATION: '{m.group(1).strip()} ({yr})' — surname not found in any retrieved source"
+            )
     return issues
 
 
@@ -237,16 +265,15 @@ def detect_duplicate_blocks(text: str, min_len: int = 25) -> list[str]:
         body = _SPK_CANON.sub("", s).strip()
         if len(body) >= min_len:
             counts[body] += 1
-    return [f"DUPLICATE_LINE (x{n}): \"{body[:50]}…\""
-            for body, n in counts.items() if n > 1]
+    return [f'DUPLICATE_LINE (x{n}): "{body[:50]}…"' for body, n in counts.items() if n > 1]
 
 
 # --------------------------------------------------------------------------- #
 # Aggregate
 # --------------------------------------------------------------------------- #
-def validate_script_structure(script_text: str, sot_path: str | None = None,
-                              sources_json_path: str | None = None,
-                              sot_text: str | None = None) -> dict:
+def validate_script_structure(
+    script_text: str, sot_path: str | None = None, sources_json_path: str | None = None, sot_text: str | None = None
+) -> dict:
     """Run all deterministic gates. Returns
     {'pass': bool, 'issues': [str], 'normalized_text': str, 'labels_fixed': int}.
     ``normalized_text`` has speaker labels canonicalized and should be used
@@ -275,15 +302,22 @@ def validate_script_structure(script_text: str, sot_path: str | None = None,
 # segmentation). Non-blocking: surfaces to the editor / human pre-render scan.
 # See PLAN.md "TTS glossary + style-rules pipeline enforcement".
 _TTS_READING_HAZARDS = [
-    (re.compile(r'表[がにを](?:出|裏)|表と裏|表向き|コイン[^。\n]{0,8}表'),
-     'TABLE_FRONT: 表 may misread ひょう vs おもて (heads/surface context) — verify'),
-    (re.compile(r'大あり'),
-     'OOARI: 大あり segmentation unreliable in TTS — consider rephrasing'),
-    (re.compile(r'(?:料理|味|スパイス|香辛料|カレー|激|唐辛子)[^。\n]{0,4}辛い|辛い(?:料理|もの|味|食)'),
-     'SPICY_KARAI: 辛い may misread つらい vs からい (spicy context) — verify'),
-    (re.compile(r'(?:こちら|そちら|あちら|どちら|上|下|右|左|前|後|奥|外|内|東|西|南|北)の方'
-                r'|[一-鿿ぁ-ん]の方(?=[はをがにでもへとの])(?![法向面針])'),
-     'NO_HOU_KATA: 〜の方 may misread ほう vs かた — verify reading'),
+    (
+        re.compile(r"表[がにを](?:出|裏)|表と裏|表向き|コイン[^。\n]{0,8}表"),
+        "TABLE_FRONT: 表 may misread ひょう vs おもて (heads/surface context) — verify",
+    ),
+    (re.compile(r"大あり"), "OOARI: 大あり segmentation unreliable in TTS — consider rephrasing"),
+    (
+        re.compile(r"(?:料理|味|スパイス|香辛料|カレー|激|唐辛子)[^。\n]{0,4}辛い|辛い(?:料理|もの|味|食)"),
+        "SPICY_KARAI: 辛い may misread つらい vs からい (spicy context) — verify",
+    ),
+    (
+        re.compile(
+            r"(?:こちら|そちら|あちら|どちら|上|下|右|左|前|後|奥|外|内|東|西|南|北)の方"
+            r"|[一-鿿ぁ-ん]の方(?=[はをがにでもへとの])(?![法向面針])"
+        ),
+        "NO_HOU_KATA: 〜の方 may misread ほう vs かた — verify reading",
+    ),
 ]
 
 
@@ -301,8 +335,7 @@ def validate_tts_readings(text: str, max_report: int = 20) -> list[str]:
             if m:
                 issues.append(f"{msg} [L{lineno}: …{m.group(0)}…]")
                 if len(issues) >= max_report:
-                    issues.append(
-                        f"TTS_READINGS_TRUNCATED: >{max_report} hazards; showing first {max_report}")
+                    issues.append(f"TTS_READINGS_TRUNCATED: >{max_report} hazards; showing first {max_report}")
                     return issues
     return issues
 
@@ -317,24 +350,27 @@ def validate_tts_readings(text: str, max_report: int = 20) -> list[str]:
 # Detection is a string comparison; it does not need an LLM.
 
 _GRADE_FINAL = re.compile(
-    r'(?:FINAL\s+GRADE|最終\s*GRADE|Overall\s+GRADE)\s*[:：]?\s*\**\s*'
-    r'(VERY\s+LOW|LOW|MODERATE|HIGH|非常に低い|低い|中程度|高い)', re.I)
+    r"(?:FINAL\s+GRADE|最終\s*GRADE|Overall\s+GRADE)\s*[:：]?\s*\**\s*"
+    r"(VERY\s+LOW|LOW|MODERATE|HIGH|非常に低い|低い|中程度|高い)",
+    re.I,
+)
 
 # Level tokens as they appear in a Japanese script, mapped to canonical grades.
 _GRADE_TOKENS = [
-    (re.compile(r'非常に低い|VERY\s+LOW', re.I), 'VERY LOW'),
-    (re.compile(r'中程度|中等度|MODERATE', re.I), 'MODERATE'),
-    (re.compile(r'高い|HIGH', re.I), 'HIGH'),
-    (re.compile(r'低い|LOW', re.I), 'LOW'),
+    (re.compile(r"非常に低い|VERY\s+LOW", re.I), "VERY LOW"),
+    (re.compile(r"中程度|中等度|MODERATE", re.I), "MODERATE"),
+    (re.compile(r"高い|HIGH", re.I), "HIGH"),
+    (re.compile(r"低い|LOW", re.I), "LOW"),
 ]
-_GRADE_MENTION = re.compile(r'GRADE|グレード')
+_GRADE_MENTION = re.compile(r"GRADE|グレード")
 
 # "no measurable difference" signatures from the deterministic math.
-_NNT_NULL = re.compile(r'NNT[^\n]{0,40}\binf\b|no_effect|ARR\s*=\s*\+?0\.0000')
+_NNT_NULL = re.compile(r"NNT[^\n]{0,40}\binf\b|no_effect|ARR\s*=\s*\+?0\.0000")
 # Script turning that null into a positive population-level benefit.
 _NNT_PROJECTION = re.compile(
-    r'(?:NNT|治療必要数)[^\n]{0,80}?(?:防げ|予防でき|減らせ)'
-    r'|(?:年間|試算)[^\n]{0,30}?[0-9０-９万千百]+\s*(?:人|単位)[^\n]{0,20}?(?:防げ|予防でき|減らせ)')
+    r"(?:NNT|治療必要数)[^\n]{0,80}?(?:防げ|予防でき|減らせ)"
+    r"|(?:年間|試算)[^\n]{0,30}?[0-9０-９万千百]+\s*(?:人|単位)[^\n]{0,20}?(?:防げ|予防でき|減らせ)"
+)
 
 
 def _canonical_grade(text: str) -> str | None:
@@ -343,14 +379,12 @@ def _canonical_grade(text: str) -> str | None:
     if not m:
         return None
     raw = m.group(1).upper().strip()
-    return {'非常に低い': 'VERY LOW', '低い': 'LOW',
-            '中程度': 'MODERATE', '高い': 'HIGH'}.get(m.group(1), raw)
+    return {"非常に低い": "VERY LOW", "低い": "LOW", "中程度": "MODERATE", "高い": "HIGH"}.get(m.group(1), raw)
 
 
-def validate_grade_consistency(script_text: str,
-                               grade_path: str | None = None,
-                               sot_path: str | None = None,
-                               basis_text: str | None = None) -> list[str]:
+def validate_grade_consistency(
+    script_text: str, grade_path: str | None = None, sot_path: str | None = None, basis_text: str | None = None
+) -> list[str]:
     """Flag script claims that contradict the basis's GRADE level or NNT result.
 
     Deterministic: compares what the script says about certainty against values
@@ -384,7 +418,8 @@ def validate_grade_consistency(script_text: str,
                 if m and level != grade:
                     issues.append(
                         f"GRADE_CONTRADICTION: script says '{m.group(0)}' "
-                        f"({level}) but basis final GRADE is {grade} [L{lineno}]")
+                        f"({level}) but basis final GRADE is {grade} [L{lineno}]"
+                    )
                     break
 
     if _NNT_NULL.search(basis):
@@ -393,5 +428,6 @@ def validate_grade_consistency(script_text: str,
             if m:
                 issues.append(
                     f"NNT_NULL_CONTRADICTION: basis computed NNT=inf/no_effect but "
-                    f"script projects a benefit [L{lineno}: …{m.group(0)[:40]}…]")
+                    f"script projects a benefit [L{lineno}: …{m.group(0)[:40]}…]"
+                )
     return issues

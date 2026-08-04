@@ -4,6 +4,7 @@ POST /tts  {"text": "...", "speaker": "Host1"}  -> WAV bytes
 GET  /health -> {"status": "ok"}
 Speaker map: Host1 -> Aiden (male), Host2 -> Ono_anna (Japanese female)
 """
+
 import io, os, logging
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
@@ -17,8 +18,10 @@ logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="Qwen3-TTS Server")
 
 SPEAKER_VOICE_MAP = {
-    "Host1": "Aiden", "host1": "Aiden",
-    "Host2": "Ono_anna", "host2": "Ono_anna",
+    "Host1": "Aiden",
+    "host1": "Aiden",
+    "Host2": "Ono_anna",
+    "host2": "Ono_anna",
 }
 CHECKPOINTS_PATH = os.getenv("CHECKPOINTS_PATH", os.path.join(os.path.dirname(__file__), "checkpoints"))
 _model = None
@@ -27,6 +30,7 @@ _model = None
 def _load_model():
     global _model
     from qwen_tts import Qwen3TTSModel
+
     device_map = "cuda:0" if torch.cuda.is_available() else "cpu"
     logger.info(f"Loading Qwen3-TTS from {CHECKPOINTS_PATH} (device_map={device_map})...")
     _model = Qwen3TTSModel.from_pretrained(
@@ -59,12 +63,16 @@ def synthesize(req: TTSRequest) -> Response:
         raise HTTPException(status_code=503, detail="Model not loaded")
     voice = SPEAKER_VOICE_MAP.get(req.speaker)
     if voice is None:
-        raise HTTPException(status_code=400, detail=f"Unknown speaker: {req.speaker!r}. Valid: {list(SPEAKER_VOICE_MAP.keys())}")
+        raise HTTPException(
+            status_code=400, detail=f"Unknown speaker: {req.speaker!r}. Valid: {list(SPEAKER_VOICE_MAP.keys())}"
+        )
     logger.info(f"TTS: speaker={req.speaker} -> voice={voice}, text={req.text[:60]!r}")
     try:
         # generate_custom_voice returns (List[np.ndarray], sample_rate)
         audio_list, sample_rate = _model.generate_custom_voice(
-            text=req.text, language=req.language, speaker=voice,
+            text=req.text,
+            language=req.language,
+            speaker=voice,
         )
         # Concatenate list of audio segments into single array
         if isinstance(audio_list, list):

@@ -14,8 +14,8 @@ from dr2_podcast.tools.upload_utils import validate_upload_config, upload_to_buz
 # LinkValidatorTool._run
 # ---------------------------------------------------------------------------
 
-class TestLinkValidator:
 
+class TestLinkValidator:
     def test_valid_link_200(self):
         validator = LinkValidatorTool()
         mock_resp = MagicMock()
@@ -65,12 +65,14 @@ class TestLinkValidator:
 # validate_upload_config
 # ---------------------------------------------------------------------------
 
-class TestValidateUploadConfig:
 
+class TestValidateUploadConfig:
     def test_valid_buzzsprout_config(self):
         result = validate_upload_config(
-            True, False,
-            buzzsprout_api_key="key", buzzsprout_account_id="123",
+            True,
+            False,
+            buzzsprout_api_key="key",
+            buzzsprout_account_id="123",
         )
         assert result["valid"] is True
         assert len(result["errors"]) == 0
@@ -86,7 +88,8 @@ class TestValidateUploadConfig:
         secret_file.write_text("{}")
         with patch("dr2_podcast.tools.upload_utils.PROJECT_ROOT", tmp_path):
             result = validate_upload_config(
-                False, True,
+                False,
+                True,
                 youtube_secret_path="client_secret.json",
             )
         assert result["valid"] is True
@@ -102,8 +105,8 @@ class TestValidateUploadConfig:
 # upload_to_buzzsprout
 # ---------------------------------------------------------------------------
 
-class TestUploadToBuzzsprout:
 
+class TestUploadToBuzzsprout:
     def test_successful_upload(self, tmp_path):
         audio = tmp_path / "test.mp3"
         audio.write_bytes(b"fake audio data")
@@ -112,17 +115,14 @@ class TestUploadToBuzzsprout:
         mock_resp.json.return_value = {"id": 42}
         mock_resp.raise_for_status = MagicMock()
         with patch("dr2_podcast.tools.upload_utils.httpx.post", return_value=mock_resp):
-            result = upload_to_buzzsprout(str(audio), "Test Episode",
-                                          api_key="k", account_id="1")
+            result = upload_to_buzzsprout(str(audio), "Test Episode", api_key="k", account_id="1")
         assert result["success"] is True
         assert result["episode_id"] == "42"
 
     def test_upload_error(self, tmp_path):
         audio = tmp_path / "test.mp3"
         audio.write_bytes(b"fake audio data")
-        with patch("dr2_podcast.tools.upload_utils.httpx.post",
-                    side_effect=Exception("Network error")):
-            result = upload_to_buzzsprout(str(audio), "Test",
-                                          api_key="k", account_id="1")
+        with patch("dr2_podcast.tools.upload_utils.httpx.post", side_effect=Exception("Network error")):
+            result = upload_to_buzzsprout(str(audio), "Test", api_key="k", account_id="1")
         assert result["success"] is False
         assert "Network error" in result["error"]
