@@ -340,8 +340,6 @@ def phase_1_research(
         sot_content = _pipeline.build_imrad_sot(
             topic=topic_name,
             reports=deep_reports,
-            ev_quality=evidence_quality,
-            aff_cand=aff_candidates,
             domain=research_domain,
         )
         if evidence_quality == "limited":

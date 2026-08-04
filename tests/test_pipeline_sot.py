@@ -232,7 +232,7 @@ class TestBuildImradSot:
             "lead": _make_report("Affirmative case."),
             "counter": _make_report("Falsification case."),
         }
-        result = build_imrad_sot("Test Topic", reports, "sufficient", 5, domain="clinical")
+        result = build_imrad_sot("Test Topic", reports, domain="clinical")
         assert "## Abstract" in result
         assert "## 1. Introduction" in result
         assert "## 2. Methods" in result
@@ -258,7 +258,7 @@ class TestBuildImradSot:
             "counter": _make_report("Falsification case."),
         }
         result = build_imrad_sot(
-            "Education Topic", reports, "sufficient", 5, domain="clinical"
+            "Education Topic", reports, domain="clinical"
         )  # domain auto-detected from pipeline_data
         assert "## 1. Abstract" in result
         assert "## 2. Introduction" in result
@@ -275,7 +275,7 @@ class TestBuildImradSot:
             "lead": _make_report(""),
             "counter": _make_report(""),
         }
-        result = build_imrad_sot("Missing Keys Topic", reports, "unknown", 0)
+        result = build_imrad_sot("Missing Keys Topic", reports)
         assert isinstance(result, str)
         assert "Missing Keys Topic" in result
 
@@ -296,7 +296,7 @@ class TestBuildImradSot:
             "lead": _make_report("肯定的ケースのテキスト"),
             "counter": _make_report("反証ケースのテキスト"),
         }
-        result = build_imrad_sot("Test Topic JA", reports, "sufficient", 5, domain="clinical", language="ja")
+        result = build_imrad_sot("Test Topic JA", reports, domain="clinical", language="ja")
         assert "## 要約" in result
         assert "## 1. 序論" in result
         assert "## 2. 方法" in result
@@ -321,7 +321,7 @@ class TestBuildImradSot:
             "lead": _make_report("Aff case."),
             "counter": _make_report("Fal case."),
         }
-        result = build_imrad_sot("Chinese Test", reports, "sufficient", 5, domain="clinical", language="ja")
+        result = build_imrad_sot("Chinese Test", reports, domain="clinical", language="ja")
         # Check for known Chinese-only characters
         chinese_only = set("执补认效营维剂证结显临摄随筛杂混")
         found = [ch for ch in result if ch in chinese_only]
@@ -344,8 +344,8 @@ class TestBuildImradSot:
             "lead": _make_report("Aff."),
             "counter": _make_report("Fal."),
         }
-        default_result = build_imrad_sot("Compat", reports, "sufficient", 5)
-        explicit_result = build_imrad_sot("Compat", reports, "sufficient", 5, language="en")
+        default_result = build_imrad_sot("Compat", reports)
+        explicit_result = build_imrad_sot("Compat", reports, language="en")
         assert default_result == explicit_result
 
     def test_think_tags_stripped(self):
@@ -365,7 +365,7 @@ class TestBuildImradSot:
             "lead": _make_report("<think>planning</think>Affirmative case."),
             "counter": _make_report("<think>analysis</think>Falsification case."),
         }
-        result = build_imrad_sot("Think Test", reports, "sufficient", 5)
+        result = build_imrad_sot("Think Test", reports)
         assert "<think>" not in result
         assert "internal reasoning" not in result
         assert "Affirmative case." in result

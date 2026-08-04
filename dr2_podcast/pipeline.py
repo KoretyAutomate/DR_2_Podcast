@@ -1642,13 +1642,11 @@ def _create_agents_and_tasks():
 # ================================================================
 
 
-def build_imrad_sot(topic, reports, ev_quality, aff_cand, domain="clinical", lang="en"):
+def build_imrad_sot(topic, reports, domain="clinical", lang="en"):
     """Wrapper — delegates to pipeline_sot with output_dir and output_path."""
     return _build_imrad_sot_impl(
         topic,
         reports,
-        ev_quality,
-        aff_cand,
         domain=domain,
         output_dir=output_dir,
         output_path_fn=output_path,
