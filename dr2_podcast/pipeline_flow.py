@@ -542,18 +542,22 @@ def phase_3_translation(
 
     sot_file = Path(sot_file_path) if sot_file_path else None
     translated_sot, sot_translated_file, translated_sot_summary = _pipeline._translate_and_inject_sot(
-        sot_content,
-        language,
-        language_config,
-        topic_name,
-        output_dir_path,
+        _pipeline.ScriptRunContext(
+            language_config=language_config,
+            topic_name=topic_name,
+            sot_content=sot_content,
+            language=language,
+            output_dir=output_dir_path,
+        ),
         sot_file,
         sot_summary,
         grade_injection,
-        blueprint_task_ref,
-        script_task_ref,
-        audit_task_ref,
-        translation_task_ref,
+        _pipeline.Crew3Refs(
+            script_task=script_task_ref,
+            audit_task=audit_task_ref,
+            blueprint_task=blueprint_task_ref,
+            translation_task=translation_task_ref,
+        ),
     )
 
     return {
@@ -680,15 +684,17 @@ def phase_5_script_draft(
 
     script_draft_text, draft_count = _pipeline._run_sectional_draft(
         bp_inventory,
-        target_length_int,
-        language_config,
-        sot_content,
-        session_roles,
-        topic_name,
-        target_instruction,
-        channel_intro,
+        _pipeline.ScriptRunContext(
+            language_config=language_config,
+            session_roles=session_roles,
+            topic_name=topic_name,
+            target_instruction=target_instruction,
+            target_length_int=target_length_int,
+            sot_content=sot_content,
+            channel_intro=channel_intro,
+            target_min=target_min,
+        ),
         _call_smart_model=_pipeline._call_smart_model,
-        target_min=target_min,
     )
 
     # Save draft to disk
@@ -756,19 +762,23 @@ def phase_6_polish(
         script_draft_text,
         draft_count,
         bp_inventory,
-        target_length_int,
-        language_config,
-        sot_content,
-        script_task_ref,
-        polish_task_ref,
-        editor_agent_ref,
-        translation_task_ref,
-        polish_task_base_description,
-        polish_task_expected_output,
+        _pipeline.ScriptRunContext(
+            language_config=language_config,
+            session_roles=session_roles,
+            topic_name=topic_name,
+            target_instruction=target_instruction,
+            target_length_int=target_length_int,
+            sot_content=sot_content,
+        ),
+        _pipeline.Crew3Refs(
+            script_task=script_task_ref,
+            polish_task=polish_task_ref,
+            translation_task=translation_task_ref,
+            editor_agent=editor_agent_ref,
+            polish_base_desc=polish_task_base_description,
+            polish_expected=polish_task_expected_output,
+        ),
         max_attempts,
-        session_roles=session_roles,
-        topic_name=topic_name,
-        target_instruction=target_instruction,
     )
 
     # Save polished script to disk

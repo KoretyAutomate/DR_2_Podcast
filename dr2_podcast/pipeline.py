@@ -23,7 +23,8 @@ from dr2_podcast.tools.link_validator import LinkValidatorTool
 import wave
 from dr2_podcast.audio.engine import generate_audio_from_script, clean_script_for_tts, post_process_audio
 from dr2_podcast.utils import strip_think_blocks
-from dataclasses import fields as dc_fields
+from dataclasses import dataclass, fields as dc_fields
+from typing import Any
 
 from dr2_podcast.config import EVIDENCE_LIMITED_THRESHOLD, OUTPUT_DIR_OVERRIDE
 
@@ -61,6 +62,45 @@ from dr2_podcast.pipeline_crew import (
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ScriptRunContext:
+    """Run-wide script settings threaded through phases 3, 5 and 6.
+
+    These travelled as the same repeated tail on _run_condense_pass,
+    _run_sectional_draft, _run_polish_loop and _translate_and_inject_sot.
+    """
+
+    language_config: Any
+    session_roles: Any = None
+    topic_name: str = ""
+    target_instruction: str = ""
+    target_length_int: int = 0
+    sot_content: str = ""
+    channel_intro: str = ""
+    target_min: int = 30
+    language: str = "en"
+    output_dir: Any = None
+
+
+@dataclass
+class Crew3Refs:
+    """The CrewAI task and agent objects the polish and translation phases mutate.
+
+    They are passed as one value because these phases append to the SAME shared
+    task objects — see _append_to_description_once in pipeline_flow for why that
+    sharing is deliberate.
+    """
+
+    script_task: Any = None
+    polish_task: Any = None
+    audit_task: Any = None
+    blueprint_task: Any = None
+    translation_task: Any = None
+    editor_agent: Any = None
+    polish_base_desc: str = ""
+    polish_expected: str = ""
 
 
 class LLM(_BaseLLM):
@@ -1309,20 +1349,18 @@ def _validate_script(script_text, target_length, tolerance, language_config, sot
     )
 
 
-def _run_condense_pass(
-    script_text, inventory, target_length, language_config, session_roles, topic_name, target_instruction
-):
+def _run_condense_pass(script_text, inventory, target_length, ctx: ScriptRunContext):
     """Wrapper — delegates to pipeline_script with _call_smart_model."""
     return _run_condense_pass_impl(
         script_text,
         inventory,
         target_length,
-        target_instruction,
+        ctx.target_instruction,
         _SectionGenDeps(
             call_smart_model=_call_smart_model,
-            language_config=language_config,
-            session_roles=session_roles,
-            topic_name=topic_name,
+            language_config=ctx.language_config,
+            session_roles=ctx.session_roles,
+            topic_name=ctx.topic_name,
         ),
     )
 
@@ -1719,19 +1757,7 @@ def _run_script_draft(producer_agent, script_task, target_length_int, language_c
     return draft_text, draft_count
 
 
-def _run_sectional_draft(
-    inventory,
-    target_length_int,
-    language_config,
-    sot_content,
-    session_roles,
-    topic_name,
-    target_instruction,
-    channel_intro,
-    *,
-    _call_smart_model,
-    target_min=30,
-):
+def _run_sectional_draft(inventory, ctx: ScriptRunContext, *, _call_smart_model):
     """Phase 5: Generate script draft via 4 sequential section calls.
 
     Each section has its own word budget, coverage checklist items, and
@@ -1740,6 +1766,14 @@ def _run_sectional_draft(
 
     Returns (assembled_draft, total_count).
     """
+    target_length_int = ctx.target_length_int
+    language_config = ctx.language_config
+    sot_content = ctx.sot_content
+    session_roles = ctx.session_roles
+    topic_name = ctx.topic_name
+    channel_intro = ctx.channel_intro
+    target_min = ctx.target_min
+
     from dr2_podcast.pipeline_script import (
         _allocate_section_budgets,
         _generate_section,
@@ -1868,35 +1902,25 @@ def _run_sectional_draft(
     return assembled, total_count
 
 
-def _run_polish_loop(
-    draft_text,
-    draft_count,
-    inventory,
-    target_length_int,
-    language_config,
-    sot_content,
-    script_task,
-    polish_task,
-    editor_agent,
-    translation_task,
-    polish_base_desc,
-    polish_expected,
-    max_attempts=3,
-    *,
-    session_roles=None,
-    topic_name=None,
-    target_instruction=None,
-):
+def _run_polish_loop(draft_text, draft_count, inventory, ctx: ScriptRunContext, refs: Crew3Refs, max_attempts=3):
     """Phase 6: Pre-polish trim, polish loop with feedback, shrinkage guard.
 
     Returns (polished_text, final_polish_task).
     """
+    target_length_int = ctx.target_length_int
+    language_config = ctx.language_config
+    sot_content = ctx.sot_content
+    script_task = refs.script_task
+    polish_task = refs.polish_task
+    editor_agent = refs.editor_agent
+    translation_task = refs.translation_task
+    polish_base_desc = refs.polish_base_desc
+    polish_expected = refs.polish_expected
+
     # Pre-polish trim: if over-target, reduce before polish to prevent poor cuts
     if draft_count > target_length_int * (1 + SCRIPT_TOLERANCE) and inventory:
         logger.info(f"  Draft over target ({draft_count}/{target_length_int}) — running condense pass...")
-        draft_text = _run_condense_pass(
-            draft_text, inventory, target_length_int, language_config, session_roles, topic_name, target_instruction
-        )
+        draft_text = _run_condense_pass(draft_text, inventory, target_length_int, ctx)
         draft_text = _deduplicate_script(draft_text, language_config)
         draft_count = _count_words(draft_text, language_config)
         logger.info(f"  Post-condense: {draft_count} {language_config['length_unit']}")
@@ -2217,24 +2241,21 @@ def _run_audio_pipeline(script_text, output_dir, language_config):
     return audio_file, duration_minutes
 
 
-def _translate_and_inject_sot(
-    sot_content,
-    language,
-    language_config,
-    topic_name,
-    output_dir,
-    sot_path,
-    sot_summary,
-    grade_injection,
-    blueprint_task,
-    script_task,
-    audit_task,
-    translation_task,
-):
+def _translate_and_inject_sot(ctx: ScriptRunContext, sot_path, sot_summary, grade_injection, refs: Crew3Refs):
     """Translate SOT and inject summary into Crew 3 task descriptions.
 
     Returns (translated_sot_text, sot_translated_file, translated_summary).
     """
+    sot_content = ctx.sot_content
+    language = ctx.language
+    language_config = ctx.language_config
+    topic_name = ctx.topic_name
+    output_dir = ctx.output_dir
+    blueprint_task = refs.blueprint_task
+    script_task = refs.script_task
+    audit_task = refs.audit_task
+    translation_task = refs.translation_task
+
     logger.info("\nPHASE 3: REPORT TRANSLATION (pipelined)")
     translated_sot = _translate_sot_pipelined(sot_content, language, language_config)
     sot_translated_file = None
@@ -2529,18 +2550,22 @@ if __name__ == "__main__":
                     logger.info("\u2713 Reuse: using existing template-built %s SoT", language.upper())
                 else:
                     _r_translated, _r_sot_translated_file, _r_tl_summary = _translate_and_inject_sot(
-                        sot_content,
-                        language,
-                        language_config,
-                        topic_name,
-                        new_output_dir,
+                        ScriptRunContext(
+                            language_config=language_config,
+                            topic_name=topic_name,
+                            sot_content=sot_content,
+                            language=language,
+                            output_dir=new_output_dir,
+                        ),
                         sot_path,
                         _truncate_at_boundary(sot_content, 8000),
                         "",
-                        blueprint_task,
-                        script_task,
-                        audit_task,
-                        translation_task,
+                        Crew3Refs(
+                            script_task=script_task,
+                            audit_task=audit_task,
+                            blueprint_task=blueprint_task,
+                            translation_task=translation_task,
+                        ),
                     )
                 if _r_sot_translated_file:
                     sot_translated_file = _r_sot_translated_file
@@ -2585,15 +2610,17 @@ if __name__ == "__main__":
             logger.info("\n  PHASE 5: SCRIPT DRAFT (SECTIONAL)")
             _r_draft_text, _r_draft_count = _run_sectional_draft(
                 _r_inventory,
-                target_length_int,
-                language_config,
-                sot_content,
-                SESSION_ROLES,
-                topic_name,
-                target_instruction,
-                channel_intro,
+                ScriptRunContext(
+                    language_config=language_config,
+                    session_roles=SESSION_ROLES,
+                    topic_name=topic_name,
+                    target_instruction=target_instruction,
+                    target_length_int=target_length_int,
+                    sot_content=sot_content,
+                    channel_intro=channel_intro,
+                    target_min=_target_min,
+                ),
                 _call_smart_model=_call_smart_model,
-                target_min=_target_min,
             )
 
             # Set script_task.output for polish loop
@@ -2609,19 +2636,23 @@ if __name__ == "__main__":
                 _r_draft_text,
                 _r_draft_count,
                 _r_inventory,
-                target_length_int,
-                language_config,
-                sot_content,
-                script_task,
-                polish_task,
-                editor_agent,
-                translation_task,
-                _reuse_polish_base_desc,
-                _reuse_polish_expected,
+                ScriptRunContext(
+                    language_config=language_config,
+                    session_roles=SESSION_ROLES,
+                    topic_name=topic_name,
+                    target_instruction=target_instruction,
+                    target_length_int=target_length_int,
+                    sot_content=sot_content,
+                ),
+                Crew3Refs(
+                    script_task=script_task,
+                    polish_task=polish_task,
+                    translation_task=translation_task,
+                    editor_agent=editor_agent,
+                    polish_base_desc=_reuse_polish_base_desc,
+                    polish_expected=_reuse_polish_expected,
+                ),
                 _REUSE_MAX_ATTEMPTS,
-                session_roles=SESSION_ROLES,
-                topic_name=topic_name,
-                target_instruction=target_instruction,
             )
 
             # Phase 7: Accuracy Audit + enforcement (correct FAIL/HIGH/fabrication before audio)
@@ -2796,18 +2827,22 @@ if __name__ == "__main__":
                         logger.info("\u2713 Supplemental: using existing template-built %s SoT", language.upper())
                     else:
                         _s_translated, _s_sot_translated_file, _s_tl_summary = _translate_and_inject_sot(
-                            sot_content,
-                            language,
-                            language_config,
-                            topic_name,
-                            new_output_dir,
+                            ScriptRunContext(
+                                language_config=language_config,
+                                topic_name=topic_name,
+                                sot_content=sot_content,
+                                language=language,
+                                output_dir=new_output_dir,
+                            ),
                             sot_path,
                             _truncate_at_boundary(sot_content, 8000),
                             "",
-                            blueprint_task,
-                            script_task,
-                            audit_task,
-                            translation_task,
+                            Crew3Refs(
+                                script_task=script_task,
+                                audit_task=audit_task,
+                                blueprint_task=blueprint_task,
+                                translation_task=translation_task,
+                            ),
                         )
                     if _s_sot_translated_file:
                         sot_translated_file = _s_sot_translated_file
@@ -2852,15 +2887,17 @@ if __name__ == "__main__":
                 logger.info("\n  PHASE 5: SCRIPT DRAFT (SECTIONAL)")
                 _s_draft_text, _s_draft_count = _run_sectional_draft(
                     _s_inventory,
-                    target_length_int,
-                    language_config,
-                    sot_content,
-                    SESSION_ROLES,
-                    topic_name,
-                    target_instruction,
-                    channel_intro,
+                    ScriptRunContext(
+                        language_config=language_config,
+                        session_roles=SESSION_ROLES,
+                        topic_name=topic_name,
+                        target_instruction=target_instruction,
+                        target_length_int=target_length_int,
+                        sot_content=sot_content,
+                        channel_intro=channel_intro,
+                        target_min=_target_min,
+                    ),
                     _call_smart_model=_call_smart_model,
-                    target_min=_target_min,
                 )
 
                 # Set script_task.output for polish loop
@@ -2876,19 +2913,23 @@ if __name__ == "__main__":
                     _s_draft_text,
                     _s_draft_count,
                     _s_inventory,
-                    target_length_int,
-                    language_config,
-                    sot_content,
-                    script_task,
-                    polish_task,
-                    editor_agent,
-                    translation_task,
-                    _supp_polish_base_desc,
-                    _supp_polish_expected,
+                    ScriptRunContext(
+                        language_config=language_config,
+                        session_roles=SESSION_ROLES,
+                        topic_name=topic_name,
+                        target_instruction=target_instruction,
+                        target_length_int=target_length_int,
+                        sot_content=sot_content,
+                    ),
+                    Crew3Refs(
+                        script_task=script_task,
+                        polish_task=polish_task,
+                        translation_task=translation_task,
+                        editor_agent=editor_agent,
+                        polish_base_desc=_supp_polish_base_desc,
+                        polish_expected=_supp_polish_expected,
+                    ),
                     _SUPP_MAX_ATTEMPTS,
-                    session_roles=SESSION_ROLES,
-                    topic_name=topic_name,
-                    target_instruction=target_instruction,
                 )
 
                 # Phase 7: Accuracy Audit + enforcement (correct FAIL/HIGH/fabrication before audio)

@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from dr2_podcast.pipeline import (
+    ScriptRunContext,
     _parse_blueprint_inventory,
     _count_words,
     _deduplicate_script,
@@ -298,13 +299,15 @@ class TestRunCondensePass:
         condensed_text = "Host: Welcome. Guest: Short answer. Host: One Action for today."
         with patch("dr2_podcast.pipeline._call_smart_model", return_value=condensed_text):
             result = _run_trim_pass(
-                script_text=self.LONG_SCRIPT,
-                inventory=self.CONDENSE_INVENTORY,
-                target_length=50,
-                language_config=english_lang_config,
-                session_roles=self.SESSION_ROLES,
-                topic_name="Coffee and Cognition",
-                target_instruction="Keep the One Action ending.",
+                self.LONG_SCRIPT,
+                self.CONDENSE_INVENTORY,
+                50,
+                ScriptRunContext(
+                    language_config=english_lang_config,
+                    session_roles=self.SESSION_ROLES,
+                    topic_name="Coffee and Cognition",
+                    target_instruction="Keep the One Action ending.",
+                ),
             )
         assert isinstance(result, str)
 
@@ -313,26 +316,30 @@ class TestRunCondensePass:
         short = "Host: Coffee helps cognition. Guest: Agreed. Host: One Action."
         with patch("dr2_podcast.pipeline._call_smart_model", return_value=short):
             result = _run_trim_pass(
-                script_text=self.LONG_SCRIPT,
-                inventory=self.CONDENSE_INVENTORY,
-                target_length=50,
-                language_config=english_lang_config,
-                session_roles=self.SESSION_ROLES,
-                topic_name="Coffee and Cognition",
-                target_instruction="Keep the One Action ending.",
+                self.LONG_SCRIPT,
+                self.CONDENSE_INVENTORY,
+                50,
+                ScriptRunContext(
+                    language_config=english_lang_config,
+                    session_roles=self.SESSION_ROLES,
+                    topic_name="Coffee and Cognition",
+                    target_instruction="Keep the One Action ending.",
+                ),
             )
         assert _count_words(result, english_lang_config) < _count_words(self.LONG_SCRIPT, english_lang_config)
 
     def test_no_condense_when_under_target(self, english_lang_config):
         """Script already under target should be returned unchanged."""
         result = _run_trim_pass(
-            script_text=self.LONG_SCRIPT,
-            inventory=self.CONDENSE_INVENTORY,
-            target_length=99999,
-            language_config=english_lang_config,
-            session_roles=self.SESSION_ROLES,
-            topic_name="Coffee and Cognition",
-            target_instruction="",
+            self.LONG_SCRIPT,
+            self.CONDENSE_INVENTORY,
+            99999,
+            ScriptRunContext(
+                language_config=english_lang_config,
+                session_roles=self.SESSION_ROLES,
+                topic_name="Coffee and Cognition",
+                target_instruction="",
+            ),
         )
         assert result == self.LONG_SCRIPT
 
@@ -340,12 +347,14 @@ class TestRunCondensePass:
         """If LLM call raises, condense pass should return the original script."""
         with patch("dr2_podcast.pipeline._call_smart_model", side_effect=Exception("LLM down")):
             result = _run_trim_pass(
-                script_text=self.LONG_SCRIPT,
-                inventory=self.CONDENSE_INVENTORY,
-                target_length=50,
-                language_config=english_lang_config,
-                session_roles=self.SESSION_ROLES,
-                topic_name="Coffee and Cognition",
-                target_instruction="",
+                self.LONG_SCRIPT,
+                self.CONDENSE_INVENTORY,
+                50,
+                ScriptRunContext(
+                    language_config=english_lang_config,
+                    session_roles=self.SESSION_ROLES,
+                    topic_name="Coffee and Cognition",
+                    target_instruction="",
+                ),
             )
         assert result == self.LONG_SCRIPT
