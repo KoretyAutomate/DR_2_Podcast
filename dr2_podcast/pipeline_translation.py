@@ -89,6 +89,101 @@ def _split_at_subheaders(body: str) -> list:
     return sections
 
 
+def _flatten_sot_chunks(imrad_sections: list) -> list:
+    """Flatten IMRaD sections into an ordered chunk list.
+
+    Each chunk: (index, header, body, passthrough_flag)
+    passthrough_flag: True = skip translate/audit, False = needs translate+audit,
+                      "discussion_marker" = reassembly marker for Discussion section
+
+    Note the passthrough rule: a short body is only passed through when it also
+    has NO header. A one-line body under its own sub-header is still translated.
+    """
+    chunks = []
+    for header, body in imrad_sections:
+        if header == "## 5. References":
+            chunks.append((len(chunks), header, body, True))
+            continue
+        if (not body.strip() and not header) or (len(body.strip()) < 10 and not header):
+            chunks.append((len(chunks), header, body, True))
+            continue
+        if header == "## 4. Discussion":
+            sub_chunks = _split_at_subheaders(body)
+            disc_parts = []
+            for sub_hdr, sub_body in sub_chunks:
+                if (not sub_body.strip() and not sub_hdr) or (len(sub_body.strip()) < 10 and not sub_hdr):
+                    disc_parts.append((len(chunks), sub_hdr, sub_body, True))
+                else:
+                    disc_parts.append((len(chunks), sub_hdr, sub_body, False))
+                chunks.append(disc_parts[-1])
+            # Store Discussion metadata for reassembly
+            chunks.append((len(chunks), header, disc_parts, "discussion_marker"))
+            continue
+        chunks.append((len(chunks), header, body, False))
+    return chunks
+
+
+def _build_output_plan(chunks: list) -> list:
+    """Document order, with Discussion sub-chunks excluded from the top level.
+
+    Without that exclusion each Discussion sub-section would be emitted twice —
+    once inside its parent and once standalone.
+    """
+    disc_sub_indices = set()
+    for c in chunks:
+        if c[3] == "discussion_marker":
+            disc_sub_indices.update(p[0] for p in c[2])
+
+    output_plan = []
+    for idx, header, body_or_parts, flag in chunks:
+        if flag == "discussion_marker":
+            output_plan.append((header, "discussion", [p[0] for p in body_or_parts]))
+        elif idx not in disc_sub_indices:
+            output_plan.append((header, "single", [idx]))
+    return output_plan
+
+
+def _reassemble_sot(chunks: list, output_plan: list, results: dict) -> list:
+    """Rebuild the document in original section order.
+
+    `results` maps chunk index -> translated body; a chunk missing from it
+    (translation failed) falls back to its original text.
+    """
+    assembled_parts = []
+    for plan_entry in output_plan:
+        header = plan_entry[0]
+        plan_type = plan_entry[1]
+
+        if plan_type == "discussion":
+            disc_sub_parts = []
+            for didx in plan_entry[2]:
+                for c in chunks:
+                    if c[0] == didx:
+                        sub_hdr = c[1]
+                        if c[3] is True:
+                            piece = (sub_hdr + "\n" + c[2]) if sub_hdr else c[2]
+                        else:
+                            body = results.get(didx, c[2])
+                            piece = (sub_hdr + "\n" + body) if sub_hdr else body
+                        disc_sub_parts.append(piece)
+                        break
+            assembled_parts.append(header + "\n" + "\n".join(disc_sub_parts))
+        elif plan_type == "single":
+            cidx = plan_entry[2][0]
+            for c in chunks:
+                if c[0] == cidx:
+                    if c[3] is True:
+                        piece = (c[1] + "\n" + c[2]) if c[1] else c[2]
+                    elif c[3] == "discussion_marker":
+                        continue
+                    else:
+                        body = results.get(cidx, c[2])
+                        piece = (c[1] + "\n" + body) if c[1] else body
+                    assembled_parts.append(piece)
+                    break
+    return assembled_parts
+
+
 def _translate_sot_pipelined(sot_content: str, language: str, language_config: dict, *, _call_smart_model) -> str:
     """Translate SOT on the Smart Model (sequential, no audit).
 
@@ -117,45 +212,8 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
         "- Translate meaning, not word-for-word"
     )
 
-    # --- Flatten sections into ordered chunk list ---
-    # Each chunk: (index, header, body, passthrough_flag)
-    # passthrough_flag: True = skip translate/audit, False = needs translate+audit,
-    #                   "discussion_marker" = reassembly marker for Discussion section
-    chunks = []
-    for _sec_idx, (header, body) in enumerate(imrad_sections):
-        if header == "## 5. References":
-            chunks.append((len(chunks), header, body, True))
-            continue
-        if (not body.strip() and not header) or (len(body.strip()) < 10 and not header):
-            chunks.append((len(chunks), header, body, True))
-            continue
-        if header == "## 4. Discussion":
-            sub_chunks = _split_at_subheaders(body)
-            disc_parts = []
-            for _sub_idx, (sub_hdr, sub_body) in enumerate(sub_chunks):
-                if (not sub_body.strip() and not sub_hdr) or (len(sub_body.strip()) < 10 and not sub_hdr):
-                    disc_parts.append((len(chunks), sub_hdr, sub_body, True))
-                else:
-                    disc_parts.append((len(chunks), sub_hdr, sub_body, False))
-                chunks.append(disc_parts[-1])
-            # Store Discussion metadata for reassembly
-            chunks.append((len(chunks), header, disc_parts, "discussion_marker"))
-            continue
-        chunks.append((len(chunks), header, body, False))
-
-    # --- Build reassembly plan ---
-    # Collect indices of Discussion sub-chunks to exclude from standalone output
-    disc_sub_indices = set()
-    for c in chunks:
-        if c[3] == "discussion_marker":
-            disc_sub_indices.update(p[0] for p in c[2])
-
-    output_plan = []
-    for idx, header, body_or_parts, flag in chunks:
-        if flag == "discussion_marker":
-            output_plan.append((header, "discussion", [p[0] for p in body_or_parts]))
-        elif idx not in disc_sub_indices:
-            output_plan.append((header, "single", [idx]))
+    chunks = _flatten_sot_chunks(imrad_sections)
+    output_plan = _build_output_plan(chunks)
 
     # --- Identify translatable chunks ---
     translatable = [(c[0], c[1], c[2]) for c in chunks if c[3] is False]
@@ -195,41 +253,7 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
 
     logger.info("  Translation complete: %d translate calls (no audit)", translate_count)
 
-    # --- Reassemble output in original section order ---
-    assembled_parts = []
-    for plan_entry in output_plan:
-        header = plan_entry[0]
-        plan_type = plan_entry[1]
-
-        if plan_type == "discussion":
-            disc_indices = plan_entry[2]
-            disc_sub_parts = []
-            for didx in disc_indices:
-                for c in chunks:
-                    if c[0] == didx:
-                        sub_hdr = c[1]
-                        if c[3] is True:
-                            piece = (sub_hdr + "\n" + c[2]) if sub_hdr else c[2]
-                        else:
-                            body = results.get(didx, c[2])
-                            piece = (sub_hdr + "\n" + body) if sub_hdr else body
-                        disc_sub_parts.append(piece)
-                        break
-            discussion_body = "\n".join(disc_sub_parts)
-            assembled_parts.append(header + "\n" + discussion_body)
-        elif plan_type == "single":
-            cidx = plan_entry[2][0]
-            for c in chunks:
-                if c[0] == cidx:
-                    if c[3] is True:
-                        piece = (c[1] + "\n" + c[2]) if c[1] else c[2]
-                    elif c[3] == "discussion_marker":
-                        continue
-                    else:
-                        body = results.get(cidx, c[2])
-                        piece = (c[1] + "\n" + body) if c[1] else body
-                    assembled_parts.append(piece)
-                    break
+    assembled_parts = _reassemble_sot(chunks, output_plan, results)
 
     result_text = "\n".join(assembled_parts)
 
