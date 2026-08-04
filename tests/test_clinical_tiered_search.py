@@ -10,7 +10,6 @@ injection, matching tests/test_t3_3_retry_logic.py.
 """
 
 import asyncio
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest

@@ -823,6 +823,54 @@ class FastWorker:
 # --- Smart Model: The Researcher Agent ---
 
 
+@dataclass(frozen=True)
+class _TrackSpec:
+    """What distinguishes the affirmative track from the falsification one.
+
+    The two Step 1-5 tracks were written out twice inline; everything except
+    these five fields was identical.
+    """
+
+    researcher_attr: str  # "lead_researcher" | "counter_researcher"
+    strategy_role: str  # role passed to _formulate_tiered_strategy
+    case_role: str  # role passed to _build_case
+    label: str  # "Affirmative" | "Falsification" — log suffix
+    step_suffix: str  # "a" | "b" — log step numbering
+
+
+_AFFIRMATIVE_TRACK = _TrackSpec(
+    researcher_attr="lead_researcher",
+    strategy_role="affirmative",
+    case_role="affirmative",
+    label="Affirmative",
+    step_suffix="a",
+)
+
+_FALSIFICATION_TRACK = _TrackSpec(
+    researcher_attr="counter_researcher",
+    strategy_role="adversarial",
+    case_role="falsification",
+    label="Falsification",
+    step_suffix="b",
+)
+
+
+@dataclass
+class _TrackResult:
+    """One track's outputs plus the metrics Step 7 sums across both."""
+
+    plan: Any
+    records: list
+    top_records: list
+    extractions: list
+    case_report: Any
+    highest_tier: int
+    wide_net_total: int
+    screened_in: int
+    fulltext_ok: int
+    fulltext_err: int
+
+
 class _RecordPool:
     """Accumulates WideNetRecords, deduplicating as they arrive.
 
@@ -2649,6 +2697,200 @@ class Orchestrator:
 
         self.fulltext_fetcher = FullTextFetcher(max_concurrent=5, cache=self._page_cache)
 
+    def _run_step6_math(self, all_extractions: list, log) -> tuple:
+        """Step 6: deterministic effect sizes (social) or ARR/NNT (clinical).
+
+        Returns (impacts, math_report). No LLM is involved either way.
+        """
+        from dr2_podcast.research import clinical_math
+
+        rule = "=" * 70
+        log(f"\n{rule}")
+        if self.domain == "social_science":
+            from dr2_podcast.research.effect_size_math import (
+                batch_calculate as es_batch_calculate,
+                format_effect_size_report,
+            )
+
+            log("STEP 6: DETERMINISTIC MATH (Effect Size)")
+            log(rule)
+            impacts = es_batch_calculate(all_extractions)
+            math_report = format_effect_size_report(impacts)
+            log(f"    Calculated effect sizes for {len(impacts)} studies")
+            return impacts, math_report
+
+        log("STEP 6: DETERMINISTIC MATH (ARR/NNT)")
+        log(rule)
+        impacts = clinical_math.batch_calculate(all_extractions)
+        math_report = clinical_math.format_math_report(impacts)
+        log(f"    Calculated clinical impact for {len(impacts)} studies with CER+EER data")
+        for imp in impacts:
+            log(f"      {imp.study_id}: NNT={imp.nnt:.1f} ({imp.direction})")
+        return impacts, math_report
+
+    def _databases_searched(self) -> list:
+        if self.domain == "social_science":
+            return ["OpenAlex", "ERIC", "Google Scholar"]
+        return ["PubMed", "Google Scholar"]
+
+    def _combined_metrics(self, search_date, db_list, aff: _TrackResult, fal: _TrackResult) -> SearchMetrics:
+        """Both tracks' metrics summed, for the auditor's report."""
+        total_wide = aff.wide_net_total + fal.wide_net_total
+        total_ft_ok = aff.fulltext_ok + fal.fulltext_ok
+        total_ft_err = aff.fulltext_err + fal.fulltext_err
+        return SearchMetrics(
+            search_date=search_date,
+            databases_searched=db_list,
+            total_identified=total_wide,
+            total_after_dedup=total_wide,  # dedup happens inside PubMedClient
+            total_fetched=total_ft_ok + total_ft_err,
+            total_fetch_errors=total_ft_err,
+            total_with_content=total_ft_ok,
+            total_summarized=len(aff.extractions) + len(fal.extractions),
+            academic_sources=total_wide,
+            general_web_sources=0,
+            wide_net_total=total_wide,
+            screened_in=aff.screened_in + fal.screened_in,
+            fulltext_retrieved=total_ft_ok,
+            fulltext_errors=total_ft_err,
+        )
+
+    async def _run_step7_grade(self, topic, aff: _TrackResult, fal: _TrackResult, math_report, search_date, log):
+        """Step 7: GRADE synthesis over both tracks' totals."""
+        rule = "=" * 70
+        log(f"\n{rule}")
+        log("STEP 7: GRADE SYNTHESIS")
+        log(rule)
+        return await self._grade_synthesis(
+            topic,
+            aff.case_report,
+            fal.case_report,
+            math_report,
+            aff.plan,
+            fal.plan,
+            aff.wide_net_total + fal.wide_net_total,
+            aff.screened_in + fal.screened_in,
+            aff.fulltext_ok + fal.fulltext_ok,
+            aff.fulltext_err + fal.fulltext_err,
+            search_date,
+            log,
+            aff_extractions=aff.extractions,
+            fal_extractions=fal.extractions,
+        )
+
+    def _log_run_summary(self, start_time, aff: _TrackResult, fal: _TrackResult, impacts, all_extractions, log):
+        rule = "=" * 70
+        log(f"\n{rule}")
+        log(f"ALL RESEARCH COMPLETE in {time.time() - start_time:.0f}s")
+        log(f"  Affirmative: {len(aff.extractions)} studies from {aff.wide_net_total} candidates")
+        log(f"  Falsification: {len(fal.extractions)} studies from {fal.wide_net_total} candidates")
+        math_label = "Effect size math" if self.domain == "social_science" else "Clinical math"
+        math_detail = "effect size data" if self.domain == "social_science" else "NNT data"
+        log(f"  {math_label}: {len(impacts)} studies with {math_detail}")
+        log(f"  Total articles analyzed: {len(all_extractions)}")
+        log(f"{rule}\n")
+
+    def _build_track_report(self, role: str, track: _TrackResult, search_date, db_list, duration) -> ResearchReport:
+        """Wrap one track's outputs in the backward-compatible ResearchReport."""
+        sources = self._extractions_to_sources(track.extractions, role.lower().split()[0])
+        fetched = track.fulltext_ok + track.fulltext_err
+        return ResearchReport(
+            topic=self._current_topic,
+            role=role,
+            sources=sources,
+            report=track.case_report,
+            iterations_used=0,
+            total_urls_fetched=fetched,
+            total_summaries=len(track.extractions),
+            total_errors=track.fulltext_err,
+            duration_seconds=duration,
+            search_metrics=SearchMetrics(
+                search_date=search_date,
+                databases_searched=db_list,
+                total_identified=track.wide_net_total,
+                total_after_dedup=track.wide_net_total,
+                total_fetched=fetched,
+                total_fetch_errors=track.fulltext_err,
+                total_with_content=track.fulltext_ok,
+                total_summarized=len(track.extractions),
+                academic_sources=track.wide_net_total,
+                general_web_sources=0,
+                wide_net_total=track.wide_net_total,
+                screened_in=track.screened_in,
+                fulltext_retrieved=track.fulltext_ok,
+                fulltext_errors=track.fulltext_err,
+            ),
+        )
+
+    async def _run_research_track(
+        self, spec: _TrackSpec, topic: str, framing_context: str, decomposition, output_dir, log
+    ) -> _TrackResult:
+        """Steps 1-5 for one track.
+
+        The affirmative and falsification tracks are the same five steps; only
+        the researcher, the two role strings and the log labels differ, which is
+        what _TrackSpec carries.
+        """
+        researcher = getattr(self, spec.researcher_attr)
+        n, label = spec.step_suffix, spec.label
+        rule = "=" * 70
+
+        log(f"\n{rule}")
+        log(f"STEP 1{n}: TIERED KEYWORD GENERATION + AUDITOR GATE ({label})")
+        log(rule)
+        plan = await researcher._formulate_tiered_strategy(
+            topic, spec.strategy_role, framing_context, decomposition, log=log
+        )
+
+        log(f"\n{rule}")
+        log(f"STEP 2{n}: TIERED CASCADE SEARCH ({label})")
+        log(rule)
+        records, highest_tier = await researcher._tiered_search(plan, log)
+
+        log(f"\n{rule}")
+        log(f"STEP 3{n}: SCREENING ({len(records)} → top 20) ({label})")
+        log(rule)
+        top_records = await researcher._screen_and_prioritize(records, plan, topic=topic, log=log)
+        screened_in = len(top_records)
+
+        # Metadata enrichment (optional — degrades gracefully)
+        top_records = await self._enrich_with_metadata(top_records, log)
+        # Filter out retracted papers
+        retracted = [r for r in top_records if r.paper_metadata and r.paper_metadata.is_retracted]
+        if retracted:
+            log(f"    ⚠ Filtering out {len(retracted)} retracted paper(s) from {label.lower()} track")
+            top_records = [r for r in top_records if not (r.paper_metadata and r.paper_metadata.is_retracted)]
+
+        log(f"\n{rule}")
+        log(f"STEP 4{n}: DEEP EXTRACTION ({len(top_records)} articles) ({label})")
+        log(rule)
+        fulltexts = await self.fulltext_fetcher.fetch_all(top_records)
+        fulltext_ok = sum(1 for ft in fulltexts if not ft.error)
+        fulltext_err = sum(1 for ft in fulltexts if ft.error)
+        log(f"    Full-text retrieved: {fulltext_ok}/{len(fulltexts)}")
+
+        extractions = await researcher._deep_extract_batch(
+            fulltexts, top_records, plan.pico, log, output_dir=output_dir
+        )
+
+        log(f"\n{rule}")
+        log(f"STEP 5{n}: {label.upper()} CASE")
+        log(rule)
+        case_report = await researcher._build_case(topic, plan, extractions, spec.case_role, log)
+
+        return _TrackResult(
+            plan=plan,
+            records=records,
+            top_records=top_records,
+            extractions=extractions,
+            case_report=case_report,
+            highest_tier=highest_tier,
+            wide_net_total=len(records),
+            screened_in=screened_in,
+            fulltext_ok=fulltext_ok,
+            fulltext_err=fulltext_err,
+        )
+
     async def run(
         self, topic: str, framing_context: str = "", progress_callback=None, output_dir: str = None
     ) -> dict[str, ResearchReport]:
@@ -2663,8 +2905,6 @@ class Orchestrator:
         Returns:
             Dict[str, ResearchReport] with keys: "lead", "counter", "audit"
         """
-        from dr2_podcast.research import clinical_math
-
         if not SMART_MODEL or not SMART_BASE_URL:
             raise RuntimeError(
                 "MODEL_NAME and LLM_BASE_URL environment variables must be set before running the pipeline"
@@ -2691,16 +2931,6 @@ class Orchestrator:
             log(f"Research framing provided: {len(framing_context)} chars")
         log(f"{'=' * 70}")
 
-        # Counters for metrics
-        aff_wide_net_total = 0
-        aff_screened_in = 0
-        aff_fulltext_ok = 0
-        aff_fulltext_err = 0
-        fal_wide_net_total = 0
-        fal_screened_in = 0
-        fal_fulltext_ok = 0
-        fal_fulltext_err = 0
-
         # --- Phase 0: Concept Decomposition (C2) ---
         log(f"\n{'=' * 70}")
         log("PHASE 0: CONCEPT DECOMPOSITION")
@@ -2711,169 +2941,30 @@ class Orchestrator:
         if decomposition.get("related_concepts"):
             log(f"  Related concepts: {', '.join(decomposition['related_concepts'])}")
 
-        # --- Affirmative Track (Steps 1-5) ---
-        async def affirmative_track():
-            nonlocal aff_wide_net_total, aff_screened_in, aff_fulltext_ok, aff_fulltext_err
-
-            log(f"\n{'=' * 70}")
-            log("STEP 1a: TIERED KEYWORD GENERATION + AUDITOR GATE (Affirmative)")
-            log(f"{'=' * 70}")
-            plan = await self.lead_researcher._formulate_tiered_strategy(
-                topic, "affirmative", framing_context, decomposition, log=log
-            )
-
-            log(f"\n{'=' * 70}")
-            log("STEP 2a: TIERED CASCADE SEARCH (Affirmative)")
-            log(f"{'=' * 70}")
-            records, aff_highest_tier = await self.lead_researcher._tiered_search(plan, log)
-            aff_wide_net_total = len(records)
-
-            log(f"\n{'=' * 70}")
-            log(f"STEP 3a: SCREENING ({len(records)} → top 20) (Affirmative)")
-            log(f"{'=' * 70}")
-            top_records = await self.lead_researcher._screen_and_prioritize(records, plan, topic=topic, log=log)
-            aff_screened_in = len(top_records)
-
-            # Metadata enrichment (optional — degrades gracefully)
-            top_records = await self._enrich_with_metadata(top_records, log)
-            # Filter out retracted papers
-            retracted = [r for r in top_records if r.paper_metadata and r.paper_metadata.is_retracted]
-            if retracted:
-                log(f"    ⚠ Filtering out {len(retracted)} retracted paper(s) from affirmative track")
-                top_records = [r for r in top_records if not (r.paper_metadata and r.paper_metadata.is_retracted)]
-
-            log(f"\n{'=' * 70}")
-            log(f"STEP 4a: DEEP EXTRACTION ({len(top_records)} articles) (Affirmative)")
-            log(f"{'=' * 70}")
-            fulltexts = await self.fulltext_fetcher.fetch_all(top_records)
-            aff_fulltext_ok = sum(1 for ft in fulltexts if not ft.error)
-            aff_fulltext_err = sum(1 for ft in fulltexts if ft.error)
-            log(f"    Full-text retrieved: {aff_fulltext_ok}/{len(fulltexts)}")
-
-            extractions = await self.lead_researcher._deep_extract_batch(
-                fulltexts, top_records, plan.pico, log, output_dir=output_dir
-            )
-
-            log(f"\n{'=' * 70}")
-            log("STEP 5a: AFFIRMATIVE CASE")
-            log(f"{'=' * 70}")
-            case_report = await self.lead_researcher._build_case(topic, plan, extractions, "affirmative", log)
-
-            return plan, records, top_records, extractions, case_report, aff_highest_tier
-
-        # --- Falsification Track (Steps 1'-4', 6) ---
-        async def falsification_track():
-            nonlocal fal_wide_net_total, fal_screened_in, fal_fulltext_ok, fal_fulltext_err
-
-            log(f"\n{'=' * 70}")
-            log("STEP 1b: TIERED KEYWORD GENERATION + AUDITOR GATE (Falsification)")
-            log(f"{'=' * 70}")
-            plan = await self.counter_researcher._formulate_tiered_strategy(
-                topic, "adversarial", framing_context, decomposition, log=log
-            )
-
-            log(f"\n{'=' * 70}")
-            log("STEP 2b: TIERED CASCADE SEARCH (Falsification)")
-            log(f"{'=' * 70}")
-            records, fal_highest_tier = await self.counter_researcher._tiered_search(plan, log)
-            fal_wide_net_total = len(records)
-
-            log(f"\n{'=' * 70}")
-            log(f"STEP 3b: SCREENING ({len(records)} → top 20) (Falsification)")
-            log(f"{'=' * 70}")
-            top_records = await self.counter_researcher._screen_and_prioritize(records, plan, topic=topic, log=log)
-            fal_screened_in = len(top_records)
-
-            # Metadata enrichment (optional — degrades gracefully)
-            top_records = await self._enrich_with_metadata(top_records, log)
-            # Filter out retracted papers
-            retracted = [r for r in top_records if r.paper_metadata and r.paper_metadata.is_retracted]
-            if retracted:
-                log(f"    ⚠ Filtering out {len(retracted)} retracted paper(s) from falsification track")
-                top_records = [r for r in top_records if not (r.paper_metadata and r.paper_metadata.is_retracted)]
-
-            log(f"\n{'=' * 70}")
-            log(f"STEP 4b: DEEP EXTRACTION ({len(top_records)} articles) (Falsification)")
-            log(f"{'=' * 70}")
-            fulltexts = await self.fulltext_fetcher.fetch_all(top_records)
-            fal_fulltext_ok = sum(1 for ft in fulltexts if not ft.error)
-            fal_fulltext_err = sum(1 for ft in fulltexts if ft.error)
-            log(f"    Full-text retrieved: {fal_fulltext_ok}/{len(fulltexts)}")
-
-            extractions = await self.counter_researcher._deep_extract_batch(
-                fulltexts, top_records, plan.pico, log, output_dir=output_dir
-            )
-
-            log(f"\n{'=' * 70}")
-            log("STEP 5b: FALSIFICATION CASE")
-            log(f"{'=' * 70}")
-            case_report = await self.counter_researcher._build_case(topic, plan, extractions, "falsification", log)
-
-            return plan, records, top_records, extractions, case_report, fal_highest_tier
-
         # --- Run both tracks in parallel ---
         log(f"\n{'=' * 70}")
         log("RUNNING AFFIRMATIVE & FALSIFICATION TRACKS IN PARALLEL")
         log(f"{'=' * 70}")
 
-        (
-            (aff_strategy, aff_records, aff_top, aff_extractions, aff_case, aff_highest_tier),
-            (fal_strategy, fal_records, fal_top, fal_extractions, fal_case, fal_highest_tier),
-        ) = await asyncio.gather(affirmative_track(), falsification_track())
-
-        # --- Step 6: Deterministic Math ---
-        log(f"\n{'=' * 70}")
-        all_extractions = aff_extractions + fal_extractions
-        if self.domain == "social_science":
-            from dr2_podcast.research.effect_size_math import (
-                batch_calculate as es_batch_calculate,
-                format_effect_size_report,
-            )
-
-            log("STEP 6: DETERMINISTIC MATH (Effect Size)")
-            log(f"{'=' * 70}")
-            impacts = es_batch_calculate(all_extractions)
-            math_report = format_effect_size_report(impacts)
-            log(f"    Calculated effect sizes for {len(impacts)} studies")
-        else:
-            log("STEP 6: DETERMINISTIC MATH (ARR/NNT)")
-            log(f"{'=' * 70}")
-            impacts = clinical_math.batch_calculate(all_extractions)
-            math_report = clinical_math.format_math_report(impacts)
-            log(f"    Calculated clinical impact for {len(impacts)} studies with CER+EER data")
-            if impacts:
-                for imp in impacts:
-                    log(f"      {imp.study_id}: NNT={imp.nnt:.1f} ({imp.direction})")
-
-        # --- Step 8: GRADE Synthesis ---
-        log(f"\n{'=' * 70}")
-        log("STEP 7: GRADE SYNTHESIS")
-        log(f"{'=' * 70}")
-
-        search_date = datetime.date.today().isoformat()
-        total_wide = aff_wide_net_total + fal_wide_net_total
-        total_screened = aff_screened_in + fal_screened_in
-        total_ft_ok = aff_fulltext_ok + fal_fulltext_ok
-        total_ft_err = aff_fulltext_err + fal_fulltext_err
-
-        audit_text = await self._grade_synthesis(
-            topic,
-            aff_case,
-            fal_case,
-            math_report,
-            aff_strategy,
-            fal_strategy,
-            total_wide,
-            total_screened,
-            total_ft_ok,
-            total_ft_err,
-            search_date,
-            log,
-            aff_extractions=aff_extractions,
-            fal_extractions=fal_extractions,
+        aff, fal = await asyncio.gather(
+            self._run_research_track(_AFFIRMATIVE_TRACK, topic, framing_context, decomposition, output_dir, log),
+            self._run_research_track(_FALSIFICATION_TRACK, topic, framing_context, decomposition, output_dir, log),
         )
 
-        # --- Save intermediate artifacts ---
+        aff_strategy, aff_records, aff_top = aff.plan, aff.records, aff.top_records
+        fal_strategy, fal_records, fal_top = fal.plan, fal.records, fal.top_records
+        aff_extractions, fal_extractions = aff.extractions, fal.extractions
+        aff_highest_tier, fal_highest_tier = aff.highest_tier, fal.highest_tier
+
+        aff_fulltext_ok, aff_fulltext_err = aff.fulltext_ok, aff.fulltext_err
+        fal_fulltext_ok, fal_fulltext_err = fal.fulltext_ok, fal.fulltext_err
+
+        all_extractions = aff_extractions + fal_extractions
+        impacts, math_report = self._run_step6_math(all_extractions, log)
+
+        search_date = datetime.date.today().isoformat()
+        audit_text = await self._run_step7_grade(topic, aff, fal, math_report, search_date, log)
+
         if output_dir:
             self._save_artifacts(
                 output_dir,
@@ -2893,83 +2984,13 @@ class Orchestrator:
         aff_sources = self._extractions_to_sources(aff_extractions, "affirmative")
         fal_sources = self._extractions_to_sources(fal_extractions, "falsification")
 
-        db_list = (
-            ["OpenAlex", "ERIC", "Google Scholar"] if self.domain == "social_science" else ["PubMed", "Google Scholar"]
-        )
-
-        combined_metrics = SearchMetrics(
-            search_date=search_date,
-            databases_searched=db_list,
-            total_identified=total_wide,
-            total_after_dedup=total_wide,  # dedup happens inside PubMedClient
-            total_fetched=total_ft_ok + total_ft_err,
-            total_fetch_errors=total_ft_err,
-            total_with_content=total_ft_ok,
-            total_summarized=len(aff_extractions) + len(fal_extractions),
-            academic_sources=total_wide,
-            general_web_sources=0,
-            wide_net_total=total_wide,
-            screened_in=total_screened,
-            fulltext_retrieved=total_ft_ok,
-            fulltext_errors=total_ft_err,
-        )
+        db_list = self._databases_searched()
+        combined_metrics = self._combined_metrics(search_date, db_list, aff, fal)
 
         lead_duration = time.time() - start_time
-        lead_report = ResearchReport(
-            topic=topic,
-            role="Lead Researcher",
-            sources=aff_sources,
-            report=aff_case,
-            iterations_used=0,
-            total_urls_fetched=aff_fulltext_ok + aff_fulltext_err,
-            total_summaries=len(aff_extractions),
-            total_errors=aff_fulltext_err,
-            duration_seconds=lead_duration,
-            search_metrics=SearchMetrics(
-                search_date=search_date,
-                databases_searched=db_list,
-                total_identified=aff_wide_net_total,
-                total_after_dedup=aff_wide_net_total,
-                total_fetched=aff_fulltext_ok + aff_fulltext_err,
-                total_fetch_errors=aff_fulltext_err,
-                total_with_content=aff_fulltext_ok,
-                total_summarized=len(aff_extractions),
-                academic_sources=aff_wide_net_total,
-                general_web_sources=0,
-                wide_net_total=aff_wide_net_total,
-                screened_in=aff_screened_in,
-                fulltext_retrieved=aff_fulltext_ok,
-                fulltext_errors=aff_fulltext_err,
-            ),
-        )
-
-        counter_report = ResearchReport(
-            topic=topic,
-            role="Counter Researcher",
-            sources=fal_sources,
-            report=fal_case,
-            iterations_used=0,
-            total_urls_fetched=fal_fulltext_ok + fal_fulltext_err,
-            total_summaries=len(fal_extractions),
-            total_errors=fal_fulltext_err,
-            duration_seconds=lead_duration,
-            search_metrics=SearchMetrics(
-                search_date=search_date,
-                databases_searched=db_list,
-                total_identified=fal_wide_net_total,
-                total_after_dedup=fal_wide_net_total,
-                total_fetched=fal_fulltext_ok + fal_fulltext_err,
-                total_fetch_errors=fal_fulltext_err,
-                total_with_content=fal_fulltext_ok,
-                total_summarized=len(fal_extractions),
-                academic_sources=fal_wide_net_total,
-                general_web_sources=0,
-                wide_net_total=fal_wide_net_total,
-                screened_in=fal_screened_in,
-                fulltext_retrieved=fal_fulltext_ok,
-                fulltext_errors=fal_fulltext_err,
-            ),
-        )
+        self._current_topic = topic
+        lead_report = self._build_track_report("Lead Researcher", aff, search_date, db_list, lead_duration)
+        counter_report = self._build_track_report("Counter Researcher", fal, search_date, db_list, lead_duration)
 
         audit_report = ResearchReport(
             topic=topic,
@@ -2984,16 +3005,7 @@ class Orchestrator:
             search_metrics=combined_metrics,
         )
 
-        total_time = time.time() - start_time
-        log(f"\n{'=' * 70}")
-        log(f"ALL RESEARCH COMPLETE in {total_time:.0f}s")
-        log(f"  Affirmative: {len(aff_extractions)} studies from {aff_wide_net_total} candidates")
-        log(f"  Falsification: {len(fal_extractions)} studies from {fal_wide_net_total} candidates")
-        math_label = "Effect size math" if self.domain == "social_science" else "Clinical math"
-        math_detail = "effect size data" if self.domain == "social_science" else "NNT data"
-        log(f"  {math_label}: {len(impacts)} studies with {math_detail}")
-        log(f"  Total articles analyzed: {len(all_extractions)}")
-        log(f"{'=' * 70}\n")
+        self._log_run_summary(start_time, aff, fal, impacts, all_extractions, log)
 
         # Close social science clients if used
         if self.domain == "social_science":
@@ -3021,14 +3033,14 @@ class Orchestrator:
                 "aff_highest_tier": aff_highest_tier,
                 "fal_highest_tier": fal_highest_tier,
                 "metrics": {
-                    "aff_wide_net_total": aff_wide_net_total,
-                    "aff_screened_in": aff_screened_in,
-                    "aff_fulltext_ok": aff_fulltext_ok,
-                    "aff_fulltext_err": aff_fulltext_err,
-                    "fal_wide_net_total": fal_wide_net_total,
-                    "fal_screened_in": fal_screened_in,
-                    "fal_fulltext_ok": fal_fulltext_ok,
-                    "fal_fulltext_err": fal_fulltext_err,
+                    "aff_wide_net_total": aff.wide_net_total,
+                    "aff_screened_in": aff.screened_in,
+                    "aff_fulltext_ok": aff.fulltext_ok,
+                    "aff_fulltext_err": aff.fulltext_err,
+                    "fal_wide_net_total": fal.wide_net_total,
+                    "fal_screened_in": fal.screened_in,
+                    "fal_fulltext_ok": fal.fulltext_ok,
+                    "fal_fulltext_err": fal.fulltext_err,
                 },
             },
         }
