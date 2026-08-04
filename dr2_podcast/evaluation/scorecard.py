@@ -52,17 +52,10 @@ def _parse_screening_tiers(research_dir: Path) -> dict:
     return tiers
 
 
-def _parse_log_metrics(log_path: Path) -> dict:
-    """Extract metrics from podcast_generation.log via regex."""
+def _log_extraction_metrics(text: str) -> dict:
+    """Deep-extraction throughput and timeouts."""
     metrics: dict = {}
-    if not log_path.exists():
-        return metrics
-
-    text = log_path.read_text(errors="replace")
-
-    # Extraction timeout rate
-    timeouts = len(re.findall(r"timed out", text, re.IGNORECASE))
-    metrics["extraction_timeouts"] = timeouts
+    metrics["extraction_timeouts"] = len(re.findall(r"timed out", text, re.IGNORECASE))
 
     # Articles extracted / attempted  ("Extracted data from X/Y articles")
     m = re.findall(r"Extracted data from (\d+)/(\d+) articles", text)
@@ -76,6 +69,12 @@ def _parse_log_metrics(log_path: Path) -> dict:
     else:
         metrics["articles_extracted"] = 0
         metrics["articles_attempted"] = 0
+    return metrics
+
+
+def _log_script_metrics(text: str) -> dict:
+    """Section budgets, deficit cascade, and draft/target length."""
+    metrics: dict = {}
 
     # Section budget adherence ("Section <name>: XXXX/YYYY chars")
     section_hits = re.findall(r"Section (\w+):\s+(\d+)/(\d+) chars", text)
@@ -102,22 +101,28 @@ def _parse_log_metrics(log_path: Path) -> dict:
     m_budget = re.search(r"total budget\s+(\d+)\s+(?:chars|words)", text)
     if m_budget:
         metrics["script_target_length"] = int(m_budget.group(1))
+    return metrics
 
-    # Degenerate repetition %
+
+def _log_quality_metrics(text: str) -> dict:
+    """Degenerate repetition and the quick content audit."""
+    metrics: dict = {}
+
     m_degen = re.search(r"[Dd]egenerate.*?(\d+(?:\.\d+)?)\s*%", text)
-    if m_degen:
-        metrics["degenerate_repetition_pct"] = float(m_degen.group(1))
-    else:
-        metrics["degenerate_repetition_pct"] = 0.0
+    metrics["degenerate_repetition_pct"] = float(m_degen.group(1)) if m_degen else 0.0
 
     # Content audit issues ("CLEAN" or issue text)
     if re.search(r"content audit.*CLEAN", text, re.IGNORECASE):
         metrics["content_audit_issues"] = 0
     else:
-        issues = re.findall(r"content audit.*issue", text, re.IGNORECASE)
-        metrics["content_audit_issues"] = len(issues)
+        metrics["content_audit_issues"] = len(re.findall(r"content audit.*issue", text, re.IGNORECASE))
+    return metrics
 
-    # Pipeline start/end timestamps for total duration
+
+def _log_timing_metrics(text: str) -> dict:
+    """Wall-clock duration from log timestamps, plus audio and target duration."""
+    metrics: dict = {}
+
     timestamps = re.findall(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", text, re.MULTILINE)
     if len(timestamps) >= 2:
         fmt = "%Y-%m-%d %H:%M:%S"
@@ -128,7 +133,6 @@ def _parse_log_metrics(log_path: Path) -> dict:
         except ValueError:
             pass
 
-    # Audio duration ("Audio duration X minutes" or WAV-based)
     m_audio = re.search(r"[Aa]udio duration[:\s]+(\d+(?:\.\d+)?)\s*min", text)
     if m_audio:
         metrics["audio_duration_min"] = float(m_audio.group(1))
@@ -137,8 +141,14 @@ def _parse_log_metrics(log_path: Path) -> dict:
     m_target = re.search(r"Podcast Length Mode:\s*\w+\s*\((\d+)\s*min\)", text)
     if m_target:
         metrics["target_duration_min"] = int(m_target.group(1))
+    return metrics
 
-    # Language — capture the 2-letter code: "Language: 日本語 (Japanese) (ja)" or "Language: English (en)"
+
+def _log_run_identity(text: str) -> dict:
+    """Language code and topic."""
+    metrics: dict = {}
+
+    # Capture the 2-letter code: "Language: 日本語 (Japanese) (ja)" or "Language: English (en)"
     m_lang = re.search(r"Language:.*\(([a-z]{2})\)", text)
     if m_lang:
         metrics["language"] = m_lang.group(1)
@@ -149,11 +159,29 @@ def _parse_log_metrics(log_path: Path) -> dict:
             lang_raw = m_lang2.group(1).lower()
             metrics["language"] = {"japanese": "ja", "english": "en"}.get(lang_raw, lang_raw)
 
-    # Topic from log
+    # Topic from log — anchored, so a log-prefixed line does not match
     m_topic = re.search(r"^Topic:\s*(.+)$", text, re.MULTILINE)
     if m_topic:
         metrics["topic"] = m_topic.group(1).strip()
+    return metrics
 
+
+def _parse_log_metrics(log_path: Path) -> dict:
+    """Extract metrics from podcast_generation.log via regex."""
+    if not log_path.exists():
+        return {}
+
+    text = log_path.read_text(errors="replace")
+
+    metrics: dict = {}
+    for parser in (
+        _log_extraction_metrics,
+        _log_script_metrics,
+        _log_quality_metrics,
+        _log_timing_metrics,
+        _log_run_identity,
+    ):
+        metrics.update(parser(text))
     return metrics
 
 
