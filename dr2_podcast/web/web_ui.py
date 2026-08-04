@@ -4,6 +4,7 @@ Web-based UI for DR_2_Podcast Generation
 Provides a user-friendly interface for generating research-driven debate podcasts
 """
 
+import contextlib
 import os
 import sys
 import signal
@@ -29,6 +30,9 @@ import httpx
 from dotenv import load_dotenv
 
 from dr2_podcast.config import SMART_BASE_URL, FAST_BASE_URL, OUTPUT_DIR_OVERRIDE
+
+# Expected artifacts — derived from pipeline's _FILE_SUBDIR_MAP (auto-updates)
+from dr2_podcast.pipeline import _FILE_SUBDIR_MAP
 from dr2_podcast.tools.upload_utils import upload_to_buzzsprout, upload_to_youtube
 
 load_dotenv()
@@ -94,8 +98,6 @@ tasks_lock = threading.RLock()
 
 # Task Queue
 task_queue = queue.Queue()
-# Expected artifacts — derived from pipeline's _FILE_SUBDIR_MAP (auto-updates)
-from dr2_podcast.pipeline import _FILE_SUBDIR_MAP
 
 # Artifacts that are conditional / alternate names (not always produced)
 _CONDITIONAL_ARTIFACTS = {"SOURCE_OF_TRUTH.md", "ACCURACY_CORRECTIONS.md", "audio_mixed.wav"}
@@ -174,10 +176,8 @@ def save_tasks():
             os.replace(tmp, TASKS_FILE)
         except Exception:
             logger.exception("Failed to save tasks to %s", TASKS_FILE)
-            try:
+            with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 # --- Topic Index: central registry of completed research runs ---
@@ -197,8 +197,8 @@ def load_topic_index() -> list:
     if TOPIC_INDEX_FILE.exists():
         try:
             return json.loads(TOPIC_INDEX_FILE.read_text())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("topic index unreadable, treating as empty: %s", exc)
     return []
 
 
@@ -486,9 +486,9 @@ def home(username: str = Depends(verify_credentials)):
             body {
                 font-family: 'Inter', system-ui, -apple-system, sans-serif;
                 background-color: var(--bg-color);
-                background-image: 
-                    radial-gradient(at 0% 0%, hsla(253,16%,7%,1) 0, transparent 50%), 
-                    radial-gradient(at 50% 0%, hsla(225,39%,30%,1) 0, transparent 50%), 
+                background-image:
+                    radial-gradient(at 0% 0%, hsla(253,16%,7%,1) 0, transparent 50%),
+                    radial-gradient(at 50% 0%, hsla(225,39%,30%,1) 0, transparent 50%),
                     radial-gradient(at 100% 0%, hsla(339,49%,30%,1) 0, transparent 50%);
                 color: var(--text-primary);
                 min-height: 100vh;
@@ -571,7 +571,7 @@ def home(username: str = Depends(verify_credentials)):
                 border-color: var(--accent-primary);
                 box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
             }
-            
+
             select {
                 appearance: none;
                 background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
@@ -649,7 +649,7 @@ def home(username: str = Depends(verify_credentials)):
                 background-color: var(--accent-primary);
                 border-color: var(--accent-primary);
             }
-            
+
             input[type="checkbox"]:checked::before {
                 transform: scale(1);
             }
@@ -755,11 +755,11 @@ def home(username: str = Depends(verify_credentials)):
                 border-top: 1px dashed var(--border-color);
                 font-size: 0.9rem;
             }
-            
+
             .history-details.open {
                 display: block;
             }
-            
+
             .artifact-pill {
                 display: inline-flex;
                 align-items: center;
@@ -772,7 +772,7 @@ def home(username: str = Depends(verify_credentials)):
                 text-decoration: none;
                 border: 1px solid rgba(99, 102, 241, 0.2);
             }
-            
+
             .artifact-pill:hover {
                 background: rgba(99, 102, 241, 0.2);
             }
@@ -790,7 +790,7 @@ def home(username: str = Depends(verify_credentials)):
                 width: auto;
                 box-shadow: none;
             }
-            
+
             .auth-btn:hover {
                 background: rgba(139, 92, 246, 0.1);
                 transform: none;
@@ -822,7 +822,7 @@ def home(username: str = Depends(verify_credentials)):
             .download-link:hover {
                 background: rgba(16, 185, 129, 0.2);
             }
-            
+
             .error {
                 background: rgba(239, 68, 68, 0.1);
                 border: 1px solid var(--error-color);
@@ -854,7 +854,7 @@ def home(username: str = Depends(verify_credentials)):
                 border: 1px solid var(--border-color);
                 transition: transform 0.2s;
             }
-            
+
             .source-icon:hover {
                 transform: scale(1.2);
                 z-index: 10;
@@ -874,7 +874,7 @@ def home(username: str = Depends(verify_credentials)):
 
             .counter-label { font-size: 0.9rem; color: var(--accent-primary); font-weight: 600; }
             .counter-value { font-size: 1.5rem; color: #fff; font-weight: 700; }
-            
+
             .eta-box {
                 font-family: monospace;
                 font-size: 0.9rem;
@@ -885,7 +885,7 @@ def home(username: str = Depends(verify_credentials)):
 
         </style>
     </head>
-    
+
     <body>
         <div class="container">
             <div class="header">
@@ -999,7 +999,7 @@ def home(username: str = Depends(verify_credentials)):
 
                     <div style="margin-top: 30px;">
                         <label style="margin-bottom: 12px;">Publishing Options</label>
-                        
+
                         <div style="display: flex; gap: 24px; margin-bottom: 15px;">
                             <label class="checkbox-wrapper" id="buzzsproutLabel">
                                 <input type="checkbox" id="uploadBuzzsprout" />
@@ -1031,16 +1031,16 @@ def home(username: str = Depends(verify_credentials)):
 
                 <div id="statusBox" class="status-box">
                     <div class="status-header">
-                        <span id="statusIcon">⚡</span> 
+                        <span id="statusIcon">⚡</span>
                         <span id="statusText">System Ready</span>
                     </div>
-                    
+
                     <div class="progress">
                         <div class="progress-bar" id="progressBar"></div>
                     </div>
-                    
+
                     <div class="eta-box" id="etaDisplay"></div>
-                    
+
                     <!-- Artifact Progress -->
                     <div id="artifactProgress" style="margin-top: 10px; font-size: 0.9rem; color: var(--text-secondary); display: none;">
                         📦 Artifacts: <span id="artifactCount" style="color: var(--text-primary); font-weight: bold;">0/24</span>
@@ -1127,7 +1127,7 @@ def home(username: str = Depends(verify_credentials)):
 
             // Load history on page load
             loadHistory();
-            
+
             // Check System Status (Git)
             (async () => {
                 try {
@@ -1509,20 +1509,20 @@ def home(username: str = Depends(verify_credentials)):
 
                     statusText.textContent = 'Production In Progress...';
                     statusIcon.textContent = '⚡';
-                    
+
                     const pct = data.progress || 0;
                     progressBar.style.width = pct + '%';
                     const step = data.current_step || data.phase || 'Initializing...';
                     statusDetails.textContent = `Phase: ${step} >> Progress: ${pct}%`;
                     statusIcon.textContent = '⚙️';
-                    
+
                     // Update numeric ETA
                     if (data.estimated_remaining) {
                          const mins = Math.floor(data.estimated_remaining / 60);
                          const secs = Math.floor(data.estimated_remaining % 60);
                          document.getElementById('etaDisplay').textContent = `⏱️ Approx. Remaining: ${mins}m ${secs}s`;
                     }
-                    
+
                     // Update Artifact Count
                     const artifactNav = document.getElementById('artifactProgress');
                     const artifactCount = document.getElementById('artifactCount');
@@ -1530,12 +1530,12 @@ def home(username: str = Depends(verify_credentials)):
                         artifactNav.style.display = 'block';
                         artifactCount.textContent = `${data.artifacts_created}/${data.artifacts_total}`;
                     }
-                    
+
                     // Update Step Durations
                     const durationBox = document.getElementById('stepDurations');
                     const durationList = document.getElementById('stepDurationList');
                     const currentTimer = document.getElementById('currentStepTimer');
-                    
+
                     const PHASE_GROUPS = {
                         'Research Framing': 'Scientific Fact Finding',
                         'Clinical Research': 'Scientific Fact Finding',
@@ -1602,7 +1602,7 @@ def home(username: str = Depends(verify_credentials)):
                     if (data.sources && data.sources.length > 0) {
                         document.getElementById('researchViz').style.display = 'block';
                         document.getElementById('sourceCount').textContent = data.sources.length;
-                        
+
                         const grid = document.getElementById('sourceGrid');
                         grid.innerHTML = data.sources.map(url => {
                             let domain = '';
@@ -1719,8 +1719,8 @@ def home(username: str = Depends(verify_credentials)):
                              { name: "Affirmative Case", file: "affirmative_case.md", icon: "📄" },
                              { name: "GRADE Synthesis", file: "grade_synthesis.md", icon: "⚖️" }
                          ];
-                         
-                         const artifactLinks = artifacts.map(a => 
+
+                         const artifactLinks = artifacts.map(a =>
                              `<a href="/api/download/${task.task_id}/${a.file}" class="artifact-pill" target="_blank">${a.icon} ${a.name}</a>`
                          ).join('');
 
@@ -1730,9 +1730,9 @@ def home(username: str = Depends(verify_credentials)):
                                 <div>
                                     <div class="history-topic">${task.topic}</div>
                                     <div class="history-meta">
-                                        ${task.language === 'en' ? 'English' : '日本語'} • 
-                                        ${date} • 
-                                        Sources: ${task.sources ? task.sources.length : 0} • 
+                                        ${task.language === 'en' ? 'English' : '日本語'} •
+                                        ${date} •
+                                        Sources: ${task.sources ? task.sources.length : 0} •
                                         <span class="status-${task.status}">${task.status}</span>
                                     </div>
                                 </div>
@@ -1757,7 +1757,7 @@ def home(username: str = Depends(verify_credentials)):
                     console.error('Failed to load history:', error);
                 }
             }
-            
+
             window.toggleDetails = function(id) {
                 const el = document.getElementById(id);
                 if (el.style.display === 'block') {
@@ -2224,8 +2224,8 @@ def _stream_process_output(proc, task_id: str) -> list:
                     if discovered:
                         tasks_db[task_id]["output_dir"] = discovered
                         output_dir_discovered = True
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("could not parse [OUTPUT_DIR] marker: %s", exc)
             elif not mtime_fallback_tried:
                 mtime_fallback_tried = True
                 found_dir = _find_latest_output_dir()
@@ -2260,8 +2260,8 @@ def _stream_process_output(proc, task_id: str) -> list:
                 if url not in tasks_db[task_id]["sources"]:
                     tasks_db[task_id]["sources"].append(url)
                     save_tasks()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("could not parse [SOURCE] marker: %s", exc)
 
     return output_lines
 
@@ -2415,16 +2415,15 @@ def run_podcast_generation(
         tasks_db[task_id]["error"] = str(e)
         # Still register if research completed (source_of_truth.md exists)
         od = tasks_db[task_id].get("output_dir")
-        if od:
-            if _sot_exists(od):
-                register_topic(
-                    topic=topic,
-                    output_dir=od,
-                    language=language,
-                    accessibility_level=accessibility_level,
-                    podcast_length=podcast_length,
-                    podcast_hosts=podcast_hosts,
-                )
+        if od and _sot_exists(od):
+            register_topic(
+                topic=topic,
+                output_dir=od,
+                language=language,
+                accessibility_level=accessibility_level,
+                podcast_length=podcast_length,
+                podcast_hosts=podcast_hosts,
+            )
     finally:
         save_tasks()
 
@@ -2729,10 +2728,9 @@ async def stop_task(task_id: str, username: str = Depends(verify_credentials)):
 
     pid = _running_pids.get(task_id)
     if pid:
-        try:
+        # ProcessLookupError just means the run already exited on its own.
+        with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass  # already exited
 
     with tasks_lock:
         tasks_db[task_id]["status"] = "stopped"

@@ -3,6 +3,7 @@ Unit tests for wwc_database.py.
 """
 
 import csv
+import sqlite3
 
 import pytest
 
@@ -199,8 +200,8 @@ class TestWWCDatabase:
 
     def test_close(self, db):
         db.close()
-        # After closing, operations should fail
-        with pytest.raises(Exception):
+        # After closing, operations should fail on the closed sqlite3 connection
+        with pytest.raises(sqlite3.ProgrammingError):
             db.count()
 
 

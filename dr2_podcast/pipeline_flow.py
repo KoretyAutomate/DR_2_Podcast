@@ -273,8 +273,8 @@ def phase_1_research(
                         aff_candidates = val
                     else:
                         neg_candidates = val
-                except Exception:
-                    pass
+                except Exception as exc:
+                    run_logger.debug("candidate count unreadable: %s", exc)
 
         if aff_candidates == 0:
             _pipeline._write_insufficient_evidence_report(topic_name, 0, neg_candidates, output_dir_path)
@@ -427,8 +427,8 @@ def phase_2_url_validation(output_dir: str):
                     for src in role_sources:
                         if src.get("url"):
                             all_urls.add(src["url"])
-        except Exception:
-            pass
+        except Exception as exc:
+            run_logger.debug("research_sources.json unreadable, no URLs collected: %s", exc)
 
     run_logger.info("Found %d unique URLs to validate", len(all_urls))
 
@@ -1142,8 +1142,8 @@ def run_pipeline_flow(
 
             for _issue in validate_tts_readings(polished_text):
                 flow_logger.warning("TTS_READING: %s", _issue)
-        except Exception:
-            pass
+        except Exception as exc:
+            flow_logger.debug("TTS reading validation skipped: %s", exc)
 
     if audit_output and (_pipeline._audit_requires_correction(audit_output) or det_citation_issues or det_grade_issues):
         flow_logger.info(
@@ -1182,8 +1182,8 @@ def run_pipeline_flow(
                 f"{'applied' if corrected_script_text else 'FAILED — audio uses UNCORRECTED script, manual review needed'}\n",
                 encoding="utf-8",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            flow_logger.debug("could not write ACCURACY_CORRECTIONS.md: %s", exc)
         if corrected_script_text is None:
             flow_logger.warning(
                 "Correction pass produced no valid script — finalizing the "

@@ -735,10 +735,7 @@ def _generate_section_single(
     budget_pct = str(round(budget / (target_min * language_config["speech_rate"]) * 100))
 
     # Estimate dialogue turn count (~25 content chars/turn for JA, ~15 words/turn for EN)
-    if length_unit == "chars":
-        turn_count = str(max(10, budget // 25))
-    else:
-        turn_count = str(max(10, budget // 15))
+    turn_count = str(max(10, budget // 25)) if length_unit == "chars" else str(max(10, budget // 15))
 
     # Build user prompt
     user_key = _SECTION_USER_PROMPT_KEY[section_id]
@@ -759,10 +756,7 @@ def _generate_section_single(
     user = get_prompt("section_gen", user_key, language, **user_kwargs)
 
     # Calculate max_tokens: ~2 tokens/word for EN, ~2.5 tokens/char for JA, with buffer
-    if length_unit == "chars":
-        max_tokens = int(budget * 2.5) + 500
-    else:
-        max_tokens = int(budget * 2) + 500
+    max_tokens = int(budget * 2.5) + 500 if length_unit == "chars" else int(budget * 2) + 500
 
     # Attempt generation (up to 2 tries)
     floor = int(budget * 0.75)  # 25% under budget = retry threshold

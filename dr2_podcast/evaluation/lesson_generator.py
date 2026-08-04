@@ -45,8 +45,8 @@ def _load_pending() -> list[dict]:
             data = json.loads(_PENDING_PATH.read_text())
             if isinstance(data, list):
                 return data
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("lessons_pending.json unreadable, treating as empty: %s", exc)
     return []
 
 

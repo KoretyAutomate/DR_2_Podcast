@@ -9,6 +9,7 @@ Regression anchors from the 2026-07-05 sleep-week investigation:
 
 import json
 import textwrap
+from pathlib import Path
 
 from dr2_podcast.pipeline_validators import (
     normalize_speaker_labels,
@@ -180,7 +181,7 @@ def test_validate_script_structure_normalizes_and_flags(tmp_path):
 
 def test_validate_structure_accepts_sot_text(tmp_path):
     sot = _write_sot(tmp_path)
-    sot_text = open(sot, encoding="utf-8").read()
+    sot_text = Path(sot).read_text(encoding="utf-8")
     script = "Host 1: Vandewalle et al. (2007) の話。\nHost 2: なるほど。"
     r = validate_script_structure(script, sot_text=sot_text)
     assert not r["pass"]

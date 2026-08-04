@@ -133,8 +133,8 @@ def _format_run_report(scorecard: dict, lessons: list[dict]) -> str:
     if pending_path.exists():
         try:
             pending_count = len(json.loads(pending_path.read_text()))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("pending-lessons count unavailable: %s", exc)
     lines.append(f"\nPending lessons: {pending_count}/10")
 
     return "\n".join(lines)

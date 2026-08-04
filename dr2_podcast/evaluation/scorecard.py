@@ -46,7 +46,8 @@ def _parse_screening_tiers(research_dir: Path) -> dict:
                     tiers["tier2"] += 1
                 elif tier_int >= 3:
                     tiers["tier3"] += 1
-        except Exception:
+        except Exception as exc:
+            logger.debug("screening row skipped, tier unparseable: %s", exc)
             continue
     return tiers
 
@@ -234,7 +235,8 @@ def _get_audio_duration_from_wav(output_dir: Path) -> float | None:
                     rate = wf.getframerate()
                     if rate > 0:
                         return round(frames / rate / 60, 2)
-            except Exception:
+            except Exception as exc:
+                logger.debug("audio duration probe failed: %s", exc)
                 continue
     return None
 
@@ -251,7 +253,8 @@ def _load_recent_scorecards(output_base: Path, exclude_run: str, limit: int = 5)
         if sc_path.exists():
             try:
                 scorecards.append(json.loads(sc_path.read_text()))
-            except Exception:
+            except Exception as exc:
+                logger.debug("run_scorecard.json unreadable, skipping: %s", exc)
                 continue
         if len(scorecards) >= limit:
             break

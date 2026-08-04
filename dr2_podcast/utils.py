@@ -25,10 +25,7 @@ def strip_think_blocks(text: str) -> str:
         first_brace = text.find("{")
         first_bracket = text.find("[")
         starts = [i for i in (first_brace, first_bracket) if i > 0]
-        if starts:
-            text = text[min(starts) :]
-        else:
-            text = ""
+        text = text[min(starts) :] if starts else ""
     return text.strip()
 
 

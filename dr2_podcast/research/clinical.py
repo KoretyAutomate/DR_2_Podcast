@@ -21,6 +21,7 @@ Author: DR_2_Podcast Team
 
 import asyncio
 import atexit
+import contextlib
 import json
 import logging
 import os
@@ -33,6 +34,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from dr2_podcast.pipeline_types import DeepResearchResult
 
+from dr2_podcast.pipeline_types import StudyMetadata, SummarizedSource, SearchMetrics, ResearchReport
 from dr2_podcast.utils import (
     strip_think_blocks,
     is_safe_url,
@@ -195,9 +197,6 @@ class FetchedPage:
     content: str
     word_count: int
     error: str | None = None
-
-
-from dr2_podcast.pipeline_types import StudyMetadata, SummarizedSource, SearchMetrics, ResearchReport
 
 
 # --- New Pipeline Data Models ---
@@ -473,10 +472,8 @@ class PubMedClient:
         year = None
         year_el = article.find(".//PubDate/Year")
         if year_el is not None and year_el.text:
-            try:
+            with contextlib.suppress(ValueError):
                 year = int(year_el.text)
-            except ValueError:
-                pass
         if not year:
             medline_year = article.find(".//MedlineDate")
             if medline_year is not None and medline_year.text:
@@ -1788,7 +1785,7 @@ class ResearchAgent:
         if needs_screening and self.fast_worker:
             log(f"    [Step 2] Fast-model typing {len(needs_screening)} abstracts...")
             screened = await self._fast_screen_abstracts(needs_screening)
-            screening_map = {id(r): s for r, s in zip(needs_screening, screened)}
+            screening_map = {id(r): s for r, s in zip(needs_screening, screened, strict=True)}
             for r in all_records:
                 if id(r) in screening_map:
                     s = screening_map[id(r)]
@@ -1963,7 +1960,7 @@ class ResearchAgent:
         if needs_screening and self.fast_worker:
             log(f"    [Step 2] Fast-model typing {len(needs_screening)} abstracts...")
             screened = await self._fast_screen_abstracts(needs_screening)
-            screening_map = {id(r): s for r, s in zip(needs_screening, screened)}
+            screening_map = {id(r): s for r, s in zip(needs_screening, screened, strict=True)}
             for r in all_records:
                 if id(r) in screening_map:
                     s = screening_map[id(r)]
@@ -2494,7 +2491,7 @@ class ResearchAgent:
                         paper_metadata=record.paper_metadata,
                     )
 
-        results = await asyncio.gather(*[extract_one(art, rec) for art, rec in zip(articles, records)])
+        results = await asyncio.gather(*[extract_one(art, rec) for art, rec in zip(articles, records, strict=True)])
         good = sum(1 for r in results if r.raw_facts and "failed" not in r.raw_facts.lower())
         log(f"    [Step 4] Extracted data from {good}/{len(results)} articles (cache hits: {cache_hits})")
 
@@ -3306,7 +3303,7 @@ class Orchestrator:
 
                     retracted_titles = []
                     enriched_count = 0
-                    for rec, ep in zip(records, enriched):
+                    for rec, ep in zip(records, enriched, strict=True):
                         if not ep.enrichment_sources:
                             continue
                         enriched_count += 1
@@ -3404,10 +3401,7 @@ class Orchestrator:
 
         # Use research/ subdirectory if it exists (M9 layout)
         research_dir = out / "research"
-        if research_dir.is_dir():
-            _out = research_dir
-        else:
-            _out = out
+        _out = research_dir if research_dir.is_dir() else out
 
         # Strategy files — TieredSearchPlan serialized via dataclasses.asdict
         with open(_out / "search_strategy_aff.json", "w") as f:

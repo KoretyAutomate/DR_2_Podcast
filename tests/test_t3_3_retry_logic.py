@@ -129,9 +129,11 @@ class TestCallSmartRetry(unittest.TestCase):
         async def mock_sleep(t):
             pass  # Skip actual sleeping
 
-        with patch("dr2_podcast.research.clinical.asyncio.sleep", side_effect=mock_sleep):
-            with self.assertRaises(ConnectionError) as ctx:
-                self._run(self.agent._call_smart("system", "user"))
+        with (
+            patch("dr2_podcast.research.clinical.asyncio.sleep", side_effect=mock_sleep),
+            self.assertRaises(ConnectionError) as ctx,
+        ):
+            self._run(self.agent._call_smart("system", "user"))
 
         self.assertEqual(
             self.agent.smart_client.chat.completions.create.call_count, 4, "Should attempt exactly 4 times total"
@@ -160,7 +162,9 @@ class TestCallSmartRetry(unittest.TestCase):
 
             call_count = 0
 
-            async def make_side_effect(err_cls, err_kw):
+            # resp is passed in rather than closed over: mock_resp is rebound each
+            # iteration, so a closure over it would see the last loop value.
+            async def make_side_effect(err_cls, err_kw, resp):
                 nonlocal call_count
                 call_count = 0
 
@@ -169,11 +173,11 @@ class TestCallSmartRetry(unittest.TestCase):
                     call_count += 1
                     if call_count == 1:
                         raise err_cls(**err_kw)
-                    return mock_resp
+                    return resp
 
                 return side_effect
 
-            side_fn = self._run(make_side_effect(error_class, error_kwargs))
+            side_fn = self._run(make_side_effect(error_class, error_kwargs, mock_resp))
             self.agent.smart_client.chat.completions.create = AsyncMock(side_effect=side_fn)
 
             async def mock_sleep(t):

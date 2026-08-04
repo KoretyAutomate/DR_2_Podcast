@@ -194,7 +194,10 @@ class TestCrewKickoffGuarded:
         kickoff_mock = MagicMock()
         crew_mock = MagicMock()
         crew_mock.kickoff = kickoff_mock
-        crew_factory = lambda: crew_mock
+
+        def crew_factory():
+            return crew_mock
+
         task = SimpleNamespace(description="Short task", context=[])
         _crew_kickoff_guarded(
             crew_factory,

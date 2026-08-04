@@ -89,4 +89,4 @@ def synthesize(req: TTSRequest) -> Response:
         return Response(content=buf.read(), media_type="audio/wav")
     except Exception as e:
         logger.error(f"TTS failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e

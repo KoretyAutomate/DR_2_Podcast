@@ -450,8 +450,8 @@ def save_checkpoint(output_dir_path, phase_num, topic, language, pipeline_state)
     if ckpt_path.exists():
         try:
             existing = json.loads(ckpt_path.read_text())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("checkpoint unreadable, starting from empty: %s", exc)
 
     completed = existing.get("completed_phases", [])
     if phase_num not in completed:
@@ -509,9 +509,8 @@ def load_checkpoint(output_dir_path):
 
     # Deserialize pipeline_data within pipeline_state if present
     ps = data.get("pipeline_state", {})
-    if "deep_reports" in ps and isinstance(ps["deep_reports"], dict):
-        if "pipeline_data" in ps["deep_reports"]:
-            ps["deep_reports"]["pipeline_data"] = _deserialize_pipeline_data(ps["deep_reports"]["pipeline_data"])
+    if "deep_reports" in ps and isinstance(ps["deep_reports"], dict) and "pipeline_data" in ps["deep_reports"]:
+        ps["deep_reports"]["pipeline_data"] = _deserialize_pipeline_data(ps["deep_reports"]["pipeline_data"])
 
     return data
 
@@ -904,7 +903,9 @@ def check_tts_dependencies():
     try:
         import kokoro
 
-        logger.info("✓ Kokoro TTS dependencies verified")
+        # Reference the module: find_spec would not catch an installed-but-broken
+        # kokoro, and a broken kokoro is exactly what this check exists to catch.
+        logger.info("✓ Kokoro TTS dependencies verified (version %s)", getattr(kokoro, "__version__", "unknown"))
     except ImportError as e:
         logger.error(f"CRITICAL ERROR: Kokoro TTS not installed: {e}")
         logger.error("Install with: pip install kokoro>=0.9")
@@ -1968,9 +1969,7 @@ def _audit_requires_correction(audit_output: str) -> bool:
         return True
     if re.search(r"HIGH[\s_*\-]{0,4}severity", t, re.IGNORECASE):
         return True
-    if re.search(r"\(\s*HIGH\b", t):
-        return True
-    return False
+    return bool(re.search(r"\(\s*HIGH\b", t))
 
 
 def _run_script_correction(audit_output, polished_text, language, language_config, output_dir):
@@ -2040,8 +2039,8 @@ def _enforce_audit(audit_output, polished_text, sot_content, language, language_
                 f"- Fabricated-citation trigger: {det or 'none'}\n"
                 f"- Result: {'applied' if corrected else 'FAILED — kept original, manual review needed'}\n"
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("could not write ACCURACY_CORRECTIONS.md: %s", exc)
     return corrected
 
 
@@ -2111,8 +2110,8 @@ def _finalize_script(polished_text, polish_task, language, language_config, outp
         _grade = output_path(output_dir, "research/grade_synthesis.md")
         for _issue in validate_grade_consistency(script_text, str(_grade), str(_sot)):
             logger.warning(f"  GRADE_CHECK: {_issue}")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("GRADE consistency check skipped: %s", exc)
 
     logger.info("\nAdding reaction/emotion guidance to script...")
     script_text = _add_reaction_guidance(script_text, language_config)
@@ -2194,8 +2193,8 @@ def _run_audio_pipeline(script_text, output_dir, language_config):
                 duration_seconds = frames / float(rate)
                 duration_minutes = duration_seconds / 60
             logger.info(f"SUCCESS: Audio duration {duration_minutes:.2f} minutes")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("audio duration probe failed: %s", exc)
 
     return audio_file, duration_minutes
 
@@ -2623,8 +2622,8 @@ if __name__ == "__main__":
                 acc_content = audit_task.output.raw if hasattr(audit_task, "output") and audit_task.output else ""
                 if acc_content:
                     create_pdf("Accuracy Audit", acc_content, "accuracy_audit.pdf")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("accuracy-audit PDF generation failed: %s", exc)
 
             # TTS + BGM
             _run_audio_pipeline(script_text, new_output_dir, language_config)

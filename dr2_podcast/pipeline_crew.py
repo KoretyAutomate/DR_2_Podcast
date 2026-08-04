@@ -80,8 +80,8 @@ def _build_sot_injection_for_stage(
                 )
                 if m:
                     grade_text = m.group(1).strip()[:1000]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("GRADE section extraction failed: %s", exc)
         evidence_label = "EVIDENCE ASSESSMENT"
         return (
             f"\n\n[SOT Stage 2 \u2014 reduced for context budget]\n"
@@ -938,7 +938,7 @@ def display_workflow_plan(topic_name, language_config, output_dir):
         logger.info("       |-- %s", metadata["description"])
         if metadata["dependencies"]:
             deps_str = ", ".join(
-                ["Phase %s" % TASK_METADATA[d]["phase"] for d in metadata["dependencies"] if d in TASK_METADATA]
+                [f"Phase {TASK_METADATA[d]['phase']}" for d in metadata["dependencies"] if d in TASK_METADATA]
             )
             logger.info("          Dependencies: %s", deps_str)
         logger.info("")

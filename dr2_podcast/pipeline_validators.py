@@ -70,7 +70,7 @@ def check_speaker_alternation(text: str, max_run: int = 6, single_voice_ratio: f
         return ["NO_SPEAKER_LABELS: no canonical 'Host N:' turns found"]
     issues = []
     run = maxrun = 1
-    for a, b in zip(turns, turns[1:]):
+    for a, b in zip(turns, turns[1:], strict=False):
         run = run + 1 if a == b else 1
         maxrun = max(maxrun, run)
     if maxrun > max_run:
