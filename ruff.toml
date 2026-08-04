@@ -1,0 +1,149 @@
+# CANONICAL lint contract — the fallback for any repo without its own ruff.toml.
+#
+# A repo with no ruff.toml is linted against THIS file in ADVISORY mode (warns,
+# never blocks). Copy it into the repo and drain the backlog to zero to make it
+# blocking — that is the ratchet, per the article: warn first, error once clean.
+#
+# Limits mirror §② of
+# https://zenn.dev/singularity/articles/stopped-reviewing-my-code,
+# translated from ESLint to ruff:
+#
+#   max-lines-per-function: 60  ->  PLR0915 max-statements
+#   complexity: 20              ->  C901    max-complexity
+#   max-depth: 4                ->  PLR1702 max-nested-blocks
+#   max-params: 6               ->  PLR0913 max-args
+#
+# House rule carried over verbatim from the article: exceptions live HERE,
+# in config, with a reason. Never an inline `# noqa` — an inline suppression
+# is invisible to everyone who didn't already open that file.
+
+line-length = 120
+target-version = "py311"
+exclude = [
+    ".git", "__pycache__", ".venv", "venv", "node_modules",
+    "build", "dist", "output", "data", "archive",
+]
+
+[lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "B",        # flake8-bugbear
+    "S",        # flake8-bandit (security)
+    "SIM",      # flake8-simplify
+    "UP",       # pyupgrade
+    "C901",     # mccabe complexity
+    "PLR0913",  # too-many-arguments
+    "PLR0915",  # too-many-statements
+    # PLR1702 (too-many-nested-blocks, the `max-depth: 4` analogue) is
+    # deliberately NOT selected: it is preview-only in ruff 0.16, and listing
+    # it emits "has no effect because preview is not enabled" while silently
+    # enforcing nothing. Enabling `preview = true` to get it would also switch
+    # on every other unstable rule. Revisit when it stabilises; the
+    # max-nested-blocks value below is kept ready for that day.
+]
+
+[lint.mccabe]
+max-complexity = 20
+
+[lint.pylint]
+max-args = 6
+max-statements = 60
+max-nested-blocks = 4
+
+[lint.per-file-ignores]
+# pytest's bare `assert` IS the idiom — S101 would fire on every test.
+# Fixture passwords/tmp paths/magic numbers are fixtures, not findings.
+"**/tests/**" = ["S101", "S106", "S108", "PLR2004"]
+"**/test_*.py" = ["S101", "S106", "S108", "PLR2004"]
+# One-shot maintenance scripts: loose structure is acceptable by design.
+"**/scripts/**" = ["S101"]
+
+# ---------------------------------------------------------------------------
+# DR_2_Podcast exceptions. House rule: exceptions live HERE with a reason,
+# never as an inline `# noqa`. Each entry below states what was checked.
+# ---------------------------------------------------------------------------
+
+# E501 — measured 2026-08-03: after `ruff format` at line-length 120, ALL 168
+# remaining E501 hits are inside string LITERALS; zero are code. (Checked by
+# walking each file's AST and testing every flagged line for membership in a
+# Constant/JoinedStr node span.) The literals are the embedded HTML/CSS/JS of
+# the web UI, LLM prompt text, and test fixture prose — content where a wrap
+# either changes what is emitted (a CSS `url("data:image/svg+xml,...")` cannot
+# carry a newline) or silently alters the prompt the model receives. Code lines
+# stay wrapped by `ruff format`; this ignore is per-file, so a NEW file with
+# long code lines is still caught.
+"dr2_podcast/web/web_ui.py" = ["E501", "B008", "S105", "S603", "S607"]
+"dr2_podcast/prompt_strings.py" = ["E501"]
+"dr2_podcast/pipeline_crew.py" = ["E501"]
+"dr2_podcast/pipeline.py" = ["E501", "S311"]
+# pipeline_flow.py — PLR0913 on the Prefect @task/@flow signatures.
+#
+# These parameter lists are a framework contract, not an ordinary signature, on
+# two counts, both checked:
+#
+#  1. Cache key. Every phase is declared with cache_key_fn=_phase_cache_key, and
+#     that function looks its input up BY NAME: parameters.get("output_dir").
+#     Prefect passes the task's bound arguments as a dict, so folding the
+#     parameters into one object renames the key to whatever the object is
+#     called, every phase's cache key changes, and --resume silently stops
+#     matching prior runs. tests/test_pipeline_flow_helpers.py pins both halves
+#     of this — that each phase still uses _phase_cache_key and still takes
+#     output_dir as a named parameter.
+#
+#  2. Observability. Prefect records a task run's parameters and shows them per
+#     run. For an orchestrator that is the point: a failed phase shows the topic,
+#     language, target length and output dir that produced it. Collapsing 26
+#     named parameters into two opaque objects would render every task run as
+#     `cfg=<RunConfig object at 0x...>`.
+#
+# The bodies were NOT exempted: phase_1_research (89 statements, complexity 21)
+# and run_pipeline_flow (105 statements) were split into named helpers, and
+# C901/PLR0915 are clean here.
+"dr2_podcast/pipeline_flow.py" = ["E501", "PLR0913"]
+"dr2_podcast/pipeline_script.py" = ["E501"]
+"dr2_podcast/audio/engine.py" = ["E501", "S311"]
+"dr2_podcast/research/clinical.py" = ["E501"]
+"dr2_podcast/research/domain_classifier.py" = ["E501"]
+"dr2_podcast/tools/link_validator.py" = ["E501"]
+"tests/conftest.py" = ["E501"]
+
+# web_ui.py, beyond E501:
+#   B008 — `Depends(verify_credentials)` and a BaseModel default in a route
+#          signature ARE the FastAPI idiom; moving the call into the body
+#          breaks dependency injection.
+#   S105 — `secret_path: str = "./client_secret.json"` is a filesystem path.
+#          The rule fires on the field NAME. Renaming it would change the
+#          request contract the frontend posts against.
+#   S603/S607 — four subprocess calls, all argv LISTS with shell=False. Two run
+#          a literal ["git", ...] for the run-integrity banner; two run
+#          [PODCAST_ENV_PYTHON, "-m", "dr2_podcast.pipeline", ...] where the
+#          interpreter is a module constant. The topic reaches the child as a
+#          separate argv element, never through a shell.
+
+# S311 — random.choice over the BGM library and random.uniform for retry
+# backoff jitter. Neither selects a secret; a CSPRNG here buys nothing.
+
+# S310 — urlopen on f"https://api.telegram.org/bot{token}/sendMessage". The
+# scheme is a literal in the f-string, so no file:/custom scheme is reachable.
+"dr2_podcast/evaluation/telegram_report.py" = ["S310"]
+
+# S301 — a one-time migration that unpickles the user's OWN youtube_token.pickle
+# from disk and immediately deletes it, replacing it with JSON. Not untrusted
+# input; the pickle path is a module constant, not caller-supplied.
+"dr2_podcast/tools/upload_utils.py" = ["S301"]
+
+# S608 — lookup_study builds `WHERE ...` by joining code-owned predicate
+# fragments ("study_citation LIKE ? COLLATE NOCASE"). Every user value is bound
+# through a `?` placeholder in `params`; nothing user-supplied is interpolated
+# into the SQL text.
+"dr2_podcast/research/wwc_database.py" = ["S608"]
+
+# E402 — aivisspeech_smoke.py sets os.environ["TTS_ENGINE_JA"] and friends
+# BEFORE importing dr2_podcast.audio.engine, because config.py reads them at
+# import time. Hoisting the imports would make the smoke test read .env instead
+# of its own forced config, which is the one thing it must not do.
+"scripts_smoke/**" = ["E402", "S101"]
+
+# S311 in utils.py — retry backoff jitter, same reasoning as above.
+"dr2_podcast/utils.py" = ["S311"]
