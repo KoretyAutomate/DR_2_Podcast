@@ -15,6 +15,8 @@ Features:
 """
 
 import logging
+from dataclasses import dataclass
+
 import soundfile as sf
 from kokoro import KPipeline
 import torch
@@ -47,6 +49,23 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # AudioMixer — merged from audio_mixer.py (T4.1)
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class MixSettings:
+    """Tuning knobs for mix_podcast_pro.
+
+    NOTE: pre_roll_ms=0 or post_roll_ms=0 makes pydub's .fade(duration=0)
+    raise, and mix_podcast_pro's except falls back to the basic mixer while
+    still returning True. Production never sets them to zero.
+    """
+
+    pre_roll_ms: int = 4000
+    post_roll_ms: int = 6000
+    transition_positions_ms: list | None = None
+    voice_ducking_db: int = -20
+    transition_bump_db: int = -10
+    transition_duration_ms: int = 1500
 
 
 class AudioMixer:
@@ -102,12 +121,7 @@ class AudioMixer:
         voice_path: str,
         music_path: str,
         output_path: str,
-        pre_roll_ms: int = 4000,
-        post_roll_ms: int = 6000,
-        transition_positions_ms: list = None,
-        voice_ducking_db: int = -20,
-        transition_bump_db: int = -10,
-        transition_duration_ms: int = 1500,
+        settings: "MixSettings | None" = None,
     ) -> bool:
         """
         Pro-grade podcast mixing with BGM-only intro/outro and transition bumps.
@@ -118,6 +132,14 @@ class AudioMixer:
         3. TRANSITIONS: Brief BGM volume bumps at marked positions
         4. POST-ROLL: BGM fading up from ducked to full, then fading out
         """
+        s = settings or MixSettings()
+        pre_roll_ms = s.pre_roll_ms
+        post_roll_ms = s.post_roll_ms
+        transition_positions_ms = s.transition_positions_ms
+        voice_ducking_db = s.voice_ducking_db
+        transition_bump_db = s.transition_bump_db
+        transition_duration_ms = s.transition_duration_ms
+
         try:
             logger.info(f"Pro mixing: {voice_path} with {music_path}")
             logger.info(f"  Pre-roll: {pre_roll_ms}ms, Post-roll: {post_roll_ms}ms")
@@ -778,8 +800,10 @@ def post_process_audio(
             wav_path,
             music_path,
             mixed_path,
-            transition_positions_ms=transition_positions_ms or [],
-            voice_ducking_db=VOICE_DUCKING_DB,
+            MixSettings(
+                transition_positions_ms=transition_positions_ms or [],
+                voice_ducking_db=VOICE_DUCKING_DB,
+            ),
         )
 
         if success:
