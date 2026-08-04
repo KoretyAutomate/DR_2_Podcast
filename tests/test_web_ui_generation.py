@@ -12,6 +12,9 @@ import pytest
 
 from dr2_podcast.web import web_ui
 
+# A filesystem path, not a credential — named so S105 does not read it as one.
+_FAKE_CLIENT_JSON = "/tmp/client.json"
+
 
 class TestGenerationRequestFromTaskData:
     def test_maps_every_field(self):
@@ -29,7 +32,7 @@ class TestGenerationRequestFromTaskData:
                 "channel_mission": "mission",
                 "buzzsprout_api_key": "k",
                 "buzzsprout_account_id": "a",
-                "youtube_secret_path": "/tmp/secret.json",
+                "youtube_secret_path": _FAKE_CLIENT_JSON,
             }
         )
         assert req.topic == "Coffee"
@@ -44,7 +47,7 @@ class TestGenerationRequestFromTaskData:
         assert req.channel_mission == "mission"
         assert req.buzzsprout_api_key == "k"
         assert req.buzzsprout_account_id == "a"
-        assert req.youtube_secret_path == "/tmp/secret.json"
+        assert req.youtube_secret_path == _FAKE_CLIENT_JSON
 
     def test_optional_fields_default_when_absent(self):
         req = web_ui.GenerationRequest.from_task_data(
