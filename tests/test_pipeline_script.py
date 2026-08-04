@@ -111,7 +111,7 @@ class TestParseBlueprintInventory:
 
     def test_items_have_question_answer(self, sample_blueprint):
         inv = _parse_blueprint_inventory(sample_blueprint)
-        for act_label, items in inv.items():
+        for _act_label, items in inv.items():
             for it in items:
                 assert "question" in it
                 assert "answer" in it

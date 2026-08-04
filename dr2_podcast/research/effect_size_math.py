@@ -138,7 +138,6 @@ def calculate_effect(
     direction = "positive" if cohens_d > 0.01 else ("negative" if cohens_d < -0.01 else "null")
 
     # Human-readable interpretation
-    abs_d = abs(cohens_d)
     if direction == "null":
         interp = f"No meaningful effect detected (d = {cohens_d:.3f})"
     else:

@@ -122,7 +122,7 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
     # passthrough_flag: True = skip translate/audit, False = needs translate+audit,
     #                   "discussion_marker" = reassembly marker for Discussion section
     chunks = []
-    for sec_idx, (header, body) in enumerate(imrad_sections):
+    for _sec_idx, (header, body) in enumerate(imrad_sections):
         if header == "## 5. References":
             chunks.append((len(chunks), header, body, True))
             continue
@@ -132,7 +132,7 @@ def _translate_sot_pipelined(sot_content: str, language: str, language_config: d
         if header == "## 4. Discussion":
             sub_chunks = _split_at_subheaders(body)
             disc_parts = []
-            for sub_idx, (sub_hdr, sub_body) in enumerate(sub_chunks):
+            for _sub_idx, (sub_hdr, sub_body) in enumerate(sub_chunks):
                 if (not sub_body.strip() and not sub_hdr) or (len(sub_body.strip()) < 10 and not sub_hdr):
                     disc_parts.append((len(chunks), sub_hdr, sub_body, True))
                 else:

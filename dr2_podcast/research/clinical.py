@@ -28,6 +28,11 @@ import re
 import sqlite3
 import time
 import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dr2_podcast.pipeline_types import DeepResearchResult
+
 from dr2_podcast.utils import (
     strip_think_blocks,
     is_safe_url,

@@ -417,7 +417,6 @@ def phase_2_url_validation(output_dir: str):
     run_logger.info("=" * 70)
 
     all_urls: set = set()
-    url_pattern = re.compile(r"https?://[^\s\)\]\"\'<>]+")
 
     sources_file = _pipeline.output_path(output_dir_path, "research_sources.json")
     if sources_file.exists():
@@ -934,7 +933,6 @@ def run_pipeline_flow(
     sot_content = p1_result["sot_content"]
     sot_summary = p1_result["sot_summary"]
     evidence_quality = p1_result["evidence_quality"]
-    aff_candidates = p1_result["aff_candidates"]
 
     # -------------------------------------------------------------------
     # Phase 2: URL Validation (I/O-bound; errors non-fatal)
@@ -1011,7 +1009,6 @@ def run_pipeline_flow(
     # Save base descriptions for audit-loop feedback injection
     # -------------------------------------------------------------------
     script_task_base_description = script_task_ref.description
-    script_task_expected_output = script_task_ref.expected_output
     polish_base_desc = polish_task_base_description
     polish_expected = polish_task_expected_output
 
@@ -1033,7 +1030,6 @@ def run_pipeline_flow(
         translation_task_ref=translation_task_ref,
     )
     bp_inventory = p4_result["bp_inventory"]
-    blueprint_text = p4_result["blueprint_text"]
 
     # Inject blueprint checklist into script task description
     _pipeline._inject_blueprint_checklist(blueprint_task_ref, script_task_ref, script_task_base_description)

@@ -1749,7 +1749,7 @@ def _run_sectional_draft(
     accumulated_deficit = 0  # positive = under-budget (later sections get more)
     accumulated_surplus = 0  # positive = over-budget (later sections get less)
 
-    for i, section_cfg in enumerate(sections):
+    for _i, section_cfg in enumerate(sections):
         original_budget = section_cfg["word_budget"]
 
         # Redistribute deficit from prior sections (capped at 50% of original budget)
@@ -2125,7 +2125,7 @@ def _finalize_script(polished_text, polish_task, language, language_config, outp
 
 def _save_task_outputs(output_dir, task_output_list):
     """Save markdown outputs from a list of (label, source, filename) tuples."""
-    for label, source, filename in task_output_list:
+    for _label, source, filename in task_output_list:
         try:
             if isinstance(source, str):
                 content = source

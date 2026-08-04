@@ -147,7 +147,7 @@ def load_tasks():
 
                 # CLEANUP: Mark any interrupted "running" tasks as "cancelled" on startup
                 dirty = False
-                for tid, task in tasks_db.items():
+                for _tid, task in tasks_db.items():
                     if task["status"] in ["running", "uploading", "queued"]:
                         task["status"] = "cancelled"
                         task["error"] = "Server restarted during execution"
@@ -306,7 +306,7 @@ def backfill_topic_index():
 
         if not topic:
             # Fallback: check tasks_db
-            for tid, task in tasks_db.items():
+            for _tid, task in tasks_db.items():
                 if task.get("output_dir") == str(d):
                     topic = task.get("topic", "")
                     lang = task.get("language", "en")
@@ -319,7 +319,7 @@ def backfill_topic_index():
         access_level = "simple"
         pod_length = "long"
         pod_hosts = "random"
-        for tid, task in tasks_db.items():
+        for _tid, task in tasks_db.items():
             if task.get("output_dir") == str(d):
                 access_level = task.get("accessibility_level", "simple")
                 pod_length = task.get("podcast_length", "long")
@@ -1785,7 +1785,7 @@ def get_system_status(username: str = Depends(verify_credentials)):
     try:
         # Check for uncommitted changes (exclude untracked files — they don't affect run integrity)
         proc = subprocess.run(["git", "status", "--porcelain"], cwd=SCRIPT_DIR, capture_output=True, text=True)
-        tracked_changes = [l for l in proc.stdout.splitlines() if not l.startswith("??")]
+        tracked_changes = [line for line in proc.stdout.splitlines() if not line.startswith("??")]
         if tracked_changes:
             status["git_clean"] = False
             status["message"] = "⚠️ Uncommitted changes detected"
@@ -1985,7 +1985,6 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
 @app.post("/api/generate-intro")
 async def generate_intro(request: GenerateIntroRequest, username: str = Depends(verify_credentials)):
     """Generate a channel intro using the LLM (smart model with fast-model fallback)."""
-    lang_label = "Japanese" if request.language == "ja" else "English"
     name = request.channel_name or "our podcast"
     target = request.core_target or "curious listeners"
     mission = request.channel_mission or "turning science into everyday wisdom"
@@ -2346,9 +2345,9 @@ def run_podcast_generation(
             # Filter out pydantic caret-only lines and log prefixes for cleaner error display
             raw_lines = output_lines[-100:]
             clean_lines = []
-            for l in raw_lines:
+            for line in raw_lines:
                 # Strip log prefix (timestamp + level) to get the actual message
-                stripped = l.rstrip("\n")
+                stripped = line.rstrip("\n")
                 # Skip lines that are only carets/whitespace (pydantic error formatting)
                 msg = stripped.split(" - ERROR - ", 1)[-1] if " - ERROR - " in stripped else stripped
                 if msg.strip() and msg.strip().replace("^", "").strip():
@@ -2669,8 +2668,8 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     if proc.returncode != 0:
         raw_lines = output_lines[-100:]
         clean_lines = []
-        for l in raw_lines:
-            stripped = l.rstrip("\n")
+        for line in raw_lines:
+            stripped = line.rstrip("\n")
             msg = stripped.split(" - ERROR - ", 1)[-1] if " - ERROR - " in stripped else stripped
             if msg.strip() and msg.strip().replace("^", "").strip():
                 clean_lines.append(msg)

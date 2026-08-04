@@ -148,7 +148,7 @@ class TestFormatStudyCharacteristicsTable:
         ext2 = _make_extraction(pmid="111", title="Study A duplicate")
         result = _format_study_characteristics_table([ext1, ext2])
         # Only 1 data row (header + separator + 1 row)
-        lines = [l for l in result.strip().split("\n") if l.startswith("|")]
+        lines = [line for line in result.strip().split("\n") if line.startswith("|")]
         assert len(lines) == 3  # header, separator, 1 data row
 
 

@@ -107,7 +107,6 @@ def _check_already_implemented(lessons: list[dict]) -> tuple[list[dict], int]:
     removed = 0
     for lesson in lessons:
         obs = lesson.get("observation", "").lower()
-        phase = lesson.get("phase_group", "")
 
         # Extract key terms from observation (words > 4 chars)
         key_terms = [w for w in obs.split() if len(w) > 4]
@@ -155,12 +154,12 @@ async def _deduplicate_async(lessons: list[dict]) -> tuple[list[dict], int]:
 
     input_data = [
         {
-            "id": l["id"],
-            "phase_group": l.get("phase_group", ""),
-            "observation": l.get("observation", ""),
-            "evidence": l.get("evidence", ""),
+            "id": lesson["id"],
+            "phase_group": lesson.get("phase_group", ""),
+            "observation": lesson.get("observation", ""),
+            "evidence": lesson.get("evidence", ""),
         }
-        for l in lessons
+        for lesson in lessons
     ]
 
     try:
@@ -177,7 +176,7 @@ async def _deduplicate_async(lessons: list[dict]) -> tuple[list[dict], int]:
         # Handle markdown fences
         if text.startswith("```"):
             lines = text.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
+            lines = [line for line in lines if not line.strip().startswith("```")]
             text = "\n".join(lines)
 
         keep_ids = set(json.loads(text))
@@ -185,7 +184,7 @@ async def _deduplicate_async(lessons: list[dict]) -> tuple[list[dict], int]:
         logger.warning("Dedup LLM call failed, keeping all: %s", e)
         return lessons, 0
 
-    remaining = [l for l in lessons if l["id"] in keep_ids]
+    remaining = [lesson for lesson in lessons if lesson["id"] in keep_ids]
     removed = len(lessons) - len(remaining)
     return remaining, removed
 

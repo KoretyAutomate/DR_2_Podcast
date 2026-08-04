@@ -613,7 +613,7 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
                 logger.warning(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
         buffer_text = ""
 
-    for line_num, line in enumerate(lines, 1):
+    for _line_num, line in enumerate(lines, 1):
         line = line.strip()
         if not line:
             continue

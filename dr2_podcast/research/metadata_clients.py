@@ -481,7 +481,7 @@ class CrossrefClient:
             if update.get("type", "").lower() == "retraction":
                 return True
         # Also check relation field
-        for rel in raw.get("relation", {}).get("is-retracted-by", []):
+        for _rel in raw.get("relation", {}).get("is-retracted-by", []):
             return True
         return False
 

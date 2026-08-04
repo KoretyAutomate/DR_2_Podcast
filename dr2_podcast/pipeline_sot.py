@@ -260,7 +260,6 @@ def _build_social_science_sot(
     out.append("\n## 4. Results\n")
     out.append("### 4.1 Study Characteristics\n")
     if all_extractions:
-        has_metadata = any(getattr(ext, "paper_metadata", None) for ext in all_extractions)
         rows = [
             "| # | Study | Design | N | Setting | Demographics | Effect Size | Follow-up | Tier |",
             "|---|-------|--------|---|---------|--------------|-------------|-----------|------|",

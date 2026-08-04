@@ -923,7 +923,7 @@ def display_workflow_plan(topic_name, language_config, output_dir):
     logger.info("-" * 70)
 
     total_duration = 0
-    for task_name, metadata in TASK_METADATA.items():
+    for _task_name, metadata in TASK_METADATA.items():
         phase = metadata["phase"]
         name = metadata["name"]
         duration = metadata["estimated_duration_min"]

@@ -132,7 +132,6 @@ class TestCleanScriptForTTS:
 
 class TestChunkJapaneseText:
     def test_splits_at_punctuation(self):
-        text = "first sentence here.second one."
         # Use Japanese punctuation
         text_jp = "first sentence here\u3002second one\u3002"
         chunks = _chunk_japanese_text(text_jp, max_chars=80)

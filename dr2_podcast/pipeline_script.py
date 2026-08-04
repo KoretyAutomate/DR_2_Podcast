@@ -308,7 +308,7 @@ def _deduplicate_script(script_text: str, language_config: dict) -> str:
     for start in range(len(non_empty) - WINDOW_SIZE + 1):
         block = tuple(non_empty[start + j][1] for j in range(WINDOW_SIZE))
         # Skip blocks that are only markers/annotations
-        if all(l.startswith("[TRANSITION]") or l.startswith("[INTRO_END]") or l.startswith("## [") for l in block):
+        if all(bl.startswith("[TRANSITION]") or bl.startswith("[INTRO_END]") or bl.startswith("## [") for bl in block):
             continue
         if block in seen_blocks:
             first_pos = seen_blocks[block]
@@ -350,7 +350,6 @@ def _deduplicate_script(script_text: str, language_config: dict) -> str:
     result = "\n".join(result_lines)
     removed_count = len(duplicate_line_indices)
     removed_pct = removed_count / len(lines) * 100 if lines else 0
-    length_unit = language_config.get("length_unit", "chars")
     logger.info("  Deduplication: removed %d duplicate lines (%.0f%% of script)", removed_count, removed_pct)
     if removed_pct > 15:
         logger.warning("  Expansion produced %.0f%% duplicate content -- removed", removed_pct)
@@ -568,10 +567,8 @@ def _generate_section(
         (section_text, word_count, deficit) where deficit is the shortfall
         from the budget (0 if at or over budget).
     """
-    section_id = section_config["section_id"]
     budget = section_config["word_budget"]
     length_unit = section_config["length_unit"]
-    language = "ja" if length_unit == "chars" else "en"
 
     # Sub-section large JA sections into smaller calls
     if length_unit == "chars" and budget > _JA_SUBSECTION_THRESHOLD:

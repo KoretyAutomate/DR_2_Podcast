@@ -96,7 +96,7 @@ class TestDiscussionDedup:
 
         imrad_sections = _split_sot_imrad(sot)
         chunks = []
-        for sec_idx, (header, body) in enumerate(imrad_sections):
+        for _sec_idx, (header, body) in enumerate(imrad_sections):
             if header == "## 5. References":
                 chunks.append((len(chunks), header, body, True))
                 continue
@@ -106,7 +106,7 @@ class TestDiscussionDedup:
             if header == "## 4. Discussion":
                 sub_chunks = _split_at_subheaders(body)
                 disc_parts = []
-                for sub_idx, (sub_hdr, sub_body) in enumerate(sub_chunks):
+                for _sub_idx, (sub_hdr, sub_body) in enumerate(sub_chunks):
                     if (not sub_body.strip() and not sub_hdr) or (len(sub_body.strip()) < 10 and not sub_hdr):
                         disc_parts.append((len(chunks), sub_hdr, sub_body, True))
                     else:
