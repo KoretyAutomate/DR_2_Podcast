@@ -101,10 +101,13 @@ def _section_config(section_id, budget, length_unit, *, checklist=True):
     }
 
 
-def _run(fn, cfg, previous_lines, model, language_config, *, channel_intro="", target_min=30):
+def _run(fn, cfg, previous_lines, model, *, channel_intro="", target_min=30):
+    # The fake model already carries the language config it was built with;
+    # taking it from there keeps this helper within the argument limit and
+    # removes the chance of the two disagreeing.
     deps = ps.SectionGenDeps(
         call_smart_model=model,
-        language_config=language_config,
+        language_config=model.language_config,
         session_roles=ROLES,
         topic_name="Coffee and productivity",
         channel_intro=channel_intro,
@@ -126,7 +129,7 @@ def _cases() -> dict:
     for sid in ("opening", "evidence", "synthesis", "closing"):
         model = FakeModel(EN_CFG, 300)
         out[f"en_{sid}"] = _run(
-            ps._generate_section, _section_config(sid, 300, "words"), ["Host 1: prior line."], model, EN_CFG
+            ps._generate_section, _section_config(sid, 300, "words"), ["Host 1: prior line."], model
         )
 
     # opening with and without a channel intro (different directive text)
@@ -136,7 +139,6 @@ def _cases() -> dict:
         _section_config("opening", 300, "words"),
         [],
         model,
-        EN_CFG,
         channel_intro="Welcome to the Deep Research Podcast.",
     )
 
@@ -147,14 +149,11 @@ def _cases() -> dict:
         _section_config("evidence", 300, "words", checklist=False),
         ["Host 2: earlier."],
         model,
-        EN_CFG,
     )
 
     # first section: no previous lines -> the "(This is the first section...)" lead-in
     model = FakeModel(EN_CFG, 300)
-    out["en_no_previous_lines"] = _run(
-        ps._generate_section, _section_config("evidence", 300, "words"), [], model, EN_CFG
-    )
+    out["en_no_previous_lines"] = _run(ps._generate_section, _section_config("evidence", 300, "words"), [], model)
 
     # long previous_lines: only the last 5 are used as lead-in
     model = FakeModel(EN_CFG, 300)
@@ -163,24 +162,21 @@ def _cases() -> dict:
         _section_config("evidence", 300, "words"),
         [f"Host 1: line {i}." for i in range(12)],
         model,
-        EN_CFG,
     )
 
     # under-floor first attempt -> retry with feedback appended (2 model calls)
     model = FakeModel(EN_CFG, 400, yield_ratio=0.10)
-    out["en_retry_then_pass"] = _run(ps._generate_section, _section_config("evidence", 400, "words"), [], model, EN_CFG)
+    out["en_retry_then_pass"] = _run(ps._generate_section, _section_config("evidence", 400, "words"), [], model)
 
     # both attempts under floor -> loop exhausts, deficit is non-zero
     model = FakeModel(EN_CFG, 400, yield_ratio=0.10, escalate_on_retry=False)
-    out["en_retry_still_short"] = _run(
-        ps._generate_section, _section_config("evidence", 400, "words"), [], model, EN_CFG
-    )
+    out["en_retry_still_short"] = _run(ps._generate_section, _section_config("evidence", 400, "words"), [], model)
 
     # --- Japanese ------------------------------------------------------------
     # below the sub-section threshold -> single call
     model = FakeModel(JA_CFG, 2000)
     out["ja_below_threshold"] = _run(
-        ps._generate_section, _section_config("evidence", 2000, "chars"), ["Host 1: 前の行。"], model, JA_CFG
+        ps._generate_section, _section_config("evidence", 2000, "chars"), ["Host 1: 前の行。"], model
     )
 
     # exactly at the threshold -> still a single call (boundary is strict >)
@@ -190,7 +186,6 @@ def _cases() -> dict:
         _section_config("evidence", ps._JA_SUBSECTION_THRESHOLD, "chars"),
         [],
         model,
-        JA_CFG,
     )
 
     # one over the threshold -> sub-split path
@@ -200,13 +195,12 @@ def _cases() -> dict:
         _section_config("evidence", ps._JA_SUBSECTION_THRESHOLD + 1, "chars"),
         [],
         model,
-        JA_CFG,
     )
 
     # large budget -> several sub-parts, checklist distributed round-robin
     model = FakeModel(JA_CFG, 12000)
     out["ja_subsplit_many_parts"] = _run(
-        ps._generate_section, _section_config("evidence", 12000, "chars"), ["Host 1: 前。"], model, JA_CFG
+        ps._generate_section, _section_config("evidence", 12000, "chars"), ["Host 1: 前。"], model
     )
 
     # sub-split opening: channel_intro must reach part 0 only
@@ -216,7 +210,6 @@ def _cases() -> dict:
         _section_config("opening", 9000, "chars"),
         [],
         model,
-        JA_CFG,
         channel_intro="ディープリサーチポッドキャストへようこそ。",
     )
 
@@ -227,7 +220,6 @@ def _cases() -> dict:
         _section_config("evidence", 2000, "chars"),
         [],
         model,
-        JA_CFG,
         target_min=10,
     )
 

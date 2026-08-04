@@ -42,6 +42,7 @@ from dr2_podcast.utils import (
     safe_int,
     safe_str,
     async_call_smart,
+    SmartCallOptions,
     safe_message_text,
     QWEN3_NO_THINK_EXTRA_BODY,
 )
@@ -859,7 +860,11 @@ class ResearchAgent:
         Delegates to the shared async_call_smart() helper in utils.py.
         """
         return await async_call_smart(
-            self.smart_client, self.smart_model, system, user, max_tokens=max_tokens, temperature=temperature
+            self.smart_client,
+            self.smart_model,
+            system,
+            user,
+            SmartCallOptions(max_tokens=max_tokens, temperature=temperature),
         )
 
     def _parse_json_queries(self, raw: str) -> list[ResearchQuery]:

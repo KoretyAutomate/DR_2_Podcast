@@ -20,7 +20,7 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 from dr2_podcast.config import SMART_MODEL, SMART_BASE_URL
-from dr2_podcast.utils import async_call_smart
+from dr2_podcast.utils import async_call_smart, SmartCallOptions
 
 logger = logging.getLogger(__name__)
 
@@ -168,8 +168,7 @@ async def _deduplicate_async(lessons: list[dict]) -> tuple[list[dict], int]:
             model=SMART_MODEL,
             system=_DEDUP_SYSTEM,
             user=json.dumps(input_data, ensure_ascii=False),
-            max_tokens=512,
-            temperature=0.1,
+            options=SmartCallOptions(max_tokens=512, temperature=0.1),
         )
 
         text = raw.strip()

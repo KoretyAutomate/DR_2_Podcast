@@ -14,7 +14,7 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 from dr2_podcast.config import SMART_MODEL, SMART_BASE_URL
-from dr2_podcast.utils import async_call_smart
+from dr2_podcast.utils import async_call_smart, SmartCallOptions
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +65,7 @@ async def _generate_lessons_async(scorecard: dict) -> list[dict]:
         model=SMART_MODEL,
         system=_SYSTEM_PROMPT,
         user=user_msg,
-        max_tokens=1024,
-        temperature=0.3,
+        options=SmartCallOptions(max_tokens=1024, temperature=0.3),
     )
 
     # Parse JSON from response — handle markdown fences

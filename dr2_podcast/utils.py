@@ -6,6 +6,7 @@ import logging
 import random
 import re
 import socket
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
@@ -165,7 +166,26 @@ def safe_str(v):
 _utils_logger = logging.getLogger(__name__)
 
 
-async def async_call_smart(client, model, system, user, max_tokens=2048, temperature=0.3, timeout=300, no_think=True):
+@dataclass(frozen=True)
+class SmartCallOptions:
+    """Sampling knobs for async_call_smart.
+
+    Grouped into one object so the call signature stays within the argument
+    limit. timeout and no_think have never been overridden by a caller; they
+    live here rather than as module constants so that a caller which needs to
+    still can.
+    """
+
+    max_tokens: int = 2048
+    temperature: float = 0.3
+    timeout: int = 300
+    no_think: bool = True
+
+
+_DEFAULT_SMART_CALL_OPTIONS = SmartCallOptions()
+
+
+async def async_call_smart(client, model, system, user, options: SmartCallOptions | None = None):
     """Shared async LLM call with retry logic for smart model.
 
     - Non-transient fast-fail (BadRequestError, AuthenticationError)
@@ -176,17 +196,18 @@ async def async_call_smart(client, model, system, user, max_tokens=2048, tempera
     """
     import openai
 
+    opts = options or _DEFAULT_SMART_CALL_OPTIONS
     create_kwargs = dict(
         model=model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        max_tokens=max_tokens,
-        temperature=temperature,
-        timeout=timeout,
+        max_tokens=opts.max_tokens,
+        temperature=opts.temperature,
+        timeout=opts.timeout,
     )
-    if no_think:
+    if opts.no_think:
         create_kwargs["extra_body"] = QWEN3_NO_THINK_EXTRA_BODY
 
     max_retries = 3
