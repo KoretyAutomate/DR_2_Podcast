@@ -10,8 +10,6 @@ Existing coverage was two cases (empty list, no clients).
 
 import asyncio
 
-import pytest
-
 from dr2_podcast.research.metadata_clients import enrich_papers_metadata
 
 
