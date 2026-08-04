@@ -823,6 +823,74 @@ class FastWorker:
 # --- Smart Model: The Researcher Agent ---
 
 
+class _RecordPool:
+    """Accumulates WideNetRecords, deduplicating as they arrive.
+
+    A record is a duplicate if its PMID, its URL, or its title prefix has been
+    seen before. Both Step 2 cascades (PubMed and OpenAlex/ERIC) used to carry
+    these three sets and the same skip-then-add dance inline at four sites each.
+    """
+
+    TITLE_KEY_LEN = 80
+
+    def __init__(self):
+        self.records: list[WideNetRecord] = []
+        self.seen_pmids: set = set()
+        self.seen_urls: set = set()
+        self.seen_titles: set = set()
+
+    def is_duplicate(self, *, pmid=None, url=None, title_key=None) -> bool:
+        return bool(
+            (pmid and pmid in self.seen_pmids)
+            or (url and url in self.seen_urls)
+            or (title_key and title_key in self.seen_titles)
+        )
+
+    def add(self, record: WideNetRecord, *, title_key=None) -> None:
+        """Record the identifiers, then append. Callers check is_duplicate first."""
+        if record.pmid:
+            self.seen_pmids.add(record.pmid)
+        if record.url:
+            self.seen_urls.add(record.url)
+        if title_key:
+            self.seen_titles.add(title_key)
+        self.records.append(record)
+
+    @classmethod
+    def title_key(cls, title: str) -> str:
+        return (title or "").lower().strip()[: cls.TITLE_KEY_LEN]
+
+
+def _add_pubmed_articles(pool: _RecordPool, articles: list, tier_num: int, log) -> int:
+    """Append the non-duplicate PubMed articles to the pool. Returns how many."""
+    added = 0
+    for art in articles:
+        pmid = art.get("pmid", "")
+        url = art.get("url", "")
+        if pool.is_duplicate(pmid=pmid, url=url):
+            continue
+        pool.add(
+            WideNetRecord(
+                pmid=pmid,
+                doi=art.get("doi"),
+                title=art.get("title", ""),
+                abstract=art.get("abstract", ""),
+                study_type=art.get("study_type", "other"),
+                sample_size=None,
+                primary_objective=None,
+                year=art.get("year"),
+                journal=art.get("journal"),
+                authors=art.get("authors"),
+                url=url,
+                source_db="pubmed",
+                research_tier=tier_num,
+            )
+        )
+        added += 1
+        log("[STUDY_FOUND]")
+    return added
+
+
 class ResearchAgent:
     """
     A smart-model-driven researcher that iteratively delegates to workers.
@@ -1623,19 +1691,30 @@ class ResearchAgent:
         if getattr(self, "_domain", "clinical") == "social_science":
             return await self._tiered_search_social(plan, log)
         log(f"    [Step 2] Tiered cascade search ({plan.role})...")
-        all_records: list[WideNetRecord] = []
-        seen_pmids: set = set()
-        seen_urls: set = set()
-        highest_tier = 0
 
-        pubmed = self.search.pubmed
-
+        pool = _RecordPool()
         tier_configs = [
             (1, plan.tier1, "Humans[MeSH] AND English[la]"),
             (2, plan.tier2, "Humans[MeSH]"),
             (3, plan.tier3, ""),
         ]
 
+        highest_tier = await self._run_pubmed_cascade(pool, tier_configs, log)
+        await self._add_scholar_records(pool, plan, log)
+
+        # Zero-result fallback: if all tiers returned nothing, retry with
+        # intervention-only queries (no outcome/population AND clause) to cast a
+        # wider net — let Step 3 screening do the filtering.
+        if not pool.records:
+            await self._run_pubmed_fallback(pool, tier_configs, log)
+
+        log(f"    [Step 2] Total pool: {len(pool.records)} records (highest tier: {highest_tier})")
+        await self._apply_fast_typing(pool.records, log)
+        return pool.records[:500], highest_tier
+
+    async def _run_pubmed_cascade(self, pool, tier_configs, log) -> int:
+        """Tier 1 -> 2 -> 3, stopping once the pool reaches the threshold."""
+        highest_tier = 0
         for tier_num, tier_kw, filters in tier_configs:
             if not tier_kw.intervention:
                 log(f"    [Tier {tier_num}] No intervention keywords — skipping")
@@ -1648,176 +1727,110 @@ class ResearchAgent:
 
             log(f"    [Tier {tier_num}] Query: {query[:140]}...")
             try:
-                articles = await pubmed.search_extended(query, max_results=200)
-                added = 0
-                for art in articles:
-                    pmid = art.get("pmid", "")
-                    url = art.get("url", "")
-                    if pmid and pmid in seen_pmids:
-                        continue
-                    if url and url in seen_urls:
-                        continue
-                    if pmid:
-                        seen_pmids.add(pmid)
-                    if url:
-                        seen_urls.add(url)
-                    all_records.append(
-                        WideNetRecord(
-                            pmid=pmid,
-                            doi=art.get("doi"),
-                            title=art.get("title", ""),
-                            abstract=art.get("abstract", ""),
-                            study_type=art.get("study_type", "other"),
-                            sample_size=None,
-                            primary_objective=None,
-                            year=art.get("year"),
-                            journal=art.get("journal"),
-                            authors=art.get("authors"),
-                            url=url,
-                            source_db="pubmed",
-                            research_tier=tier_num,
-                        )
-                    )
-                    added += 1
-                    log("[STUDY_FOUND]")
-                log(f"    [Tier {tier_num}] +{added} new records (pool: {len(all_records)})")
+                articles = await self.search.pubmed.search_extended(query, max_results=200)
+                added = _add_pubmed_articles(pool, articles, tier_num, log)
+                log(f"    [Tier {tier_num}] +{added} new records (pool: {len(pool.records)})")
             except Exception as e:
                 logger.error(f"Tier {tier_num} PubMed search failed: {e}")
 
             highest_tier = tier_num
 
-            if len(all_records) >= TIER_CASCADE_THRESHOLD:
+            if len(pool.records) >= TIER_CASCADE_THRESHOLD:
                 log(f"    [Tier {tier_num}] Threshold ({TIER_CASCADE_THRESHOLD}) reached — stopping cascade")
                 break
+        return highest_tier
 
-        # Scholar search — Tier 1 plain-text keywords always
-        scholar_query = " ".join(plan.tier1.intervention + plan.tier1.outcome)
-        if scholar_query.strip():
+    async def _run_pubmed_fallback(self, pool, tier_configs, log) -> None:
+        """Intervention-only retry, used only when the cascade found nothing."""
+        log("    [Step 2] Zero results from cascade — retrying with intervention-only queries")
+        for tier_num, tier_kw, filters in tier_configs:
+            if not tier_kw.intervention:
+                continue
+            intervention_only = TierKeywords(
+                intervention=tier_kw.intervention,
+                outcome=[],
+                population=[],
+                rationale="fallback-intervention-only",
+            )
+            query = self._build_tier_query(intervention_only, filters)
+            if not query:
+                continue
+            log(f"    [Tier {tier_num} fallback] Query: {query[:140]}...")
             try:
-                async with SearxngClient() as client:
-                    if await client.validate_connection():
-                        raw = await client.search(scholar_query, engines=["google scholar"], num_results=100)
-                        scholar_added = 0
-                        for r in raw:
-                            url = r.get("url", "") if isinstance(r, dict) else getattr(r, "url", "")
-                            if not url or url in seen_urls or is_junk_url(url):
-                                continue
-                            seen_urls.add(url)
-                            title = r.get("title", "") if isinstance(r, dict) else getattr(r, "title", "")
-                            snippet = r.get("content", "") if isinstance(r, dict) else getattr(r, "snippet", "")
-                            all_records.append(
-                                WideNetRecord(
-                                    pmid=None,
-                                    doi=None,
-                                    title=title,
-                                    abstract=snippet,
-                                    study_type="other",
-                                    sample_size=None,
-                                    primary_objective=None,
-                                    year=None,
-                                    journal=None,
-                                    authors=None,
-                                    url=url,
-                                    source_db="scholar",
-                                    research_tier=1,
-                                )
-                            )
-                            scholar_added += 1
-                            log("[STUDY_FOUND]")
-                        log(f"    [Scholar] +{scholar_added} records (Tier 1 keywords)")
+                articles = await self.search.pubmed.search_extended(query, max_results=200)
+                _add_pubmed_articles(pool, articles, tier_num, log)
             except Exception as e:
-                logger.error(f"Google Scholar search failed: {e}")
+                logger.error(f"Tier {tier_num} fallback search failed: {e}")
+            if len(pool.records) >= TIER_CASCADE_THRESHOLD:
+                break
+        log(f"    [Step 2] Fallback pool: {len(pool.records)} records")
 
-        # Zero-result fallback: if all tiers returned nothing, retry with
-        # intervention-only query (no outcome/population AND clause) to cast a
-        # wider net — let Step 3 screening do the filtering.
-        if not all_records:
-            log("    [Step 2] Zero results from cascade — retrying with intervention-only queries")
-            for tier_num, tier_kw, filters in tier_configs:
-                if not tier_kw.intervention:
-                    continue
-                intervention_only = TierKeywords(
-                    intervention=tier_kw.intervention,
-                    outcome=[],
-                    population=[],
-                    rationale="fallback-intervention-only",
-                )
-                query = self._build_tier_query(intervention_only, filters)
-                if not query:
-                    continue
-                log(f"    [Tier {tier_num} fallback] Query: {query[:140]}...")
-                try:
-                    articles = await pubmed.search_extended(query, max_results=200)
-                    for art in articles:
-                        pmid = art.get("pmid", "")
-                        url = art.get("url", "")
-                        if pmid and pmid in seen_pmids:
-                            continue
-                        if url and url in seen_urls:
-                            continue
-                        if pmid:
-                            seen_pmids.add(pmid)
-                        if url:
-                            seen_urls.add(url)
-                        all_records.append(
-                            WideNetRecord(
-                                pmid=pmid,
-                                doi=art.get("doi"),
-                                title=art.get("title", ""),
-                                abstract=art.get("abstract", ""),
-                                study_type=art.get("study_type", "other"),
-                                sample_size=None,
-                                primary_objective=None,
-                                year=art.get("year"),
-                                journal=art.get("journal"),
-                                authors=art.get("authors"),
-                                url=url,
-                                source_db="pubmed",
-                                research_tier=tier_num,
-                            )
+    async def _add_scholar_records(self, pool, plan: TieredSearchPlan, log) -> None:
+        """Google Scholar supplement — Tier 1 plain-text keywords always."""
+        scholar_query = " ".join(plan.tier1.intervention + plan.tier1.outcome)
+        if not scholar_query.strip():
+            return
+        try:
+            async with SearxngClient() as client:
+                if not await client.validate_connection():
+                    return
+                raw = await client.search(scholar_query, engines=["google scholar"], num_results=100)
+                scholar_added = 0
+                for r in raw:
+                    url = r.get("url", "") if isinstance(r, dict) else getattr(r, "url", "")
+                    if not url or url in pool.seen_urls or is_junk_url(url):
+                        continue
+                    title = r.get("title", "") if isinstance(r, dict) else getattr(r, "title", "")
+                    snippet = r.get("content", "") if isinstance(r, dict) else getattr(r, "snippet", "")
+                    pool.add(
+                        WideNetRecord(
+                            pmid=None,
+                            doi=None,
+                            title=title,
+                            abstract=snippet,
+                            study_type="other",
+                            sample_size=None,
+                            primary_objective=None,
+                            year=None,
+                            journal=None,
+                            authors=None,
+                            url=url,
+                            source_db="scholar",
+                            research_tier=1,
                         )
-                        log("[STUDY_FOUND]")
-                except Exception as e:
-                    logger.error(f"Tier {tier_num} fallback search failed: {e}")
-                if len(all_records) >= TIER_CASCADE_THRESHOLD:
-                    break
-            log(f"    [Step 2] Fallback pool: {len(all_records)} records")
+                    )
+                    scholar_added += 1
+                    log("[STUDY_FOUND]")
+                log(f"    [Scholar] +{scholar_added} records (Tier 1 keywords)")
+        except Exception as e:
+            logger.error(f"Google Scholar search failed: {e}")
 
-        log(f"    [Step 2] Total pool: {len(all_records)} records (highest tier: {highest_tier})")
-
-        # Fast-model screening for study_type / sample_size on "other" records
-        needs_screening = [r for r in all_records if r.study_type == "other" and r.abstract]
-        if needs_screening and self.fast_worker:
-            log(f"    [Step 2] Fast-model typing {len(needs_screening)} abstracts...")
-            screened = await self._fast_screen_abstracts(needs_screening)
-            screening_map = {id(r): s for r, s in zip(needs_screening, screened, strict=True)}
-            for r in all_records:
-                if id(r) in screening_map:
-                    s = screening_map[id(r)]
-                    if s.get("study_type"):
-                        r.study_type = s["study_type"]
-                    if s.get("sample_size"):
-                        r.sample_size = s["sample_size"]
-                    if s.get("primary_objective"):
-                        r.primary_objective = s["primary_objective"]
-
-        return all_records[:500], highest_tier
+    async def _apply_fast_typing(self, records: list, log) -> None:
+        """Fast-model screening for study_type / sample_size on "other" records."""
+        needs_screening = [r for r in records if r.study_type == "other" and r.abstract]
+        if not (needs_screening and self.fast_worker):
+            return
+        log(f"    [Step 2] Fast-model typing {len(needs_screening)} abstracts...")
+        screened = await self._fast_screen_abstracts(needs_screening)
+        screening_map = {id(r): s for r, s in zip(needs_screening, screened, strict=True)}
+        for r in records:
+            if id(r) in screening_map:
+                s = screening_map[id(r)]
+                if s.get("study_type"):
+                    r.study_type = s["study_type"]
+                if s.get("sample_size"):
+                    r.sample_size = s["sample_size"]
+                if s.get("primary_objective"):
+                    r.primary_objective = s["primary_objective"]
 
     async def _tiered_search_social(self, plan: TieredSearchPlan, log=logger.info) -> tuple:
         """Step 2: Search OpenAlex + ERIC + Scholar for social science topics."""
         log(f"    [Step 2] Social science search ({plan.role})...")
-        all_records: list[WideNetRecord] = []
-        seen_titles: set = set()
-        seen_urls: set = set()
+
+        pool = _RecordPool()
         highest_tier = 0
 
-        tier_configs = [
-            (1, plan.tier1),
-            (2, plan.tier2),
-            (3, plan.tier3),
-        ]
-
-        for tier_num, tier_kw in tier_configs:
+        for tier_num, tier_kw in [(1, plan.tier1), (2, plan.tier2), (3, plan.tier3)]:
             terms = tier_kw.intervention + tier_kw.outcome
             query = " ".join(terms[:5])
             if not query.strip():
@@ -1825,158 +1838,99 @@ class ResearchAgent:
                 continue
 
             log(f"    [Tier {tier_num}] Query: {query[:140]}...")
-
-            # OpenAlex search
-            try:
-                oa_results = await self._openalex.search_works(query, per_page=50)
-                added = 0
-                for oa in oa_results:
-                    title = oa.get("title", "") or ""
-                    oa_doi = oa.get("doi") or ""
-                    url = ("https://doi.org/" + oa_doi) if oa_doi else ""
-                    if not title and not url:
-                        continue
-                    title_key = title.lower().strip()[:80]
-                    if title_key and title_key in seen_titles:
-                        continue
-                    if url and url in seen_urls:
-                        continue
-                    if title_key:
-                        seen_titles.add(title_key)
-                    if url:
-                        seen_urls.add(url)
-                    pri_loc = oa.get("primary_location")
-                    journal_name = None
-                    if isinstance(pri_loc, dict):
-                        src = pri_loc.get("source")
-                        if isinstance(src, dict):
-                            journal_name = src.get("display_name")
-                    all_records.append(
-                        WideNetRecord(
-                            pmid=None,
-                            doi=oa_doi or None,
-                            title=title,
-                            abstract=oa.get("abstract_text", "") or "",
-                            study_type=oa.get("type", "other"),
-                            sample_size=None,
-                            primary_objective=None,
-                            year=oa.get("publication_year"),
-                            journal=journal_name,
-                            authors=None,
-                            url=url,
-                            source_db="openalex",
-                            research_tier=tier_num,
-                        )
-                    )
-                    added += 1
-                    log("[STUDY_FOUND]")
-                log(f"    [Tier {tier_num}] OpenAlex: +{added} records")
-            except Exception as e:
-                logger.error(f"Tier {tier_num} OpenAlex search failed: {e}")
-
-            # ERIC search
-            try:
-                eric_results = await self._eric.search(query, max_results=30)
-                added = 0
-                for er in eric_results:
-                    title = er.get("title", "")
-                    url = er.get("url", "")
-                    title_key = title.lower().strip()[:80]
-                    if title_key and title_key in seen_titles:
-                        continue
-                    if url and url in seen_urls:
-                        continue
-                    if title_key:
-                        seen_titles.add(title_key)
-                    if url:
-                        seen_urls.add(url)
-                    er_authors = er.get("author", [])
-                    author_str = ", ".join(er_authors) if er_authors else None
-                    all_records.append(
-                        WideNetRecord(
-                            pmid=None,
-                            doi=None,
-                            title=title,
-                            abstract=er.get("description", ""),
-                            study_type="other",
-                            sample_size=None,
-                            primary_objective=None,
-                            year=er.get("year"),
-                            journal=er.get("source", ""),
-                            authors=author_str,
-                            url=url,
-                            source_db="eric",
-                            research_tier=tier_num,
-                        )
-                    )
-                    added += 1
-                    log("[STUDY_FOUND]")
-                log(f"    [Tier {tier_num}] ERIC: +{added} records")
-            except Exception as e:
-                logger.error(f"Tier {tier_num} ERIC search failed: {e}")
+            await self._add_openalex_records(pool, query, tier_num, log)
+            await self._add_eric_records(pool, query, tier_num, log)
 
             highest_tier = tier_num
-            if len(all_records) >= TIER_CASCADE_THRESHOLD:
+            if len(pool.records) >= TIER_CASCADE_THRESHOLD:
                 log(f"    [Tier {tier_num}] Threshold ({TIER_CASCADE_THRESHOLD}) reached — stopping cascade")
                 break
 
-        # Scholar search — same as clinical
-        scholar_query = " ".join(plan.tier1.intervention + plan.tier1.outcome)
-        if scholar_query.strip():
-            try:
-                async with SearxngClient() as client:
-                    if await client.validate_connection():
-                        raw = await client.search(scholar_query, engines=["google scholar"], num_results=100)
-                        scholar_added = 0
-                        for r in raw:
-                            url = r.get("url", "") if isinstance(r, dict) else getattr(r, "url", "")
-                            if not url or url in seen_urls or is_junk_url(url):
-                                continue
-                            seen_urls.add(url)
-                            title = r.get("title", "") if isinstance(r, dict) else getattr(r, "title", "")
-                            snippet = r.get("content", "") if isinstance(r, dict) else getattr(r, "snippet", "")
-                            all_records.append(
-                                WideNetRecord(
-                                    pmid=None,
-                                    doi=None,
-                                    title=title,
-                                    abstract=snippet,
-                                    study_type="other",
-                                    sample_size=None,
-                                    primary_objective=None,
-                                    year=None,
-                                    journal=None,
-                                    authors=None,
-                                    url=url,
-                                    source_db="scholar",
-                                    research_tier=1,
-                                )
-                            )
-                            scholar_added += 1
-                            log("[STUDY_FOUND]")
-                        log(f"    [Scholar] +{scholar_added} records")
-            except Exception as e:
-                logger.error(f"Google Scholar search failed: {e}")
+        await self._add_scholar_records(pool, plan, log)
 
-        log(f"    [Step 2] Total pool: {len(all_records)} records (highest tier: {highest_tier})")
+        log(f"    [Step 2] Total pool: {len(pool.records)} records (highest tier: {highest_tier})")
+        await self._apply_fast_typing(pool.records, log)
+        return pool.records[:500], highest_tier
 
-        # Fast-model screening for study_type on "other" records
-        needs_screening = [r for r in all_records if r.study_type == "other" and r.abstract]
-        if needs_screening and self.fast_worker:
-            log(f"    [Step 2] Fast-model typing {len(needs_screening)} abstracts...")
-            screened = await self._fast_screen_abstracts(needs_screening)
-            screening_map = {id(r): s for r, s in zip(needs_screening, screened, strict=True)}
-            for r in all_records:
-                if id(r) in screening_map:
-                    s = screening_map[id(r)]
-                    if s.get("study_type"):
-                        r.study_type = s["study_type"]
-                    if s.get("sample_size"):
-                        r.sample_size = s["sample_size"]
-                    if s.get("primary_objective"):
-                        r.primary_objective = s["primary_objective"]
+    async def _add_openalex_records(self, pool, query: str, tier_num: int, log) -> None:
+        """OpenAlex works for one tier. The record URL is derived from the DOI."""
+        try:
+            oa_results = await self._openalex.search_works(query, per_page=50)
+            added = 0
+            for oa in oa_results:
+                title = oa.get("title", "") or ""
+                oa_doi = oa.get("doi") or ""
+                url = ("https://doi.org/" + oa_doi) if oa_doi else ""
+                if not title and not url:
+                    continue
+                title_key = _RecordPool.title_key(title)
+                if pool.is_duplicate(url=url, title_key=title_key):
+                    continue
+                pri_loc = oa.get("primary_location")
+                journal_name = None
+                if isinstance(pri_loc, dict):
+                    src = pri_loc.get("source")
+                    if isinstance(src, dict):
+                        journal_name = src.get("display_name")
+                pool.add(
+                    WideNetRecord(
+                        pmid=None,
+                        doi=oa_doi or None,
+                        title=title,
+                        abstract=oa.get("abstract_text", "") or "",
+                        study_type=oa.get("type", "other"),
+                        sample_size=None,
+                        primary_objective=None,
+                        year=oa.get("publication_year"),
+                        journal=journal_name,
+                        authors=None,
+                        url=url,
+                        source_db="openalex",
+                        research_tier=tier_num,
+                    ),
+                    title_key=title_key,
+                )
+                added += 1
+                log("[STUDY_FOUND]")
+            log(f"    [Tier {tier_num}] OpenAlex: +{added} records")
+        except Exception as e:
+            logger.error(f"Tier {tier_num} OpenAlex search failed: {e}")
 
-        return all_records[:500], highest_tier
+    async def _add_eric_records(self, pool, query: str, tier_num: int, log) -> None:
+        """ERIC (IES) results for one tier."""
+        try:
+            eric_results = await self._eric.search(query, max_results=30)
+            added = 0
+            for er in eric_results:
+                title = er.get("title", "")
+                url = er.get("url", "")
+                title_key = _RecordPool.title_key(title)
+                if pool.is_duplicate(url=url, title_key=title_key):
+                    continue
+                er_authors = er.get("author", [])
+                pool.add(
+                    WideNetRecord(
+                        pmid=None,
+                        doi=None,
+                        title=title,
+                        abstract=er.get("description", ""),
+                        study_type="other",
+                        sample_size=None,
+                        primary_objective=None,
+                        year=er.get("year"),
+                        journal=er.get("source", ""),
+                        authors=", ".join(er_authors) if er_authors else None,
+                        url=url,
+                        source_db="eric",
+                        research_tier=tier_num,
+                    ),
+                    title_key=title_key,
+                )
+                added += 1
+                log("[STUDY_FOUND]")
+            log(f"    [Tier {tier_num}] ERIC: +{added} records")
+        except Exception as e:
+            logger.error(f"Tier {tier_num} ERIC search failed: {e}")
 
     async def _fast_screen_abstracts(self, records: list[WideNetRecord]) -> list[dict]:
         """Use fast model to extract study_type, sample_size, primary_objective from abstracts."""
