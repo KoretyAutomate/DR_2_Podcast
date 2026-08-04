@@ -25,7 +25,9 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from prefect import flow, task, get_run_logger
 
@@ -868,6 +870,194 @@ def phase_8_audio(
 # ---------------------------------------------------------------------------
 
 
+def _deterministic_gate_issues(polished_text: str, sot_content: str, flow_logger) -> tuple[list, list]:
+    """Run the two deterministic accuracy gates against the polished script.
+
+    Both are independent triggers for the correction pass. The final GRADE and
+    the ARR/NNT math are computed, not written, so a script contradicting them
+    is always the script's error. The LLM auditor is unreliable here (2026-05-05
+    sleep episode: graded FAIL, caught 3 of 9 HIGH defects, missed every
+    GRADE/NNT inversion).
+    """
+    from dr2_podcast.pipeline_validators import validate_citations, validate_grade_consistency
+
+    try:
+        citation_issues = validate_citations(polished_text, sot_text=sot_content) if sot_content else []
+    except Exception:
+        citation_issues = []
+    if citation_issues:
+        flow_logger.warning(
+            "Deterministic citation gate flagged %d issue(s): %s",
+            len(citation_issues),
+            "; ".join(citation_issues),
+        )
+
+    try:
+        grade_issues = validate_grade_consistency(polished_text, basis_text=sot_content) if sot_content else []
+    except Exception:
+        grade_issues = []
+    if grade_issues:
+        flow_logger.warning(
+            "Deterministic GRADE/NNT gate flagged %d issue(s): %s", len(grade_issues), "; ".join(grade_issues)
+        )
+
+    return citation_issues, grade_issues
+
+
+def _warn_tts_readings(polished_text: str, language: str, flow_logger) -> None:
+    """Layer 3: warn on CONTEXT-DEPENDENT TTS reading hazards (JA only). Non-blocking."""
+    if language == "en":
+        return
+    try:
+        from dr2_podcast.pipeline_validators import validate_tts_readings
+
+        for issue in validate_tts_readings(polished_text):
+            flow_logger.warning("TTS_READING: %s", issue)
+    except Exception as exc:
+        flow_logger.debug("TTS reading validation skipped: %s", exc)
+
+
+def _augment_audit_for_corrector(audit_output: str, citation_issues: list, grade_issues: list) -> str:
+    """Append the deterministic findings to the auditor's text for the corrector."""
+    text = audit_output or ""
+    if citation_issues:
+        text += "\n\n## Deterministic Citation Issues (fix these too)\n" + "\n".join(f"- {i}" for i in citation_issues)
+    if grade_issues:
+        text += (
+            "\n\n## Deterministic GRADE/NNT Contradictions (fix these too)\n"
+            "The basis's final GRADE and the ARR/NNT figures are computed by the pipeline, "
+            "not written by an LLM. Where the script disagrees, the SCRIPT is wrong — "
+            "restate it to match the basis. Do not raise the certainty level.\n"
+            + "\n".join(f"- {i}" for i in grade_issues)
+        )
+    return text
+
+
+def _write_accuracy_corrections_md(
+    output_dir,
+    audit_output: str,
+    citation_issues: list,
+    grade_issues: list,
+    corrected_script_text,
+    flow_logger,
+) -> None:
+    """Record why the accuracy gate fired and whether the correction landed."""
+    from dr2_podcast import pipeline as _pipeline
+
+    result = "applied" if corrected_script_text else "FAILED — audio uses UNCORRECTED script, manual review needed"
+    try:
+        _pipeline.output_path(Path(output_dir), "ACCURACY_CORRECTIONS.md").write_text(
+            "# Accuracy Corrections\n\n"
+            f"- Audit verdict trigger: {_pipeline._audit_requires_correction(audit_output)}\n"
+            f"- Fabricated-citation trigger: {citation_issues or 'none'}\n"
+            f"- GRADE/NNT contradiction trigger: {grade_issues or 'none'}\n"
+            f"- Correction result: {result}\n",
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        flow_logger.debug("could not write ACCURACY_CORRECTIONS.md: %s", exc)
+
+
+def _write_prefect_checkpoint(output_dir, topic_name: str, language: str, flow_logger) -> None:
+    """Write checkpoint.json for artifact completeness.
+
+    Prefect handles resume via result persistence; the audit skill still expects
+    this file to exist.
+    """
+    from dr2_podcast import pipeline as _pipeline
+
+    try:
+        from datetime import datetime as _dt
+
+        ckpt = {
+            "topic": topic_name,
+            "language": language,
+            "completed_phases": list(range(9)),
+            "timestamp": _dt.now().isoformat(),
+            "orchestrator": "prefect",
+        }
+        _pipeline.output_path(output_dir, "checkpoint.json").write_text(json.dumps(ckpt, indent=2, ensure_ascii=False))
+    except Exception as exc:
+        flow_logger.warning("Failed to write checkpoint.json: %s", exc)
+
+
+def _generate_run_pdfs(pdf_items: list, flow_logger) -> None:
+    from dr2_podcast import pipeline as _pipeline
+
+    for title, source, filename in pdf_items:
+        try:
+            _pipeline.create_pdf(title, source, filename)
+        except Exception as exc:
+            flow_logger.warning("PDF generation failed for %s: %s", filename, exc)
+
+
+def _log_run_banner(flow_logger, topic_name: str, language: str, output_dir_str: str) -> None:
+    flow_logger.info("=" * 70)
+    flow_logger.info("DR_2_PODCAST PIPELINE — Prefect Flow")
+    flow_logger.info("Topic: %s | Language: %s", topic_name, language)
+    flow_logger.info("Output: %s", output_dir_str)
+    flow_logger.info("=" * 70)
+
+
+def _log_completion_banner(flow_logger, p8_result: dict, output_dir_str: str) -> None:
+    flow_logger.info("=" * 70)
+    flow_logger.info("PIPELINE COMPLETE")
+    flow_logger.info("Audio: %s (%.2f min)", p8_result["audio_file"], p8_result["duration_minutes"] or 0)
+    flow_logger.info("Output: %s", output_dir_str)
+    flow_logger.info("=" * 70)
+
+
+@dataclass
+class RunDocuments:
+    """What the end-of-run document writers need from the flow."""
+
+    output_dir: Path
+    topic_name: str
+    language: str
+    language_config: dict
+    session_roles: dict
+    framing_output: str
+    sot_content: str
+    translated_sot: str
+    audit_task_ref: Any
+    blueprint_task_ref: Any
+    script_task_ref: Any
+
+
+def _save_run_documents(docs: RunDocuments, flow_logger) -> None:
+    """Write the markdown outputs, their PDFs, and the session metadata."""
+    from dr2_podcast import pipeline as _pipeline
+
+    _pipeline._save_task_outputs(
+        docs.output_dir,
+        [
+            ("Research Framing", docs.framing_output, "research_framing.md"),
+            ("Accuracy Audit", docs.audit_task_ref, "accuracy_audit.md"),
+            ("Episode Blueprint", docs.blueprint_task_ref, "EPISODE_BLUEPRINT.md"),
+            ("Script Draft", docs.script_task_ref, "script_draft.md"),
+        ],
+    )
+
+    pdf_items = [
+        ("Research Framing", docs.framing_output, "research_framing.pdf"),
+        ("Source of Truth", docs.sot_content, "source_of_truth.pdf"),
+        ("Accuracy Audit", docs.audit_task_ref, "accuracy_audit.pdf"),
+    ]
+    # Translated SOT PDF for non-English runs
+    if docs.translated_sot:
+        lang_code = docs.language_config.get("code", "ja")
+        pdf_items.append((f"Source of Truth ({lang_code})", docs.translated_sot, f"source_of_truth_{lang_code}.pdf"))
+    _generate_run_pdfs(pdf_items, flow_logger)
+
+    _pipeline._save_session_metadata(
+        output_dir=docs.output_dir,
+        topic_name=docs.topic_name,
+        language=docs.language,
+        language_config=docs.language_config,
+        session_roles=docs.session_roles,
+    )
+
+
 @flow(
     name="dr2_podcast_pipeline",
     description="DR_2_Podcast: research-driven debate podcast generation",
@@ -910,12 +1100,7 @@ def run_pipeline_flow(
 
     flow_logger = get_run_logger()
     output_dir_str = str(output_dir)
-
-    flow_logger.info("=" * 70)
-    flow_logger.info("DR_2_PODCAST PIPELINE — Prefect Flow")
-    flow_logger.info("Topic: %s | Language: %s", topic_name, language)
-    flow_logger.info("Output: %s", output_dir_str)
-    flow_logger.info("=" * 70)
+    _log_run_banner(flow_logger, topic_name, language, output_dir_str)
 
     # Sync module-level output_dir so @tool decorators resolve paths correctly
     _pipeline.output_dir = output_dir
@@ -1124,46 +1309,10 @@ def run_pipeline_flow(
     # already-built corrector never ran. _audit_requires_correction() is the
     # multilingual fix; the deterministic citation gate is an independent trigger.
     # -------------------------------------------------------------------
+    det_citation_issues, det_grade_issues = _deterministic_gate_issues(polished_text, sot_content, flow_logger)
+    _warn_tts_readings(polished_text, language, flow_logger)
+
     corrected_script_text = None
-    try:
-        from dr2_podcast.pipeline_validators import validate_citations
-
-        det_citation_issues = validate_citations(polished_text, sot_text=sot_content) if sot_content else []
-    except Exception:
-        det_citation_issues = []
-    if det_citation_issues:
-        flow_logger.warning(
-            "Deterministic citation gate flagged %d issue(s): %s",
-            len(det_citation_issues),
-            "; ".join(det_citation_issues),
-        )
-
-    # Deterministic GRADE/NNT gate — an independent trigger, same rationale as
-    # citations. The final GRADE and the ARR/NNT math are computed, not written,
-    # so a script contradicting them is always the script's error. The LLM
-    # auditor is unreliable here (2026-05-05 sleep episode: graded FAIL, caught
-    # 3 of 9 HIGH defects, missed every GRADE/NNT inversion).
-    try:
-        from dr2_podcast.pipeline_validators import validate_grade_consistency
-
-        det_grade_issues = validate_grade_consistency(polished_text, basis_text=sot_content) if sot_content else []
-    except Exception:
-        det_grade_issues = []
-    if det_grade_issues:
-        flow_logger.warning(
-            "Deterministic GRADE/NNT gate flagged %d issue(s): %s", len(det_grade_issues), "; ".join(det_grade_issues)
-        )
-
-    # Layer 3: warn on CONTEXT-DEPENDENT TTS reading hazards (JA only). Non-blocking.
-    if language != "en":
-        try:
-            from dr2_podcast.pipeline_validators import validate_tts_readings
-
-            for _issue in validate_tts_readings(polished_text):
-                flow_logger.warning("TTS_READING: %s", _issue)
-        except Exception as exc:
-            flow_logger.debug("TTS reading validation skipped: %s", exc)
-
     if audit_output and (_pipeline._audit_requires_correction(audit_output) or det_citation_issues or det_grade_issues):
         flow_logger.info(
             "Accuracy gate TRIGGERED (verdict=%s, citation_issues=%d, grade_issues=%d) — correcting",
@@ -1171,38 +1320,21 @@ def run_pipeline_flow(
             len(det_citation_issues),
             len(det_grade_issues),
         )
-        _audit_for_corrector = audit_output or ""
-        if det_citation_issues:
-            _audit_for_corrector += "\n\n## Deterministic Citation Issues (fix these too)\n" + "\n".join(
-                f"- {i}" for i in det_citation_issues
-            )
-        if det_grade_issues:
-            _audit_for_corrector += (
-                "\n\n## Deterministic GRADE/NNT Contradictions (fix these too)\n"
-                "The basis's final GRADE and the ARR/NNT figures are computed by the pipeline, "
-                "not written by an LLM. Where the script disagrees, the SCRIPT is wrong — "
-                "restate it to match the basis. Do not raise the certainty level.\n"
-                + "\n".join(f"- {i}" for i in det_grade_issues)
-            )
         corrected_script_text = _run_inline_correction(
-            audit_output=_audit_for_corrector,
+            audit_output=_augment_audit_for_corrector(audit_output, det_citation_issues, det_grade_issues),
             polished_text=polished_text,
             editor_agent_ref=editor_agent_ref,
             target_instruction=target_instruction,
             output_dir=output_dir,
         )
-        try:
-            _pipeline.output_path(Path(output_dir), "ACCURACY_CORRECTIONS.md").write_text(
-                "# Accuracy Corrections\n\n"
-                f"- Audit verdict trigger: {_pipeline._audit_requires_correction(audit_output)}\n"
-                f"- Fabricated-citation trigger: {det_citation_issues or 'none'}\n"
-                f"- GRADE/NNT contradiction trigger: {det_grade_issues or 'none'}\n"
-                f"- Correction result: "
-                f"{'applied' if corrected_script_text else 'FAILED — audio uses UNCORRECTED script, manual review needed'}\n",
-                encoding="utf-8",
-            )
-        except Exception as exc:
-            flow_logger.debug("could not write ACCURACY_CORRECTIONS.md: %s", exc)
+        _write_accuracy_corrections_md(
+            output_dir,
+            audit_output,
+            det_citation_issues,
+            det_grade_issues,
+            corrected_script_text,
+            flow_logger,
+        )
         if corrected_script_text is None:
             flow_logger.warning(
                 "Correction pass produced no valid script — finalizing the "
@@ -1221,40 +1353,21 @@ def run_pipeline_flow(
         corrected_text=corrected_script_text,
     )
 
-    # Save markdown outputs
-    _pipeline._save_task_outputs(
-        output_dir,
-        [
-            ("Research Framing", framing_output, "research_framing.md"),
-            ("Accuracy Audit", audit_task_ref, "accuracy_audit.md"),
-            ("Episode Blueprint", blueprint_task_ref, "EPISODE_BLUEPRINT.md"),
-            ("Script Draft", script_task_ref, "script_draft.md"),
-        ],
-    )
-
-    # Generate PDFs
-    pdf_items = [
-        ("Research Framing", framing_output, "research_framing.pdf"),
-        ("Source of Truth", sot_content, "source_of_truth.pdf"),
-        ("Accuracy Audit", audit_task_ref, "accuracy_audit.pdf"),
-    ]
-    # Translated SOT PDF for non-English runs
-    if translated_sot:
-        lang_code = language_config.get("code", "ja")
-        pdf_items.append((f"Source of Truth ({lang_code})", translated_sot, f"source_of_truth_{lang_code}.pdf"))
-    for title, source, filename in pdf_items:
-        try:
-            _pipeline.create_pdf(title, source, filename)
-        except Exception as exc:
-            flow_logger.warning("PDF generation failed for %s: %s", filename, exc)
-
-    # Session metadata
-    _pipeline._save_session_metadata(
-        output_dir=output_dir,
-        topic_name=topic_name,
-        language=language,
-        language_config=language_config,
-        session_roles=session_roles,
+    _save_run_documents(
+        RunDocuments(
+            output_dir=output_dir,
+            topic_name=topic_name,
+            language=language,
+            language_config=language_config,
+            session_roles=session_roles,
+            framing_output=framing_output,
+            sot_content=sot_content,
+            translated_sot=translated_sot,
+            audit_task_ref=audit_task_ref,
+            blueprint_task_ref=blueprint_task_ref,
+            script_task_ref=script_task_ref,
+        ),
+        flow_logger,
     )
 
     # -------------------------------------------------------------------
@@ -1266,28 +1379,9 @@ def run_pipeline_flow(
         language_config=language_config,
     )
 
-    # Write checkpoint.json for artifact completeness (Prefect handles resume
-    # via result persistence, but the audit skill expects this file).
-    try:
-        from datetime import datetime as _dt
+    _write_prefect_checkpoint(output_dir, topic_name, language, flow_logger)
 
-        ckpt = {
-            "topic": topic_name,
-            "language": language,
-            "completed_phases": list(range(9)),
-            "timestamp": _dt.now().isoformat(),
-            "orchestrator": "prefect",
-        }
-        ckpt_path = _pipeline.output_path(output_dir, "checkpoint.json")
-        ckpt_path.write_text(json.dumps(ckpt, indent=2, ensure_ascii=False))
-    except Exception as exc:
-        flow_logger.warning("Failed to write checkpoint.json: %s", exc)
-
-    flow_logger.info("=" * 70)
-    flow_logger.info("PIPELINE COMPLETE")
-    flow_logger.info("Audio: %s (%.2f min)", p8_result["audio_file"], p8_result["duration_minutes"] or 0)
-    flow_logger.info("Output: %s", output_dir_str)
-    flow_logger.info("=" * 70)
+    _log_completion_banner(flow_logger, p8_result, output_dir_str)
 
     return {
         "output_dir": output_dir_str,
