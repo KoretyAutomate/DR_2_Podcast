@@ -39,6 +39,7 @@ from dr2_podcast.pipeline_script import (
     _add_reaction_guidance as _add_reaction_guidance_impl,
     _quick_content_audit as _quick_content_audit_impl,
     _run_condense_pass as _run_condense_pass_impl,
+    SectionGenDeps as _SectionGenDeps,
     SCRIPT_TOLERANCE,
 )
 from dr2_podcast.pipeline_translation import (
@@ -1303,11 +1304,13 @@ def _run_condense_pass(
         script_text,
         inventory,
         target_length,
-        language_config,
-        session_roles,
-        topic_name,
         target_instruction,
-        _call_smart_model=_call_smart_model,
+        _SectionGenDeps(
+            call_smart_model=_call_smart_model,
+            language_config=language_config,
+            session_roles=session_roles,
+            topic_name=topic_name,
+        ),
     )
 
 
@@ -1791,12 +1794,14 @@ def _run_sectional_draft(
         section_text, word_count, deficit = _generate_section(
             section_cfg,
             previous_lines,
-            _call_smart_model=_call_smart_model,
-            language_config=language_config,
-            session_roles=session_roles,
-            topic_name=topic_name,
-            channel_intro=channel_intro,
-            target_min=target_min,
+            _SectionGenDeps(
+                call_smart_model=_call_smart_model,
+                language_config=language_config,
+                session_roles=session_roles,
+                topic_name=topic_name,
+                channel_intro=channel_intro,
+                target_min=target_min,
+            ),
         )
 
         status = "OK"

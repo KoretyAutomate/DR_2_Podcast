@@ -9,6 +9,9 @@ _add_reaction_guidance, _quick_content_audit.
 
 import logging
 import re
+from dataclasses import dataclass, replace
+from typing import Any
+
 from dr2_podcast.utils import strip_think_blocks
 
 logger = logging.getLogger(__name__)
@@ -537,31 +540,40 @@ _JA_SUBSECTION_THRESHOLD = 3500  # chars — split JA sections above this into s
 _JA_SUBSECTION_MAX = 3000  # chars — max budget per sub-call
 
 
+@dataclass
+class SectionGenDeps:
+    """Collaborators and run-wide settings shared by the section generators.
+
+    These six travelled together through _generate_section,
+    _generate_section_subsplit and _generate_section_single as an identical
+    keyword-only block. Passing them as one object keeps the three signatures
+    in step and takes each under the argument limit.
+    """
+
+    call_smart_model: Any
+    language_config: dict
+    session_roles: dict
+    topic_name: str
+    channel_intro: str = ""
+    target_min: int = 30
+
+
 def _generate_section(
     section_config: dict,
     previous_lines: list,
-    *,
-    _call_smart_model,
-    language_config: dict,
-    session_roles: dict,
-    topic_name: str,
-    channel_intro: str = "",
-    target_min: int = 30,
+    deps: SectionGenDeps,
 ) -> tuple:
     """Generate one section of the podcast script via LLM call(s).
 
-    For JA sections with budget > _JA_SUBSECTION_THRESHOLD, the section is
-    split into multiple sub-calls to keep each within the model's natural
+    For JA sections with a budget above _JA_SUBSECTION_THRESHOLD, the section
+    is split into multiple sub-calls to keep each within the model's natural
     output range.
 
     Args:
         section_config: dict from _allocate_section_budgets()
         previous_lines: last lines of the previous section (for continuity)
-        _call_smart_model: callable for the Smart Model
-        language_config: language settings dict
-        session_roles: presenter/questioner role defs
-        channel_intro: channel intro text (only used for opening section)
-        target_min: total episode target in minutes
+        deps: SectionGenDeps — model callable, language/role config, topic,
+            channel intro (opening section only) and episode target minutes.
 
     Returns:
         (section_text, word_count, deficit) where deficit is the shortfall
@@ -572,39 +584,15 @@ def _generate_section(
 
     # Sub-section large JA sections into smaller calls
     if length_unit == "chars" and budget > _JA_SUBSECTION_THRESHOLD:
-        return _generate_section_subsplit(
-            section_config,
-            previous_lines,
-            _call_smart_model=_call_smart_model,
-            language_config=language_config,
-            session_roles=session_roles,
-            topic_name=topic_name,
-            channel_intro=channel_intro,
-            target_min=target_min,
-        )
+        return _generate_section_subsplit(section_config, previous_lines, deps)
 
-    return _generate_section_single(
-        section_config,
-        previous_lines,
-        _call_smart_model=_call_smart_model,
-        language_config=language_config,
-        session_roles=session_roles,
-        topic_name=topic_name,
-        channel_intro=channel_intro,
-        target_min=target_min,
-    )
+    return _generate_section_single(section_config, previous_lines, deps)
 
 
 def _generate_section_subsplit(
     section_config: dict,
     previous_lines: list,
-    *,
-    _call_smart_model,
-    language_config: dict,
-    session_roles: dict,
-    topic_name: str,
-    channel_intro: str = "",
-    target_min: int = 30,
+    deps: SectionGenDeps,
 ) -> tuple:
     """Split a large JA section into sub-calls and concatenate results."""
     import math
@@ -638,16 +626,9 @@ def _generate_section_subsplit(
         sub_config["word_budget"] = part_budget
         sub_config["checklist_items"] = checklist_parts[part_idx]
 
-        sub_text, sub_count, _ = _generate_section_single(
-            sub_config,
-            running_lines,
-            _call_smart_model=_call_smart_model,
-            language_config=language_config,
-            session_roles=session_roles,
-            topic_name=topic_name,
-            channel_intro=channel_intro if part_idx == 0 else "",
-            target_min=target_min,
-        )
+        # The channel intro belongs to the very first sub-part only.
+        sub_deps = deps if part_idx == 0 else replace(deps, channel_intro="")
+        sub_text, sub_count, _ = _generate_section_single(sub_config, running_lines, sub_deps)
 
         logger.info("    Sub-part %d/%d: %d chars (budget %d)", part_idx + 1, n_parts, sub_count, part_budget)
 
@@ -664,30 +645,27 @@ def _generate_section_subsplit(
 def _generate_section_single(
     section_config: dict,
     previous_lines: list,
-    *,
-    _call_smart_model,
-    language_config: dict,
-    session_roles: dict,
-    topic_name: str,
-    channel_intro: str = "",
-    target_min: int = 30,
+    deps: SectionGenDeps,
 ) -> tuple:
     """Generate one section of the podcast script via a single LLM call.
 
     Args:
         section_config: dict from _allocate_section_budgets()
         previous_lines: last lines of the previous section (for continuity)
-        _call_smart_model: callable for the Smart Model
-        language_config: language settings dict
-        session_roles: presenter/questioner role defs
-        channel_intro: channel intro text (only used for opening section)
-        target_min: total episode target in minutes
+        deps: SectionGenDeps — see _generate_section.
 
     Returns:
         (section_text, word_count, deficit) where deficit is the shortfall
         from the budget (0 if at or over budget).
     """
     from dr2_podcast.prompt_strings import get_prompt
+
+    _call_smart_model = deps.call_smart_model
+    language_config = deps.language_config
+    session_roles = deps.session_roles
+    topic_name = deps.topic_name
+    channel_intro = deps.channel_intro
+    target_min = deps.target_min
 
     section_id = section_config["section_id"]
     budget = section_config["word_budget"]
@@ -803,20 +781,24 @@ def _run_condense_pass(
     script_text: str,
     inventory: dict,
     target_length: int,
-    language_config: dict,
-    session_roles: dict,
-    topic_name: str,
     target_instruction: str,
-    *,
-    _call_smart_model,
+    deps: SectionGenDeps,
 ) -> str:
     """
     Condense an over-target script by rewriting verbose passages more concisely.
     Merges overlapping points, tightens language, reduces filler.
     Does NOT delete entire discussion topics — condenses them.
     Returns condensed text (or original if condensing didn't help).
+
+    `inventory` is unused by the prompt today; it is kept because callers pass
+    the blueprint inventory and the condense prompt is expected to grow into it.
     """
     from dr2_podcast.prompt_strings import get_prompt
+
+    _call_smart_model = deps.call_smart_model
+    language_config = deps.language_config
+    session_roles = deps.session_roles
+    topic_name = deps.topic_name
 
     current = _count_words(script_text, language_config)
     target_with_buffer = int(target_length * 1.05)  # condense to 105%, leave room for polish
