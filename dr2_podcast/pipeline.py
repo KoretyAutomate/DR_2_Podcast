@@ -336,83 +336,93 @@ def _serialize_dataclass(obj):
     return str(obj)
 
 
+def _restore_tier_keywords(d):
+    from dr2_podcast.research.clinical import TierKeywords
+
+    if d is None or not isinstance(d, dict):
+        return d
+    return TierKeywords(
+        intervention=d.get("intervention", []),
+        outcome=d.get("outcome", []),
+        population=d.get("population", []),
+        rationale=d.get("rationale", ""),
+    )
+
+
+def _restore_tiered_search_plan(d):
+    from dr2_podcast.research.clinical import TieredSearchPlan
+
+    if d is None or not isinstance(d, dict):
+        return d
+    return TieredSearchPlan(
+        pico=d.get("pico", {}),
+        tier1=_restore_tier_keywords(d.get("tier1")),
+        tier2=_restore_tier_keywords(d.get("tier2")),
+        tier3=_restore_tier_keywords(d.get("tier3")),
+        role=d.get("role", ""),
+        auditor_approved=d.get("auditor_approved", False),
+        auditor_notes=d.get("auditor_notes", ""),
+        revision_count=d.get("revision_count", 0),
+    )
+
+
+def _restore_paper_metadata(d):
+    from dr2_podcast.research.clinical import PaperMetadata
+
+    if d is None or not isinstance(d, dict):
+        return None
+    return PaperMetadata.from_dict(d)
+
+
+def _restore_wide_net_record(d):
+    from dr2_podcast.research.clinical import WideNetRecord
+
+    if not isinstance(d, dict):
+        return d
+    pm = _restore_paper_metadata(d.get("paper_metadata"))
+    valid_keys = {f.name for f in dc_fields(WideNetRecord)}
+    kwargs = {k: v for k, v in d.items() if k in valid_keys and k != "paper_metadata"}
+    # Supply defaults for required positional args that serializer may have dropped
+    for req_opt in ("pmid", "doi", "sample_size", "primary_objective", "year", "journal", "authors"):
+        kwargs.setdefault(req_opt, None)
+    for req_str in ("title", "abstract", "study_type", "url", "source_db"):
+        kwargs.setdefault(req_str, "")
+    return WideNetRecord(**kwargs, paper_metadata=pm)
+
+
+def _restore_deep_extraction(d):
+    from dr2_podcast.research.clinical import DeepExtraction
+
+    if not isinstance(d, dict):
+        return d
+    pm = _restore_paper_metadata(d.get("paper_metadata"))
+    valid_keys = {f.name for f in dc_fields(DeepExtraction)}
+    kwargs = {k: v for k, v in d.items() if k in valid_keys and k != "paper_metadata"}
+    # Required positional args that to_dict() may have dropped when None/empty
+    kwargs.setdefault("pmid", None)
+    kwargs.setdefault("doi", None)
+    kwargs.setdefault("title", "")
+    kwargs.setdefault("url", "")
+    return DeepExtraction(**kwargs, paper_metadata=pm)
+
+
+def _restore_clinical_impact(d):
+    from dr2_podcast.research.clinical_math import ClinicalImpact
+
+    if not isinstance(d, dict):
+        return d
+    valid_keys = {f.name for f in dc_fields(ClinicalImpact)}
+    return ClinicalImpact(**{k: v for k, v in d.items() if k in valid_keys})
+
+
 def _deserialize_pipeline_data(pd_dict):
     """Deserialize pipeline_data dict back into dataclass objects.
 
-    Imports clinical_research dataclasses lazily to avoid circular imports
-    when pipeline.py is loaded as a module.
+    The _restore_* helpers import the clinical_research dataclasses lazily to
+    avoid a circular import when pipeline.py is loaded as a module.
     """
     if not pd_dict:
         return pd_dict
-    from dr2_podcast.research.clinical import (
-        TieredSearchPlan,
-        TierKeywords,
-        WideNetRecord,
-        DeepExtraction,
-        PaperMetadata,
-    )
-    from dr2_podcast.research.clinical_math import ClinicalImpact
-
-    def _restore_tier_keywords(d):
-        if d is None or not isinstance(d, dict):
-            return d
-        return TierKeywords(
-            intervention=d.get("intervention", []),
-            outcome=d.get("outcome", []),
-            population=d.get("population", []),
-            rationale=d.get("rationale", ""),
-        )
-
-    def _restore_tiered_search_plan(d):
-        if d is None or not isinstance(d, dict):
-            return d
-        return TieredSearchPlan(
-            pico=d.get("pico", {}),
-            tier1=_restore_tier_keywords(d.get("tier1")),
-            tier2=_restore_tier_keywords(d.get("tier2")),
-            tier3=_restore_tier_keywords(d.get("tier3")),
-            role=d.get("role", ""),
-            auditor_approved=d.get("auditor_approved", False),
-            auditor_notes=d.get("auditor_notes", ""),
-            revision_count=d.get("revision_count", 0),
-        )
-
-    def _restore_paper_metadata(d):
-        if d is None or not isinstance(d, dict):
-            return None
-        return PaperMetadata.from_dict(d)
-
-    def _restore_wide_net_record(d):
-        if not isinstance(d, dict):
-            return d
-        pm = _restore_paper_metadata(d.get("paper_metadata"))
-        valid_keys = {f.name for f in dc_fields(WideNetRecord)}
-        kwargs = {k: v for k, v in d.items() if k in valid_keys and k != "paper_metadata"}
-        # Supply defaults for required positional args that serializer may have dropped
-        for req_opt in ("pmid", "doi", "sample_size", "primary_objective", "year", "journal", "authors"):
-            kwargs.setdefault(req_opt, None)
-        for req_str in ("title", "abstract", "study_type", "url", "source_db"):
-            kwargs.setdefault(req_str, "")
-        return WideNetRecord(**kwargs, paper_metadata=pm)
-
-    def _restore_deep_extraction(d):
-        if not isinstance(d, dict):
-            return d
-        pm = _restore_paper_metadata(d.get("paper_metadata"))
-        valid_keys = {f.name for f in dc_fields(DeepExtraction)}
-        kwargs = {k: v for k, v in d.items() if k in valid_keys and k != "paper_metadata"}
-        # Required positional args that to_dict() may have dropped when None/empty
-        kwargs.setdefault("pmid", None)
-        kwargs.setdefault("doi", None)
-        kwargs.setdefault("title", "")
-        kwargs.setdefault("url", "")
-        return DeepExtraction(**kwargs, paper_metadata=pm)
-
-    def _restore_clinical_impact(d):
-        if not isinstance(d, dict):
-            return d
-        valid_keys = {f.name for f in dc_fields(ClinicalImpact)}
-        return ClinicalImpact(**{k: v for k, v in d.items() if k in valid_keys})
 
     restored = dict(pd_dict)  # shallow copy
 
