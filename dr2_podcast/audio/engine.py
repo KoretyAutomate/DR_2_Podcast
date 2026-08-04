@@ -614,17 +614,14 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             return None
         return adapter(script_text, output_filename)
 
-    # Kokoro TTS path (English default, and any language where TTS_ENGINE_* = kokoro)
-    logger.info("=" * 60)
-    logger.info("KOKORO TTS AUDIO GENERATION")
-    logger.info("=" * 60)
+    return _generate_audio_kokoro(script_text, output_filename, lang_code)
 
-    # Resolve voices for this language
-    voices = VOICE_MAP.get(lang_code, VOICE_MAP["a"])
-    voice_host_1 = voices["host1"]
-    voice_host_2 = voices["host2"]
 
-    # 1. Initialize Pipeline
+def _init_kokoro_pipeline(lang_code: str):
+    """Build the Kokoro pipeline, falling back to CPU if CUDA cannot run.
+
+    Returns the pipeline, or None if it cannot be initialised at all.
+    """
     device = "cpu"
     if torch.cuda.is_available():
         try:
@@ -634,159 +631,141 @@ def generate_audio_from_script(script_text: str, output_filename: str = "final_p
             logger.warning("  CUDA reported available but kernel execution failed, falling back to CPU")
     logger.info(f"Device: {device}")
     logger.info(f"Language code: {lang_code}")
-    logger.info(f"Voices: Host 1 ({voice_host_1}), Host 2 ({voice_host_2})")
 
     try:
         pipeline = KPipeline(lang_code=lang_code, device=device)
         logger.info("✓ Kokoro pipeline initialized")
+        return pipeline
     except RuntimeError as e:
         if "CUDA" in str(e) and device == "cuda":
             logger.warning(f"  CUDA init failed, retrying on CPU: {e}")
-            device = "cpu"
-            pipeline = KPipeline(lang_code=lang_code, device=device)
+            pipeline = KPipeline(lang_code=lang_code, device="cpu")
             logger.info("✓ Kokoro pipeline initialized (CPU fallback)")
-        else:
-            logger.error(f"✗ ERROR: Failed to initialize Kokoro: {e}")
-            return None
+            return pipeline
+        logger.error(f"✗ ERROR: Failed to initialize Kokoro: {e}")
+        return None
     except Exception as e:
         logger.error(f"✗ ERROR: Failed to initialize Kokoro: {e}")
         return None
 
-    # 2. Parse Script — strict Speaker N: pattern only (no greedy name matching)
+
+class _KokoroTimeline:
+    """Kokoro counterpart of _AivisTimeline. Sample rate is fixed at 24 kHz."""
+
+    SAMPLE_RATE = 24000
+
+    def __init__(self, pipeline, voice_host_1, voice_host_2):
+        self.pipeline = pipeline
+        self.voice_host_1 = voice_host_1
+        self.voice_host_2 = voice_host_2
+        self.segments = []
+        self.transition_positions_ms = []
+        self.cumulative_samples = 0
+        self.segment_count = 0
+
+    def flush_turn(self, text: str, speaker) -> None:
+        if not (text and speaker):
+            return
+        voice = self.voice_host_1 if speaker == 1 else self.voice_host_2
+        try:
+            chunk_list = []
+            for _, _, audio in self.pipeline(text, voice=voice, speed=1.0, split_pattern=r"\n+"):
+                chunk_list.append(audio)
+                self.segment_count += 1
+            if chunk_list:
+                segment_audio = np.concatenate(chunk_list)
+                # Per-speaker RMS normalization
+                rms = np.sqrt(np.mean(segment_audio**2))
+                if rms > 1e-6:
+                    segment_audio = np.clip(segment_audio * (_TARGET_RMS / rms), -1.0, 1.0)
+                self._append(segment_audio)
+        except Exception as e:
+            logger.warning(f"  ⚠ Warning: Failed to generate segment {self.segment_count}: {e}")
+
+    def add_marker(self, marker: str) -> None:
+        silence, position_ms = _marker_silence(marker, self.SAMPLE_RATE, self.cumulative_samples)
+        if position_ms is not None:
+            self.transition_positions_ms.append(position_ms)
+        self._append(silence)
+
+    def add_speaker_gap(self) -> None:
+        self._append(np.zeros(int(0.3 * self.SAMPLE_RATE), dtype=np.float32))
+
+    def _append(self, audio) -> None:
+        self.segments.append(audio)
+        self.cumulative_samples += len(audio)
+
+
+def _generate_audio_kokoro(script_text: str, output_filename: str, lang_code: str):
+    """Kokoro TTS path (English default, and any language where TTS_ENGINE_* = kokoro)."""
+    logger.info("=" * 60)
+    logger.info("KOKORO TTS AUDIO GENERATION")
+    logger.info("=" * 60)
+
+    voices = VOICE_MAP.get(lang_code, VOICE_MAP["a"])
+    logger.info(f"Voices: Host 1 ({voices['host1']}), Host 2 ({voices['host2']})")
+
+    pipeline = _init_kokoro_pipeline(lang_code)
+    if pipeline is None:
+        return None
+
+    # Parse Script — strict Speaker N: pattern only (no greedy name matching)
     speaker_pattern = re.compile(r"^(Speaker\s*(\d+))\s*[:：]\s*(.*)", re.IGNORECASE)
     speaker_map = {}  # "Speaker 1" → 1, "Speaker 2" → 2
-
-    sample_rate = 24000  # Kokoro standard
-    lines = script_text.split("\n")
-    audio_segments = []
-    silence_gap = np.zeros(int(0.3 * sample_rate), dtype=np.float32)  # 300ms silence
-    transition_positions_ms = []  # Track [TRANSITION] positions for pro mixer
-    cumulative_samples = 0  # Running total for position tracking
+    tl = _KokoroTimeline(pipeline, voices["host1"], voices["host2"])
 
     current_speaker = None
     buffer_text = ""
-    segment_count = 0
 
-    def _flush_buffer():
-        """Flush the current text buffer into audio segments."""
-        nonlocal buffer_text, segment_count, cumulative_samples
-        if buffer_text and current_speaker:
-            voice = voice_host_1 if current_speaker == 1 else voice_host_2
-            try:
-                generator = pipeline(buffer_text, voice=voice, speed=1.0, split_pattern=r"\n+")
-                chunk_list = []
-                for _, _, audio in generator:
-                    chunk_list.append(audio)
-                    segment_count += 1
-                if chunk_list:
-                    segment_audio = np.concatenate(chunk_list)
-                    # Per-speaker RMS normalization
-                    rms = np.sqrt(np.mean(segment_audio**2))
-                    if rms > 1e-6:
-                        segment_audio = segment_audio * (_TARGET_RMS / rms)
-                        segment_audio = np.clip(segment_audio, -1.0, 1.0)
-                    audio_segments.append(segment_audio)
-                    cumulative_samples += len(segment_audio)
-            except Exception as e:
-                logger.warning(f"  ⚠ Warning: Failed to generate segment {segment_count}: {e}")
-        buffer_text = ""
-
-    for _line_num, line in enumerate(lines, 1):
-        line = line.strip()
-        if not line:
+    for raw_line in script_text.split("\n"):
+        line = raw_line.strip()
+        # Skip blanks, ## guidance/metadata comments, and --- topic separators
+        if not line or line.startswith("##") or re.match(r"^-{3,}$", line):
             continue
 
-        # Skip ## comment lines (guidance, metadata)
-        if line.startswith("##"):
-            continue
-
-        # Skip section separators (--- between topics) — not end of dialogue
-        if re.match(r"^-{3,}$", line):
-            continue
-
-        # Check for audio markers ([TRANSITION], [PAUSE], [BEAT])
+        # Audio markers ([TRANSITION], [PAUSE], [BEAT])
         if line in MARKER_SILENCE:
-            _flush_buffer()
-            silence_sec = MARKER_SILENCE[line]
-            silence_samples = int(silence_sec * sample_rate)
-            audio_segments.append(np.zeros(silence_samples, dtype=np.float32))
-            if line == "[TRANSITION]":
-                position_ms = int((cumulative_samples / sample_rate) * 1000)
-                transition_positions_ms.append(position_ms)
-                logger.info(f"  [TRANSITION] marker at {position_ms}ms")
-            cumulative_samples += silence_samples
+            tl.flush_turn(buffer_text, current_speaker)
+            buffer_text = ""
+            tl.add_marker(line)
             continue
 
-        # Check for Speaker Switch — strict "Speaker N:" pattern only
         match = speaker_pattern.match(line)
         if match:
             name = match.group(1).strip()  # "Speaker 1" or "Speaker 2"
-            slot = int(match.group(2))  # 1 or 2
-            text_after = match.group(3).strip()
-
             if name not in speaker_map:
-                speaker_map[name] = slot
-                logger.info(f"  Speaker detected: '{name}' → Host {slot}")
-
+                speaker_map[name] = int(match.group(2))
+                logger.info(f"  Speaker detected: '{name}' → Host {speaker_map[name]}")
             new_speaker = speaker_map[name]
 
-            # Flush previous buffer before switching
-            _flush_buffer()
-
-            # Insert silence gap on speaker change (not before first speaker)
+            tl.flush_turn(buffer_text, current_speaker)
+            buffer_text = ""
+            # Silence gap on speaker change (not before the first speaker)
             if current_speaker is not None and current_speaker != new_speaker:
-                audio_segments.append(silence_gap)
-                cumulative_samples += len(silence_gap)
+                tl.add_speaker_gap()
 
             current_speaker = new_speaker
-            buffer_text = text_after
-
+            buffer_text = match.group(3).strip()
+        elif current_speaker is None:
+            # Channel intro line (before any Speaker label) — synthesize as
+            # Speaker 2 (the presenter/narrator role) instead of skipping.
+            if line and not line.startswith("["):
+                logger.info(f"  Channel intro (Speaker 2): {line[:60]}...")
+                tl.flush_turn(line, 2)
+            else:
+                logger.debug(f"  Skipping unlabeled line before first speaker: {line[:60]}...")
         else:
-            # Continuation of current speaker's dialogue
-            if current_speaker is None:
-                # Channel intro line (before any Speaker label) — synthesize as
-                # Speaker 2 (the presenter/narrator role) instead of skipping.
-                if line and not line.startswith("["):
-                    logger.info(f"  Channel intro (Speaker 2): {line[:60]}...")
-                    current_speaker = 2
-                    buffer_text = line
-                    _flush_buffer()
-                    current_speaker = None  # reset so next Speaker N: triggers normally
-                else:
-                    logger.debug(f"  Skipping unlabeled line before first speaker: {line[:60]}...")
-                continue
             buffer_text = f"{buffer_text} {line}".strip()
 
-    # Process final buffer
-    _flush_buffer()
+    tl.flush_turn(buffer_text, current_speaker)
 
-    logger.info(f"Generated {segment_count} audio segments")
-    if transition_positions_ms:
-        logger.info(f"Transition positions: {transition_positions_ms}")
+    logger.info(f"Generated {tl.segment_count} audio segments")
+    if tl.transition_positions_ms:
+        logger.info(f"Transition positions: {tl.transition_positions_ms}")
 
-    # 3. Stitch and Save
-    if audio_segments:
-        try:
-            final_audio = np.concatenate(audio_segments)
-            sf.write(output_filename, final_audio, sample_rate)
-
-            file_size = Path(output_filename).stat().st_size
-            duration_sec = len(final_audio) / sample_rate
-            duration_min = duration_sec / 60
-
-            logger.info("\n✓ Audio generated successfully:")
-            logger.info(f"  File: {output_filename}")
-            logger.info(f"  Size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
-            logger.info(f"  Duration: {duration_min:.2f} minutes ({duration_sec:.1f} seconds)")
-            logger.info("=" * 60 + "\n")
-
-            return (output_filename, transition_positions_ms)
-        except Exception as e:
-            logger.error(f"✗ ERROR: Failed to save audio: {e}")
-            return None
-    else:
-        logger.error("✗ ERROR: No audio segments generated")
+    if not _write_generated_audio(tl.segments, tl.SAMPLE_RATE, output_filename, "Kokoro"):
         return None
+    return (output_filename, tl.transition_positions_ms)
 
 
 def post_process_audio(
