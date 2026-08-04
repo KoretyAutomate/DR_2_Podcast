@@ -66,7 +66,7 @@ def _phase_cache_key(context, parameters):
     # Use basename for readability; add a short hash of the full path as a
     # collision guard in case two runs share the same basename somehow.
     basename = od.rstrip("/").rsplit("/", 1)[-1] if "/" in od else od
-    od_hash = hashlib.md5(od.encode()).hexdigest()[:8]
+    od_hash = hashlib.md5(od.encode(), usedforsecurity=False).hexdigest()[:8]
     return f"{basename}-{od_hash}-{context.task.name}"
 
 
