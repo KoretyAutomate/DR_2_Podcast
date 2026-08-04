@@ -29,32 +29,31 @@ def _reset_glossary_cache():
 # --------------------------------------------------------------------------- #
 class TestApplyGlossary:
     def test_standalone_substitution(self):
-        assert apply_tts_glossary("母数と強さ") == "ぼすうとつよさ"
+        assert apply_tts_glossary("母数と仕方") == "ぼすうとしかた"
 
     @pytest.mark.parametrize("compound", [
-        "酵母数", "手強さ", "力強さ", "心強さ", "粘り強さ",
-        "意見方針", "奉仕方法", "一番下手", "一番下品",
+        "酵母数", "奉仕方法",
     ])
     def test_boundary_safety(self, compound):
-        # Embeddable keys (強さ/母数/見方/仕方/一番下) must NOT be substituted
+        # Embeddable keys (母数/仕方) must NOT be substituted
         # inside a correctly-read compound — this is the regression the review
         # (B2) flagged and the reason deterministic substitution was risky.
         assert apply_tts_glossary(compound) == compound
 
     def test_guarded_standalone_still_fires(self):
-        assert apply_tts_glossary("階段の一番下です") == "階段の一番したです"
-        assert apply_tts_glossary("この強さ") == "このつよさ"
+        assert apply_tts_glossary("この母数です") == "このぼすうです"
+        assert apply_tts_glossary("その仕方") == "そのしかた"
 
     def test_safe_full_phrase(self):
-        assert apply_tts_glossary("考え方と読み方") == "かんがえかたとよみかた"
+        assert apply_tts_glossary("建前と捕食者") == "たてまえとほしょくしゃ"
 
     def test_non_key_untouched(self):
-        # 作り方/選び方 are NOT keys; a pass that converts 考え方 must leave them alone.
-        out = apply_tts_glossary("考え方と作り方と選び方")
-        assert "作り方" in out and "選び方" in out and "かんがえかた" in out
+        # 働き者/人気者 are NOT keys; a pass that converts 笑い者 must leave them alone.
+        out = apply_tts_glossary("笑い者と働き者と人気者")
+        assert "働き者" in out and "人気者" in out and "わらいもの" in out
 
     def test_idempotent(self):
-        s = "母数と強さと考え方、酵母数と手強さ、一番下と一番下手、捕食者、〇〇"
+        s = "母数と仕方、酵母数と奉仕方法、建前、捕食者、〇〇"
         once = apply_tts_glossary(s)
         assert apply_tts_glossary(once) == once
 
@@ -66,11 +65,11 @@ class TestApplyGlossary:
     # finding 4つ目→「よんつめ」. All context-free → glossary, not per-script kana.
     @pytest.mark.parametrize("src,want", [
         ("五つ目のパターン", "いつつめのパターン"),
+        ("五つ、高額の掲載料", "いつつ、高額の掲載料"),
         ("六つ目、特許取得", "むっつめ、特許取得"),
         ("5つ目のフレーズ", "いつつめのフレーズ"),
         ("6つのフレーズ", "むっつのフレーズ"),
         ("4つ目の選択肢", "よっつめの選択肢"),
-        ("五つ、高額の掲載料", "いつつ、高額の掲載料"),
         ("建前としては", "たてまえとしては"),
         ("放っておけない病気", "ほうっておけない病気"),
         ("放っておくと悪化する", "ほうっておくと悪化する"),
@@ -78,10 +77,69 @@ class TestApplyGlossary:
     def test_ep09_round_readings(self, src, want):
         assert apply_tts_glossary(src) == want
 
+    # Ep05 listening round 2026-08-03: 「何人いれば十分か」→ イレバジュップンカ.
+    # STRICTLY context-dependent — every other 十分 surface reads ジュウブン correctly
+    # both in isolation and in its real line, so the key is the 3-char 十分か, NOT 十分.
+    # Widening it to 十分 would flatten the 21 correctly-read occurrences in the corpus
+    # and degrade their pitch accent for no gain.
+    @pytest.mark.parametrize("src,want", [
+        ("「何人いれば十分か」に決まった線はない", "「何人いればじゅうぶんか」に決まった線はない"),
+        ("効果量や信頼区間は十分か、再現性は", "効果量や信頼区間はじゅうぶんか、再現性は"),
+    ])
+    def test_ep05_juubun_ka(self, src, want):
+        assert apply_tts_glossary(src) == want
+
+    @pytest.mark.parametrize("src", [
+        "それだけでは不十分。",
+        "基本はこれで十分です。",
+        "まだデータが十分に集まっていない",
+        "生物学的妥当性は「十分条件」ではありません",
+        "用量反応は週百五十分くらいまで",
+    ])
+    def test_juubun_ka_does_not_overreach(self, src):
+        # No 十分か substring -> the entry must not fire. 週百五十分 is 150 MINUTES
+        # (correctly ジュップン) and must never be rewritten.
+        assert apply_tts_glossary(src) == src
+
     def test_ordinal_longest_first(self):
         # 五つ目/六つ目 must win over the bare 五つ/六つ keys, and the guarded
         # 目の rule (which fires first) must still land on いつつめの.
+        # 2026-07-28: 五つめ->ゴツメ / 五つめの->ゴツメノ confirmed broken via /audio_query,
+        # so this family is load-bearing and must NOT be pruned.
         assert apply_tts_glossary("五つ目のパターンと六つ目") == "いつつめのパターンとむっつめ"
+
+    # 2026-07-26: the 目の->めの rule was itself CAUSING the reported 五つ目->「ごつめ」.
+    # Engine readings (verified via /audio_query moras):
+    #   一つ目の -> ヒトツメノ ok | 一つめの -> イチツメノ BROKEN
+    #   五つ目の -> イツツメノ ok | 五つめの -> ゴツメノ  BROKEN
+    #   六つ目の -> ムッツメノ ok | 六つめの -> ロクツメノ BROKEN
+    # So the ordinal family must be guarded against that rule.
+    @pytest.mark.parametrize("src", [
+        "一つ目のパターン", "二つ目のパターン", "三つ目のパターン", "四つ目のパターン",
+        "七つ目の場所", "3つ目の質問",
+    ])
+    def test_ordinal_plus_no_is_guarded(self, src):
+        # The hazard is a KANJI numeral left in front of めの — that is what misreads
+        # (五つめの -> ゴツメノ). A fully-kana ordinal is fine: verified 2026-07-28 via
+        # /audio_query, みっつめの -> ミッツメノ and よっつめの -> ヨッツメノ are both
+        # CORRECT. So the invariant is "no kanji numeral + めの", not "no めの at all" —
+        # the broader form failed once 三つ目/四つ目 gained their own safe keys.
+        import re
+        out = apply_tts_glossary(src)
+        assert not re.search(r"[一二三四五六七八九十]つ?めの?", out), f"{src} -> {out}"
+
+    @pytest.mark.parametrize("src,want", [
+        ("五つ目のパターン", "いつつめのパターン"),   # safe key wins, kana is unambiguous
+        ("六つ目の場所", "むっつめの場所"),
+        ("4つ目の質問", "よっつめの質問"),
+        ("一つ目のパターン", "一つ目のパターン"),     # untouched — reads ヒトツメノ correctly
+    ])
+    def test_ordinal_readings_after_guard(self, src, want):
+        assert apply_tts_glossary(src) == want
+
+    def test_me_no_rule_still_fires_where_intended(self):
+        # the guard must not disable the rule for its original targets
+        assert apply_tts_glossary("目のつけどころ") == "めのつけどころ"
 
     def test_ordinals_idempotent(self):
         s = "五つ目、六つ目、5つ目、4つ目、建前、放っておけない"
@@ -114,8 +172,8 @@ class TestCleanScriptIntegration:
         assert clean_script_for_tts("母数（ぼすう）") == "ぼすう"
 
     def test_glossary_applied_in_clean(self):
-        out = clean_script_for_tts("Speaker 1: 他の薬と強さ")
-        assert "ほかの" in out and "つよさ" in out
+        out = clean_script_for_tts("Speaker 1: 他の薬と母数")
+        assert "ほかの" in out and "ぼすう" in out
 
 
 # --------------------------------------------------------------------------- #

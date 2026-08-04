@@ -71,6 +71,16 @@ def _parse_speed_overrides(raw: str) -> dict:
 
 TTS_SPEED_OVERRIDES = _parse_speed_overrides(os.environ.get("TTS_SPEED_OVERRIDES", "1138003200:1.0"))
 
+# Per-voice intonationScale overrides — same "id:value" format and same fallback rule as
+# TTS_SPEED_OVERRIDES. AivisSpeech's default is 1.0. わかな (1138003200) reads with too much
+# pitch swing at the default: user feedback 2026-07-31 on ep02 was
+# 「わかなの声のトーンの起伏が少し激し過ぎる」— "a LITTLE too much", so she renders at 0.85,
+# a noticeable flattening rather than a monotone.
+TTS_INTONATION_SCALE = float(os.environ.get("TTS_INTONATION_SCALE", "1.0"))
+TTS_INTONATION_OVERRIDES = _parse_speed_overrides(
+    os.environ.get("TTS_INTONATION_OVERRIDES", "1138003200:0.85")
+)
+
 # --- Timeouts (seconds) ---
 LLM_TIMEOUT = 300
 SCRAPING_TIMEOUT = 25.0

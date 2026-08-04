@@ -35,6 +35,8 @@ from dr2_podcast.config import (
     TTS_RANDOM_VOICE,
     TTS_SPEED_SCALE,
     TTS_SPEED_OVERRIDES,
+    TTS_INTONATION_SCALE,
+    TTS_INTONATION_OVERRIDES,
 )
 
 from pydub import AudioSegment, effects
@@ -234,10 +236,12 @@ def _aivisspeech_available():
         return False
 
 
-def _call_aivisspeech_segment(text: str, speaker_id: int, speed_scale: float = None) -> tuple:
+def _call_aivisspeech_segment(text: str, speaker_id: int, speed_scale: float = None,
+                              intonation_scale: float = None) -> tuple:
     """Call AivisSpeech API (two-step: audio_query → synthesis). Returns (audio_np, sample_rate) or (None, None).
 
-    speed_scale overrides the global TTS_SPEED_SCALE for this segment (per-voice cadence)."""
+    speed_scale overrides the global TTS_SPEED_SCALE for this segment (per-voice cadence).
+    intonation_scale likewise overrides TTS_INTONATION_SCALE (per-voice pitch swing)."""
     try:
         import requests
         import io as _io
@@ -255,6 +259,9 @@ def _call_aivisspeech_segment(text: str, speaker_id: int, speed_scale: float = N
         q_resp.raise_for_status()
         query_data = q_resp.json()
         query_data["speedScale"] = TTS_SPEED_SCALE if speed_scale is None else speed_scale
+        query_data["intonationScale"] = (
+            TTS_INTONATION_SCALE if intonation_scale is None else intonation_scale
+        )
 
         # Step 2: Synthesize audio
         synth_resp = requests.post(
@@ -343,8 +350,9 @@ def _generate_audio_aivisspeech(script_text: str, output_filename: str) -> str:
             chunk_audios = []
             spk_id = host1_id if current_speaker == 1 else host2_id
             spk_speed = TTS_SPEED_OVERRIDES.get(spk_id, TTS_SPEED_SCALE)
+            spk_inton = TTS_INTONATION_OVERRIDES.get(spk_id, TTS_INTONATION_SCALE)
             for chunk in chunks:
-                a, sr_chunk = _call_aivisspeech_segment(chunk, spk_id, spk_speed)
+                a, sr_chunk = _call_aivisspeech_segment(chunk, spk_id, spk_speed, spk_inton)
                 if a is not None:
                     chunk_audios.append(a)
                 else:
