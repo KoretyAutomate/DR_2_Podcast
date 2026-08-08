@@ -86,6 +86,18 @@ def extract(scorecard: dict) -> dict[str, float]:
     return out
 
 
+def unmeasured(current: dict[str, float], floors: dict[str, float]) -> list[str]:
+    """Floored metrics this run did not report.
+
+    `compare` skips them, because a null audio_adherence_pct means the audio
+    step has not reported yet rather than that the audio is bad. But silence is
+    then a way past a floor: a producer that degrades to emitting nothing for a
+    metric breaches nothing. So the omission is surfaced separately instead of
+    being folded into either the pass or the failure.
+    """
+    return sorted(name for name in floors if name not in current)
+
+
 def compare(current: dict[str, float], floors: dict[str, float]) -> list[Breach]:
     """Every floored metric that came in the wrong side of its limit.
 

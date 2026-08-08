@@ -444,6 +444,7 @@ def generate_scorecard(output_dir: str) -> dict:
         },
         "regressions": [],
         "floor_breaches": [],
+        "floor_unmeasured": [],
     }
 
     # Run-over-run comparison — catches a cliff.
@@ -456,8 +457,15 @@ def generate_scorecard(output_dir: str) -> dict:
     # average every single run and still be far below what a publishable
     # episode requires, because the average descends with it.
     repo_root = Path(__file__).resolve().parent.parent.parent
-    breaches = floors_mod.compare(floors_mod.extract(scorecard), floors_mod.load(repo_root))
-    scorecard["floor_breaches"] = [str(b) for b in breaches]
+    limits = floors_mod.load(repo_root)
+    measured = floors_mod.extract(scorecard)
+    scorecard["floor_breaches"] = [str(b) for b in floors_mod.compare(measured, limits)]
+    scorecard["floor_unmeasured"] = floors_mod.unmeasured(measured, limits)
+    if not limits:
+        # Absence is loud. quality_floor.json lives at the repo root, so a wheel
+        # install (or a deleted file) resolves to nothing — and no floors means
+        # every run passes the floor check forever, silently.
+        logger.warning("No quality_floor.json found at %s — floor check is NOT running", repo_root)
 
     # Write scorecard
     sc_path = od / "run_scorecard.json"

@@ -149,3 +149,36 @@ def test_the_committed_floor_file_is_loadable_and_not_all_theatre():
     committed = floors.load(repo_root)
     assert committed, "quality_floor.json should exist and carry floors"
     assert floors.vacuous(committed) == []
+
+
+def test_unmeasured_names_floored_metrics_the_run_omitted():
+    """Silence must not be a way past a floor. compare() skips a metric the run
+    did not report; this is what makes that omission visible instead."""
+    limits = {"script_adherence_pct": 0.99, "audio_adherence_pct": 0.87}
+    measured = {"script_adherence_pct": 1.2}
+    assert floors.compare(measured, limits) == []
+    assert floors.unmeasured(measured, limits) == ["audio_adherence_pct"]
+
+
+def test_unmeasured_is_empty_when_every_floored_metric_reported():
+    assert floors.unmeasured({"a": 1.0}, {"a": 0.5}) == []
+
+
+def test_the_telegram_report_surfaces_a_breach():
+    """Nothing in the pipeline blocks on a breach — evaluation is deliberately
+    non-fatal — so the operator message is where a human finds out. If this
+    stops rendering, the floor becomes instrumentation nobody reads."""
+    from dr2_podcast.evaluation import telegram_report
+
+    sc = {
+        "topic": "t",
+        "language": "ja",
+        "metrics": {"research": {}, "script": {}, "audio": {}, "pipeline": {}},
+        "regressions": [],
+        "floor_breaches": ["script_adherence_pct: 0.500 below floor 0.993"],
+        "floor_unmeasured": ["audio_adherence_pct"],
+    }
+    body = telegram_report._format_run_report(sc, [])
+    assert "BELOW QUALITY FLOOR" in body
+    assert "script_adherence_pct" in body
+    assert "audio_adherence_pct" in body

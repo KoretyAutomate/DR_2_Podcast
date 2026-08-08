@@ -110,6 +110,26 @@ def _format_run_report(scorecard: dict, lessons: list[dict]) -> str:
         f"{audio_icon} Audio: {audio_min}min (target {audio_target or '?'})",
     ]
 
+    # Below the absolute floor. Listed FIRST and separately from regressions:
+    # a regression is "worse than lately", a breach is "under what a
+    # publishable run requires", and the second is the one that should stop a
+    # publish. Nothing in the pipeline blocks on it \u2014 evaluation is deliberately
+    # non-fatal \u2014 so this message is where a human finds out.
+    breaches = scorecard.get("floor_breaches", [])
+    if breaches:
+        lines.append("")
+        lines.append("\U0001f6d1 <b>BELOW QUALITY FLOOR \u2014 do not publish unexplained:</b>")
+        for breach in breaches[:5]:
+            lines.append(f"\u2022 {breach}")
+
+    # A floored metric the run never reported is not a pass. Without this a
+    # degraded producer evades its floor simply by emitting nothing for it.
+    unmeasured = scorecard.get("floor_unmeasured", [])
+    if unmeasured:
+        lines.append("")
+        lines.append("\u2753 <b>Floored metrics this run did not report:</b>")
+        lines.append(f"\u2022 {', '.join(unmeasured[:6])}")
+
     # Regressions
     regressions = scorecard.get("regressions", [])
     if regressions:
