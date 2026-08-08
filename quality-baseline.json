@@ -21,7 +21,7 @@
       "limit": 0
     },
     "min:tests": {
-      "limit": 794
+      "limit": 810
     },
     "mypy:arg-type": {
       "limit": 14
@@ -92,6 +92,6 @@
   },
   "rebaselined_at": "2026-08-08T14:56:16+00:00",
   "tool": "quality-ceiling",
-  "updated_at": "2026-08-08T14:56:16+00:00",
+  "updated_at": "2026-08-08T15:29:08+00:00",
   "version": 1
 }

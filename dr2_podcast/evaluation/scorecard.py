@@ -14,6 +14,8 @@ import wave
 from datetime import datetime
 from pathlib import Path
 
+from dr2_podcast.evaluation import floors as floors_mod
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -290,7 +292,13 @@ def _load_recent_scorecards(output_base: Path, exclude_run: str, limit: int = 5)
 
 
 def _detect_regressions(current: dict, history: list[dict]) -> list[str]:
-    """Flag metrics that worsened by >20% vs rolling average."""
+    """Flag metrics that worsened by >20% vs rolling average.
+
+    Catches a CLIFF only. The baseline moves with the metric, so a slow decay —
+    five runs at -19%, each dragging the average down for the next comparison —
+    reports "no regressions" the whole way down. The absolute floors in
+    ``floors.py`` are the other half of this, and both run.
+    """
     if not history:
         return []
 
@@ -298,15 +306,10 @@ def _detect_regressions(current: dict, history: list[dict]) -> list[str]:
     cm = current.get("metrics", {})
     regressions = []
 
-    # Define checks: (display_name, metric_path, higher_is_better)
-    checks = [
-        ("extraction_timeout_rate", ("research", "extraction_timeout_rate"), False),
-        ("url_validation_pass_rate", ("research", "url_validation_pass_rate"), True),
-        ("script_adherence_pct", ("script", "adherence_pct"), True),
-        ("audio_adherence_pct", ("audio", "adherence_pct"), True),
-        ("accuracy_audit_findings", ("script", "accuracy_audit_findings"), False),
-        ("degenerate_repetition_pct", ("script", "degenerate_repetition_pct"), False),
-    ]
+    # (display_name, metric_path, higher_is_better) — defined once in floors.py
+    # and shared, so this check and the absolute-floor check can never drift
+    # apart about what a metric means or which direction is good.
+    checks = floors_mod.METRICS
 
     for name, path, higher_better in checks:
         # Get current value
@@ -440,13 +443,21 @@ def generate_scorecard(output_dir: str) -> dict:
             },
         },
         "regressions": [],
+        "floor_breaches": [],
     }
 
-    # Run-over-run comparison
+    # Run-over-run comparison — catches a cliff.
     output_base = od.parent
     history = _load_recent_scorecards(output_base, run_id)
     regressions = _detect_regressions(scorecard, history)
     scorecard["regressions"] = regressions
+
+    # Absolute floors — catches a slope. A metric can sit inside the rolling
+    # average every single run and still be far below what a publishable
+    # episode requires, because the average descends with it.
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    breaches = floors_mod.compare(floors_mod.extract(scorecard), floors_mod.load(repo_root))
+    scorecard["floor_breaches"] = [str(b) for b in breaches]
 
     # Write scorecard
     sc_path = od / "run_scorecard.json"
@@ -456,5 +467,7 @@ def generate_scorecard(output_dir: str) -> dict:
     if regressions:
         for r in regressions:
             logger.warning("Regression: %s", r)
+    for b in scorecard["floor_breaches"]:
+        logger.warning("Below quality floor: %s", b)
 
     return scorecard

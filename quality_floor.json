@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "note": "Derived from the 13 scorecards in research_outputs as of 2026-08-08: worst observed value per metric, relaxed by a 0.85 margin. Limits only ever get stricter (floors.tighten) and only when set deliberately. OMITTED as underivable: url_validation_pass_rate \u2014 history contains a run at 0.000, so no floor read off the past could ever fire. Needs a deliberate threshold, not a derived one.",
+  "higher_is_better": {
+    "extraction_timeout_rate": false,
+    "url_validation_pass_rate": true,
+    "script_adherence_pct": true,
+    "audio_adherence_pct": true,
+    "accuracy_audit_findings": false,
+    "degenerate_repetition_pct": false
+  },
+  "floors": {
+    "accuracy_audit_findings": 5.8824,
+    "audio_adherence_pct": 0.8789,
+    "degenerate_repetition_pct": 0.0,
+    "extraction_timeout_rate": 0.0294,
+    "script_adherence_pct": 0.9928
+  }
+}
