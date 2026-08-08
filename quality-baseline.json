@@ -1,0 +1,97 @@
+{
+  "config": {
+    "bigfiles": true,
+    "mypy": true,
+    "pytest": true,
+    "ruff": {
+      "config": "~/.config/prepush/ruff.toml",
+      "select": null
+    },
+    "suppressions": true
+  },
+  "frozen_at": "2026-08-08T14:56:16+00:00",
+  "metrics": {
+    "bigfiles:over600": {
+      "limit": 10
+    },
+    "inline:noqa": {
+      "limit": 0
+    },
+    "inline:type-ignore": {
+      "limit": 0
+    },
+    "min:tests": {
+      "limit": 794
+    },
+    "mypy:arg-type": {
+      "limit": 14
+    },
+    "mypy:assignment": {
+      "limit": 45
+    },
+    "mypy:attr-defined": {
+      "limit": 11
+    },
+    "mypy:call-arg": {
+      "limit": 2
+    },
+    "mypy:dict-item": {
+      "limit": 1
+    },
+    "mypy:misc": {
+      "limit": 1
+    },
+    "mypy:no-redef": {
+      "limit": 1
+    },
+    "mypy:return": {
+      "limit": 1
+    },
+    "mypy:return-value": {
+      "limit": 8
+    },
+    "mypy:union-attr": {
+      "limit": 26
+    },
+    "mypy:var-annotated": {
+      "limit": 13
+    },
+    "ruff:B008": {
+      "limit": 2
+    },
+    "ruff:E402": {
+      "limit": 3
+    },
+    "ruff:E501": {
+      "limit": 166
+    },
+    "ruff:PLR0913": {
+      "limit": 6
+    },
+    "ruff:S105": {
+      "limit": 1
+    },
+    "ruff:S301": {
+      "limit": 1
+    },
+    "ruff:S310": {
+      "limit": 1
+    },
+    "ruff:S311": {
+      "limit": 3
+    },
+    "ruff:S603": {
+      "limit": 2
+    },
+    "ruff:S607": {
+      "limit": 2
+    },
+    "ruff:S608": {
+      "limit": 1
+    }
+  },
+  "rebaselined_at": "2026-08-08T14:56:16+00:00",
+  "tool": "quality-ceiling",
+  "updated_at": "2026-08-08T14:56:16+00:00",
+  "version": 1
+}
