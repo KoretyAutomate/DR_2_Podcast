@@ -676,7 +676,9 @@ class ContentFetcher:
         self.cache = cache
 
     async def fetch_page(self, url: str) -> FetchedPage:
-        async with _vllm_gate():
+        # NOT _vllm_gate(): this is an HTTP fetch, not an inference call. Holding a vLLM
+        # slot for up to SCRAPING_TIMEOUT would starve the other track's model calls.
+        async with self.semaphore:
             # SSRF guard — block private/link-local IPs
             if not is_safe_url(url):
                 logger.warning(f"Blocked SSRF-unsafe URL: {url}")
@@ -828,7 +830,7 @@ class SummaryWorker:
             f"- Use null (not quotes) for unknown metadata fields\n"
             f"- If no relevant information: output 'NO RELEVANT DATA' with no metadata"
         )
-        async with self.semaphore:
+        async with _vllm_gate():
             try:
                 resp = await self.client.chat.completions.create(
                     model=self.model,
