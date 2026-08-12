@@ -1,13 +1,16 @@
 """Shared pytest fixtures for DR_2_Podcast test suite."""
 
+# FIRST — pins env before any dr2_podcast import. See tests/_pinned_env.py.
+from tests._pinned_env import TEST_BASE_URL, TEST_MODEL_NAME
+
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def mock_env_vars(monkeypatch):
     """Set minimum env vars so modules can be imported without real services."""
-    monkeypatch.setenv("MODEL_NAME", "test-model")
-    monkeypatch.setenv("LLM_BASE_URL", "http://localhost:9999/v1")
+    monkeypatch.setenv("MODEL_NAME", TEST_MODEL_NAME)
+    monkeypatch.setenv("LLM_BASE_URL", TEST_BASE_URL)
     monkeypatch.setenv("LLM_API_KEY", "NA")
 
 

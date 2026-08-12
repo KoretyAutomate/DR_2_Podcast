@@ -128,8 +128,8 @@ class TestVllmGate:
                 for i, line in enumerate(text.splitlines(), 1):
                     if ".chat.completions.create(" in line and "await" in line:
                         offenders.append(f"{path.relative_to(pkg)}:{i}")
-        assert not offenders, (
-            "ungated async completion call(s) — route through utils.gated_create(): " + ", ".join(offenders)
+        assert not offenders, "ungated async completion call(s) — route through utils.gated_create(): " + ", ".join(
+            offenders
         )
 
     def test_gate_is_shared_across_callers_in_one_loop(self):

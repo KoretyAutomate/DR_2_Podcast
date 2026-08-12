@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+from tests._pinned_env import TEST_MODEL_NAME
 
 from dr2_podcast.pipeline_sot import build_imrad_sot
 from dr2_podcast.research.clinical import (
@@ -31,6 +34,10 @@ from dr2_podcast.research.clinical import (
     WideNetRecord,
 )
 from dr2_podcast.research.clinical_math import ClinicalImpact
+
+# The golden must be generated under the same pinned env the suite verifies it in,
+# or it embeds this machine's model name and CI (no .env) fails on every case.
+assert os.environ["MODEL_NAME"] == TEST_MODEL_NAME, "regenerate under the pinned test env — see tests/_pinned_env.py"
 
 GOLDEN_PATH = Path(__file__).parent / "golden_sot.json"
 
