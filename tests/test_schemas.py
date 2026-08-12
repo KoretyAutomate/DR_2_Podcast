@@ -21,12 +21,15 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 
+from dr2_podcast.research.clinical_math import calculate_impact
+from dr2_podcast.research.effect_size_math import d_to_r, hedges_g_correction, odds_ratio_to_d, r_to_d
 from dr2_podcast.schemas import (
     CONFIDENCE_LADDER,
     DERIVED_OPERATIONS,
     EXAMPLE_NAMES,
     SCHEMA_NAMES,
     SchemaValidationError,
+    agrees_to_stated_precision,
     compute_finding_key,
     example_path,
     extraction_errors,
@@ -39,6 +42,7 @@ from dr2_podcast.schemas import (
     net_direction,
     ordinal_monotonicity_errors,
     recompute_derived,
+    schema_errors,
     schema_path,
     span_errors,
     step_pack_errors,
@@ -226,7 +230,7 @@ SPAN_TARGETS: list[tuple[str, Callable[[dict[str, Any]], dict[str, Any]]]] = [
     ("funding", lambda i: i["funding_locator"]),
     ("extraction", lambda i: i["findings"][0]["locators"][0]),
     ("grade", lambda i: i["downgrades"][0]["locator"]),
-    ("grade_derived_input", lambda i: i["downgrades"][1]["locator"]["inputs"][0]),
+    ("grade_derived_input", lambda i: i["downgrades"][1]["locator"]["operands"]["ci_low"]["quoted"]),
     ("step_pack", lambda i: i["steps"]["4"]["locators"][0]),
 ]
 
@@ -266,10 +270,11 @@ def test_verify_locator_span_is_offset_sensitive() -> None:
 
 
 def test_iter_locators_reaches_every_nesting_depth() -> None:
-    """Including the locators inside a derived value's inputs, which sit three levels down."""
+    """Including the locators quoting a derived value's operands, four levels down."""
     pointers = [pointer for pointer, _ in iter_locators(load_example("grade"))]
     assert "/downgrades/0/locator" in pointers
-    assert "/downgrades/1/locator/inputs/0" in pointers
+    assert "/downgrades/1/locator/operands/ci_low/quoted" in pointers
+    assert "/downgrades/1/locator/operands/ci_high/quoted" in pointers
     assert "/upgrades/0/locator" in pointers
 
 
@@ -291,47 +296,125 @@ def test_validate_finding_raises_and_carries_every_error() -> None:
 # --------------------------------------------------------------------------- #
 # Derived values — recomputation, not shape
 # --------------------------------------------------------------------------- #
-def _derived(operation: str, operands: dict[str, float], result: Any, sourced: list[str] | None = None) -> dict:
-    fields = sourced if sourced is not None else list(DERIVED_OPERATIONS[operation][1])
-    return {
-        "kind": "derived",
-        "operation": operation,
-        "operands": operands,
-        "result": result,
-        "inputs": [
-            {
-                "fields": fields,
-                "source_artifact_id": "a",
-                "char_offset": 0,
-                "quoted_span": "x",
-            }
-        ],
-    }
+def _quoted(field: str) -> dict[str, Any]:
+    return {"fields": [field], "source_artifact_id": "a", "char_offset": 0, "quoted_span": "x"}
 
 
-CORRECT_DERIVED: list[tuple[str, dict[str, Any]]] = [
-    ("difference", _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, 0.05)),
-    ("ratio", _derived("ratio", {"numerator": 0.05, "denominator": 0.15}, 0.3333333333333333)),
-    ("reciprocal_abs", _derived("reciprocal_abs", {"value": 0.05}, 20.0)),
-    ("ci_includes_null", _derived("ci_includes_null", {"ci_low": -0.4, "ci_high": 2.8, "null_value": 0}, True)),
-    ("ci_excludes_null", _derived("ci_excludes_null", {"ci_low": 2.0, "ci_high": 8.0, "null_value": 0}, True)),
-]
+def _derived(
+    operation: str,
+    values: dict[str, float],
+    result: Any,
+    *,
+    constants: tuple[str, ...] = (),
+    computed: dict[str, dict[str, Any]] | None = None,
+    unsourced: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    computed = computed or {}
+    operands: dict[str, Any] = {}
+    for name, value in values.items():
+        if name in constants or name in unsourced:
+            operands[name] = {"value": value, "constant": True}
+        elif name in computed:
+            operands[name] = {"value": value, "computed": computed[name]}
+        else:
+            operands[name] = {"value": value, "quoted": _quoted(name)}
+    return {"kind": "derived", "operation": operation, "operands": operands, "result": result}
 
 
-@pytest.mark.parametrize(("case", "record"), CORRECT_DERIVED, ids=[case for case, _ in CORRECT_DERIVED])
+def _correct_derived_records() -> list[tuple[str, dict[str, Any]]]:
+    """One record per operation, with the result taken from the PRODUCTION calculator.
+
+    Hardcoding the expected numbers here would only prove this file agrees with itself. Taking
+    them from `clinical_math` / `effect_size_math` pins the schema's recomputation to the
+    functions that actually produce these values — if either drifts, this fails.
+    """
+    return [
+        ("difference", _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, 0.05)),
+        ("negate", _derived("negate", {"value": 0.05}, -0.05)),
+        ("ratio", _derived("ratio", {"numerator": 0.05, "denominator": 0.15}, 0.3333333333333333)),
+        ("reciprocal_abs", _derived("reciprocal_abs", {"value": 0.05}, 20.0)),
+        ("hedges_g", _derived("hedges_g", {"cohens_d": 0.5, "sample_size": 20}, hedges_g_correction(0.5, 20))),
+        (
+            "hedges_g_below_the_correction_floor",
+            _derived("hedges_g", {"cohens_d": 0.5, "sample_size": 3}, hedges_g_correction(0.5, 3)),
+        ),
+        ("odds_ratio_to_d", _derived("odds_ratio_to_d", {"odds_ratio": 2.0}, odds_ratio_to_d(2.0))),
+        ("r_to_d", _derived("r_to_d", {"r": 0.3}, r_to_d(0.3))),
+        ("d_to_r", _derived("d_to_r", {"cohens_d": 0.5}, d_to_r(0.5))),
+        (
+            "ci_includes_null",
+            _derived(
+                "ci_includes_null", {"ci_low": -0.4, "ci_high": 2.8, "null_value": 0}, True, constants=("null_value",)
+            ),
+        ),
+        (
+            "ci_excludes_null",
+            _derived(
+                "ci_excludes_null", {"ci_low": 2.0, "ci_high": 8.0, "null_value": 0}, True, constants=("null_value",)
+            ),
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("case", "record"), _correct_derived_records(), ids=[case for case, _ in _correct_derived_records()]
+)
 def test_correct_derived_value_passes(case: str, record: dict[str, Any]) -> None:
     assert recompute_derived(record) == [], case
 
 
+def test_every_operation_has_a_correct_case() -> None:
+    """A closed enum with an untested member is a contract nobody has checked."""
+    assert {case.split("_below")[0] for case, _ in _correct_derived_records()} == set(DERIVED_OPERATIONS)
+
+
+# codex review 2026-08-12, finding 1 (second round): operands could only be quoted from a paper,
+# which cannot express the pipeline's own arithmetic — RRR consumes a computed ARR, and NNT
+# consumes 1/|ARR|. Neither has a span in any paper.
+def test_the_real_calculate_impact_chain_validates_end_to_end() -> None:
+    impact = calculate_impact("pmid:12345678", cer=0.15, eer=0.1, outcome_is_adverse=True)
+    assert impact is not None
+    arr = _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, impact.arr)
+    rrr = _derived(
+        "ratio",
+        {"numerator": impact.arr, "denominator": 0.15},
+        impact.rrr,
+        computed={"numerator": arr},
+    )
+    nnt = _derived("reciprocal_abs", {"value": impact.arr}, impact.nnt, computed={"value": arr})
+    for record in (arr, rrr, nnt):
+        assert schema_errors("derived", record) == [], record
+        assert recompute_derived(record) == [], record
+
+
+def test_a_rounded_result_is_accepted_but_a_wrong_one_is_not() -> None:
+    """calculate_impact rounds RRR to 4 decimals; full-precision equality would reject its output."""
+    assert agrees_to_stated_precision(1 / 3, 0.3333)
+    assert agrees_to_stated_precision(20.04, 20.0)
+    assert not agrees_to_stated_precision(0.05, 0.5)
+    assert not agrees_to_stated_precision(1 / 3, 0.3433)
+
+
+def test_a_computed_operand_must_equal_the_derivation_it_names() -> None:
+    arr = _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, 0.05)
+    nnt = _derived("reciprocal_abs", {"value": 0.02}, 50.0, computed={"value": arr})
+    errors = recompute_derived(nnt)
+    assert any("does not equal the result" in error for error in errors), errors
+
+
+def test_a_defect_in_a_nested_derivation_is_caught() -> None:
+    """The walk recomputes the operand's own derivation, not just the top-level one."""
+    arr = _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, 0.02)
+    nnt = _derived("reciprocal_abs", {"value": 0.02}, 50.0, computed={"value": arr})
+    errors = recompute_derived(nnt)
+    assert any(error.startswith("/operands/value/computed/result: states 0.02") for error in errors), errors
+
+
 DERIVED_MUTATIONS: list[tuple[str, dict[str, Any], str]] = [
-    (
-        "wrong_arithmetic_result",
-        _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, 0.5),
-        "recomputed",
-    ),
+    ("wrong_arithmetic_result", _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, 0.5), "recomputed"),
     (
         "ci_verdict_inverted",
-        _derived("ci_includes_null", {"ci_low": 2.0, "ci_high": 8.0, "null_value": 0}, True),
+        _derived("ci_includes_null", {"ci_low": 2.0, "ci_high": 8.0, "null_value": 0}, True, constants=("null_value",)),
         "recomputed",
     ),
     (
@@ -339,30 +422,20 @@ DERIVED_MUTATIONS: list[tuple[str, dict[str, Any], str]] = [
         _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, True),
         "yields float",
     ),
-    (
-        "division_by_zero",
-        _derived("ratio", {"numerator": 0.05, "denominator": 0.0}, 0.0),
-        "undefined",
-    ),
+    ("division_by_zero", _derived("ratio", {"numerator": 0.05, "denominator": 0.0}, 0.0), "undefined"),
+    ("odds_ratio_out_of_domain", _derived("odds_ratio_to_d", {"odds_ratio": -1.0}, 0.0), "undefined"),
+    ("correlation_out_of_domain", _derived("r_to_d", {"r": 1.0}, 0.0), "undefined"),
     (
         "missing_operand",
         _derived("ci_includes_null", {"ci_low": -0.4, "ci_high": 2.8}, True),
         "takes",
     ),
+    ("extra_operand", _derived("reciprocal_abs", {"value": 0.05, "fudge": 1.0}, 20.0), "takes"),
+    # A measurement laundered as a constant is the way round the provenance requirement.
     (
-        "extra_operand",
-        _derived("reciprocal_abs", {"value": 0.05, "fudge": 1.0}, 20.0),
-        "takes",
-    ),
-    (
-        "operand_with_no_provenance",
-        _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, 0.05, sourced=["minuend"]),
-        "no locator names operand 'subtrahend'",
-    ),
-    (
-        "input_names_something_that_is_not_an_operand",
-        _derived("reciprocal_abs", {"value": 0.05}, 20.0, sourced=["value", "vibes"]),
-        "not an operand",
+        "measurement_declared_a_constant",
+        _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, 0.05, unsourced=("subtrahend",)),
+        "is a measurement, not a constant",
     ),
 ]
 
@@ -376,6 +449,13 @@ def test_derived_mutation_is_rejected(case: str, record: dict[str, Any], expecte
     errors = recompute_derived(record)
     assert errors, f"{case} was accepted"
     assert any(expected_fragment in error for error in errors), errors
+
+
+def test_an_operand_with_no_account_of_itself_is_structurally_invalid() -> None:
+    """Three ways in — quoted, computed, constant — and no fourth."""
+    record = _derived("negate", {"value": 0.05}, -0.05)
+    del record["operands"]["value"]["quoted"]
+    assert schema_errors("derived", record)
 
 
 def test_derived_defect_inside_a_grade_record_is_rejected() -> None:
@@ -393,7 +473,7 @@ def test_free_text_formula_is_no_longer_accepted() -> None:
     record["downgrades"][1]["locator"] = {
         "kind": "derived",
         "formula": "the moon says so",
-        "inputs": record["downgrades"][1]["locator"]["inputs"],
+        "inputs": [_quoted("ci_low")],
     }
     assert grade_errors(record, artifacts_for(record))
 
@@ -569,6 +649,74 @@ def test_an_observational_paper_may_have_no_trial_registration() -> None:
     extraction = load_example("extraction")
     extraction.update(trial_registration=None, study_design="prospective cohort", randomization_method=None)
     assert errors_for("extraction", extraction) == []
+
+
+def test_paper_metadata_is_accepted_and_constrained() -> None:
+    """codex review 2026-08-12, finding 2: every successfully built record carries it
+    (clinical.py:2527) and to_dict() serialises it, so additionalProperties:false was rejecting
+    real records. It is accepted — but as external API metadata, not as claim material."""
+    extraction = load_example("extraction")
+    assert errors_for("extraction", extraction) == []
+    extraction["paper_metadata"]["citation_cnt"] = 3
+    assert errors_for("extraction", extraction)
+
+
+def test_paper_metadata_may_be_absent_or_null() -> None:
+    extraction = load_example("extraction")
+    extraction.pop("paper_metadata")
+    assert errors_for("extraction", extraction) == []
+    extraction["paper_metadata"] = None
+    assert errors_for("extraction", extraction) == []
+
+
+# --------------------------------------------------------------------------- #
+# Migration guard: what today's DeepExtraction still has to change
+# --------------------------------------------------------------------------- #
+def _todays_extraction_dict() -> dict[str, Any]:
+    from dr2_podcast.research.clinical import DeepExtraction, PaperMetadata
+
+    return DeepExtraction(
+        pmid="12345678",
+        doi="10.1000/example.2026.001",
+        title="Vitamin D supplementation and hip fracture",
+        url="https://pubmed.ncbi.nlm.nih.gov/12345678/",
+        funding_source="National Institute on Aging",
+        control_event_rate=0.15,
+        experimental_event_rate=0.1,
+        outcome_is_adverse=True,
+        study_design="randomised controlled trial",
+        risk_of_bias="some concerns",
+        research_tier=1,
+        raw_facts="…",
+        paper_metadata=PaperMetadata(citation_count=214),
+    ).to_dict()
+
+
+def test_todays_deepextraction_names_exactly_the_step_9a_migration() -> None:
+    """This test is expected to FAIL-to-validate until Step 9a lands, and it says why.
+
+    It exists so the migration is a checklist rather than a discovery: when someone changes
+    DeepExtraction, the diff between this and the contract is what is left to do. When 9a is
+    complete this test flips to asserting the record validates — do not delete it, invert it.
+    """
+    errors = schema_errors("extraction", _todays_extraction_dict())
+    missing = {"trial_registration", "author_group", "funding", "findings"}
+    moved_away = {"funding_source", "control_event_rate", "experimental_event_rate", "outcome_is_adverse"}
+    for field in missing:
+        assert any(f"'{field}' is a required property" in error for error in errors), field
+    for field in moved_away:
+        assert any(field in error and "not allowed" in error for error in errors), field
+
+
+def test_to_dict_dropping_nulls_is_itself_part_of_the_migration() -> None:
+    """DeepExtraction.to_dict() omits any field that is None (clinical.py:288), but the contract
+    requires the key to be present and explicitly null: absent cannot distinguish 'we looked and
+    found nothing' from 'this producer version does not set it'. 9a's to_dict must emit nulls."""
+    from dr2_podcast.research.clinical import DeepExtraction
+
+    record = DeepExtraction(pmid="1", doi=None, title="t", url="u").to_dict()
+    assert "doi" not in record
+    assert any("'doi' is a required property" in error for error in schema_errors("extraction", record))
 
 
 # --------------------------------------------------------------------------- #

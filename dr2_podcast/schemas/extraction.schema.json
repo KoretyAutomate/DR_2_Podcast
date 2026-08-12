@@ -64,6 +64,22 @@
     "biological_mechanism": { "type": ["string", "null"], "minLength": 1 },
     "primary_outcome": { "type": ["string", "null"], "minLength": 1 },
     "secondary_outcomes": { "type": ["array", "null"], "items": { "type": "string", "minLength": 1 } },
-    "raw_facts": { "type": "string" }
+    "raw_facts": { "type": "string" },
+    "paper_metadata": {
+      "description": "External API metadata (OpenAlex / Semantic Scholar / Crossref), carried on every successfully built record (clinical.py:2527) and serialised by DeepExtraction.to_dict(). It is NOT extracted claim material: nothing here has a locator in the paper, which is exactly why api_metadata funding is a separate provenance in the funding block. Anything claim-bearing must be projected into `funding` or `findings` before it can be used. All fields optional — the pipeline degrades gracefully when the APIs are unreachable.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "citation_count": { "type": ["integer", "null"], "minimum": 0 },
+        "influential_citation_count": { "type": ["integer", "null"], "minimum": 0 },
+        "fwci": { "type": ["number", "null"] },
+        "funding_sources": { "type": ["array", "null"], "items": { "type": "string", "minLength": 1 } },
+        "is_retracted": { "type": ["boolean", "null"] },
+        "is_corrected": { "type": ["boolean", "null"] },
+        "has_clinical_trial_number": { "type": ["boolean", "null"] },
+        "clinical_trial_numbers": { "type": ["array", "null"], "items": { "type": "string", "minLength": 1 } },
+        "enrichment_sources": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    }
   }
 }

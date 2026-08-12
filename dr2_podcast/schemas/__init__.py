@@ -38,6 +38,7 @@ import json
 import math
 import unicodedata
 from collections import Counter
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -220,63 +221,127 @@ def span_errors(instance: Any, artifacts: dict[str, str]) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Derived values
 # --------------------------------------------------------------------------- #
-#: operation -> (every operand it takes, the operands that must be quoted from a paper).
-#: ``null_value`` is the constant a confidence interval is compared against (0 for a difference,
-#: 1 for a ratio); it is stated, not quoted, so it is exempt from provenance.
-DERIVED_OPERATIONS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "difference": (("minuend", "subtrahend"), ("minuend", "subtrahend")),
-    "ratio": (("numerator", "denominator"), ("numerator", "denominator")),
-    "reciprocal_abs": (("value",), ("value",)),
-    "ci_includes_null": (("ci_low", "ci_high", "null_value"), ("ci_low", "ci_high")),
-    "ci_excludes_null": (("ci_low", "ci_high", "null_value"), ("ci_low", "ci_high")),
+#: operation -> the operand names it takes. Exactly the arithmetic this repo's two deterministic
+#: calculators compute (``clinical_math.py``, ``effect_size_math.py``) plus the GRADE imprecision
+#: judgement. Nothing speculative: an operation with no producer would be a contract nobody meets,
+#: and an operation a producer needs but the enum lacks would reject real data.
+DERIVED_OPERATIONS: dict[str, tuple[str, ...]] = {
+    "difference": ("minuend", "subtrahend"),
+    "negate": ("value",),
+    "ratio": ("numerator", "denominator"),
+    "reciprocal_abs": ("value",),
+    "hedges_g": ("cohens_d", "sample_size"),
+    "odds_ratio_to_d": ("odds_ratio",),
+    "r_to_d": ("r",),
+    "d_to_r": ("cohens_d",),
+    "ci_includes_null": ("ci_low", "ci_high", "null_value"),
+    "ci_excludes_null": ("ci_low", "ci_high", "null_value"),
+}
+
+#: Which operands may be declared ``constant`` rather than quoted or computed. Only the null a
+#: confidence interval is compared against — everything else is a measurement and needs an account
+#: of where it came from, or ``constant`` becomes the way to launder an unsourced number.
+CONSTANT_OPERANDS: dict[str, frozenset[str]] = {
+    "ci_includes_null": frozenset({"null_value"}),
+    "ci_excludes_null": frozenset({"null_value"}),
 }
 
 
-def _evaluate_derived(operation: str, operands: dict[str, float]) -> float | bool | None:
+def _evaluate_arithmetic(operation: str, values: dict[str, float]) -> float | None:
     if operation == "difference":
-        return operands["minuend"] - operands["subtrahend"]
+        return values["minuend"] - values["subtrahend"]
+    if operation == "negate":
+        return -values["value"]
     if operation == "ratio":
-        return operands["numerator"] / operands["denominator"] if operands["denominator"] else None
+        return values["numerator"] / values["denominator"] if values["denominator"] else None
     if operation == "reciprocal_abs":
-        return 1.0 / abs(operands["value"]) if operands["value"] else None
-    inside = operands["ci_low"] <= operands["null_value"] <= operands["ci_high"]
-    return inside if operation == "ci_includes_null" else not inside
+        return 1.0 / abs(values["value"]) if values["value"] else None
+    if operation == "hedges_g":
+        # Mirrors effect_size_math.hedges_g_correction, including its n<4 no-correction branch.
+        sample_size = values["sample_size"]
+        if sample_size < 4:
+            return values["cohens_d"]
+        return values["cohens_d"] * (1 - 3 / (4 * sample_size - 9))
+    if operation == "odds_ratio_to_d":
+        odds_ratio = values["odds_ratio"]
+        return math.log(odds_ratio) * math.sqrt(3) / math.pi if odds_ratio > 0 else None
+    if operation == "r_to_d":
+        r = values["r"]
+        return 2 * r / math.sqrt(1 - r * r) if abs(r) < 1.0 else None
+    return values["cohens_d"] / math.sqrt(values["cohens_d"] ** 2 + 4)
+
+
+def _evaluate_derived(operation: str, values: dict[str, float]) -> float | bool | None:
+    if operation in ("ci_includes_null", "ci_excludes_null"):
+        inside = values["ci_low"] <= values["null_value"] <= values["ci_high"]
+        return inside if operation == "ci_includes_null" else not inside
+    return _evaluate_arithmetic(operation, values)
+
+
+def agrees_to_stated_precision(expected: float, stated: float) -> bool:
+    """True iff ``stated`` is ``expected`` correctly rounded to the precision ``stated`` is written at.
+
+    A plain float comparison is the wrong check here, and would be a constraint stricter than the
+    pipeline itself: ``clinical_math.calculate_impact`` rounds RRR to 4 decimals and NNT to 1
+    (``clinical_math.py:71-74``), so an exactly-correct record would be rejected for stating
+    ``0.3333`` where the arithmetic gives ``0.33333…``. What is checked is therefore agreement at
+    the reported precision — which still rejects a wrong number, because a wrong number is not the
+    correct rounding of the right one at any precision it claims.
+    """
+    if math.isclose(expected, float(stated), rel_tol=1e-9, abs_tol=1e-12):
+        return True
+    decimals = -Decimal(str(stated)).as_tuple().exponent
+    if not isinstance(decimals, int) or decimals < 0:
+        return False
+    return abs(expected - float(stated)) <= 0.5 * 10.0**-decimals
 
 
 def _derived_result_errors(record: dict[str, Any], pointer: str) -> list[str]:
     operation = record["operation"]
-    operands = record["operands"]
-    expected = _evaluate_derived(operation, operands)
+    values = {name: operand["value"] for name, operand in record["operands"].items()}
+    expected = _evaluate_derived(operation, values)
     stated = record["result"]
     if expected is None:
-        return [f"{pointer}/operands: {operation} is undefined for these operands (division by zero)"]
+        return [f"{pointer}/operands: {operation} is undefined for these operands"]
     if isinstance(expected, bool) != isinstance(stated, bool):
         return [f"{pointer}/result: {operation} yields {type(expected).__name__}, but the record states {stated!r}"]
     if isinstance(expected, bool):
         return [] if expected == stated else [f"{pointer}/result: states {stated!r}, recomputed {expected!r}"]
-    if not math.isclose(expected, float(stated), rel_tol=1e-9, abs_tol=1e-12):
-        return [f"{pointer}/result: states {stated!r}, recomputed {expected!r} from {operands!r}"]
+    if not agrees_to_stated_precision(expected, float(stated)):
+        return [f"{pointer}/result: states {stated!r}, recomputed {expected!r} from {values!r}"]
     return []
 
 
-def _derived_errors(record: dict[str, Any], pointer: str) -> list[str]:
+def _operand_provenance_errors(record: dict[str, Any], pointer: str) -> list[str]:
+    """Constants only where declared, and a computed operand must equal the derivation it names."""
     operation = record["operation"]
-    accepted, quoted = DERIVED_OPERATIONS[operation]
-    operands = record["operands"]
-    errors = [f"{pointer}/operands: {operation} takes {list(accepted)}, got {sorted(operands)}"] if (
-        set(operands) != set(accepted)
-    ) else []
-    if errors:
-        return errors
-    sourced = {field for locator in record["inputs"] for field in locator["fields"]}
-    errors.extend(
-        f"{pointer}/inputs: no locator names operand {name!r}" for name in quoted if name not in sourced
-    )
-    errors.extend(
-        f"{pointer}/inputs: {name!r} is not an operand of {operation}" for name in sorted(sourced - set(accepted))
-    )
-    errors.extend(_derived_result_errors(record, pointer))
+    allowed_constants = CONSTANT_OPERANDS.get(operation, frozenset())
+    errors: list[str] = []
+    for name, operand in sorted(record["operands"].items()):
+        if "constant" in operand and name not in allowed_constants:
+            errors.append(
+                f"{pointer}/operands/{name}: {name!r} is a measurement, not a constant of {operation} — "
+                f"it needs a quoted span or a computed derivation"
+            )
+        nested = operand.get("computed")
+        if nested is None:
+            continue
+        if isinstance(nested["result"], bool):
+            errors.append(f"{pointer}/operands/{name}/computed: a boolean verdict cannot be a numeric operand")
+        elif not math.isclose(operand["value"], float(nested["result"]), rel_tol=1e-9, abs_tol=1e-12):
+            errors.append(
+                f"{pointer}/operands/{name}/value: {operand['value']!r} does not equal the result "
+                f"{nested['result']!r} of the derivation it names"
+            )
     return errors
+
+
+def _derived_errors(record: dict[str, Any], pointer: str) -> list[str]:
+    accepted = DERIVED_OPERATIONS[record["operation"]]
+    operands = record["operands"]
+    if set(operands) != set(accepted):
+        return [f"{pointer}/operands: {record['operation']} takes {list(accepted)}, got {sorted(operands)}"]
+    return _operand_provenance_errors(record, pointer) + _derived_result_errors(record, pointer)
 
 
 def recompute_derived(instance: Any) -> list[str]:

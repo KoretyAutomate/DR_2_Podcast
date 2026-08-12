@@ -20,16 +20,28 @@
       "locator": {
         "kind": "derived",
         "operation": "ci_includes_null",
-        "operands": { "ci_low": -0.4, "ci_high": 2.8, "null_value": 0 },
-        "result": true,
-        "inputs": [
-          {
-            "fields": ["ci_low", "ci_high"],
-            "source_artifact_id": "meta:pooled#results",
-            "char_offset": 640,
-            "quoted_span": "pooled absolute risk reduction 1.2% (95% CI -0.4 to 2.8)"
-          }
-        ]
+        "operands": {
+          "ci_low": {
+            "value": -0.4,
+            "quoted": {
+              "fields": ["ci_low"],
+              "source_artifact_id": "meta:pooled#results",
+              "char_offset": 640,
+              "quoted_span": "pooled absolute risk reduction 1.2% (95% CI -0.4 to 2.8)"
+            }
+          },
+          "ci_high": {
+            "value": 2.8,
+            "quoted": {
+              "fields": ["ci_high"],
+              "source_artifact_id": "meta:pooled#results",
+              "char_offset": 640,
+              "quoted_span": "pooled absolute risk reduction 1.2% (95% CI -0.4 to 2.8)"
+            }
+          },
+          "null_value": { "value": 0, "constant": true }
+        },
+        "result": true
       }
     }
   ],

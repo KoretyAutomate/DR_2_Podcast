@@ -18,6 +18,14 @@
   "primary_outcome": "hip fracture",
   "secondary_outcomes": ["any fall", "serum 25(OH)D"],
   "raw_facts": "",
+  "paper_metadata": {
+    "citation_count": 214,
+    "funding_sources": ["National Institute on Aging", "Acme Pharma"],
+    "is_retracted": false,
+    "has_clinical_trial_number": true,
+    "clinical_trial_numbers": ["NCT01234567"],
+    "enrichment_sources": ["openalex", "semantic_scholar"]
+  },
   "funding": {
     "funding_raw": "Supported by grant R01-AG000000 from the National Institute on Aging; study drug donated by Acme Pharma.",
     "funding_category": "mixed",
