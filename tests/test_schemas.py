@@ -1,13 +1,15 @@
-"""Mutation matrix for the four schema artifacts.
+"""Mutation matrix for the schema artifacts.
 
 PLAN.md, "Where the loop stands": rounds 4 and 5 of the Codex plan review found *only* missing
 fields in schemas written as Markdown prose, and the stated terminal move was to make a missing
 field a test failure rather than a reviewer's catch. This file is that test. Every case below
-that carries a `# iteration N` comment is a defect a human reviewer actually had to find.
+that carries an `# iteration N` or `# codex review` comment is a defect a reviewer actually had
+to find.
 
 Structure: for each schema, the canonical instance must PASS, and one mutation per promised
 failure class must be REJECTED. A mutation matrix, not a spot check — a validator that rejects
-everything passes a spot check.
+everything passes a spot check. Each mutation moves exactly one axis away from a legal instance,
+so a case cannot pass for a reason other than the one it names.
 """
 
 from __future__ import annotations
@@ -21,19 +23,24 @@ from jsonschema import Draft202012Validator
 
 from dr2_podcast.schemas import (
     CONFIDENCE_LADDER,
+    DERIVED_OPERATIONS,
     EXAMPLE_NAMES,
     SCHEMA_NAMES,
     SchemaValidationError,
     compute_finding_key,
     example_path,
+    extraction_errors,
     finding_errors,
     funding_errors,
     grade_errors,
+    iter_locators,
     load_example,
     load_schema,
     net_direction,
     ordinal_monotonicity_errors,
+    recompute_derived,
     schema_path,
+    span_errors,
     step_pack_errors,
     validate_finding,
     validate_grade,
@@ -43,17 +50,14 @@ from dr2_podcast.schemas import (
 Mutation = Callable[[dict[str, Any]], None]
 
 
-def _mutated(name: str, mutation: Mutation) -> dict[str, Any]:
-    """A fresh copy of the canonical instance with one defect injected."""
-    instance = load_example(name)
-    mutation(instance)
-    return instance
+def artifacts_for(instance: Any) -> dict[str, str]:
+    """Synthesise source artifacts that literally contain every span at its declared offset.
 
-
-def _artifact_text(locators: list[dict[str, Any]]) -> dict[str, str]:
-    """Synthesise source artifacts that literally contain every span at its declared offset."""
+    Real runs pass the fetched documents. The tests need the *provenance* check to pass so that a
+    mutation elsewhere is what fails; the span-specific cases below break these deliberately.
+    """
     by_artifact: dict[str, list[dict[str, Any]]] = {}
-    for locator in locators:
+    for _, locator in iter_locators(instance):
         by_artifact.setdefault(locator["source_artifact_id"], []).append(locator)
     artifacts: dict[str, str] = {}
     for artifact_id, entries in by_artifact.items():
@@ -64,6 +68,18 @@ def _artifact_text(locators: list[dict[str, Any]]) -> dict[str, str]:
                 buffer[entry["char_offset"] + index] = char
         artifacts[artifact_id] = "".join(buffer)
     return artifacts
+
+
+def errors_for(name: str, instance: dict[str, Any]) -> list[str]:
+    """Full validation of an instance against artifacts built to satisfy its own locators."""
+    return VALIDATORS[name](instance, artifacts_for(instance))
+
+
+def _mutated(name: str, mutation: Mutation) -> dict[str, Any]:
+    """A fresh copy of the canonical instance with one defect injected."""
+    instance = load_example(name)
+    mutation(instance)
+    return instance
 
 
 # --------------------------------------------------------------------------- #
@@ -83,7 +99,7 @@ def test_canonical_example_round_trips_on_disk(name: str) -> None:
     raw = example_path(name).read_text(encoding="utf-8")
     instance = json.loads(raw)
     assert json.loads(json.dumps(instance, ensure_ascii=False)) == instance
-    assert VALIDATORS[name](instance) == []
+    assert errors_for(name, instance) == []
 
 
 def test_schema_and_example_files_are_utf8_and_newline_terminated() -> None:
@@ -118,12 +134,6 @@ def test_null_timepoint_is_the_same_identity_as_empty() -> None:
 # --------------------------------------------------------------------------- #
 # Findings — must pass
 # --------------------------------------------------------------------------- #
-def test_canonical_finding_passes_including_span_verification() -> None:
-    finding = load_example("finding")
-    artifacts = _artifact_text(finding["locators"])
-    assert finding_errors(finding, artifacts) == []
-
-
 def test_finding_with_only_identity_and_direction_passes() -> None:
     """Coverage is required for claim-bearing fields that are PRESENT, not for every field."""
     finding = load_example("finding")
@@ -139,7 +149,7 @@ def test_finding_with_only_identity_and_direction_passes() -> None:
             "quoted_span": "no numeric result was reported for this endpoint",
         }
     ]
-    assert finding_errors(finding) == []
+    assert errors_for("finding", finding) == []
 
 
 def test_null_timepoint_needs_no_locator() -> None:
@@ -148,7 +158,7 @@ def test_null_timepoint_needs_no_locator() -> None:
     finding["finding_key"] = compute_finding_key(finding)
     finding["locators"][0]["fields"] = ["population", "intervention", "comparator", "endpoint"]
     finding["locators"][1]["fields"] = ["direction", "value", "unit", "ci_low", "ci_high", "p_value"]
-    assert finding_errors(finding) == []
+    assert errors_for("finding", finding) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -163,21 +173,9 @@ def _drop_field_from_coverage(finding: dict[str, Any], field: str) -> None:
 
 
 FINDING_MUTATIONS: list[tuple[str, Mutation, str]] = [
-    (
-        "model_authored_key",
-        lambda f: f.__setitem__("finding_key", "0" * 40),
-        "finding_key",
-    ),
-    (
-        "identity_changed_without_rekey",
-        lambda f: f.__setitem__("endpoint", "転倒"),
-        "finding_key",
-    ),
-    (
-        "uncovered_p_value",
-        lambda f: _drop_field_from_coverage(f, "p_value"),
-        "no locator names 'p_value'",
-    ),
+    ("model_authored_key", lambda f: f.__setitem__("finding_key", "0" * 40), "finding_key"),
+    ("identity_changed_without_rekey", lambda f: f.__setitem__("endpoint", "転倒"), "finding_key"),
+    ("uncovered_p_value", lambda f: _drop_field_from_coverage(f, "p_value"), "no locator names 'p_value'"),
     # iteration 5, finding 2 — intervention and comparator are two of the five finding_key inputs,
     # so an unsourced arm corrupts finding identity and therefore replication grouping.
     (
@@ -185,69 +183,25 @@ FINDING_MUTATIONS: list[tuple[str, Mutation, str]] = [
         lambda f: _drop_field_from_coverage(f, "intervention"),
         "no locator names 'intervention'",
     ),
-    (
-        "uncovered_comparator",
-        lambda f: _drop_field_from_coverage(f, "comparator"),
-        "no locator names 'comparator'",
-    ),
-    (
-        # p_value goes null while a locator still claims to source it.
-        "locator_names_a_null_field",
-        lambda f: f.__setitem__("p_value", None),
-        "is null on this finding",
-    ),
+    ("uncovered_comparator", lambda f: _drop_field_from_coverage(f, "comparator"), "no locator names 'comparator'"),
+    # p_value goes null while a locator still claims to source it.
+    ("locator_names_a_null_field", lambda f: f.__setitem__("p_value", None), "is null on this finding"),
     (
         "locator_names_a_non_claim_field",
         lambda f: f["locators"][0]["fields"].append("title"),
         "not a claim-bearing field",
     ),
-    (
-        "cer_without_eer",
-        lambda f: f.__setitem__("experimental_event_rate", None),
-        "must both be present or both null",
-    ),
+    ("cer_without_eer", lambda f: f.__setitem__("experimental_event_rate", None), "must both be present or both null"),
     # iteration 5, finding 1 — clinical_math.py:39 reads a missing flag as "adverse" and would
     # report a directionally wrong NNT for a beneficial endpoint.
-    (
-        "rates_without_polarity",
-        lambda f: f.__setitem__("outcome_is_adverse", None),
-        "outcome_is_adverse",
-    ),
-    (
-        "inverted_confidence_interval",
-        lambda f: f.__setitem__("ci_low", 9.0),
-        "greater than ci_high",
-    ),
-    (
-        "half_a_confidence_interval",
-        lambda f: f.__setitem__("ci_high", None),
-        "ci_low and ci_high",
-    ),
-    (
-        "impossible_p_value",
-        lambda f: f.__setitem__("p_value", 1.5),
-        "1.5",
-    ),
-    (
-        "direction_outside_enum",
-        lambda f: f.__setitem__("direction", "improved"),
-        "improved",
-    ),
-    (
-        "unknown_property",
-        lambda f: f.__setitem__("conclusion", "vitamin D works"),
-        "conclusion",
-    ),
-    (
-        "no_locators_at_all",
-        lambda f: f.__setitem__("locators", []),
-        "locators",
-    ),
-    (
-        "missing_required_identity_field",
-        lambda f: f.pop("comparator"),
-        "comparator",
-    ),
+    ("rates_without_polarity", lambda f: f.__setitem__("outcome_is_adverse", None), "outcome_is_adverse"),
+    ("inverted_confidence_interval", lambda f: f.__setitem__("ci_low", 9.0), "greater than ci_high"),
+    ("half_a_confidence_interval", lambda f: f.__setitem__("ci_high", None), "ci_low and ci_high"),
+    ("impossible_p_value", lambda f: f.__setitem__("p_value", 1.5), "1.5"),
+    ("direction_outside_enum", lambda f: f.__setitem__("direction", "improved"), "improved"),
+    ("unknown_property", lambda f: f.__setitem__("conclusion", "vitamin D works"), "conclusion"),
+    ("no_locators_at_all", lambda f: f.__setitem__("locators", []), "locators"),
+    ("missing_required_identity_field", lambda f: f.pop("comparator"), "comparator"),
 ]
 
 
@@ -257,30 +211,51 @@ FINDING_MUTATIONS: list[tuple[str, Mutation, str]] = [
     ids=[case for case, _, _ in FINDING_MUTATIONS],
 )
 def test_finding_mutation_is_rejected(case: str, mutation: Mutation, expected_fragment: str) -> None:
-    errors = finding_errors(_mutated("finding", mutation))
+    errors = errors_for("finding", _mutated("finding", mutation))
     assert errors, f"{case} was accepted"
     assert any(expected_fragment in error for error in errors), errors
 
 
-def test_span_that_is_not_in_the_artifact_is_rejected() -> None:
-    finding = load_example("finding")
-    artifacts = _artifact_text(finding["locators"])
-    finding["locators"][1]["quoted_span"] = "absolute risk reduction 50.0% (95% CI 2.0 to 8.0), p=0.03"
-    errors = finding_errors(finding, artifacts)
+# --------------------------------------------------------------------------- #
+# Locator spans — the provenance check, on every schema that can carry one
+# --------------------------------------------------------------------------- #
+# codex review 2026-08-12, finding 2: span verification used to be opt-in (`artifacts=None`) and
+# funding/GRADE/step-pack locators were never resolved at all, so fabricated provenance passed.
+SPAN_TARGETS: list[tuple[str, Callable[[dict[str, Any]], dict[str, Any]]]] = [
+    ("finding", lambda i: i["locators"][1]),
+    ("funding", lambda i: i["funding_locator"]),
+    ("extraction", lambda i: i["findings"][0]["locators"][0]),
+    ("grade", lambda i: i["downgrades"][0]["locator"]),
+    ("grade_derived_input", lambda i: i["downgrades"][1]["locator"]["inputs"][0]),
+    ("step_pack", lambda i: i["steps"]["4"]["locators"][0]),
+]
+
+
+@pytest.mark.parametrize(("case", "pick"), SPAN_TARGETS, ids=[case for case, _ in SPAN_TARGETS])
+def test_a_span_absent_from_its_artifact_is_rejected(
+    case: str, pick: Callable[[dict[str, Any]], dict[str, Any]]
+) -> None:
+    name = case.split("_derived")[0]
+    instance = load_example(name)
+    artifacts = artifacts_for(instance)
+    pick(instance)["char_offset"] += 3
+    errors = VALIDATORS[name](instance, artifacts)
     assert any("not a literal substring" in error for error in errors), errors
 
 
-def test_span_against_an_unknown_artifact_is_rejected() -> None:
-    finding = load_example("finding")
-    errors = finding_errors(finding, {"pmid:99999999#fulltext": "unrelated text"})
-    assert all("unknown artifact" in error for error in errors)
-    assert len(errors) == len(finding["locators"])
+@pytest.mark.parametrize("name", EXAMPLE_NAMES)
+def test_validation_against_no_artifacts_at_all_fails(name: str) -> None:
+    """An empty artifact map is not a free pass — every locator becomes unresolvable."""
+    instance = load_example(name)
+    errors = VALIDATORS[name](instance, {})
+    assert errors, f"{name} validated with nothing to check its provenance against"
+    assert all("unknown artifact" in error for error in errors), errors
 
 
-def test_span_offset_shifted_by_one_is_rejected() -> None:
+def test_a_rewritten_quote_is_rejected() -> None:
     finding = load_example("finding")
-    artifacts = _artifact_text(finding["locators"])
-    finding["locators"][0]["char_offset"] += 1
+    artifacts = artifacts_for(finding)
+    finding["locators"][1]["quoted_span"] = "absolute risk reduction 50.0% (95% CI 2.0 to 8.0), p=0.03"
     assert any("not a literal substring" in error for error in finding_errors(finding, artifacts))
 
 
@@ -290,14 +265,137 @@ def test_verify_locator_span_is_offset_sensitive() -> None:
     assert not verify_locator_span(locator, "alphaXbetagamma")
 
 
+def test_iter_locators_reaches_every_nesting_depth() -> None:
+    """Including the locators inside a derived value's inputs, which sit three levels down."""
+    pointers = [pointer for pointer, _ in iter_locators(load_example("grade"))]
+    assert "/downgrades/0/locator" in pointers
+    assert "/downgrades/1/locator/inputs/0" in pointers
+    assert "/upgrades/0/locator" in pointers
+
+
+def test_span_errors_is_usable_standalone() -> None:
+    assert span_errors(load_example("grade"), artifacts_for(load_example("grade"))) == []
+
+
 def test_validate_finding_raises_and_carries_every_error() -> None:
     finding = load_example("finding")
+    artifacts = artifacts_for(finding)
     finding["finding_key"] = "0" * 40
     finding["ci_low"] = 9.0
     with pytest.raises(SchemaValidationError) as excinfo:
-        validate_finding(finding)
+        validate_finding(finding, artifacts)
     assert len(excinfo.value.errors) == 2
     assert excinfo.value.artifact == "finding"
+
+
+# --------------------------------------------------------------------------- #
+# Derived values — recomputation, not shape
+# --------------------------------------------------------------------------- #
+def _derived(operation: str, operands: dict[str, float], result: Any, sourced: list[str] | None = None) -> dict:
+    fields = sourced if sourced is not None else list(DERIVED_OPERATIONS[operation][1])
+    return {
+        "kind": "derived",
+        "operation": operation,
+        "operands": operands,
+        "result": result,
+        "inputs": [
+            {
+                "fields": fields,
+                "source_artifact_id": "a",
+                "char_offset": 0,
+                "quoted_span": "x",
+            }
+        ],
+    }
+
+
+CORRECT_DERIVED: list[tuple[str, dict[str, Any]]] = [
+    ("difference", _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, 0.05)),
+    ("ratio", _derived("ratio", {"numerator": 0.05, "denominator": 0.15}, 0.3333333333333333)),
+    ("reciprocal_abs", _derived("reciprocal_abs", {"value": 0.05}, 20.0)),
+    ("ci_includes_null", _derived("ci_includes_null", {"ci_low": -0.4, "ci_high": 2.8, "null_value": 0}, True)),
+    ("ci_excludes_null", _derived("ci_excludes_null", {"ci_low": 2.0, "ci_high": 8.0, "null_value": 0}, True)),
+]
+
+
+@pytest.mark.parametrize(("case", "record"), CORRECT_DERIVED, ids=[case for case, _ in CORRECT_DERIVED])
+def test_correct_derived_value_passes(case: str, record: dict[str, Any]) -> None:
+    assert recompute_derived(record) == [], case
+
+
+DERIVED_MUTATIONS: list[tuple[str, dict[str, Any], str]] = [
+    (
+        "wrong_arithmetic_result",
+        _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, 0.5),
+        "recomputed",
+    ),
+    (
+        "ci_verdict_inverted",
+        _derived("ci_includes_null", {"ci_low": 2.0, "ci_high": 8.0, "null_value": 0}, True),
+        "recomputed",
+    ),
+    (
+        "boolean_where_a_number_belongs",
+        _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, True),
+        "yields float",
+    ),
+    (
+        "division_by_zero",
+        _derived("ratio", {"numerator": 0.05, "denominator": 0.0}, 0.0),
+        "undefined",
+    ),
+    (
+        "missing_operand",
+        _derived("ci_includes_null", {"ci_low": -0.4, "ci_high": 2.8}, True),
+        "takes",
+    ),
+    (
+        "extra_operand",
+        _derived("reciprocal_abs", {"value": 0.05, "fudge": 1.0}, 20.0),
+        "takes",
+    ),
+    (
+        "operand_with_no_provenance",
+        _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, 0.05, sourced=["minuend"]),
+        "no locator names operand 'subtrahend'",
+    ),
+    (
+        "input_names_something_that_is_not_an_operand",
+        _derived("reciprocal_abs", {"value": 0.05}, 20.0, sourced=["value", "vibes"]),
+        "not an operand",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("case", "record", "expected_fragment"),
+    DERIVED_MUTATIONS,
+    ids=[case for case, _, _ in DERIVED_MUTATIONS],
+)
+def test_derived_mutation_is_rejected(case: str, record: dict[str, Any], expected_fragment: str) -> None:
+    errors = recompute_derived(record)
+    assert errors, f"{case} was accepted"
+    assert any(expected_fragment in error for error in errors), errors
+
+
+def test_derived_defect_inside_a_grade_record_is_rejected() -> None:
+    """The walk reaches a derived value wherever it is nested, not only at the top level."""
+    record = load_example("grade")
+    artifacts = artifacts_for(record)
+    record["downgrades"][1]["locator"]["result"] = False
+    errors = grade_errors(record, artifacts)
+    assert any("recomputed" in error for error in errors), errors
+
+
+def test_free_text_formula_is_no_longer_accepted() -> None:
+    """PLAN.md sketched `formula` as prose; a prose formula cannot be recomputed, so it is gone."""
+    record = load_example("grade")
+    record["downgrades"][1]["locator"] = {
+        "kind": "derived",
+        "formula": "the moon says so",
+        "inputs": record["downgrades"][1]["locator"]["inputs"],
+    }
+    assert grade_errors(record, artifacts_for(record))
 
 
 # --------------------------------------------------------------------------- #
@@ -340,7 +438,7 @@ LEGAL_FUNDING: list[tuple[str, dict[str, Any]]] = [
 
 @pytest.mark.parametrize(("case", "block"), LEGAL_FUNDING, ids=[case for case, _ in LEGAL_FUNDING])
 def test_legal_funding_combination_passes(case: str, block: dict[str, Any]) -> None:
-    assert funding_errors(block) == [], case
+    assert funding_errors(block, artifacts_for(block)) == [], case
 
 
 def _silent_paper(block: dict[str, Any]) -> None:
@@ -359,19 +457,21 @@ def _unknown_with_raw_text(block: dict[str, Any]) -> None:
     block.update(funding_disclosure="unknown", funding_category="unknown", funding_raw="NIA")
 
 
-# Each mutation changes exactly ONE axis away from a legal row, so the case cannot pass for a
-# reason other than the one it names.
+def _undisclosed_but_industry(block: dict[str, Any]) -> None:
+    _silent_paper(block)
+    block["funding_category"] = "industry"
+
+
+def _silent_paper_that_quotes(block: dict[str, Any]) -> None:
+    _silent_paper(block)
+    block["funding_source_type"] = "extracted_text"
+
+
 FUNDING_MUTATIONS: list[tuple[str, Mutation]] = [
     # iteration 5, finding 3 — without the category constraint, undisclosed+industry is legal and
     # silently poisons the step-5 aggregate.
-    (
-        "undisclosed_but_industry",
-        lambda b: (_silent_paper(b), b.__setitem__("funding_category", "industry"))[1],
-    ),
-    (
-        "silent_paper_that_somehow_quotes_a_funder",
-        lambda b: (_silent_paper(b), b.__setitem__("funding_source_type", "extracted_text"))[1],
-    ),
+    ("undisclosed_but_industry", _undisclosed_but_industry),
+    ("silent_paper_that_somehow_quotes_a_funder", _silent_paper_that_quotes),
     ("unknown_but_raw_text_present", _unknown_with_raw_text),
     ("extracted_text_without_locator", lambda b: b.__setitem__("funding_locator", None)),
     ("api_metadata_with_a_locator", lambda b: b.__setitem__("funding_source_type", "api_metadata")),
@@ -382,24 +482,93 @@ FUNDING_MUTATIONS: list[tuple[str, Mutation]] = [
 ]
 
 
-@pytest.mark.parametrize(
-    ("case", "mutation"), FUNDING_MUTATIONS, ids=[case for case, _ in FUNDING_MUTATIONS]
-)
+@pytest.mark.parametrize(("case", "mutation"), FUNDING_MUTATIONS, ids=[case for case, _ in FUNDING_MUTATIONS])
 def test_illegal_funding_combination_is_rejected(case: str, mutation: Mutation) -> None:
-    assert funding_errors(_mutated("funding", mutation)), f"{case} was accepted"
+    assert errors_for("funding", _mutated("funding", mutation)), f"{case} was accepted"
 
 
 def test_funding_locator_must_source_funding_raw() -> None:
     block = load_example("funding")
     block["funding_locator"]["fields"] = ["funding_category"]
-    errors = funding_errors(block)
+    errors = errors_for("funding", block)
     assert any("must name 'funding_raw'" in error for error in errors), errors
 
 
 def test_illegal_combination_error_points_at_the_table() -> None:
     block = load_example("funding")
     block["funding_disclosure"] = "undisclosed"
-    assert any("oneOf table in funding.schema.json" in error for error in funding_errors(block))
+    assert any("oneOf table in funding.schema.json" in error for error in errors_for("funding", block))
+
+
+# --------------------------------------------------------------------------- #
+# The paper-level extraction record
+# --------------------------------------------------------------------------- #
+# codex review 2026-08-12, finding 1: with no parent schema, `findings[]`, the funding block,
+# `trial_registration` and `author_group` could all simply be absent with nothing to reject it.
+def test_canonical_extraction_carries_two_findings_from_one_paper() -> None:
+    """The 'a paper is not a finding' case, in the fixture itself: benefit on one endpoint, null on another."""
+    extraction = load_example("extraction")
+    assert len(extraction["findings"]) == 2
+    assert {f["direction"] for f in extraction["findings"]} == {"decrease", "null_result"}
+
+
+EXTRACTION_MUTATIONS: list[tuple[str, Mutation, str]] = [
+    ("no_findings_at_all", lambda e: e.__setitem__("findings", []), "findings"),
+    ("findings_key_missing", lambda e: e.pop("findings"), "findings"),
+    ("trial_registration_missing", lambda e: e.pop("trial_registration"), "trial_registration"),
+    ("author_group_missing", lambda e: e.pop("author_group"), "author_group"),
+    ("funding_block_missing", lambda e: e.pop("funding"), "funding"),
+    # The three fields 9a MOVES must not survive on the paper-level record.
+    ("legacy_funding_source_field", lambda e: e.__setitem__("funding_source", "NIA"), "funding_source"),
+    ("legacy_paper_level_cer", lambda e: e.__setitem__("control_event_rate", 0.15), "control_event_rate"),
+    ("legacy_paper_level_polarity", lambda e: e.__setitem__("outcome_is_adverse", True), "outcome_is_adverse"),
+    ("risk_of_bias_as_prose", lambda e: e.__setitem__("risk_of_bias", "probably fine"), "probably fine"),
+    ("research_tier_out_of_range", lambda e: e.__setitem__("research_tier", 4), "research_tier"),
+    (
+        "duplicate_finding_key_in_one_paper",
+        lambda e: e["findings"].__setitem__(1, dict(e["findings"][0])),
+        "appears 2 times",
+    ),
+    (
+        "nested_finding_with_broken_coverage",
+        lambda e: _drop_field_from_coverage(e["findings"][0], "p_value"),
+        "/findings/0/locators",
+    ),
+    (
+        "nested_funding_illegal_combination",
+        lambda e: e["funding"].__setitem__("funding_disclosure", "undisclosed"),
+        "funding",
+    ),
+    (
+        "nested_finding_rates_without_polarity",
+        lambda e: e["findings"][0].__setitem__("outcome_is_adverse", None),
+        "outcome_is_adverse",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("case", "mutation", "expected_fragment"),
+    EXTRACTION_MUTATIONS,
+    ids=[case for case, _, _ in EXTRACTION_MUTATIONS],
+)
+def test_extraction_mutation_is_rejected(case: str, mutation: Mutation, expected_fragment: str) -> None:
+    errors = errors_for("extraction", _mutated("extraction", mutation))
+    assert errors, f"{case} was accepted"
+    assert any(expected_fragment in error for error in errors), errors
+
+
+@pytest.mark.parametrize("value", ["low", "some concerns", "high", "unclear", "unknown"])
+def test_every_prompt_constrained_risk_of_bias_value_is_accepted(value: str) -> None:
+    extraction = load_example("extraction")
+    extraction["risk_of_bias"] = value
+    assert errors_for("extraction", extraction) == []
+
+
+def test_an_observational_paper_may_have_no_trial_registration() -> None:
+    extraction = load_example("extraction")
+    extraction.update(trial_registration=None, study_design="prospective cohort", randomization_method=None)
+    assert errors_for("extraction", extraction) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -447,24 +616,33 @@ GRADE_MUTATIONS: list[tuple[str, Mutation, str]] = [
     ids=[case for case, _, _ in GRADE_MUTATIONS],
 )
 def test_grade_mutation_is_rejected(case: str, mutation: Mutation, expected_fragment: str) -> None:
-    errors = grade_errors(_mutated("grade", mutation))
+    errors = errors_for("grade", _mutated("grade", mutation))
     assert errors, f"{case} was accepted"
     assert any(expected_fragment in error for error in errors), errors
 
 
 def test_grade_accepts_a_derived_modifier_and_a_quoted_one() -> None:
     record = load_example("grade")
-    assert grade_errors(record) == []
+    assert errors_for("grade", record) == []
     assert record["downgrades"][1]["locator"]["kind"] == "derived"
 
 
 def test_grade_with_no_modifiers_passes() -> None:
-    assert grade_errors({"schema_version": 1, "level": "high", "downgrades": [], "upgrades": []}) == []
+    assert grade_errors({"schema_version": 1, "level": "high", "downgrades": [], "upgrades": []}, {}) == []
 
 
 # --------------------------------------------------------------------------- #
 # net_direction
 # --------------------------------------------------------------------------- #
+def _modifier(domain: str, steps: int) -> dict[str, Any]:
+    return {
+        "domain": domain,
+        "steps": steps,
+        "reason": "…",
+        "locator": {"fields": ["reason"], "source_artifact_id": "a", "char_offset": 0, "quoted_span": "x"},
+    }
+
+
 @pytest.mark.parametrize(
     ("downgrades", "upgrades", "expected"),
     [
@@ -476,24 +654,11 @@ def test_grade_with_no_modifiers_passes() -> None:
     ],
 )
 def test_net_direction(downgrades: list[tuple[str, int]], upgrades: list[tuple[str, int]], expected: int) -> None:
-    def entry(domain: str, steps: int) -> dict[str, Any]:
-        return {
-            "domain": domain,
-            "steps": steps,
-            "reason": "…",
-            "locator": {
-                "fields": ["reason"],
-                "source_artifact_id": "a",
-                "char_offset": 0,
-                "quoted_span": "x",
-            },
-        }
-
     record = {
         "schema_version": 1,
         "level": "moderate",
-        "downgrades": [entry(d, s) for d, s in downgrades],
-        "upgrades": [entry(u, s) for u, s in upgrades],
+        "downgrades": [_modifier(d, s) for d, s in downgrades],
+        "upgrades": [_modifier(u, s) for u, s in upgrades],
     }
     assert net_direction(record) == expected
 
@@ -503,13 +668,25 @@ def test_net_direction_fails_closed_on_an_invalid_record() -> None:
         net_direction({"schema_version": 1, "level": "moderate", "downgrades": [], "upgrades": [{"domain": "x"}]})
 
 
+def test_net_direction_fails_closed_on_a_repeated_domain() -> None:
+    """The sum is exactly what a duplicate corrupts, so this cannot be left to the caller."""
+    record = {
+        "schema_version": 1,
+        "level": "low",
+        "downgrades": [_modifier("imprecision", 1), _modifier("imprecision", 1)],
+        "upgrades": [],
+    }
+    with pytest.raises(SchemaValidationError):
+        net_direction(record)
+
+
 def test_canonical_grade_example_nets_negative() -> None:
     assert net_direction(load_example("grade")) == -1
 
 
 def test_validate_grade_raises() -> None:
     with pytest.raises(SchemaValidationError):
-        validate_grade({"schema_version": 1, "level": "moderate"})
+        validate_grade({"schema_version": 1, "level": "moderate"}, {})
 
 
 # --------------------------------------------------------------------------- #
@@ -541,10 +718,6 @@ def test_ordinal_monotonicity(prior: str, posterior: str, net: int, reason: str 
 # --------------------------------------------------------------------------- #
 # Step pack
 # --------------------------------------------------------------------------- #
-def test_canonical_step_pack_passes() -> None:
-    assert step_pack_errors(load_example("step_pack")) == []
-
-
 def test_step_pack_json_pointer_resolves_by_step_number_not_by_position() -> None:
     """The blueprint references 'step_pack.json#/steps/3'. Against an array that pointer resolves
     to the FOURTH element, and the step numbers skip 7 — so the mapping must be keyed, not listed."""
@@ -556,21 +729,10 @@ def test_step_pack_json_pointer_resolves_by_step_number_not_by_position() -> Non
 STEP_PACK_MUTATIONS: list[tuple[str, Mutation, str]] = [
     ("missing_mandatory_step_9", lambda p: p["steps"].pop("9"), "9"),
     ("missing_mandatory_step_1", lambda p: p["steps"].pop("1"), "1"),
-    (
-        "dropped_step_7_reintroduced",
-        lambda p: p["steps"].__setitem__("7", dict(p["steps"]["3"], step=7)),
-        "7",
-    ),
-    (
-        "key_disagrees_with_step_number",
-        lambda p: p["steps"]["3"].__setitem__("step", 4),
-        "stored under key",
-    ),
-    (
-        "answer_without_provenance",
-        lambda p: p["steps"]["3"].__setitem__("locators", []),
-        "no provenance",
-    ),
+    ("dropped_step_7_reintroduced", lambda p: p["steps"].__setitem__("7", dict(p["steps"]["3"], step=7)), "7"),
+    ("key_disagrees_with_step_number", lambda p: p["steps"]["3"].__setitem__("step", 4), "stored under key"),
+    ("answer_without_provenance", lambda p: p["steps"]["3"].__setitem__("locators", []), "no provenance"),
+    ("empty_answer", lambda p: p["steps"]["3"].__setitem__("answer", {}), "answer"),
     ("bad_sufficiency", lambda p: p["steps"]["3"].__setitem__("sufficiency", "mostly"), "mostly"),
     (
         "verdict_contribution_outside_enum",
@@ -590,7 +752,7 @@ STEP_PACK_MUTATIONS: list[tuple[str, Mutation, str]] = [
     ids=[case for case, _, _ in STEP_PACK_MUTATIONS],
 )
 def test_step_pack_mutation_is_rejected(case: str, mutation: Mutation, expected_fragment: str) -> None:
-    errors = step_pack_errors(_mutated("step_pack", mutation))
+    errors = errors_for("step_pack", _mutated("step_pack", mutation))
     assert errors, f"{case} was accepted"
     assert any(expected_fragment in error for error in errors), errors
 
@@ -600,12 +762,13 @@ def test_absent_sufficiency_may_have_no_locators() -> None:
     pack = load_example("step_pack")
     pack["steps"]["5"]["sufficiency"] = "absent"
     pack["steps"]["5"]["locators"] = []
-    assert step_pack_errors(pack) == []
+    assert errors_for("step_pack", pack) == []
 
 
-VALIDATORS: dict[str, Callable[[dict[str, Any]], list[str]]] = {
+VALIDATORS: dict[str, Callable[[dict[str, Any], dict[str, str]], list[str]]] = {
     "finding": finding_errors,
     "funding": funding_errors,
+    "extraction": extraction_errors,
     "grade": grade_errors,
     "step_pack": step_pack_errors,
 }

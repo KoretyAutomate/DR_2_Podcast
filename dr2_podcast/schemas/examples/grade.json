@@ -16,16 +16,18 @@
     {
       "domain": "imprecision",
       "steps": 1,
-      "reason": "Pooled 95% CI includes the null.",
+      "reason": "The pooled 95% CI includes the null, so the direction of effect is not settled.",
       "locator": {
         "kind": "derived",
-        "formula": "ci_low < 0 < ci_high",
+        "operation": "ci_includes_null",
+        "operands": { "ci_low": -0.4, "ci_high": 2.8, "null_value": 0 },
+        "result": true,
         "inputs": [
           {
             "fields": ["ci_low", "ci_high"],
-            "source_artifact_id": "pmid:12345678#fulltext",
-            "char_offset": 1234,
-            "quoted_span": "absolute risk reduction 5.0% (95% CI 2.0 to 8.0), p=0.03"
+            "source_artifact_id": "meta:pooled#results",
+            "char_offset": 640,
+            "quoted_span": "pooled absolute risk reduction 1.2% (95% CI -0.4 to 2.8)"
           }
         ]
       }

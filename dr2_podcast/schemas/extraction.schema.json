@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dr2-podcast.local/schemas/extraction.schema.json",
+  "title": "Extraction",
+  "description": "The paper-level record — the post-Step-9a shape of DeepExtraction (clinical.py:254). It exists so that `findings[]`, the funding block, `trial_registration` and `author_group` cannot simply be absent: a schema for one finding says nothing about a record that carries no findings at all. Replication grouping (step 6) reads exactly three things from here and from the findings — same finding_key, distinct author_group, non-overlapping trial_registration — so two of its three inputs live at this level and are required. The three fields 9a MOVES are absent by construction: funding_source became the funding block, and control_event_rate / experimental_event_rate / outcome_is_adverse became per-finding, so a legacy record carrying them is rejected by additionalProperties rather than silently half-migrated.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "pmid",
+    "doi",
+    "title",
+    "url",
+    "study_design",
+    "risk_of_bias",
+    "research_tier",
+    "trial_registration",
+    "author_group",
+    "funding",
+    "findings"
+  ],
+  "properties": {
+    "pmid": { "type": ["string", "null"], "minLength": 1 },
+    "doi": { "type": ["string", "null"], "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "url": { "type": "string", "minLength": 1 },
+    "study_design": { "type": ["string", "null"], "minLength": 1 },
+    "risk_of_bias": {
+      "description": "The extraction prompt already constrains this to low / some concerns / high / unclear (clinical.py:2429), but the field is typed str|None and nothing checks it. Validated here at parse time; anything unparseable becomes 'unknown' rather than being silently retained as prose.",
+      "enum": ["low", "some concerns", "high", "unclear", "unknown"]
+    },
+    "research_tier": {
+      "description": "1 = exact folk term, 2 = scientific synonym, 3 = compound class.",
+      "type": ["integer", "null"],
+      "enum": [1, 2, 3, null]
+    },
+    "trial_registration": {
+      "description": "NCT/UMIN identifier. Correctly paper-level: a trial has exactly one. null for designs that have none — which also means that paper cannot contribute to non-overlapping-cohort replication grouping.",
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "author_group": {
+      "description": "Normalised identity of the author group, for counting DISTINCT groups reporting the same finding_key. WideNetRecord.authors (clinical.py:246) is one abbreviated string and cannot serve — that is why this field is new. null means this paper cannot be grouped, which is a stated gap rather than a silent one.",
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "funding": { "$ref": "funding.schema.json" },
+    "findings": {
+      "description": "At least one. A paper that yielded no finding is an extraction FAILURE and must be handled as one — clinical.py:2654 currently returns a failure document with the extraction text concatenated into it, which then looks like a synthesis. An empty-but-valid extraction would be that same defect wearing a schema.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "finding.schema.json" }
+    },
+    "blinding": { "type": ["string", "null"], "minLength": 1 },
+    "randomization_method": { "type": ["string", "null"], "minLength": 1 },
+    "intention_to_treat": { "type": ["boolean", "null"] },
+    "sample_size_total": { "type": ["integer", "null"], "minimum": 0 },
+    "sample_size_intervention": { "type": ["integer", "null"], "minimum": 0 },
+    "sample_size_control": { "type": ["integer", "null"], "minimum": 0 },
+    "attrition_pct": { "type": ["string", "null"], "minLength": 1 },
+    "effect_size": { "type": ["string", "null"], "minLength": 1 },
+    "demographics": { "type": ["string", "null"], "minLength": 1 },
+    "follow_up_period": { "type": ["string", "null"], "minLength": 1 },
+    "conflicts_of_interest": { "type": ["string", "null"], "minLength": 1 },
+    "biological_mechanism": { "type": ["string", "null"], "minLength": 1 },
+    "primary_outcome": { "type": ["string", "null"], "minLength": 1 },
+    "secondary_outcomes": { "type": ["array", "null"], "items": { "type": "string", "minLength": 1 } },
+    "raw_facts": { "type": "string" }
+  }
+}

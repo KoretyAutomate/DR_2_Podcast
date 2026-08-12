@@ -41,8 +41,9 @@
         },
         "question_ja": { "type": "string", "minLength": 1 },
         "answer": {
-          "description": "Step-specific structured answer, e.g. {\"rct\": 12, \"cohort\": 6, \"blinded\": 9} for step 3. Shape varies by step; what does not vary is that it is computed, not written.",
-          "type": "object"
+          "description": "Step-specific structured answer, e.g. {\"rct\": 12, \"cohort\": 6, \"blinded\": 9} for step 3. Shape varies by step; what does not vary is that it is computed, not written. Per-step answer schemas are NOT defined here — see the note in PLAN.md Step S: only step 3's shape is specified anywhere, and the honest check that an answer is derived rather than authored is regenerating the pack from its inputs and comparing, which belongs to the Step 9b generator. What this schema can require is that an answer has content at all.",
+          "type": "object",
+          "minProperties": 1
         },
         "sot_sections": {
           "type": "array",

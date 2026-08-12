@@ -15,11 +15,18 @@ Split of responsibility:
 * **Python, here** owns what JSON Schema genuinely cannot state: ``finding_key`` computation and
   agreement, field-level locator coverage in both directions, at-most-one-entry-per-GRADE-domain,
   CER/EER pairing and its polarity requirement, key↔``step`` agreement in the step pack, literal
-  span verification against a source artifact, and ordinal monotonicity.
+  span verification against a source artifact, recomputation of every derived value, and ordinal
+  monotonicity.
 
 Everything here is fail-closed by default: ``validate_*`` raises :class:`SchemaValidationError`.
 The ``*_errors`` variants return the full list instead, which is what the mutation-matrix tests
 assert against.
+
+**``artifacts`` is a required argument, not an optional one.** Every entry point that can contain
+a locator takes ``artifacts`` (source_artifact_id -> text) and verifies every span in the instance,
+however deeply nested. An optional artifact map is a bypass: the caller who omits it gets a green
+result over unverified provenance, which is indistinguishable from a checked one. A caller that
+genuinely wants shape alone calls :func:`schema_errors`, which is named for what it does.
 
 Nothing in this module calls an LLM, and nothing in it is authored by one.
 """
@@ -28,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import unicodedata
 from collections import Counter
 from functools import lru_cache
@@ -41,11 +49,19 @@ SCHEMA_DIR = Path(__file__).parent
 EXAMPLE_DIR = SCHEMA_DIR / "examples"
 
 #: Every schema shipped here. Order is load order only; refs resolve by ``$id``.
-SCHEMA_NAMES: tuple[str, ...] = ("locator", "derived", "finding", "funding", "grade", "step_pack")
+SCHEMA_NAMES: tuple[str, ...] = (
+    "locator",
+    "derived",
+    "finding",
+    "funding",
+    "extraction",
+    "grade",
+    "step_pack",
+)
 
 #: Schemas that ship a canonical valid instance under ``examples/``. These are the fixtures the
 #: mutation-matrix tests start from, and the worked example an implementer reads first.
-EXAMPLE_NAMES: tuple[str, ...] = ("finding", "funding", "grade", "step_pack")
+EXAMPLE_NAMES: tuple[str, ...] = ("finding", "funding", "extraction", "grade", "step_pack")
 
 #: Bumped when any on-disk artifact shape changes. Also the value the extraction cache keys on —
 #: without a bump, cached entries deserialize into records with silently missing ``findings[]``.
@@ -159,19 +175,139 @@ def verify_locator_span(locator: dict[str, Any], artifact_text: str) -> bool:
     return artifact_text[offset : offset + len(span)] == span
 
 
-def _span_errors(locators: list[dict[str, Any]], artifacts: dict[str, str], prefix: str = "") -> list[str]:
+_LOCATOR_KEYS = frozenset({"fields", "source_artifact_id", "char_offset", "quoted_span"})
+
+
+def iter_locators(instance: Any, pointer: str = "") -> list[tuple[str, dict[str, Any]]]:
+    """Every locator anywhere in an instance, as ``(json_pointer, locator)``.
+
+    Walks the whole document rather than the places a locator is *expected*, so a locator nested
+    inside a GRADE modifier, inside a derived value's inputs, or inside a step-pack entry is
+    verified by the same code path that verifies a finding's own.
+    """
+    found: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(instance, dict):
+        if _LOCATOR_KEYS.issubset(instance.keys()):
+            found.append((pointer or "<root>", instance))
+        for key, value in instance.items():
+            found.extend(iter_locators(value, f"{pointer}/{key}"))
+    elif isinstance(instance, list):
+        for index, value in enumerate(instance):
+            found.extend(iter_locators(value, f"{pointer}/{index}"))
+    return found
+
+
+def span_errors(instance: Any, artifacts: dict[str, str]) -> list[str]:
+    """Verify every locator in an instance against the artifact it names.
+
+    An unknown ``source_artifact_id`` is an error, not a skip: a span nobody can resolve has not
+    been checked, and treating it as checked is how unverified provenance passes for verified.
+    """
     errors: list[str] = []
-    for index, locator in enumerate(locators):
+    for pointer, locator in iter_locators(instance):
         artifact_id = locator["source_artifact_id"]
         text = artifacts.get(artifact_id)
         if text is None:
-            errors.append(f"{prefix}/locators/{index}/source_artifact_id: unknown artifact {artifact_id!r}")
+            errors.append(f"{pointer}/source_artifact_id: unknown artifact {artifact_id!r}")
         elif not verify_locator_span(locator, text):
             errors.append(
-                f"{prefix}/locators/{index}/quoted_span: not a literal substring of {artifact_id!r} "
+                f"{pointer}/quoted_span: not a literal substring of {artifact_id!r} "
                 f"at offset {locator['char_offset']}"
             )
     return errors
+
+
+# --------------------------------------------------------------------------- #
+# Derived values
+# --------------------------------------------------------------------------- #
+#: operation -> (every operand it takes, the operands that must be quoted from a paper).
+#: ``null_value`` is the constant a confidence interval is compared against (0 for a difference,
+#: 1 for a ratio); it is stated, not quoted, so it is exempt from provenance.
+DERIVED_OPERATIONS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "difference": (("minuend", "subtrahend"), ("minuend", "subtrahend")),
+    "ratio": (("numerator", "denominator"), ("numerator", "denominator")),
+    "reciprocal_abs": (("value",), ("value",)),
+    "ci_includes_null": (("ci_low", "ci_high", "null_value"), ("ci_low", "ci_high")),
+    "ci_excludes_null": (("ci_low", "ci_high", "null_value"), ("ci_low", "ci_high")),
+}
+
+
+def _evaluate_derived(operation: str, operands: dict[str, float]) -> float | bool | None:
+    if operation == "difference":
+        return operands["minuend"] - operands["subtrahend"]
+    if operation == "ratio":
+        return operands["numerator"] / operands["denominator"] if operands["denominator"] else None
+    if operation == "reciprocal_abs":
+        return 1.0 / abs(operands["value"]) if operands["value"] else None
+    inside = operands["ci_low"] <= operands["null_value"] <= operands["ci_high"]
+    return inside if operation == "ci_includes_null" else not inside
+
+
+def _derived_result_errors(record: dict[str, Any], pointer: str) -> list[str]:
+    operation = record["operation"]
+    operands = record["operands"]
+    expected = _evaluate_derived(operation, operands)
+    stated = record["result"]
+    if expected is None:
+        return [f"{pointer}/operands: {operation} is undefined for these operands (division by zero)"]
+    if isinstance(expected, bool) != isinstance(stated, bool):
+        return [f"{pointer}/result: {operation} yields {type(expected).__name__}, but the record states {stated!r}"]
+    if isinstance(expected, bool):
+        return [] if expected == stated else [f"{pointer}/result: states {stated!r}, recomputed {expected!r}"]
+    if not math.isclose(expected, float(stated), rel_tol=1e-9, abs_tol=1e-12):
+        return [f"{pointer}/result: states {stated!r}, recomputed {expected!r} from {operands!r}"]
+    return []
+
+
+def _derived_errors(record: dict[str, Any], pointer: str) -> list[str]:
+    operation = record["operation"]
+    accepted, quoted = DERIVED_OPERATIONS[operation]
+    operands = record["operands"]
+    errors = [f"{pointer}/operands: {operation} takes {list(accepted)}, got {sorted(operands)}"] if (
+        set(operands) != set(accepted)
+    ) else []
+    if errors:
+        return errors
+    sourced = {field for locator in record["inputs"] for field in locator["fields"]}
+    errors.extend(
+        f"{pointer}/inputs: no locator names operand {name!r}" for name in quoted if name not in sourced
+    )
+    errors.extend(
+        f"{pointer}/inputs: {name!r} is not an operand of {operation}" for name in sorted(sourced - set(accepted))
+    )
+    errors.extend(_derived_result_errors(record, pointer))
+    return errors
+
+
+def recompute_derived(instance: Any) -> list[str]:
+    """Re-evaluate every derived value in an instance and reject any stated result that disagrees.
+
+    PLAN.md's carve-out is "the check recomputes the arithmetic". Validating only the shape of a
+    derived record would leave that sentence unearned — which is why ``operation`` is a closed
+    enum rather than the free-text ``formula`` the plan sketched.
+    """
+    errors: list[str] = []
+    for pointer, record in _iter_derived(instance):
+        errors.extend(_derived_errors(record, pointer))
+    return errors
+
+
+def _iter_derived(instance: Any, pointer: str = "") -> list[tuple[str, dict[str, Any]]]:
+    found: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(instance, dict):
+        if instance.get("kind") == "derived" and instance.get("operation") in DERIVED_OPERATIONS:
+            found.append((pointer or "<root>", instance))
+        for key, value in instance.items():
+            found.extend(_iter_derived(value, f"{pointer}/{key}"))
+    elif isinstance(instance, list):
+        for index, value in enumerate(instance):
+            found.extend(_iter_derived(value, f"{pointer}/{index}"))
+    return found
+
+
+def _provenance_errors(instance: Any, artifacts: dict[str, str]) -> list[str]:
+    """Every check that applies to any instance regardless of which schema it is."""
+    return span_errors(instance, artifacts) + recompute_derived(instance)
 
 
 # --------------------------------------------------------------------------- #
@@ -230,8 +366,8 @@ def _rate_errors(finding: dict[str, Any]) -> list[str]:
     return errors
 
 
-def finding_errors(finding: dict[str, Any], artifacts: dict[str, str] | None = None) -> list[str]:
-    """All errors for one finding. Pass ``artifacts`` (id -> text) to also verify literal spans."""
+def finding_errors(finding: dict[str, Any], artifacts: dict[str, str]) -> list[str]:
+    """All errors for one finding, spans included. ``artifacts`` maps artifact id -> text."""
     errors = schema_errors("finding", finding)
     if errors:
         return errors
@@ -243,29 +379,64 @@ def finding_errors(finding: dict[str, Any], artifacts: dict[str, str] | None = N
         )
     errors.extend(_coverage_errors(finding))
     errors.extend(_rate_errors(finding))
-    if artifacts is not None:
-        errors.extend(_span_errors(finding["locators"], artifacts))
+    errors.extend(_provenance_errors(finding, artifacts))
     return errors
 
 
-def validate_finding(finding: dict[str, Any], artifacts: dict[str, str] | None = None) -> None:
+def validate_finding(finding: dict[str, Any], artifacts: dict[str, str]) -> None:
     """Fail closed on one finding."""
     _raise("finding", finding_errors(finding, artifacts))
 
 
-def validate_findings(findings: list[dict[str, Any]], artifacts: dict[str, str] | None = None) -> None:
-    """Fail closed on a paper's whole ``findings[]`` list, reporting every record's errors at once."""
-    errors: list[str] = []
-    for index, finding in enumerate(findings):
-        errors.extend(f"[{index}]{error}" for error in finding_errors(finding, artifacts))
-    _raise("findings", errors)
+# --------------------------------------------------------------------------- #
+# The paper-level record
+# --------------------------------------------------------------------------- #
+def extraction_errors(extraction: dict[str, Any], artifacts: dict[str, str]) -> list[str]:
+    """All errors for one paper-level extraction, including every nested finding and the funding block."""
+    errors = schema_errors("extraction", extraction)
+    if errors:
+        return errors
+    for index, finding in enumerate(extraction["findings"]):
+        expected = compute_finding_key(finding)
+        if finding["finding_key"] != expected:
+            errors.append(f"/findings/{index}/finding_key: does not match this finding's identity tuple ({expected!r})")
+        errors.extend(f"/findings/{index}{error}" for error in _coverage_errors(finding))
+        errors.extend(f"/findings/{index}{error}" for error in _rate_errors(finding))
+    errors.extend(f"/funding{error}" for error in _funding_locator_errors(extraction["funding"]))
+    errors.extend(_duplicate_finding_key_errors(extraction["findings"]))
+    errors.extend(_provenance_errors(extraction, artifacts))
+    return errors
+
+
+def _duplicate_finding_key_errors(findings: list[dict[str, Any]]) -> list[str]:
+    counts = Counter(finding["finding_key"] for finding in findings)
+    return [
+        f"/findings: finding_key {key!r} appears {count} times in one paper; two records with the same "
+        f"(population, intervention, comparator, endpoint, timepoint) are the same finding and must be merged"
+        for key, count in sorted(counts.items())
+        if count > 1
+    ]
+
+
+def validate_extraction(extraction: dict[str, Any], artifacts: dict[str, str]) -> None:
+    """Fail closed on a paper-level extraction."""
+    _raise("extraction", extraction_errors(extraction, artifacts))
 
 
 # --------------------------------------------------------------------------- #
 # Funding
 # --------------------------------------------------------------------------- #
-def funding_errors(block: dict[str, Any]) -> list[str]:
-    """All errors for a funding block, including the legal-combination table."""
+def _funding_locator_errors(block: dict[str, Any]) -> list[str]:
+    locator = block["funding_locator"]
+    if locator is not None and "funding_raw" not in locator["fields"]:
+        return [
+            "/funding_locator/fields: must name 'funding_raw' — a locator has to source the field it substantiates"
+        ]
+    return []
+
+
+def funding_errors(block: dict[str, Any], artifacts: dict[str, str]) -> list[str]:
+    """All errors for a funding block, including the legal-combination table and its locator's span."""
     errors = schema_errors("funding", block)
     if errors:
         if any("is not valid under any of the given schemas" in error for error in errors):
@@ -274,17 +445,14 @@ def funding_errors(block: dict[str, Any]) -> list[str]:
                 "funding_category) combination matched — see the oneOf table in funding.schema.json"
             )
         return errors
-    locator = block["funding_locator"]
-    if locator is not None and "funding_raw" not in locator["fields"]:
-        errors.append(
-            "/funding_locator/fields: must name 'funding_raw' — a locator has to source the field it substantiates"
-        )
+    errors.extend(_funding_locator_errors(block))
+    errors.extend(_provenance_errors(block, artifacts))
     return errors
 
 
-def validate_funding(block: dict[str, Any]) -> None:
+def validate_funding(block: dict[str, Any], artifacts: dict[str, str]) -> None:
     """Fail closed on a funding block."""
-    _raise("funding", funding_errors(block))
+    _raise("funding", funding_errors(block, artifacts))
 
 
 # --------------------------------------------------------------------------- #
@@ -303,18 +471,20 @@ def _duplicate_domain_errors(record: dict[str, Any]) -> list[str]:
     return errors
 
 
-def grade_errors(record: dict[str, Any]) -> list[str]:
-    """All errors for a structured GRADE record."""
+def grade_errors(record: dict[str, Any], artifacts: dict[str, str]) -> list[str]:
+    """All errors for a structured GRADE record, including every modifier's evidence."""
     errors = schema_errors("grade", record)
     if errors:
         return errors
-    return _duplicate_domain_errors(record)
+    errors.extend(_duplicate_domain_errors(record))
+    errors.extend(_provenance_errors(record, artifacts))
+    return errors
 
 
-def validate_grade(record: dict[str, Any]) -> None:
+def validate_grade(record: dict[str, Any], artifacts: dict[str, str]) -> None:
     """Fail closed on a GRADE record. A record that will not parse stops the run — it never
     defaults to 'Not Determined', which is what the regex scrape at pipeline_sot.py:43 does today."""
-    _raise("grade", grade_errors(record))
+    _raise("grade", grade_errors(record, artifacts))
 
 
 def net_direction(record: dict[str, Any]) -> int:
@@ -323,8 +493,12 @@ def net_direction(record: dict[str, Any]) -> int:
     Derived from the evidence layer, never from the step pack. Counting step-pack rows would
     weight a finding by how often the episode mentions it, and would let the narrative layer
     constrain a posterior that is supposed to come from the evidence.
+
+    Fails closed on the two properties the sum actually depends on — structure and one entry per
+    domain. It does NOT verify spans, because it does not need artifacts to add integers; the
+    caller that writes the record is the one that must have run :func:`validate_grade`.
     """
-    validate_grade(record)
+    _raise("grade", schema_errors("grade", record) + _duplicate_domain_errors(record))
     total = sum(entry["steps"] for entry in record["upgrades"]) - sum(entry["steps"] for entry in record["downgrades"])
     return (total > 0) - (total < 0)
 
@@ -384,11 +558,18 @@ def validate_ordinal_monotonicity(
 # --------------------------------------------------------------------------- #
 # Step pack
 # --------------------------------------------------------------------------- #
-def step_pack_errors(pack: dict[str, Any]) -> list[str]:
-    """All errors for a step pack, including key/step agreement and the provenance rule."""
+def step_pack_errors(pack: dict[str, Any], artifacts: dict[str, str]) -> list[str]:
+    """All errors for a step pack: key/step agreement, the provenance rule, and every span.
+
+    What this does NOT check is that an ``answer`` was derived rather than authored. The only
+    honest check for that is regenerating the pack from ``pipeline_data`` + extractions + GRADE
+    and comparing, which belongs to the Step 9b generator; a validator handed a finished pack
+    cannot tell a computed count from a plausible one. Recorded as open work in PLAN.md Step S.
+    """
     errors = schema_errors("step_pack", pack)
     if errors:
         return errors
+    errors.extend(_provenance_errors(pack, artifacts))
     for key, step in sorted(pack["steps"].items()):
         if str(step["step"]) != key:
             errors.append(f"/steps/{key}/step: says {step['step']} but is stored under key {key!r}")
@@ -400,6 +581,6 @@ def step_pack_errors(pack: dict[str, Any]) -> list[str]:
     return errors
 
 
-def validate_step_pack(pack: dict[str, Any]) -> None:
+def validate_step_pack(pack: dict[str, Any], artifacts: dict[str, str]) -> None:
     """Fail closed on a step pack."""
-    _raise("step_pack", step_pack_errors(pack))
+    _raise("step_pack", step_pack_errors(pack, artifacts))

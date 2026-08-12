@@ -2,19 +2,28 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dr2-podcast.local/schemas/derived.schema.json",
   "title": "DerivedValue",
-  "description": "The carve-out for values that are computed rather than quoted (PLAN.md, 'Python-derived values have no span'). ARR/NNT/effect sizes from clinical_math.py, and GRADE modifiers such as an imprecision downgrade read off a confidence interval, exist in no paper as text — a literal-substring rule would reject them. They carry the formula and the locators of their inputs instead, and the check recomputes the arithmetic.",
+  "description": "The carve-out for values that are computed rather than quoted (PLAN.md, 'Python-derived values have no span'). ARR/NNT/effect sizes from clinical_math.py, and GRADE modifiers such as an imprecision downgrade read off a confidence interval, exist in no paper as text — a literal-substring rule would reject them. PLAN.md's sentence is 'the check recomputes the arithmetic', so `operation` is a CLOSED ENUM and not the free-text `formula` the plan sketched: a free-text formula can only be validated for shape, which would leave the recomputation promise unearned. schemas.recompute_derived() evaluates the operation over the operands and rejects a stated result that does not match.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["kind", "formula", "inputs"],
+  "required": ["kind", "operation", "operands", "result", "inputs"],
   "properties": {
     "kind": { "const": "derived" },
-    "formula": {
-      "description": "Human- and machine-readable statement of the computation, e.g. 'ARR = CER - EER' or 'ci_low < 1 < ci_high'.",
-      "type": "string",
-      "minLength": 1
+    "operation": {
+      "description": "difference = minuend - subtrahend (ARR). ratio = numerator / denominator (RRR). reciprocal_abs = 1 / |value| (NNT). ci_includes_null / ci_excludes_null = whether null_value lies inside [ci_low, ci_high] (the GRADE imprecision judgement).",
+      "enum": ["difference", "ratio", "reciprocal_abs", "ci_includes_null", "ci_excludes_null"]
+    },
+    "operands": {
+      "description": "Named numeric inputs. The set of names is fixed per operation and enforced in Python; every operand that comes from the paper must be named by one of the input locators.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "number" }
+    },
+    "result": {
+      "description": "The stated result. Recomputed and compared — a number for the arithmetic operations, a boolean for the confidence-interval ones.",
+      "type": ["number", "boolean"]
     },
     "inputs": {
-      "description": "Locators for every quoted value the formula consumes.",
+      "description": "Locators for every quoted operand. Their `fields` name operands, not fields of the enclosing record.",
       "type": "array",
       "minItems": 1,
       "items": { "$ref": "locator.schema.json" }

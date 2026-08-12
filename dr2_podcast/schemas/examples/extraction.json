@@ -1,0 +1,105 @@
+{
+  "pmid": "12345678",
+  "doi": "10.1000/example.2026.001",
+  "title": "Vitamin D supplementation and hip fracture in community-dwelling adults: a randomised trial",
+  "url": "https://pubmed.ncbi.nlm.nih.gov/12345678/",
+  "study_design": "randomised controlled trial",
+  "risk_of_bias": "some concerns",
+  "research_tier": 1,
+  "trial_registration": "NCT01234567",
+  "author_group": "Tanaka H; Osaka University Bone Health Group",
+  "blinding": "double-blind",
+  "randomization_method": "computer-generated block randomisation",
+  "intention_to_treat": true,
+  "sample_size_total": 600,
+  "sample_size_intervention": 300,
+  "sample_size_control": 300,
+  "follow_up_period": "12 months",
+  "primary_outcome": "hip fracture",
+  "secondary_outcomes": ["any fall", "serum 25(OH)D"],
+  "raw_facts": "",
+  "funding": {
+    "funding_raw": "Supported by grant R01-AG000000 from the National Institute on Aging; study drug donated by Acme Pharma.",
+    "funding_category": "mixed",
+    "funding_disclosure": "disclosed",
+    "funding_source_type": "extracted_text",
+    "funding_locator": {
+      "fields": ["funding_raw"],
+      "source_artifact_id": "pmid:12345678#fulltext",
+      "char_offset": 8801,
+      "quoted_span": "Supported by grant R01-AG000000 from the National Institute on Aging; study drug donated by Acme Pharma."
+    }
+  },
+  "findings": [
+    {
+      "finding_key": "84dbf579536986d319afc61f95b4f621d59a01dd",
+      "population": "50歳以上の地域在住成人",
+      "intervention": "ビタミンD 800 IU/日",
+      "comparator": "プラセボ",
+      "endpoint": "大腿骨近位部骨折",
+      "timepoint": "12か月",
+      "direction": "decrease",
+      "value": 5.0,
+      "unit": "%",
+      "ci_low": 2.0,
+      "ci_high": 8.0,
+      "p_value": 0.03,
+      "is_primary": true,
+      "control_event_rate": 0.15,
+      "experimental_event_rate": 0.1,
+      "outcome_is_adverse": true,
+      "locators": [
+        {
+          "fields": ["population", "intervention", "comparator", "endpoint", "timepoint"],
+          "source_artifact_id": "pmid:12345678#fulltext",
+          "char_offset": 402,
+          "quoted_span": "community-dwelling adults aged 50 years or older received 800 IU/day vitamin D or matching placebo, with hip fracture assessed at 12 months"
+        },
+        {
+          "fields": ["direction", "value", "unit", "ci_low", "ci_high", "p_value"],
+          "source_artifact_id": "pmid:12345678#fulltext",
+          "char_offset": 1234,
+          "quoted_span": "absolute risk reduction 5.0% (95% CI 2.0 to 8.0), p=0.03"
+        },
+        {
+          "fields": ["control_event_rate", "experimental_event_rate", "outcome_is_adverse"],
+          "source_artifact_id": "pmid:12345678#fulltext",
+          "char_offset": 1400,
+          "quoted_span": "hip fracture occurred in 45/300 (15.0%) of placebo and 30/300 (10.0%) of vitamin D participants"
+        }
+      ]
+    },
+    {
+      "finding_key": "e7c3e089d16e65acae9f4d4555d7999ac29f1e8e",
+      "population": "50歳以上の地域在住成人",
+      "intervention": "ビタミンD 800 IU/日",
+      "comparator": "プラセボ",
+      "endpoint": "転倒",
+      "timepoint": "12か月",
+      "direction": "null_result",
+      "value": null,
+      "unit": null,
+      "ci_low": null,
+      "ci_high": null,
+      "p_value": 0.41,
+      "is_primary": false,
+      "control_event_rate": null,
+      "experimental_event_rate": null,
+      "outcome_is_adverse": null,
+      "locators": [
+        {
+          "fields": ["population", "intervention", "comparator", "endpoint", "timepoint"],
+          "source_artifact_id": "pmid:12345678#fulltext",
+          "char_offset": 402,
+          "quoted_span": "community-dwelling adults aged 50 years or older received 800 IU/day vitamin D or matching placebo, with hip fracture assessed at 12 months"
+        },
+        {
+          "fields": ["direction", "p_value"],
+          "source_artifact_id": "pmid:12345678#fulltext",
+          "char_offset": 2100,
+          "quoted_span": "no significant difference in falls was observed between groups (p=0.41)"
+        }
+      ]
+    }
+  ]
+}
