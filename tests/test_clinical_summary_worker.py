@@ -109,18 +109,27 @@ class TestBatch:
 
 
 class TestVllmGate:
-    def test_no_ungated_completion_call_exists_in_clinical(self):
-        """The gate is only global if every call site goes through _gated_create.
+    def test_no_ungated_async_completion_call_exists_in_the_package(self):
+        """The gate is only global if every async call site goes through gated_create.
 
-        Codex found two escapes on 2026-08-11: deep extraction (plus its
-        context-length retry) and the GRADE call each held their own budget, so a
-        server sized for VLLM_MAX_CONCURRENCY could see more in flight. A grep is the
-        only check that survives someone adding a sixth call site.
+        Codex found three escapes across successive rounds on 2026-08-11: deep
+        extraction (plus its context-length retry), the GRADE call, and
+        domain_classifier._classify_with_llm. Scanning only clinical.py missed the
+        last one, so this walks the whole package. Sync callers are out of scope —
+        see gated_create's docstring.
         """
-        src = pathlib.Path(clinical.__file__).read_text()
-        body = src.split("async def _gated_create", 1)[1].split("\n\n\n", 1)[1]
-        assert ".chat.completions.create(" not in body, (
-            "a direct chat.completions.create escaped the gate — route it through _gated_create()"
+        pkg = pathlib.Path(clinical.__file__).parent.parent
+        offenders = []
+        for path in sorted(pkg.rglob("*.py")):
+            if path.name == "utils.py":
+                continue  # gated_create itself lives here
+            text = path.read_text(encoding="utf-8")
+            if "await" in text and ".chat.completions.create(" in text:
+                for i, line in enumerate(text.splitlines(), 1):
+                    if ".chat.completions.create(" in line and "await" in line:
+                        offenders.append(f"{path.relative_to(pkg)}:{i}")
+        assert not offenders, (
+            "ungated async completion call(s) — route through utils.gated_create(): " + ", ".join(offenders)
         )
 
     def test_gate_is_shared_across_callers_in_one_loop(self):

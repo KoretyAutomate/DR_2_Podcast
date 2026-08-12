@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
-from dr2_podcast.utils import safe_message_text, QWEN3_NO_THINK_EXTRA_BODY
+from dr2_podcast.utils import safe_message_text, QWEN3_NO_THINK_EXTRA_BODY, gated_create
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +292,8 @@ async def _classify_with_llm(topic: str, smart_client, smart_model: str) -> Doma
         '"confidence": 0.0-1.0, "reasoning": "brief explanation"}'
     )
 
-    resp = await smart_client.chat.completions.create(
+    resp = await gated_create(
+        smart_client,
         model=smart_model,
         messages=[
             {"role": "system", "content": "You are a research methodology classifier. Respond only with JSON."},

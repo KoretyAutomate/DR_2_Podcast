@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 from dr2_podcast.pipeline_types import StudyMetadata, SummarizedSource, SearchMetrics, ResearchReport
 from dr2_podcast.utils import (
-    vllm_gate,
+    gated_create,
     strip_think_blocks,
     is_safe_url,
     safe_float,
@@ -86,19 +86,6 @@ MAX_INPUT_TOKENS = 32000
 # kept at 29K for safety margin under worst-case all-CJK input.
 _SMART_CONTENT_CHARS = 29_000
 MAX_RESEARCH_ITERATIONS = 3
-
-async def _gated_create(client, **kwargs):
-    """Every direct chat.completions.create in this module goes through here.
-
-    The gate must be acquired exactly once per request. Routing all direct calls
-    through one helper is what makes that checkable: test_clinical_summary_worker.py
-    asserts this module contains no bare `.chat.completions.create(`, so a new call
-    site cannot quietly escape the limit. Calls that go via utils.async_call_smart()
-    are already gated inside it and must NOT be wrapped again.
-    """
-    async with vllm_gate():
-        return await client.chat.completions.create(**kwargs)
-
 
 JUNK_DOMAINS = {
     "dictionary.com",
@@ -820,7 +807,7 @@ class SummaryWorker:
             f"- If no relevant information: output 'NO RELEVANT DATA' with no metadata"
         )
         try:
-            resp = await _gated_create(
+            resp = await gated_create(
                 self.client,
                 model=self.model,
                 messages=[
@@ -2035,11 +2022,11 @@ class ResearchAgent:
         """Extract study_type, sample_size, primary_objective from abstracts."""
         # Was Semaphore(2) to work around the Ollama-on-CPU footgun while vLLM held the
         # GPU. That constraint died with the Fast model; the replacement is the SHARED
-        # gate in _gated_create, not a bigger local one.
+        # gate in utils.gated_create, not a bigger local one.
 
         async def screen_one(record: WideNetRecord) -> dict:
             try:
-                resp = await _gated_create(
+                resp = await gated_create(
                     self.summary_worker.client,
                     model=self.summary_worker.model,
                     messages=[
@@ -2462,7 +2449,7 @@ class ResearchAgent:
                         {"role": "user", "content": f"Title: {record.title}\n\nContent:\n{content}"},
                     ]
                     try:
-                        resp = await _gated_create(
+                        resp = await gated_create(
                             self.smart_client,
                             model=self.smart_model,
                             messages=messages,
@@ -2480,7 +2467,7 @@ class ResearchAgent:
                             f"    Context length exceeded, retrying with {len(content)} chars for {record.title[:50]}"
                         )
                         messages[1]["content"] = f"Title: {record.title}\n\nContent:\n{content}"
-                        resp = await _gated_create(
+                        resp = await gated_create(
                             self.smart_client,
                             model=self.smart_model,
                             messages=messages,
@@ -3205,7 +3192,7 @@ class Orchestrator:
             combined_input = combined_input[:80000] + "\n\n[...truncated...]"
 
         try:
-            resp = await _gated_create(
+            resp = await gated_create(
                 self.smart_client,
                 model=self.smart_model,
                 messages=[{"role": "system", "content": audit_system}, {"role": "user", "content": combined_input}],

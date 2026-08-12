@@ -68,6 +68,23 @@ def vllm_gate() -> asyncio.Semaphore:
     return _vllm_gate_cache[1]
 
 
+async def gated_create(client, **kwargs):
+    """Every ASYNC chat.completions.create in this package goes through here.
+
+    The gate must be acquired exactly once per request. Routing all direct calls
+    through one helper is what makes that checkable: test_clinical_summary_worker.py
+    greps the package for a bare `await ....chat.completions.create(` outside this
+    module, so a new call site cannot quietly escape the limit. Calls that go via
+    async_call_smart() are gated inside it and must NOT be wrapped again.
+
+    Sync callers are deliberately out of scope — pipeline.summarize_report() and the
+    Web UI's generate_intro use a blocking client outside the event loop, one request
+    at a time, so they cannot contend with the async fan-out this gate exists to bound.
+    """
+    async with vllm_gate():
+        return await client.chat.completions.create(**kwargs)
+
+
 def safe_message_text(resp) -> str:
     """Extract message text from an OpenAI ChatCompletion response.
 
