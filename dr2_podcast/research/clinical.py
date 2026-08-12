@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
 from dr2_podcast.pipeline_types import StudyMetadata, SummarizedSource, SearchMetrics, ResearchReport
 from dr2_podcast.utils import (
+    gated_create,
     strip_think_blocks,
     is_safe_url,
     safe_float,
@@ -84,7 +85,6 @@ MAX_INPUT_TOKENS = 32000
 # Qwen3 tokenizer is ~1.5 chars/token on medical/CJK text → ~43K chars headroom;
 # kept at 29K for safety margin under worst-case all-CJK input.
 _SMART_CONTENT_CHARS = 29_000
-MAX_CONCURRENT_SUMMARIES = 10
 MAX_RESEARCH_ITERATIONS = 3
 
 JUNK_DOMAINS = {
@@ -326,7 +326,7 @@ class PaperMetadata:
         return cls(**{k: v for k, v in d.items() if k in valid_fields})
 
 
-# --- Worker Services (IO + Fast Model) ---
+# --- Worker Services (IO + LLM) ---
 
 PUBMED_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 MIN_ACADEMIC_RESULTS = 5  # Sufficiency threshold for Tier 1
@@ -652,6 +652,8 @@ class ContentFetcher:
         self.cache = cache
 
     async def fetch_page(self, url: str) -> FetchedPage:
+        # NOT the vLLM gate: this is an HTTP fetch, not an inference call. Holding a vLLM
+        # slot for up to SCRAPING_TIMEOUT would starve the other track's model calls.
         async with self.semaphore:
             # SSRF guard — block private/link-local IPs
             if not is_safe_url(url):
@@ -712,7 +714,6 @@ class SummaryWorker:
     def __init__(self, client: AsyncOpenAI, model: str = SMART_MODEL):
         self.client = client
         self.model = model
-        self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUMMARIES)
 
     def _parse_metadata_from_response(self, raw_text: str) -> tuple[str, StudyMetadata | None]:
         """Parse FACTS and METADATA sections from the model response.
@@ -805,29 +806,29 @@ class SummaryWorker:
             f"- Use null (not quotes) for unknown metadata fields\n"
             f"- If no relevant information: output 'NO RELEVANT DATA' with no metadata"
         )
-        async with self.semaphore:
-            try:
-                resp = await self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Source URL: {page.url}\n\nContent:\n{content}"},
-                    ],
-                    max_tokens=1536,
-                    temperature=0.1,
-                    timeout=180,
-                    extra_body=QWEN3_NO_THINK_EXTRA_BODY,
-                )
-                raw_text = safe_message_text(resp)
-                facts_text, metadata = self._parse_metadata_from_response(raw_text)
-                return SummarizedSource(
-                    url=page.url, title=page.title, summary=facts_text, query=query, goal=goal, metadata=metadata
-                )
-            except Exception as e:
-                logger.warning(f"Summarization failed for {page.url}: {str(e)[:100]}")
-                return SummarizedSource(
-                    url=page.url, title=page.title, summary="", query=query, goal=goal, error=str(e)[:200]
-                )
+        try:
+            resp = await gated_create(
+                self.client,
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Source URL: {page.url}\n\nContent:\n{content}"},
+                ],
+                max_tokens=1536,
+                temperature=0.1,
+                timeout=180,
+                extra_body=QWEN3_NO_THINK_EXTRA_BODY,
+            )
+            raw_text = safe_message_text(resp)
+            facts_text, metadata = self._parse_metadata_from_response(raw_text)
+            return SummarizedSource(
+                url=page.url, title=page.title, summary=facts_text, query=query, goal=goal, metadata=metadata
+            )
+        except Exception as e:
+            logger.warning(f"Summarization failed for {page.url}: {str(e)[:100]}")
+            return SummarizedSource(
+                url=page.url, title=page.title, summary="", query=query, goal=goal, error=str(e)[:200]
+            )
 
     async def summarize_batch(self, pages: list[FetchedPage], goal: str, query: str) -> list[SummarizedSource]:
         return await asyncio.gather(*[self.summarize(page, goal, query) for page in pages])
@@ -918,6 +919,15 @@ class AgentDeps:
     summary_worker: Any
     search_service: Any
     fetcher: Any
+
+    def __post_init__(self):
+        # summary_worker used to be optional (None when no Fast model was configured),
+        # and _search_and_summarize guarded every use. The guards went with the Fast
+        # model on 2026-08-10, so a None here is now an AttributeError deep inside a
+        # gather — and inside _screen_abstracts it would be swallowed by the broad
+        # except and returned as {}, i.e. silently empty typing. Fail at construction.
+        if self.summary_worker is None:
+            raise ValueError("AgentDeps.summary_worker is required (it is no longer optional)")
 
 
 @dataclass
@@ -1400,7 +1410,7 @@ class ResearchAgent:
         return data
 
     async def _decompose_topic(self, topic: str, framing_context: str = "") -> dict:
-        """Pre-PICO: fast model extracts canonical scientific terms from folk-language topic."""
+        """Pre-PICO: extract canonical scientific terms from a folk-language topic."""
         system = (
             "You are a biomedical terminology specialist. Given a research topic (possibly in "
             "colloquial form), extract canonical scientific terms used in PubMed/MeSH searches.\n"
@@ -2011,44 +2021,43 @@ class ResearchAgent:
     async def _screen_abstracts(self, records: list[WideNetRecord]) -> list[dict]:
         """Extract study_type, sample_size, primary_objective from abstracts."""
         # Was Semaphore(2) to work around the Ollama-on-CPU footgun while vLLM held the
-        # GPU. That constraint died with the Fast model (2026-08-10); this now shares
-        # vLLM's queue, so it uses the same concurrency budget as the other batch work.
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUMMARIES)
+        # GPU. That constraint died with the Fast model; the replacement is the SHARED
+        # gate in utils.gated_create, not a bigger local one.
 
         async def screen_one(record: WideNetRecord) -> dict:
-            async with semaphore:
-                try:
-                    resp = await self.summary_worker.client.chat.completions.create(
-                        model=self.summary_worker.model,
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": (
-                                    "Extract from this abstract:\n"
-                                    "- study_type: RCT | meta-analysis | systematic-review | cohort | "
-                                    "case-control | cross-sectional | case-report | in-vitro | animal-model | "
-                                    "review | guideline | other\n"
-                                    '- sample_size: "n=X" or null\n'
-                                    "- primary_objective: one sentence or null\n"
-                                    'Return JSON only: {"study_type":"...","sample_size":"...","primary_objective":"..."}'
-                                ),
-                            },
-                            {"role": "user", "content": f"Title: {record.title}\n\nAbstract: {record.abstract[:2000]}"},
-                        ],
-                        max_tokens=256,
-                        temperature=0.1,
-                        timeout=180,
-                        extra_body=QWEN3_NO_THINK_EXTRA_BODY,
-                    )
-                    raw = safe_message_text(resp)
-                    # Parse JSON from response
-                    if "```" in raw:
-                        match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
-                        if match:
-                            raw = match.group(1).strip()
-                    return json.loads(raw)
-                except Exception:
-                    return {}
+            try:
+                resp = await gated_create(
+                    self.summary_worker.client,
+                    model=self.summary_worker.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Extract from this abstract:\n"
+                                "- study_type: RCT | meta-analysis | systematic-review | cohort | "
+                                "case-control | cross-sectional | case-report | in-vitro | animal-model | "
+                                "review | guideline | other\n"
+                                '- sample_size: "n=X" or null\n'
+                                "- primary_objective: one sentence or null\n"
+                                'Return JSON only: {"study_type":"...","sample_size":"...","primary_objective":"..."}'
+                            ),
+                        },
+                        {"role": "user", "content": f"Title: {record.title}\n\nAbstract: {record.abstract[:2000]}"},
+                    ],
+                    max_tokens=256,
+                    temperature=0.1,
+                    timeout=180,
+                    extra_body=QWEN3_NO_THINK_EXTRA_BODY,
+                )
+                raw = safe_message_text(resp)
+                # Parse JSON from response
+                if "```" in raw:
+                    match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
+                    if match:
+                        raw = match.group(1).strip()
+                return json.loads(raw)
+            except Exception:
+                return {}
 
         results = await asyncio.gather(*[screen_one(r) for r in records])
         return list(results)
@@ -2332,7 +2341,7 @@ class ResearchAgent:
     async def _deep_extract_batch(
         self, articles, records: list[WideNetRecord], pico: dict[str, str], log=logger.info, output_dir: str = None
     ) -> list[DeepExtraction]:
-        """Step 4: Extract clinical variables from full-text articles using fast model.
+        """Step 4: Extract clinical variables from full-text articles using the Smart model.
         Uses PMID-keyed cache to ensure identical NNT across runs for the same paper."""
         log(f"    [Step 4] Deep extraction from {len(articles)} articles (Smart Model)...")
         semaphore = asyncio.Semaphore(3)  # Reduced from 6 to avoid overloading model server
@@ -2431,14 +2440,17 @@ class ResearchAgent:
                             "}"
                         )
 
-                    # Always use Smart Model for extraction — Fast Model (1B params)
-                    # is too small for reliable 19-field JSON extraction from full-text
+                    # Extraction has always run on the Smart model: a 9B was judged too
+                    # small for reliable 19-field JSON extraction from full text. The Fast
+                    # model was removed entirely 2026-08-10; this comment is kept because the
+                    # *reason* still governs any future attempt to demote this call.
                     messages = [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Title: {record.title}\n\nContent:\n{content}"},
                     ]
                     try:
-                        resp = await self.smart_client.chat.completions.create(
+                        resp = await gated_create(
+                            self.smart_client,
                             model=self.smart_model,
                             messages=messages,
                             max_tokens=2048,
@@ -2455,7 +2467,8 @@ class ResearchAgent:
                             f"    Context length exceeded, retrying with {len(content)} chars for {record.title[:50]}"
                         )
                         messages[1]["content"] = f"Title: {record.title}\n\nContent:\n{content}"
-                        resp = await self.smart_client.chat.completions.create(
+                        resp = await gated_create(
+                            self.smart_client,
                             model=self.smart_model,
                             messages=messages,
                             max_tokens=2048,
@@ -3179,7 +3192,8 @@ class Orchestrator:
             combined_input = combined_input[:80000] + "\n\n[...truncated...]"
 
         try:
-            resp = await self.smart_client.chat.completions.create(
+            resp = await gated_create(
+                self.smart_client,
                 model=self.smart_model,
                 messages=[{"role": "system", "content": audit_system}, {"role": "user", "content": combined_input}],
                 max_tokens=8000,

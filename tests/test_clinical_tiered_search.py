@@ -54,7 +54,7 @@ def _articles(n, prefix="p", start=0):
 def agent(monkeypatch):
     a = ResearchAgent.__new__(ResearchAgent)
     a._domain = "clinical"
-    a.summary_worker = None
+    a.summary_worker = SimpleNamespace()
     a.search = SimpleNamespace(pubmed=SimpleNamespace())
     a._openalex = SimpleNamespace()
     a._eric = SimpleNamespace()

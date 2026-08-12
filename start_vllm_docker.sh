@@ -18,7 +18,29 @@ ENTRYPOINT_DIR="/home/korety/opt/spark_vllm_docker"   # cloned from spark_vllm_d
 PORT=8000
 MAX_MODEL_LEN=65536       # 64k context; model supports up to 262k. Phase 4 CrewAI ReAct +
                           # tool observations hit the 32k ceiling on Japanese runs, so 65k.
-MAX_NUM_SEQS=4
+# Raised 4 -> 8 on 2026-08-11: removing the Fast model moved page summarization and
+# abstract typing onto this server, so one endpoint now serves what two used to.
+#
+# ONE source of truth, read from .env if set. `config.VLLM_MAX_CONCURRENCY` gates the
+# client side against the SAME variable and the same default — hardcoding it in both
+# places let an .env override move the client without moving the server, which is how
+# you get queueing (client > server) or idle capacity (client < server).
+# GATE: if vLLM logs "Available KV cache memory: -X GiB" at startup, lower this (or
+# GPU_MEMORY_UTIL) rather than letting it OOM.
+#
+# Read the value from config.py rather than re-parsing .env in shell. A grep for
+# '^VLLM_MAX_CONCURRENCY=' does not understand what python-dotenv accepts —
+# `export VLLM_MAX_CONCURRENCY=4`, inline comments, quoting — so the two sides could
+# read the same file and disagree, which is the divergence this is meant to prevent.
+# Asking Python makes config.py the single source by construction.
+_PY="${PODCAST_PYTHON:-$HOME/miniconda3/envs/podcast_flow/bin/python3}"
+MAX_NUM_SEQS=$(cd "$(dirname "$0")" && "$_PY" -c \
+  'from dr2_podcast.config import VLLM_MAX_CONCURRENCY as v; print(int(v))' 2>/dev/null)
+if ! [ "$MAX_NUM_SEQS" -gt 0 ] 2>/dev/null; then
+  echo "WARNING: could not read VLLM_MAX_CONCURRENCY from config.py — falling back to 8." >&2
+  echo "         The client gate and this server will disagree if .env overrides it." >&2
+  MAX_NUM_SEQS=8
+fi
 MAX_NUM_BATCHED_TOKENS=65536
 GPU_MEMORY_UTIL=0.82      # 82% of ~121GiB unified RAM (~99.8GiB). Reduced from Nemotron's
                           # 0.88 (2026-04-30) — INT4 weights (~65GB) + FP8 KV cache halve the

@@ -1973,7 +1973,7 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
 
 @app.post("/api/generate-intro")
 async def generate_intro(request: GenerateIntroRequest, username: str = Depends(verify_credentials)):
-    """Generate a channel intro using the LLM (smart model with fast-model fallback)."""
+    """Generate a channel intro using the Smart model."""
     name = request.channel_name or "our podcast"
     target = request.core_target or "curious listeners"
     mission = request.channel_mission or "turning science into everyday wisdom"

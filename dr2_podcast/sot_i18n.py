@@ -13,6 +13,8 @@ Key JA translations (correcting known LLM errors):
   - "randomized controlled trials" → "無作為化比較試験" (NOT 随機化 = Chinese)
 """
 
+from dr2_podcast.config import SMART_MODEL
+
 SOT_TEMPLATES = {
     "en": {
         "title": {
@@ -137,8 +139,8 @@ SOT_TEMPLATES = {
                 "- **Falsification track full-text retrieved:** {fal_ft_ok} "
                 "(errors: {fal_ft_err})\n"
                 "- **Total full texts successfully retrieved:** {total_ft_ok}\n\n"
-                "Clinical variables were extracted from each full text by the Fast Model "
-                "(qwen3.5:9b) using a structured extraction template capturing: "
+                "Clinical variables were extracted from each full text by {model_label} "
+                "using a structured extraction template capturing: "
                 "study design, sample sizes, demographics, follow-up period, "
                 "Control Event Rate (CER), Experimental Event Rate (EER), "
                 "effect size with confidence intervals, blinding, randomization method, "
@@ -195,13 +197,13 @@ SOT_TEMPLATES = {
             "limitations_header": "\n### 4.5 Limitations\n",
             "limitations_body": (
                 "The following pipeline-specific limitations apply to this synthesis:\n\n"
-                "- The Fast Model (qwen3.5:9b) may have misclassified study designs or "
+                "- {model_label} may have misclassified study designs or "
                 "misextracted clinical variables from complex full-text articles.\n"
                 "- Articles not available via PMC, Europe PMC, or Unpaywall were reduced to "
                 "abstract-level data, limiting extraction depth for paywalled literature.\n"
                 "- The 500-result cap per track may exclude relevant studies not retrieved "
                 "in the top results from PubMed or Google Scholar.\n"
-                "- CER/EER extraction relies on the Fast Model correctly identifying "
+                "- CER/EER extraction relies on {model_label} correctly identifying "
                 "event rates in text; studies reporting outcomes without explicit event "
                 "rates could not be included in NNT calculations.\n"
                 "- Non-English language publications were excluded.\n"
@@ -379,7 +381,7 @@ SOT_TEMPLATES = {
                 "- **反証トラック全文取得数:** {fal_ft_ok} "
                 "(エラー: {fal_ft_err})\n"
                 "- **全文取得成功総数:** {total_ft_ok}\n\n"
-                "臨床変数は、Fast Model (qwen3.5:9b)により構造化された抽出テンプレートを用いて"
+                "臨床変数は、{model_label}により構造化された抽出テンプレートを用いて"
                 "各全文から抽出された。抽出項目: 研究デザイン、サンプルサイズ、人口統計学的特性、"
                 "追跡期間、対照群イベント率（CER）、実験群イベント率（EER）、"
                 "効果量と信頼区間、盲検化、無作為化方法、"
@@ -433,13 +435,13 @@ SOT_TEMPLATES = {
             "limitations_header": "\n### 4.5 限界\n",
             "limitations_body": (
                 "本統合には以下のパイプライン固有の限界が適用される:\n\n"
-                "- Fast Model (qwen3.5:9b)が複雑な全文論文から研究デザインを"
+                "- {model_label}が複雑な全文論文から研究デザインを"
                 "誤分類または臨床変数を誤抽出した可能性がある。\n"
                 "- PMC、Europe PMC、またはUnpaywallで利用できない論文は"
                 "抄録レベルのデータに限定され、有料壁文献の抽出深度が制限された。\n"
                 "- トラックごとの500件上限により、PubMedまたはGoogle Scholarの"
                 "上位結果に含まれない関連研究が除外された可能性がある。\n"
-                "- CER/EER抽出はFast Modelがテキスト内のイベント率を正しく"
+                "- CER/EER抽出は{model_label}がテキスト内のイベント率を正しく"
                 "同定することに依存しており、明示的なイベント率なしにアウトカムを報告した"
                 "研究はNNT計算に含めることができなかった。\n"
                 "- 英語以外の出版物は除外された。\n"
@@ -497,9 +499,39 @@ SOT_TEMPLATES = {
 }
 
 
+def _model_label() -> str:
+    """Display name of the model that actually did the extraction.
+
+    These templates hardcoded "Fast Model (qwen3.5:9b)" until 2026-08-11. That was
+    wrong twice over: extraction has always run on the Smart model (see
+    `clinical.py` `_deep_extract_batch`), and the Fast model was removed entirely on
+    2026-08-10. The string is user-visible — it lands in the SoT Methods and
+    Limitations sections, so a reader was being told the provenance of the numbers by
+    a model that never touched them. Resolved at render time so the next model swap
+    cannot leave it stale again.
+
+    Same logic and same fallback as pipeline_sot._smart_model_display(); duplicated
+    rather than imported because pipeline_sot imports THIS module.
+    """
+    return SMART_MODEL.split("/", 1)[-1] if SMART_MODEL else "Smart LLM"
+
+
+def _resolve_model_label(node):
+    """Substitute {model_label} through a nested template dict, returning a copy.
+
+    Plain str.replace, not .format() — every other {placeholder} must survive for the
+    later t() interpolation. Never mutates SOT_TEMPLATES.
+    """
+    if isinstance(node, dict):
+        return {k: _resolve_model_label(v) for k, v in node.items()}
+    if isinstance(node, str):
+        return node.replace("{model_label}", _model_label())
+    return node
+
+
 def get_templates(language: str, domain: str = "clinical") -> dict:
     """Return template dict for the given language. Falls back to 'en' for unknown languages."""
-    return SOT_TEMPLATES.get(language, SOT_TEMPLATES["en"])
+    return _resolve_model_label(SOT_TEMPLATES.get(language, SOT_TEMPLATES["en"]))
 
 
 def t(templates: dict, section: str, key: str, **kwargs) -> str:

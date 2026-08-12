@@ -3,10 +3,11 @@
 File under test: dr2_podcast/sot_i18n.py
 """
 
+import json
 import re
 import pytest
 
-from dr2_podcast.sot_i18n import SOT_TEMPLATES, get_templates, t
+from dr2_podcast.sot_i18n import SOT_TEMPLATES, _resolve_model_label, get_templates, t
 
 
 # ---------------------------------------------------------------------------
@@ -134,21 +135,37 @@ class TestNoChinese:
 
 
 class TestGetTemplates:
+    # These asserted `tmpl is SOT_TEMPLATES[lang]` until 2026-08-11. get_templates now
+    # resolves {model_label} and returns a COPY, so identity is the wrong assertion —
+    # and asserting it would forbid the copy that keeps SOT_TEMPLATES unmutated.
+    # Selection and non-mutation are what actually matter.
+
     def test_returns_en_for_en(self):
-        tmpl = get_templates("en")
-        assert tmpl is SOT_TEMPLATES["en"]
+        assert get_templates("en") == _resolve_model_label(SOT_TEMPLATES["en"])
 
     def test_returns_ja_for_ja(self):
-        tmpl = get_templates("ja")
-        assert tmpl is SOT_TEMPLATES["ja"]
+        assert get_templates("ja") == _resolve_model_label(SOT_TEMPLATES["ja"])
 
     def test_falls_back_to_en_for_unknown(self):
-        tmpl = get_templates("fr")
-        assert tmpl is SOT_TEMPLATES["en"]
+        assert get_templates("fr") == _resolve_model_label(SOT_TEMPLATES["en"])
 
     def test_falls_back_to_en_for_empty(self):
-        tmpl = get_templates("")
-        assert tmpl is SOT_TEMPLATES["en"]
+        assert get_templates("") == _resolve_model_label(SOT_TEMPLATES["en"])
+
+    def test_never_mutates_the_module_templates(self):
+        before = SOT_TEMPLATES["en"]["methods"]["extraction_body"]
+        get_templates("en")
+        assert SOT_TEMPLATES["en"]["methods"]["extraction_body"] == before
+        assert "{model_label}" in before, "source template must keep its placeholder"
+
+    @pytest.mark.parametrize("lang", ["en", "ja"])
+    def test_no_unresolved_model_label_reaches_the_document(self, lang):
+        # The whole point: a reader must never see the raw placeholder, and must never
+        # again be told a removed model did the extraction (2026-08-11).
+        rendered = json.dumps(get_templates(lang), ensure_ascii=False)
+        assert "{model_label}" not in rendered
+        assert "qwen3.5:9b" not in rendered
+        assert "Fast Model" not in rendered
 
 
 # ---------------------------------------------------------------------------
