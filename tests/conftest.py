@@ -9,8 +9,6 @@ def mock_env_vars(monkeypatch):
     monkeypatch.setenv("MODEL_NAME", "test-model")
     monkeypatch.setenv("LLM_BASE_URL", "http://localhost:9999/v1")
     monkeypatch.setenv("LLM_API_KEY", "NA")
-    monkeypatch.setenv("FAST_MODEL_NAME", "test-fast")
-    monkeypatch.setenv("FAST_LLM_BASE_URL", "http://localhost:9999/v1")
 
 
 @pytest.fixture

@@ -8,8 +8,9 @@ load_dotenv()
 # --- Model Configuration ---
 SMART_MODEL = os.environ.get("MODEL_NAME", "")
 SMART_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
-FAST_MODEL = os.environ.get("FAST_MODEL_NAME", "")
-FAST_BASE_URL = os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1")
+# Fast model (qwen3.5:9b via Ollama) removed 2026-08-10 — it measured SLOWER than the
+# Smart model on this GB10 box (21 vs 27 tok/s) because Ollama runs on CPU while vLLM
+# holds the GPU. Every LLM call now goes to the Smart endpoint above.
 
 # --- Output Directory Override ---
 OUTPUT_DIR_OVERRIDE = os.environ.get("OUTPUT_DIR")

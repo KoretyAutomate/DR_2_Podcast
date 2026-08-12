@@ -2,17 +2,22 @@
 Deep Research Agent - Evidence-Based Clinical Research Pipeline
 
 Optimized for Nvidia DGX Spark (128GB Unified Memory):
-- SMART MODEL (configured via MODEL_NAME env var) on port 8000: Reasoning, planning, evaluation
-- FAST MODEL (qwen3.5:9b via Ollama) on port 11434: Parallel content summarization
+- SMART MODEL (configured via MODEL_NAME env var) on port 8000: every LLM call in this module.
+
+Single-model since 2026-08-10. The second endpoint (FAST MODEL, qwen3.5:9b via Ollama on
+port 11434) was removed: measured on this GB10 box it decoded at 21 tok/s against the Smart
+model's 27 tok/s, because Ollama falls back to CPU whenever vLLM holds the GPU. It was the
+slower of the two, and its absence had two silent-degradation paths (abstract typing skipped
+outright; SOT condensation truncating to 6000 chars).
 
 Architecture (7-Step Clinical Pipeline — parallel a/b tracks):
-  Pre-step: Concept Decomposition — Fast Model extracts canonical scientific terms from folk topic
+  Pre-step: Concept Decomposition — canonical scientific terms from a folk topic
   Steps 1a–5a (Affirmative) run in parallel with Steps 1b–5b (Falsification):
-    Step 1: Tiered keyword generation (Scientist, Smart) → Auditor gate (Smart) → loop until approved
+    Step 1: Tiered keyword generation (Scientist) → Auditor gate → loop until approved
     Step 2: Cascading PubMed search — Tier1 → if pool<50 add Tier2 → if still<50 add Tier3 + Scholar
-    Step 3: Tier-aware screening → top 20 (Smart Model, priority fill T1→T2→T3)
-    Step 4: Deep extraction — full text retrieval + clinical variable extraction (Fast Model)
-    Step 5: Case synthesis (Smart Model) — affirmative (5a) or falsification (5b)
+    Step 3: Tier-aware screening → top 20 (priority fill T1→T2→T3)
+    Step 4: Deep extraction — full text retrieval + clinical variable extraction
+    Step 5: Case synthesis — affirmative (5a) or falsification (5b)
   Step 6: Deterministic math — ARR/NNT (Python, no LLM)
   Step 7: GRADE synthesis (Smart Model)
 
@@ -49,8 +54,6 @@ from dr2_podcast.utils import (
 from dr2_podcast.config import (
     SMART_MODEL,
     SMART_BASE_URL,
-    FAST_MODEL,
-    FAST_BASE_URL,
     SCRAPING_TIMEOUT,
     USER_AGENT,
     TIER_CASCADE_THRESHOLD,
@@ -694,16 +697,25 @@ class ContentFetcher:
         return await asyncio.gather(*[self.fetch_page(url) for url in urls])
 
 
-class FastWorker:
-    """Uses fast model for parallel content summarization."""
+class SummaryWorker:
+    """Parallel page summarization + study-metadata extraction.
 
-    def __init__(self, client: AsyncOpenAI, model: str = FAST_MODEL):
+    Ran on the Fast model (qwen3.5:9b via Ollama) until 2026-08-10. Retargeted to
+    the Smart model when the Fast model was removed: measured on this GB10 box the
+    "fast" model decoded at 21 tok/s against the Smart model's 27 tok/s, because
+    Ollama runs on CPU whenever vLLM holds the GPU. It was slower AND weaker, so
+    the second endpoint bought nothing. The class survives the removal because the
+    structured prompt, the concurrency semaphore and the batch gather are all still
+    wanted — only the endpoint changed.
+    """
+
+    def __init__(self, client: AsyncOpenAI, model: str = SMART_MODEL):
         self.client = client
         self.model = model
         self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUMMARIES)
 
     def _parse_metadata_from_response(self, raw_text: str) -> tuple[str, StudyMetadata | None]:
-        """Parse FACTS and METADATA sections from fast model response.
+        """Parse FACTS and METADATA sections from the model response.
 
         Returns (facts_text, metadata_or_none). On parse failure, returns
         original text with None metadata (graceful fallback).
@@ -804,6 +816,7 @@ class FastWorker:
                     max_tokens=1536,
                     temperature=0.1,
                     timeout=180,
+                    extra_body=QWEN3_NO_THINK_EXTRA_BODY,
                 )
                 raw_text = safe_message_text(resp)
                 facts_text, metadata = self._parse_metadata_from_response(raw_text)
@@ -811,7 +824,7 @@ class FastWorker:
                     url=page.url, title=page.title, summary=facts_text, query=query, goal=goal, metadata=metadata
                 )
             except Exception as e:
-                logger.warning(f"Fast model failed for {page.url}: {str(e)[:100]}")
+                logger.warning(f"Summarization failed for {page.url}: {str(e)[:100]}")
                 return SummarizedSource(
                     url=page.url, title=page.title, summary="", query=query, goal=goal, error=str(e)[:200]
                 )
@@ -902,7 +915,7 @@ class AgentDeps:
     """
 
     smart_client: Any
-    fast_worker: Any
+    summary_worker: Any
     search_service: Any
     fetcher: Any
 
@@ -914,12 +927,9 @@ class ResearchConfig:
     brave_api_key: str = ""
     results_per_query: int = 5
     max_iterations: int = MAX_RESEARCH_ITERATIONS
-    fast_model_available: bool = True
     domain: str = "clinical"
     smart_base_url: str = SMART_BASE_URL
-    fast_base_url: str = FAST_BASE_URL
     smart_model: str = SMART_MODEL
-    fast_model: str = FAST_MODEL
 
 
 @dataclass(frozen=True)
@@ -1054,7 +1064,7 @@ class ResearchAgent:
 
     The agent:
     1. Plans what to search (based on its role and what's missing)
-    2. Delegates search + summarization to SearchService + FastWorker
+    2. Delegates search + summarization to SearchService + SummaryWorker
     3. Evaluates gathered evidence
     4. Identifies gaps and generates new queries
     5. Repeats until satisfied or max iterations reached
@@ -1070,7 +1080,7 @@ class ResearchAgent:
     ):
         self.smart_client = deps.smart_client
         self.smart_model = smart_model
-        self.fast_worker = deps.fast_worker
+        self.summary_worker = deps.summary_worker
         self.search = deps.search_service
         self.fetcher = deps.fetcher
         self.results_per_query = results_per_query
@@ -1145,30 +1155,7 @@ class ResearchAgent:
 
             log(f"      [{rq.goal[:40]}] {len(good_pages)}/{len(pages)} fetched → summarizing...")
 
-            # Summarize with fast model
-            if self.fast_worker:
-                batch = await self.fast_worker.summarize_batch(good_pages, rq.goal, rq.query)
-            else:
-                # Fallback to smart model
-                batch = []
-                for p in good_pages:
-                    content = p.content[:_SMART_CONTENT_CHARS]
-                    try:
-                        summary = await self._call_smart(
-                            f"Extract facts relevant to: '{rq.goal}'. Bulleted list only. Be concise.",
-                            f"Source: {p.url}\n\n{content}",
-                            max_tokens=1024,
-                            temperature=0.1,
-                        )
-                        batch.append(
-                            SummarizedSource(url=p.url, title=p.title, summary=summary, query=rq.query, goal=rq.goal)
-                        )
-                    except Exception as e:
-                        batch.append(
-                            SummarizedSource(
-                                url=p.url, title=p.title, summary="", query=rq.query, goal=rq.goal, error=str(e)[:200]
-                            )
-                        )
+            batch = await self.summary_worker.summarize_batch(good_pages, rq.goal, rq.query)
 
             good = sum(1 for s in batch if s.summary and not s.error)
             log(f"      [{rq.goal[:40]}] {good}/{len(good_pages)} summarized")
@@ -1431,18 +1418,7 @@ class ResearchAgent:
         context = f"\n\nRESEARCH FRAMING CONTEXT:\n{framing_context[:2000]}" if framing_context else ""
         user = f"Research topic: {topic}{context}"
         try:
-            # Use fast model if available, else fall back to smart
-            if self.fast_worker:
-                resp = await self.fast_worker.client.chat.completions.create(
-                    model=self.fast_worker.model,
-                    messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-                    max_tokens=512,
-                    temperature=0.2,
-                    timeout=60,
-                )
-                raw = safe_message_text(resp)
-            else:
-                raw = await self._call_smart(system, user, max_tokens=512, temperature=0.2)
+            raw = await self._call_smart(system, user, max_tokens=512, temperature=0.2)
             data = self._parse_json_response(raw)
             return {
                 "canonical_terms": data.get("canonical_terms", []),
@@ -1803,7 +1779,7 @@ class ResearchAgent:
             await self._run_pubmed_fallback(pool, tier_configs, log)
 
         log(f"    [Step 2] Total pool: {len(pool.records)} records (highest tier: {highest_tier})")
-        await self._apply_fast_typing(pool.records, log)
+        await self._apply_study_typing(pool.records, log)
         return pool.records[:500], highest_tier
 
     async def _run_pubmed_cascade(self, pool, tier_configs, log) -> int:
@@ -1899,13 +1875,19 @@ class ResearchAgent:
         except Exception as e:
             logger.error(f"Google Scholar search failed: {e}")
 
-    async def _apply_fast_typing(self, records: list, log) -> None:
-        """Fast-model screening for study_type / sample_size on "other" records."""
+    async def _apply_study_typing(self, records: list, log) -> None:
+        """Screen study_type / sample_size on "other" records.
+
+        Renamed from _apply_fast_typing 2026-08-10 (Fast model removed). Note the old
+        guard was `if not (needs_screening and self.fast_worker): return` — with no Fast
+        model configured this silently SKIPPED typing, leaving records as "other" and
+        quietly weakening tier-aware screening priority. Typing is now unconditional.
+        """
         needs_screening = [r for r in records if r.study_type == "other" and r.abstract]
-        if not (needs_screening and self.fast_worker):
+        if not needs_screening:
             return
-        log(f"    [Step 2] Fast-model typing {len(needs_screening)} abstracts...")
-        screened = await self._fast_screen_abstracts(needs_screening)
+        log(f"    [Step 2] Typing {len(needs_screening)} abstracts...")
+        screened = await self._screen_abstracts(needs_screening)
         screening_map = {id(r): s for r, s in zip(needs_screening, screened, strict=True)}
         for r in records:
             if id(r) in screening_map:
@@ -1943,7 +1925,7 @@ class ResearchAgent:
         await self._add_scholar_records(pool, plan, log)
 
         log(f"    [Step 2] Total pool: {len(pool.records)} records (highest tier: {highest_tier})")
-        await self._apply_fast_typing(pool.records, log)
+        await self._apply_study_typing(pool.records, log)
         return pool.records[:500], highest_tier
 
     async def _add_openalex_records(self, pool, query: str, tier_num: int, log) -> None:
@@ -2026,19 +2008,18 @@ class ResearchAgent:
         except Exception as e:
             logger.error(f"Tier {tier_num} ERIC search failed: {e}")
 
-    async def _fast_screen_abstracts(self, records: list[WideNetRecord]) -> list[dict]:
-        """Use fast model to extract study_type, sample_size, primary_objective from abstracts."""
-        # Concurrency=2 + timeout=180 per CLAUDE.md footgun: Ollama fast models run on
-        # CPU/contended GPU when vLLM holds the smart-model allocation. Higher concurrency
-        # or shorter timeouts produce queue thrash where openai-SDK retries fire before
-        # Ollama can drain the queue, wasting compute and stalling Step 2.
-        semaphore = asyncio.Semaphore(2)
+    async def _screen_abstracts(self, records: list[WideNetRecord]) -> list[dict]:
+        """Extract study_type, sample_size, primary_objective from abstracts."""
+        # Was Semaphore(2) to work around the Ollama-on-CPU footgun while vLLM held the
+        # GPU. That constraint died with the Fast model (2026-08-10); this now shares
+        # vLLM's queue, so it uses the same concurrency budget as the other batch work.
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUMMARIES)
 
         async def screen_one(record: WideNetRecord) -> dict:
             async with semaphore:
                 try:
-                    resp = await self.fast_worker.client.chat.completions.create(
-                        model=self.fast_worker.model,
+                    resp = await self.summary_worker.client.chat.completions.create(
+                        model=self.summary_worker.model,
                         messages=[
                             {
                                 "role": "system",
@@ -2057,6 +2038,7 @@ class ResearchAgent:
                         max_tokens=256,
                         temperature=0.1,
                         timeout=180,
+                        extra_body=QWEN3_NO_THINK_EXTRA_BODY,
                     )
                     raw = safe_message_text(resp)
                     # Parse JSON from response
@@ -2694,34 +2676,29 @@ class Orchestrator:
     def __init__(self, config: "ResearchConfig | None" = None):
         config = config or ResearchConfig()
         smart_base_url = config.smart_base_url
-        fast_base_url = config.fast_base_url
         smart_model = config.smart_model
-        fast_model = config.fast_model
         brave_api_key = config.brave_api_key
         results_per_query = config.results_per_query
         max_iterations = config.max_iterations
-        fast_model_available = config.fast_model_available
         domain = config.domain
 
         self.domain = domain
         self.smart_client = AsyncOpenAI(base_url=smart_base_url, api_key="NA")
-        self.fast_client = AsyncOpenAI(base_url=fast_base_url, api_key="NA") if fast_model_available else None
         self.smart_model = smart_model
 
-        fast_worker = FastWorker(self.fast_client, fast_model) if fast_model_available else None
+        summary_worker = SummaryWorker(self.smart_client, smart_model)
         search_svc = SearchService(brave_api_key)
         self._page_cache = PageCache()
         fetcher = ContentFetcher(max_concurrent=15, cache=self._page_cache)
 
         deps = AgentDeps(
             smart_client=self.smart_client,
-            fast_worker=fast_worker,
+            summary_worker=summary_worker,
             search_service=search_svc,
             fetcher=fetcher,
         )
         self.lead_researcher = ResearchAgent(deps, smart_model, results_per_query, max_iterations)
         self.counter_researcher = ResearchAgent(deps, smart_model, results_per_query, max_iterations)
-        self.fast_model_available = fast_model_available
 
         # Set domain on researchers for Step 2 dispatch
         self.lead_researcher._domain = self.domain
@@ -2941,11 +2918,6 @@ class Orchestrator:
             raise RuntimeError(
                 "MODEL_NAME and LLM_BASE_URL environment variables must be set before running the pipeline"
             )
-        if self.fast_model_available and (not FAST_MODEL or not FAST_BASE_URL):
-            raise RuntimeError(
-                "FAST_MODEL_NAME and FAST_LLM_BASE_URL environment variables must be set before running the pipeline"
-            )
-
         start_time = time.time()
 
         def log(msg: str):
@@ -2953,10 +2925,9 @@ class Orchestrator:
             if progress_callback:
                 progress_callback(msg)
 
-        mode = "DUAL-MODEL" if self.fast_model_available else "SINGLE-MODEL"
         log(f"\n{'=' * 70}")
         domain_label = "Social Science" if self.domain == "social_science" else "Clinical"
-        log(f"DEEP RESEARCH AGENT - Evidence-Based {domain_label} Pipeline ({mode})")
+        log(f"DEEP RESEARCH AGENT - Evidence-Based {domain_label} Pipeline")
         log(f"{'=' * 70}")
         log(f"Topic: {topic}")
         if framing_context:
@@ -3456,7 +3427,7 @@ async def run_deep_research(
     """Entry point for the 7-step pipeline.
 
     Search/model settings travel as one ResearchConfig; the default is the
-    module's configured smart/fast models with a clinical domain.
+    module's configured smart model with a clinical domain.
     """
     orchestrator = Orchestrator(config or ResearchConfig())
     return await orchestrator.run(topic, framing_context=framing_context, output_dir=output_dir)
@@ -3469,18 +3440,6 @@ async def main():
     topic = "does coffee intake improve cognitive performance and productivity?"
     brave_key = os.getenv("BRAVE_API_KEY", "")
 
-    # Check fast model
-    fast_available = True
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{FAST_BASE_URL}/models")
-            fast_available = resp.status_code == 200
-    except Exception:
-        fast_available = False
-
-    if not fast_available:
-        logger.warning("Fast model not available. Using smart-only mode.")
-
     from pathlib import Path
 
     output_dir = Path("research_outputs/test_deep_agent")
@@ -3488,9 +3447,7 @@ async def main():
 
     reports = await run_deep_research(
         topic=topic,
-        brave_api_key=brave_key,
-        results_per_query=5,
-        fast_model_available=fast_available,
+        config=ResearchConfig(brave_api_key=brave_key, results_per_query=5),
         output_dir=str(output_dir),
     )
 

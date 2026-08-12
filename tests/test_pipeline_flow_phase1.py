@@ -97,14 +97,6 @@ def flow_env(monkeypatch, tmp_path):
     """Stub every collaborator phase_1_research reaches out to."""
     monkeypatch.setattr(pf, "get_run_logger", lambda: logging.getLogger("test-flow"))
 
-    # No Ollama probe in tests.
-    import httpx
-
-    def _no_fast_model(*a, **k):
-        raise RuntimeError("no ollama in tests")
-
-    monkeypatch.setattr(httpx, "get", _no_fast_model)
-
     state = {"deep_reports": None, "screening": {}, "sot": "## SOT BODY\n", "raise_in_research": None}
 
     from dr2_podcast import pipeline as _pipeline
@@ -118,7 +110,7 @@ def flow_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(_pipeline, "output_path", _output_path)
     monkeypatch.setattr(_pipeline, "build_imrad_sot", lambda **kw: state["sot"])
-    monkeypatch.setattr(_pipeline, "summarize_report_with_fast_model", lambda *a, **k: "SUMMARY")
+    monkeypatch.setattr(_pipeline, "summarize_report", lambda *a, **k: "SUMMARY")
     monkeypatch.setattr(_pipeline, "_serialize_dataclass", lambda obj: {"serialized": True})
 
     written = {}

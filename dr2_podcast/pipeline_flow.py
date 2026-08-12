@@ -196,27 +196,6 @@ def phase_0_framing(
 # ---------------------------------------------------------------------------
 
 
-def _fast_model_available(run_logger) -> bool:
-    """Probe the Ollama-compatible endpoint for the configured fast model."""
-    fast_model_name = os.environ.get("FAST_MODEL_NAME", "")
-    fast_base_url = os.environ.get("FAST_LLM_BASE_URL", "http://localhost:11434/v1")
-    try:
-        import httpx
-
-        resp = httpx.get(f"{fast_base_url}/models", timeout=3)
-        if resp.status_code == 200:
-            models = [m.get("id", "") for m in resp.json().get("data", [])]
-            available = fast_model_name in models
-            if available:
-                run_logger.info("Fast model ready: %s", fast_model_name)
-            else:
-                run_logger.warning("Fast model '%s' not found. Available: %s", fast_model_name, models)
-            return available
-    except Exception:
-        run_logger.warning("Fast model not available (Ollama unreachable). Running smart-only mode.")
-    return False
-
-
 def _read_candidate_counts(output_dir_path: Path, run_logger) -> tuple[int, int]:
     """(affirmative, adversarial) candidate counts from the screening results."""
     from dr2_podcast import pipeline as _pipeline
@@ -355,7 +334,6 @@ def phase_1_research(
                 config=ResearchConfig(
                     brave_api_key=os.getenv("BRAVE_API_KEY", ""),
                     results_per_query=15,
-                    fast_model_available=_fast_model_available(run_logger),
                     domain=_effective_domain,
                 ),
                 framing_context=framing_output,
@@ -392,7 +370,7 @@ def phase_1_research(
         sot_file.write_text(sot_content)
         run_logger.info("Source of Truth (IMRaD) generated: %d chars", len(sot_content))
 
-        sot_summary = _pipeline.summarize_report_with_fast_model(sot_content, "sot", topic_name)
+        sot_summary = _pipeline.summarize_report(sot_content, "sot", topic_name)
 
     except Exception as exc:
         # Re-raise InsufficientEvidenceError (non-retryable — tells caller to abort)

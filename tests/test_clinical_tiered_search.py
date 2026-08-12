@@ -54,7 +54,7 @@ def _articles(n, prefix="p", start=0):
 def agent(monkeypatch):
     a = ResearchAgent.__new__(ResearchAgent)
     a._domain = "clinical"
-    a.fast_worker = None
+    a.summary_worker = None
     a.search = SimpleNamespace(pubmed=SimpleNamespace())
     a._openalex = SimpleNamespace()
     a._eric = SimpleNamespace()
@@ -278,7 +278,7 @@ class TestTieredSearchClinical:
         records, _ = _run(agent._tiered_search(_plan(), log=lambda *a: None))
         assert len(records) == 500
 
-    def test_fast_model_typing_updates_untyped_records(self, agent):
+    def test_study_typing_updates_untyped_records(self, agent):
         async def search_extended(query, max_results=200):
             arts = _articles(2)
             for a in arts:
@@ -286,12 +286,12 @@ class TestTieredSearchClinical:
             return arts
 
         agent.search.pubmed.search_extended = search_extended
-        agent.fast_worker = SimpleNamespace()
+        agent.summary_worker = SimpleNamespace()
 
         async def fake_screen(records):
             return [{"study_type": "RCT", "sample_size": "n=100", "primary_objective": "obj"} for _ in records]
 
-        agent._fast_screen_abstracts = fake_screen
+        agent._screen_abstracts = fake_screen
         records, _ = _run(agent._tiered_search(_plan(), log=lambda *a: None))
         assert all(r.study_type == "RCT" for r in records)
         assert all(r.sample_size == "n=100" for r in records)

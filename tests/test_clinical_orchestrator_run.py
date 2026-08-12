@@ -93,7 +93,6 @@ class FakeResearcher:
 def orch(monkeypatch):
     o = Orchestrator.__new__(Orchestrator)
     o.domain = "clinical"
-    o.fast_model_available = False
 
     async def _aclose():
         return None

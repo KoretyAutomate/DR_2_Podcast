@@ -20,8 +20,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # Set env vars before importing modules
 os.environ.setdefault("MODEL_NAME", "test-model")
 os.environ.setdefault("LLM_BASE_URL", "http://localhost:9999/v1")
-os.environ.setdefault("FAST_MODEL_NAME", "test-fast")
-os.environ.setdefault("FAST_LLM_BASE_URL", "http://localhost:9999/v1")
 
 
 class TestCallSmartRetry(unittest.TestCase):

@@ -244,7 +244,7 @@ def translate_env(monkeypatch, tmp_path):
     state = {"translated": "翻訳された本文", "summary": "要約"}
 
     monkeypatch.setattr(pl, "_translate_sot_pipelined", lambda sot, lang, cfg: state["translated"])
-    monkeypatch.setattr(pl, "summarize_report_with_fast_model", lambda text, role, topic: state["summary"])
+    monkeypatch.setattr(pl, "summarize_report", lambda text, role, topic: state["summary"])
     monkeypatch.setattr(pl, "output_path", lambda run_dir, filename: tmp_path / filename)
     return state, tmp_path
 

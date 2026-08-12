@@ -30,7 +30,7 @@ import uvicorn
 import httpx
 from dotenv import load_dotenv
 
-from dr2_podcast.config import SMART_BASE_URL, FAST_BASE_URL, OUTPUT_DIR_OVERRIDE
+from dr2_podcast.config import SMART_BASE_URL, OUTPUT_DIR_OVERRIDE
 
 # Expected artifacts — derived from pipeline's _FILE_SUBDIR_MAP (auto-updates)
 from dr2_podcast.pipeline import _FILE_SUBDIR_MAP
@@ -2031,11 +2031,13 @@ async def generate_intro(request: GenerateIntroRequest, username: str = Depends(
 
     llm_base = os.environ["LLM_BASE_URL"].rstrip("/")
     model_name = os.environ["MODEL_NAME"]
-    fast_base = os.environ["FAST_LLM_BASE_URL"].rstrip("/")
-    fast_model = os.environ["FAST_MODEL_NAME"]
 
+    # The FAST_MODEL_NAME / FAST_LLM_BASE_URL fallback was removed 2026-08-10 with the
+    # Fast model. It was a second endpoint, not a second chance: the 2026-06-13 blank-intro
+    # bug was that BOTH models are reasoning models and neither honoured a "/no_think"
+    # system message, so the fallback failed for exactly the same reason as the primary.
+    # What actually fixes it is chat_template_kwargs.enable_thinking=False in the payload.
     async with httpx.AsyncClient(timeout=30) as client:
-        # Primary: MODEL_NAME / LLM_BASE_URL from .env
         try:
             payload["model"] = model_name
             r = await client.post(f"{llm_base}/chat/completions", json=payload)
@@ -2044,27 +2046,11 @@ async def generate_intro(request: GenerateIntroRequest, username: str = Depends(
                 if intro:
                     return {"intro": intro}
                 fr = r.json()["choices"][0].get("finish_reason")
-                print(f"[generate-intro] primary 200 but empty content (finish_reason={fr})")
+                print(f"[generate-intro] 200 but empty content (finish_reason={fr})")
             else:
-                print(f"[generate-intro] primary non-200: {r.status_code} {r.text[:200]}")
+                print(f"[generate-intro] non-200: {r.status_code} {r.text[:200]}")
         except Exception as e:
-            print(f"[generate-intro] primary error: {e}")
-
-        # Fallback: FAST_MODEL_NAME / FAST_LLM_BASE_URL from .env
-        if fast_base != llm_base or fast_model != model_name:
-            try:
-                payload["model"] = fast_model
-                r = await client.post(f"{fast_base}/chat/completions", json=payload)
-                if r.status_code == 200:
-                    intro = _extract_intro(r)
-                    if intro:
-                        return {"intro": intro}
-                    fr = r.json()["choices"][0].get("finish_reason")
-                    print(f"[generate-intro] fallback 200 but empty content (finish_reason={fr})")
-                else:
-                    print(f"[generate-intro] fallback non-200: {r.status_code} {r.text[:200]}")
-            except Exception as e:
-                print(f"[generate-intro] fallback error: {e}")
+            print(f"[generate-intro] error: {e}")
 
     raise HTTPException(status_code=503, detail="LLM returned no intro text — try again or fill it in manually.")
 
@@ -2179,11 +2165,14 @@ def _close_phase(task_id: str):
 
 
 def _preflight_check() -> str | None:
-    """Test vLLM and Ollama reachability. Returns error message or None."""
+    """Test vLLM reachability. Returns error message or None.
+
+    The Ollama probe went with the Fast model on 2026-08-10 — there is no second
+    endpoint left to check.
+    """
     smart_health = SMART_BASE_URL.rstrip("/") + "/models"
-    fast_health = FAST_BASE_URL.rstrip("/").replace("/v1", "") + "/api/tags"
     errors = []
-    for name, url in [("vLLM", smart_health), ("Ollama", fast_health)]:
+    for name, url in [("vLLM", smart_health)]:
         try:
             resp = httpx.get(url, timeout=3.0)
             resp.raise_for_status()

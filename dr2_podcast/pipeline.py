@@ -22,7 +22,7 @@ import weasyprint
 from dr2_podcast.tools.link_validator import LinkValidatorTool
 import wave
 from dr2_podcast.audio.engine import generate_audio_from_script, clean_script_for_tts, post_process_audio
-from dr2_podcast.utils import strip_think_blocks
+from dr2_podcast.utils import strip_think_blocks, QWEN3_NO_THINK_EXTRA_BODY
 from dataclasses import dataclass, fields as dc_fields
 from typing import Any
 
@@ -1100,18 +1100,25 @@ dgx_llm_strict = None  # initialized in __main__
 dgx_llm_creative = None  # initialized in __main__
 
 
-def summarize_report_with_fast_model(report_text: str, role: str, topic: str) -> str:
-    """Condense a deep research report using the fast model (FAST_MODEL_NAME) via Ollama.
+def summarize_report(report_text: str, role: str, topic: str) -> str:
+    """Condense a deep research report with the Smart model.
 
     Returns a ~2000-word summary that preserves ALL key findings (not just
-    the first N characters).  Falls back to [:6000] truncation on error.
+    the first N characters).
+
+    Renamed from summarize_report_with_fast_model 2026-08-10 when the Fast model was
+    removed. The `[:6000]` truncation fallback is DELIBERATELY still here but is no
+    longer silent: losing a 40-page report down to 6000 characters changes what the
+    episode can say, so it now logs at ERROR and stamps the returned text, rather than
+    degrading invisibly the way it did when Ollama was simply down.
     """
     try:
         from openai import OpenAI
 
-        client = OpenAI(base_url=os.environ["FAST_LLM_BASE_URL"], api_key="ollama")
+        client = OpenAI(base_url=SMART_BASE_URL, api_key="NA")
         response = client.chat.completions.create(
-            model=os.environ["FAST_MODEL_NAME"],
+            model=SMART_MODEL,
+            extra_body=QWEN3_NO_THINK_EXTRA_BODY,
             messages=[
                 {
                     "role": "system",
@@ -1138,10 +1145,14 @@ def summarize_report_with_fast_model(report_text: str, role: str, topic: str) ->
             logger.info(f"  ✓ {role} report summarized: {len(report_text)} → {len(summary)} chars")
             return summary
         # Summary too short — fall through to truncation
-        logger.warning(f"  ⚠ {role} summary too short ({len(summary)} chars), falling back to truncation")
+        logger.error(f"  ✗ {role} summary too short ({len(summary)} chars) — TRUNCATING to 6000 chars")
     except Exception as e:
-        logger.warning(f"  ⚠ fast-model summarization failed for {role}: {e}")
+        logger.error(f"  ✗ {role} summarization failed ({e}) — TRUNCATING to 6000 chars")
 
+    logger.error(
+        f"  ✗ {role} report degraded: {len(report_text)} chars → 6000. Findings past that point "
+        f"are NOT available to downstream phases."
+    )
     return report_text[:6000]
 
 
@@ -2267,7 +2278,7 @@ def _translate_and_inject_sot(ctx: ScriptRunContext, sot_path, sot_summary, grad
             f.write(translated_sot)
         logger.info(f"\u2713 Translated SOT saved ({len(translated_sot)} chars)")
         logger.info("  Summarizing translated SOT for Crew 3 context injection...")
-        translated_summary = summarize_report_with_fast_model(translated_sot, "sot_translated", topic_name)
+        translated_summary = summarize_report(translated_sot, "sot_translated", topic_name)
         if translated_summary:
             tl_injection = _build_sot_injection_for_stage(
                 1,
@@ -2546,7 +2557,7 @@ if __name__ == "__main__":
                 if language != "en" and _r_ja_path.exists():
                     _r_translated = _r_ja_path.read_text()
                     _r_sot_translated_file = _r_ja_path
-                    _r_tl_summary = summarize_report_with_fast_model(_r_translated, "sot_translated", topic_name)
+                    _r_tl_summary = summarize_report(_r_translated, "sot_translated", topic_name)
                     logger.info("\u2713 Reuse: using existing template-built %s SoT", language.upper())
                 else:
                     _r_translated, _r_sot_translated_file, _r_tl_summary = _translate_and_inject_sot(
@@ -2823,7 +2834,7 @@ if __name__ == "__main__":
                     if language != "en" and _s_ja_path.exists():
                         _s_translated = _s_ja_path.read_text()
                         _s_sot_translated_file = _s_ja_path
-                        _s_tl_summary = summarize_report_with_fast_model(_s_translated, "sot_translated", topic_name)
+                        _s_tl_summary = summarize_report(_s_translated, "sot_translated", topic_name)
                         logger.info("\u2713 Supplemental: using existing template-built %s SoT", language.upper())
                     else:
                         _s_translated, _s_sot_translated_file, _s_tl_summary = _translate_and_inject_sot(

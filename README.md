@@ -77,7 +77,7 @@ A FastAPI-based web interface (`web_ui.py`) for managing podcast production:
 - **Upload integration**: optional Buzzsprout (draft) and YouTube (private) publishing
 - **Research reuse**: reuse previous research artifacts with optional LLM-assessed supplemental research
 - **Stop button**: cancel a running task mid-pipeline
-- **System status**: checks vLLM and Ollama availability before submission
+- **System status**: checks vLLM availability before submission
 - Basic authentication support (auto-generated credentials or via env vars)
 
 Launch:
@@ -104,12 +104,17 @@ The system uses two local LLMs working in tandem:
 
 | Role | Default Model | Hosted On | Purpose |
 |------|---------------|-----------|---------|
-| **Smart model** | `Intel/Qwen3.5-122B-A10B-int4-AutoRound` | vLLM (port 8000) | PICO strategy, screening, case synthesis, GRADE audit, script writing, SOT translation |
-| **Fast model** | `qwen3.5:9b` | Ollama (port 11434) | Parallel abstract screening, full-text clinical extraction, report condensation |
+| **Smart model** | `Intel/Qwen3.5-122B-A10B-int4-AutoRound` | vLLM (port 8000) | Every LLM call: PICO strategy, page summarization, abstract typing, screening, full-text extraction, case synthesis, GRADE audit, script writing, SOT translation, report condensation |
 
-Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`, `FAST_MODEL_NAME`, `FAST_LLM_BASE_URL`).
+Model selection can be overridden via environment variables (`MODEL_NAME`, `LLM_BASE_URL`).
 
-SOT translation is handled directly by the Smart Model (multilingual, including Japanese — set via `MODEL_NAME`). If the fast model is unavailable, the smart model handles all summarization and extraction (slower but functional).
+SOT translation is handled directly by the Smart Model (multilingual, including Japanese — set via `MODEL_NAME`).
+
+**Single-model since 2026-08-10.** A second "fast" endpoint (`qwen3.5:9b` on Ollama) used to handle page
+summarization and abstract typing. It was removed after measurement: on this GB10 box it decoded at
+21 tok/s against the smart model's 27 tok/s, because Ollama falls back to CPU whenever vLLM holds the
+GPU. It was the slower of the two and added a second failure surface, so the pipeline no longer needs
+Ollama at all.
 
 ## Evidence-Based Research Pipeline
 
@@ -120,7 +125,7 @@ The deep research pre-scan implements a 7-step systematic review methodology mod
 Steps 1–5 run identically for both tracks via `asyncio.gather()`. The only differences are the search terms (b targets adverse-effects, null-results, harms, and bias terms) and the final case mandate (a argues FOR, b argues AGAINST).
 
 **Pre-step — Concept Decomposition (Fast Model, ~5s)**
-Before Step 1, the fast model extracts canonical scientific terms from the folk-language topic (e.g., "coffee" → canonical terms: caffeine, coffea; related concepts: adenosine, methylxanthine). These terms are fed into Step 1 to help the scientist generate accurate tier keywords.
+Before Step 1, the model extracts canonical scientific terms from the folk-language topic (e.g., "coffee" → canonical terms: caffeine, coffea; related concepts: adenosine, methylxanthine). These terms are fed into Step 1 to help the scientist generate accurate tier keywords.
 
 **Step 1 — Tiered Keyword Generation + Auditor Gate (Smart Model, ~15s)**
 A Scientist agent (Smart) generates a **3-tier plain keyword plan** — no Boolean operators, no MeSH notation — just simple English phrases organized into three escalating scope tiers:
@@ -140,7 +145,7 @@ Searches PubMed using a **cascading tier strategy** — the pipeline stops addin
 2. **Tier 2** query (with `Humans[MeSH]` filter) → if pool ≥ 50, stop
 3. **Tier 3** query (no filters) → ultrawide net
 
-**Google Scholar** always runs using Tier 1 plain-text keywords (via SearXNG). **`PublicationType` in the PubMed XML is used directly** to classify study type (RCT, meta-analysis, systematic review, etc.) without LLM calls. The fast model only processes records where type cannot be determined from XML, extracting `study_type`, `sample_size`, and `primary_objective` from the abstract. Each record is tagged with its `research_tier` (1, 2, or 3) for downstream priority handling.
+**Google Scholar** always runs using Tier 1 plain-text keywords (via SearXNG). **`PublicationType` in the PubMed XML is used directly** to classify study type (RCT, meta-analysis, systematic review, etc.) without LLM calls. The model only processes records where type cannot be determined from XML, extracting `study_type`, `sample_size`, and `primary_objective` from the abstract. Each record is tagged with its `research_tier` (1, 2, or 3) for downstream priority handling.
 
 **Step 3 — Tier-Aware Screening (Smart Model, ~20s)**
 Each tier is screened **independently** with a **two-stage process**:
@@ -158,7 +163,7 @@ For each of the top 20 studies, the full text is retrieved via a 4-tier fallback
 3. **Unpaywall API** (OA PDF location via DOI)
 4. **Publisher page scrape** (existing `ContentFetcher` logic)
 
-The fast model then extracts 20 clinical variables per article: `control_event_rate` (CER), `experimental_event_rate` (EER), effect size with CI, attrition, blinding, randomization, ITT analysis, funding source, conflicts of interest, risk of bias, demographics, follow-up period, and biological mechanism. Extractions are **cached by PMID** in `research_outputs/extraction_cache.json` — subsequent runs reuse cached CER/EER values, ensuring identical NNT calculations for the same paper across runs.
+The model then extracts 20 clinical variables per article: `control_event_rate` (CER), `experimental_event_rate` (EER), effect size with CI, attrition, blinding, randomization, ITT analysis, funding source, conflicts of interest, risk of bias, demographics, follow-up period, and biological mechanism. Extractions are **cached by PMID** in `research_outputs/extraction_cache.json` — subsequent runs reuse cached CER/EER values, ensuring identical NNT calculations for the same paper across runs.
 
 **Step 5 — Case Synthesis (Smart Model, ~30s each)**
 Each track writes a structured case report from the extracted data:
@@ -188,7 +193,7 @@ After the deep research pre-scan, all source-level data is saved to `research_so
 - **ReadResearchSource** — Read the full extracted summary for any specific source by index
 - **ReadFullReport** — Read an entire research report from disk
 
-Before injection into agent task descriptions, full reports are **condensed by the fast model** (~2000 words) instead of being hard-truncated.
+Before injection into agent task descriptions, full reports are **condensed by the model** (~2000 words) instead of being hard-truncated.
 
 ## GRADE Audit Report Structure
 
@@ -294,11 +299,6 @@ Personality is determined by role, not host: the **presenter** is an enthusiasti
 ```
 The launcher script mounts `Intel/Qwen3.5-122B-A10B-int4-AutoRound` from the local HuggingFace cache and serves it with `--kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser hermes`. GPU memory utilization defaults to 82% (FP8 KV cache + INT4 weights leave ~14 GiB of headroom at 65k context). See `start_vllm_docker.sh` for all tunables.
 
-**Ollama** — Required for the fast model:
-```bash
-ollama serve
-ollama pull qwen3.5:9b                # Fast model (default)
-```
 
 **SearXNG** — Self-hosted search (optional, improves source diversity):
 ```bash
@@ -343,8 +343,6 @@ export PODCAST_CHANNEL_MISSION="turning complex science into actionable protocol
 # Model config (defaults shown)
 export MODEL_NAME="Intel/Qwen3.5-122B-A10B-int4-AutoRound"
 export LLM_BASE_URL="http://localhost:8000/v1"
-export FAST_MODEL_NAME="qwen3.5:9b"
-export FAST_LLM_BASE_URL="http://localhost:11434/v1"
 
 # Service endpoints (defaults shown)
 export SEARXNG_URL="http://localhost:8080"
