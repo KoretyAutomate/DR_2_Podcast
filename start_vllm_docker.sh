@@ -18,14 +18,19 @@ ENTRYPOINT_DIR="/home/korety/opt/spark_vllm_docker"   # cloned from spark_vllm_d
 PORT=8000
 MAX_MODEL_LEN=65536       # 64k context; model supports up to 262k. Phase 4 CrewAI ReAct +
                           # tool observations hit the 32k ceiling on Japanese runs, so 65k.
-MAX_NUM_SEQS=8            # Raised 4 -> 8 on 2026-08-11. Removing the Fast model moved page
-                          # summarization and abstract typing onto this server, so one endpoint
-                          # now serves what two used to. MUST stay in sync with
-                          # config.VLLM_MAX_CONCURRENCY, which gates the client side — a client
-                          # allowed more in flight than the server serves only builds a queue,
-                          # and queued time is charged against the 180s request timeout.
-                          # GATE: if vLLM logs "Available KV cache memory: -X GiB" at startup,
-                          # lower this (or GPU_MEMORY_UTIL) rather than letting it OOM.
+# Raised 4 -> 8 on 2026-08-11: removing the Fast model moved page summarization and
+# abstract typing onto this server, so one endpoint now serves what two used to.
+#
+# ONE source of truth, read from .env if set. `config.VLLM_MAX_CONCURRENCY` gates the
+# client side against the SAME variable and the same default — hardcoding it in both
+# places let an .env override move the client without moving the server, which is how
+# you get queueing (client > server) or idle capacity (client < server).
+# GATE: if vLLM logs "Available KV cache memory: -X GiB" at startup, lower this (or
+# GPU_MEMORY_UTIL) rather than letting it OOM.
+if [ -f "$(dirname "$0")/.env" ]; then
+  _ENV_SEQS=$(grep -E '^VLLM_MAX_CONCURRENCY=' "$(dirname "$0")/.env" | tail -1 | cut -d= -f2 | tr -d ' "')
+fi
+MAX_NUM_SEQS="${VLLM_MAX_CONCURRENCY:-${_ENV_SEQS:-8}}"
 MAX_NUM_BATCHED_TOKENS=65536
 GPU_MEMORY_UTIL=0.82      # 82% of ~121GiB unified RAM (~99.8GiB). Reduced from Nemotron's
                           # 0.88 (2026-04-30) — INT4 weights (~65GB) + FP8 KV cache halve the

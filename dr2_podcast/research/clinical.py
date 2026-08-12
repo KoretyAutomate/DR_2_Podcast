@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
 from dr2_podcast.pipeline_types import StudyMetadata, SummarizedSource, SearchMetrics, ResearchReport
 from dr2_podcast.utils import (
+    vllm_gate,
     strip_think_blocks,
     is_safe_url,
     safe_float,
@@ -54,7 +55,6 @@ from dr2_podcast.utils import (
 from dr2_podcast.config import (
     SMART_MODEL,
     SMART_BASE_URL,
-    VLLM_MAX_CONCURRENCY,
     SCRAPING_TIMEOUT,
     USER_AGENT,
     TIER_CASCADE_THRESHOLD,
@@ -87,29 +87,18 @@ MAX_INPUT_TOKENS = 32000
 _SMART_CONTENT_CHARS = 29_000
 MAX_RESEARCH_ITERATIONS = 3
 
-# One concurrency gate per event loop, shared by EVERY caller of the vLLM endpoint.
-#
-# Replaces two independent semaphores (2026-08-11). Removing the Fast model put page
-# summarization and abstract typing onto the same server as everything else, and the
-# per-call `asyncio.Semaphore(N)` in _screen_abstracts was constructed fresh on each
-# invocation — with both research tracks running under asyncio.gather that allowed
-# 2xN in flight, on top of SummaryWorker's own N, against a server configured for
-# VLLM_MAX_CONCURRENCY sequences. Excess does not fail fast; it queues, and queued
-# time is charged against the 180s request timeout.
-#
-# Single-slot cache rather than a dict: the pipeline runs one loop at a time, and
-# keying on id(loop) would hand back a semaphore bound to a dead loop once an id is
-# recycled.
-_vllm_gate_cache: tuple[Any, asyncio.Semaphore] | None = None
+async def _gated_create(client, **kwargs):
+    """Every direct chat.completions.create in this module goes through here.
 
+    The gate must be acquired exactly once per request. Routing all direct calls
+    through one helper is what makes that checkable: test_clinical_summary_worker.py
+    asserts this module contains no bare `.chat.completions.create(`, so a new call
+    site cannot quietly escape the limit. Calls that go via utils.async_call_smart()
+    are already gated inside it and must NOT be wrapped again.
+    """
+    async with vllm_gate():
+        return await client.chat.completions.create(**kwargs)
 
-def _vllm_gate() -> asyncio.Semaphore:
-    """The shared vLLM concurrency gate for the running event loop."""
-    global _vllm_gate_cache
-    loop = asyncio.get_running_loop()
-    if _vllm_gate_cache is None or _vllm_gate_cache[0] is not loop:
-        _vllm_gate_cache = (loop, asyncio.Semaphore(VLLM_MAX_CONCURRENCY))
-    return _vllm_gate_cache[1]
 
 JUNK_DOMAINS = {
     "dictionary.com",
@@ -676,7 +665,7 @@ class ContentFetcher:
         self.cache = cache
 
     async def fetch_page(self, url: str) -> FetchedPage:
-        # NOT _vllm_gate(): this is an HTTP fetch, not an inference call. Holding a vLLM
+        # NOT the vLLM gate: this is an HTTP fetch, not an inference call. Holding a vLLM
         # slot for up to SCRAPING_TIMEOUT would starve the other track's model calls.
         async with self.semaphore:
             # SSRF guard — block private/link-local IPs
@@ -830,29 +819,29 @@ class SummaryWorker:
             f"- Use null (not quotes) for unknown metadata fields\n"
             f"- If no relevant information: output 'NO RELEVANT DATA' with no metadata"
         )
-        async with _vllm_gate():
-            try:
-                resp = await self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Source URL: {page.url}\n\nContent:\n{content}"},
-                    ],
-                    max_tokens=1536,
-                    temperature=0.1,
-                    timeout=180,
-                    extra_body=QWEN3_NO_THINK_EXTRA_BODY,
-                )
-                raw_text = safe_message_text(resp)
-                facts_text, metadata = self._parse_metadata_from_response(raw_text)
-                return SummarizedSource(
-                    url=page.url, title=page.title, summary=facts_text, query=query, goal=goal, metadata=metadata
-                )
-            except Exception as e:
-                logger.warning(f"Summarization failed for {page.url}: {str(e)[:100]}")
-                return SummarizedSource(
-                    url=page.url, title=page.title, summary="", query=query, goal=goal, error=str(e)[:200]
-                )
+        try:
+            resp = await _gated_create(
+                self.client,
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Source URL: {page.url}\n\nContent:\n{content}"},
+                ],
+                max_tokens=1536,
+                temperature=0.1,
+                timeout=180,
+                extra_body=QWEN3_NO_THINK_EXTRA_BODY,
+            )
+            raw_text = safe_message_text(resp)
+            facts_text, metadata = self._parse_metadata_from_response(raw_text)
+            return SummarizedSource(
+                url=page.url, title=page.title, summary=facts_text, query=query, goal=goal, metadata=metadata
+            )
+        except Exception as e:
+            logger.warning(f"Summarization failed for {page.url}: {str(e)[:100]}")
+            return SummarizedSource(
+                url=page.url, title=page.title, summary="", query=query, goal=goal, error=str(e)[:200]
+            )
 
     async def summarize_batch(self, pages: list[FetchedPage], goal: str, query: str) -> list[SummarizedSource]:
         return await asyncio.gather(*[self.summarize(page, goal, query) for page in pages])
@@ -2046,42 +2035,42 @@ class ResearchAgent:
         """Extract study_type, sample_size, primary_objective from abstracts."""
         # Was Semaphore(2) to work around the Ollama-on-CPU footgun while vLLM held the
         # GPU. That constraint died with the Fast model; the replacement is the SHARED
-        # gate, not a bigger local one — see _vllm_gate.
+        # gate in _gated_create, not a bigger local one.
 
         async def screen_one(record: WideNetRecord) -> dict:
-            async with _vllm_gate():
-                try:
-                    resp = await self.summary_worker.client.chat.completions.create(
-                        model=self.summary_worker.model,
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": (
-                                    "Extract from this abstract:\n"
-                                    "- study_type: RCT | meta-analysis | systematic-review | cohort | "
-                                    "case-control | cross-sectional | case-report | in-vitro | animal-model | "
-                                    "review | guideline | other\n"
-                                    '- sample_size: "n=X" or null\n'
-                                    "- primary_objective: one sentence or null\n"
-                                    'Return JSON only: {"study_type":"...","sample_size":"...","primary_objective":"..."}'
-                                ),
-                            },
-                            {"role": "user", "content": f"Title: {record.title}\n\nAbstract: {record.abstract[:2000]}"},
-                        ],
-                        max_tokens=256,
-                        temperature=0.1,
-                        timeout=180,
-                        extra_body=QWEN3_NO_THINK_EXTRA_BODY,
-                    )
-                    raw = safe_message_text(resp)
-                    # Parse JSON from response
-                    if "```" in raw:
-                        match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
-                        if match:
-                            raw = match.group(1).strip()
-                    return json.loads(raw)
-                except Exception:
-                    return {}
+            try:
+                resp = await _gated_create(
+                    self.summary_worker.client,
+                    model=self.summary_worker.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Extract from this abstract:\n"
+                                "- study_type: RCT | meta-analysis | systematic-review | cohort | "
+                                "case-control | cross-sectional | case-report | in-vitro | animal-model | "
+                                "review | guideline | other\n"
+                                '- sample_size: "n=X" or null\n'
+                                "- primary_objective: one sentence or null\n"
+                                'Return JSON only: {"study_type":"...","sample_size":"...","primary_objective":"..."}'
+                            ),
+                        },
+                        {"role": "user", "content": f"Title: {record.title}\n\nAbstract: {record.abstract[:2000]}"},
+                    ],
+                    max_tokens=256,
+                    temperature=0.1,
+                    timeout=180,
+                    extra_body=QWEN3_NO_THINK_EXTRA_BODY,
+                )
+                raw = safe_message_text(resp)
+                # Parse JSON from response
+                if "```" in raw:
+                    match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
+                    if match:
+                        raw = match.group(1).strip()
+                return json.loads(raw)
+            except Exception:
+                return {}
 
         results = await asyncio.gather(*[screen_one(r) for r in records])
         return list(results)
@@ -2473,7 +2462,8 @@ class ResearchAgent:
                         {"role": "user", "content": f"Title: {record.title}\n\nContent:\n{content}"},
                     ]
                     try:
-                        resp = await self.smart_client.chat.completions.create(
+                        resp = await _gated_create(
+                            self.smart_client,
                             model=self.smart_model,
                             messages=messages,
                             max_tokens=2048,
@@ -2490,7 +2480,8 @@ class ResearchAgent:
                             f"    Context length exceeded, retrying with {len(content)} chars for {record.title[:50]}"
                         )
                         messages[1]["content"] = f"Title: {record.title}\n\nContent:\n{content}"
-                        resp = await self.smart_client.chat.completions.create(
+                        resp = await _gated_create(
+                            self.smart_client,
                             model=self.smart_model,
                             messages=messages,
                             max_tokens=2048,
@@ -3214,7 +3205,8 @@ class Orchestrator:
             combined_input = combined_input[:80000] + "\n\n[...truncated...]"
 
         try:
-            resp = await self.smart_client.chat.completions.create(
+            resp = await _gated_create(
+                self.smart_client,
                 model=self.smart_model,
                 messages=[{"role": "system", "content": audit_system}, {"role": "user", "content": combined_input}],
                 max_tokens=8000,

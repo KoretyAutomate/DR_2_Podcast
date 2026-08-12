@@ -11,10 +11,12 @@ these tests are what should have.
 """
 
 import asyncio
+import pathlib
 from types import SimpleNamespace
 
 import pytest
 
+from dr2_podcast import utils
 from dr2_podcast.research import clinical
 from dr2_podcast.research.clinical import FetchedPage, SummaryWorker
 
@@ -107,12 +109,26 @@ class TestBatch:
 
 
 class TestVllmGate:
+    def test_no_ungated_completion_call_exists_in_clinical(self):
+        """The gate is only global if every call site goes through _gated_create.
+
+        Codex found two escapes on 2026-08-11: deep extraction (plus its
+        context-length retry) and the GRADE call each held their own budget, so a
+        server sized for VLLM_MAX_CONCURRENCY could see more in flight. A grep is the
+        only check that survives someone adding a sixth call site.
+        """
+        src = pathlib.Path(clinical.__file__).read_text()
+        body = src.split("async def _gated_create", 1)[1].split("\n\n\n", 1)[1]
+        assert ".chat.completions.create(" not in body, (
+            "a direct chat.completions.create escaped the gate — route it through _gated_create()"
+        )
+
     def test_gate_is_shared_across_callers_in_one_loop(self):
         """One gate per loop, not per caller — a per-call semaphore let both research
         tracks admit N each against a server serving VLLM_MAX_CONCURRENCY total."""
 
         async def two_lookups():
-            return clinical._vllm_gate(), clinical._vllm_gate()
+            return utils.vllm_gate(), utils.vllm_gate()
 
         a, b = _run(two_lookups())
         assert a is b
@@ -131,7 +147,7 @@ class TestVllmGate:
 
 
 async def _gate():
-    return clinical._vllm_gate()
+    return utils.vllm_gate()
 
 
 class TestAgentDepsRequiresWorker:

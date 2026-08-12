@@ -7,8 +7,10 @@ import random
 import re
 import socket
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlparse
 
+from dr2_podcast.config import VLLM_MAX_CONCURRENCY
 from bs4 import BeautifulSoup
 
 
@@ -35,6 +37,35 @@ def strip_think_blocks(text: str) -> str:
 # safe_message_text() for full defense-in-depth against reasoning_content
 # leaking when the reasoning parser is enabled.
 QWEN3_NO_THINK_EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+# --- vLLM concurrency gate -------------------------------------------------
+#
+# ONE gate per event loop, shared by every caller of the vLLM endpoint. It lives here
+# rather than in clinical.py because async_call_smart() is the busiest caller and
+# clinical.py imports utils, not the other way round.
+#
+# Sizing: must match --max-num-seqs in start_vllm_docker.sh. Client concurrency above
+# the server's sequence limit buys nothing — it queues, and queued time is charged
+# against the per-request timeout.
+#
+# DEADLOCK RULE: acquire this in exactly one place per request. async_call_smart()
+# takes it internally, so callers of async_call_smart() must NOT wrap it; direct
+# `chat.completions.create` calls must. test_clinical_summary_worker.py has a guard
+# test that fails when a new ungated call site appears.
+#
+# Single-slot cache, not a dict keyed on id(loop): ids are recycled, and a recycled id
+# would hand back a semaphore bound to a dead loop.
+_vllm_gate_cache: tuple[Any, asyncio.Semaphore] | None = None
+
+
+def vllm_gate() -> asyncio.Semaphore:
+    """The shared vLLM concurrency gate for the running event loop."""
+    global _vllm_gate_cache
+    loop = asyncio.get_running_loop()
+    if _vllm_gate_cache is None or _vllm_gate_cache[0] is not loop:
+        _vllm_gate_cache = (loop, asyncio.Semaphore(VLLM_MAX_CONCURRENCY))
+    return _vllm_gate_cache[1]
 
 
 def safe_message_text(resp) -> str:
@@ -213,7 +244,8 @@ async def async_call_smart(client, model, system, user, options: SmartCallOption
     max_retries = 3
     for attempt in range(max_retries + 1):
         try:
-            resp = await client.chat.completions.create(**create_kwargs)
+            async with vllm_gate():
+                resp = await client.chat.completions.create(**create_kwargs)
             return safe_message_text(resp)
         except (openai.BadRequestError, openai.AuthenticationError):
             raise
