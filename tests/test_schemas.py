@@ -29,7 +29,7 @@ from dr2_podcast.schemas import (
     EXAMPLE_NAMES,
     SCHEMA_NAMES,
     SchemaValidationError,
-    agrees_to_stated_precision,
+    agrees_at_producer_precision,
     compute_finding_key,
     example_path,
     extraction_errors,
@@ -321,6 +321,15 @@ def _derived(
     return {"kind": "derived", "operation": operation, "operands": operands, "result": result}
 
 
+def _misquoted(
+    operation: str, values: dict[str, float], result: Any, operand: str, fields: list[str]
+) -> dict[str, Any]:
+    """A record whose `operand` is quoted by a locator naming `fields` instead of itself."""
+    record = _derived(operation, values, result)
+    record["operands"][operand]["quoted"]["fields"] = fields
+    return record
+
+
 def _correct_derived_records() -> list[tuple[str, dict[str, Any]]]:
     """One record per operation, with the result taken from the PRODUCTION calculator.
 
@@ -388,11 +397,36 @@ def test_the_real_calculate_impact_chain_validates_end_to_end() -> None:
 
 
 def test_a_rounded_result_is_accepted_but_a_wrong_one_is_not() -> None:
-    """calculate_impact rounds RRR to 4 decimals; full-precision equality would reject its output."""
-    assert agrees_to_stated_precision(1 / 3, 0.3333)
-    assert agrees_to_stated_precision(20.04, 20.0)
-    assert not agrees_to_stated_precision(0.05, 0.5)
-    assert not agrees_to_stated_precision(1 / 3, 0.3433)
+    """calculate_impact rounds RRR to 4 decimals and NNT to 1; full-precision equality would
+    reject its own correct output. The tolerance is the PRODUCER's, per operation."""
+    assert agrees_at_producer_precision("ratio", 1 / 3, 0.3333)
+    assert agrees_at_producer_precision("reciprocal_abs", 20.04, 20.0)
+    assert not agrees_at_producer_precision("ratio", 1 / 3, 0.3433)
+    assert not agrees_at_producer_precision("difference", 0.05, 0.5)
+
+
+# codex review 2026-08-12, finding 1 (third round): inferring the tolerance from how many decimals
+# the STATED value was written at let a record buy its own tolerance — stating 0.0 bought ±0.05,
+# so a recomputed 0.049 passed, and effect_size_math.py:137 calls anything above 0.01 a non-null
+# direction. That is a flipped verdict slipping through the check whose job is to catch one.
+@pytest.mark.parametrize(
+    ("operation", "expected", "stated"),
+    [
+        ("negate", -0.049, 0.0),
+        ("difference", 0.049, 0.0),
+        ("d_to_r", 0.0123, 0.0),
+        ("ratio", 0.004, 0.0),
+    ],
+)
+def test_a_result_cannot_widen_its_own_tolerance_by_being_vague(
+    operation: str, expected: float, stated: float
+) -> None:
+    assert not agrees_at_producer_precision(operation, expected, stated)
+
+
+def test_the_near_zero_case_is_rejected_end_to_end() -> None:
+    record = _derived("negate", {"value": 0.049}, 0.0)
+    assert any("recomputed" in error for error in recompute_derived(record))
 
 
 def test_a_computed_operand_must_equal_the_derivation_it_names() -> None:
@@ -436,6 +470,24 @@ DERIVED_MUTATIONS: list[tuple[str, dict[str, Any], str]] = [
         "measurement_declared_a_constant",
         _derived("difference", {"minuend": 0.15, "subtrahend": 0.1}, 0.05, unsourced=("subtrahend",)),
         "is a measurement, not a constant",
+    ),
+    # codex review 2026-08-12, finding 2 (third round): the operand schema required a
+    # locator-SHAPED object but nothing checked that the locator named this operand, which
+    # reopened for derived values the field-level hole that findings close.
+    (
+        "quoted_span_attached_to_the_wrong_operand",
+        _misquoted("difference", {"minuend": 0.15, "subtrahend": 0.1}, 0.05, "minuend", ["subtrahend"]),
+        "does not name 'minuend'",
+    ),
+    (
+        "quoted_span_naming_something_that_is_not_an_operand",
+        _misquoted("negate", {"value": 0.05}, -0.05, "value", ["value", "vibes"]),
+        "are not operands of negate",
+    ),
+    (
+        "fractional_sample_size",
+        _derived("hedges_g", {"cohens_d": 0.5, "sample_size": 20.5}, hedges_g_correction(0.5, 20.5)),
+        "non-negative whole number",
     ),
 ]
 

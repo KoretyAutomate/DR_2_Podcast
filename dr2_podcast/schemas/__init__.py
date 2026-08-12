@@ -38,7 +38,6 @@ import json
 import math
 import unicodedata
 from collections import Counter
-from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -278,22 +277,36 @@ def _evaluate_derived(operation: str, values: dict[str, float]) -> float | bool 
     return _evaluate_arithmetic(operation, values)
 
 
-def agrees_to_stated_precision(expected: float, stated: float) -> bool:
-    """True iff ``stated`` is ``expected`` correctly rounded to the precision ``stated`` is written at.
+#: operation -> the number of decimals the PRODUCER of that quantity rounds to.
+#: ``clinical_math.calculate_impact`` rounds ARR to 6, RRR to 4 and NNT to 1
+#: (``clinical_math.py:71-74``); ``effect_size_math.calculate_effect`` rounds every conversion to 4
+#: (``effect_size_math.py:153-155``). Full-precision equality would reject those producers' own
+#: correct output, so the tolerance has to accommodate their rounding — but it is THEIR rounding,
+#: fixed here, not a precision the submitted record gets to choose.
+DERIVED_RESULT_DECIMALS: dict[str, int] = {
+    "difference": 6,
+    "negate": 6,
+    "ratio": 4,
+    "reciprocal_abs": 1,
+    "hedges_g": 4,
+    "odds_ratio_to_d": 4,
+    "r_to_d": 4,
+    "d_to_r": 4,
+}
 
-    A plain float comparison is the wrong check here, and would be a constraint stricter than the
-    pipeline itself: ``clinical_math.calculate_impact`` rounds RRR to 4 decimals and NNT to 1
-    (``clinical_math.py:71-74``), so an exactly-correct record would be rejected for stating
-    ``0.3333`` where the arithmetic gives ``0.33333…``. What is checked is therefore agreement at
-    the reported precision — which still rejects a wrong number, because a wrong number is not the
-    correct rounding of the right one at any precision it claims.
+
+def agrees_at_producer_precision(operation: str, expected: float, stated: float) -> bool:
+    """True iff ``stated`` is ``expected`` at the precision this operation's producer rounds to.
+
+    An earlier version inferred the tolerance from how many decimals the *stated* value was
+    written at. That let the record choose its own tolerance: a result stated as ``0.0`` bought a
+    window of ±0.05, so a recomputed ``0.049`` passed — and ``effect_size_math.py:137`` classifies
+    anything above 0.01 as a non-null direction, so that is a flipped verdict slipping through a
+    check whose entire job is to catch one. The tolerance is now a property of the operation.
     """
-    if math.isclose(expected, float(stated), rel_tol=1e-9, abs_tol=1e-12):
+    if math.isclose(expected, stated, rel_tol=1e-9, abs_tol=1e-12):
         return True
-    decimals = -Decimal(str(stated)).as_tuple().exponent
-    if not isinstance(decimals, int) or decimals < 0:
-        return False
-    return abs(expected - float(stated)) <= 0.5 * 10.0**-decimals
+    return abs(expected - stated) <= 0.5 * 10.0 ** -DERIVED_RESULT_DECIMALS[operation]
 
 
 def _derived_result_errors(record: dict[str, Any], pointer: str) -> list[str]:
@@ -307,13 +320,44 @@ def _derived_result_errors(record: dict[str, Any], pointer: str) -> list[str]:
         return [f"{pointer}/result: {operation} yields {type(expected).__name__}, but the record states {stated!r}"]
     if isinstance(expected, bool):
         return [] if expected == stated else [f"{pointer}/result: states {stated!r}, recomputed {expected!r}"]
-    if not agrees_to_stated_precision(expected, float(stated)):
+    if not agrees_at_producer_precision(operation, expected, float(stated)):
         return [f"{pointer}/result: states {stated!r}, recomputed {expected!r} from {values!r}"]
     return []
 
 
+def _quoted_operand_errors(name: str, operand: dict[str, Any], operation: str, pointer: str) -> list[str]:
+    """The same field-level agreement findings get: a locator must source what it is attached to."""
+    quoted = operand.get("quoted")
+    if quoted is None:
+        return []
+    errors: list[str] = []
+    if name not in quoted["fields"]:
+        errors.append(
+            f"{pointer}/operands/{name}/quoted/fields: does not name {name!r} — a span attached to an "
+            f"operand has to be the span that states it"
+        )
+    strays = sorted(set(quoted["fields"]) - set(DERIVED_OPERATIONS[operation]))
+    if strays:
+        errors.append(f"{pointer}/operands/{name}/quoted/fields: {strays} are not operands of {operation}")
+    return errors
+
+
+def _computed_operand_errors(name: str, operand: dict[str, Any], pointer: str) -> list[str]:
+    nested = operand.get("computed")
+    if nested is None:
+        return []
+    if isinstance(nested["result"], bool):
+        return [f"{pointer}/operands/{name}/computed: a boolean verdict cannot be a numeric operand"]
+    if not math.isclose(operand["value"], float(nested["result"]), rel_tol=1e-9, abs_tol=1e-12):
+        return [
+            f"{pointer}/operands/{name}/value: {operand['value']!r} does not equal the result "
+            f"{nested['result']!r} of the derivation it names"
+        ]
+    return []
+
+
 def _operand_provenance_errors(record: dict[str, Any], pointer: str) -> list[str]:
-    """Constants only where declared, and a computed operand must equal the derivation it names."""
+    """Every operand must actually account for itself, whichever of the three ways it claims."""
     operation = record["operation"]
     allowed_constants = CONSTANT_OPERANDS.get(operation, frozenset())
     errors: list[str] = []
@@ -323,17 +367,22 @@ def _operand_provenance_errors(record: dict[str, Any], pointer: str) -> list[str
                 f"{pointer}/operands/{name}: {name!r} is a measurement, not a constant of {operation} — "
                 f"it needs a quoted span or a computed derivation"
             )
-        nested = operand.get("computed")
-        if nested is None:
-            continue
-        if isinstance(nested["result"], bool):
-            errors.append(f"{pointer}/operands/{name}/computed: a boolean verdict cannot be a numeric operand")
-        elif not math.isclose(operand["value"], float(nested["result"]), rel_tol=1e-9, abs_tol=1e-12):
-            errors.append(
-                f"{pointer}/operands/{name}/value: {operand['value']!r} does not equal the result "
-                f"{nested['result']!r} of the derivation it names"
-            )
+        errors.extend(_quoted_operand_errors(name, operand, operation, pointer))
+        errors.extend(_computed_operand_errors(name, operand, pointer))
     return errors
+
+
+def _operand_domain_errors(record: dict[str, Any], pointer: str) -> list[str]:
+    """Domain constraints the producing function's signature implies but JSON Schema cannot see."""
+    if record["operation"] != "hedges_g":
+        return []
+    sample_size = record["operands"]["sample_size"]["value"]
+    if sample_size < 0 or sample_size != int(sample_size):
+        return [
+            f"{pointer}/operands/sample_size/value: {sample_size!r} is not a non-negative whole number — "
+            f"effect_size_math.hedges_g_correction takes n: int"
+        ]
+    return []
 
 
 def _derived_errors(record: dict[str, Any], pointer: str) -> list[str]:
@@ -341,7 +390,8 @@ def _derived_errors(record: dict[str, Any], pointer: str) -> list[str]:
     operands = record["operands"]
     if set(operands) != set(accepted):
         return [f"{pointer}/operands: {record['operation']} takes {list(accepted)}, got {sorted(operands)}"]
-    return _operand_provenance_errors(record, pointer) + _derived_result_errors(record, pointer)
+    errors = _operand_provenance_errors(record, pointer) + _operand_domain_errors(record, pointer)
+    return errors + _derived_result_errors(record, pointer)
 
 
 def recompute_derived(instance: Any) -> list[str]:
