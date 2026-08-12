@@ -54,6 +54,7 @@ from dr2_podcast.utils import (
 from dr2_podcast.config import (
     SMART_MODEL,
     SMART_BASE_URL,
+    VLLM_MAX_CONCURRENCY,
     SCRAPING_TIMEOUT,
     USER_AGENT,
     TIER_CASCADE_THRESHOLD,
@@ -84,8 +85,31 @@ MAX_INPUT_TOKENS = 32000
 # Qwen3 tokenizer is ~1.5 chars/token on medical/CJK text → ~43K chars headroom;
 # kept at 29K for safety margin under worst-case all-CJK input.
 _SMART_CONTENT_CHARS = 29_000
-MAX_CONCURRENT_SUMMARIES = 10
 MAX_RESEARCH_ITERATIONS = 3
+
+# One concurrency gate per event loop, shared by EVERY caller of the vLLM endpoint.
+#
+# Replaces two independent semaphores (2026-08-11). Removing the Fast model put page
+# summarization and abstract typing onto the same server as everything else, and the
+# per-call `asyncio.Semaphore(N)` in _screen_abstracts was constructed fresh on each
+# invocation — with both research tracks running under asyncio.gather that allowed
+# 2xN in flight, on top of SummaryWorker's own N, against a server configured for
+# VLLM_MAX_CONCURRENCY sequences. Excess does not fail fast; it queues, and queued
+# time is charged against the 180s request timeout.
+#
+# Single-slot cache rather than a dict: the pipeline runs one loop at a time, and
+# keying on id(loop) would hand back a semaphore bound to a dead loop once an id is
+# recycled.
+_vllm_gate_cache: tuple[Any, asyncio.Semaphore] | None = None
+
+
+def _vllm_gate() -> asyncio.Semaphore:
+    """The shared vLLM concurrency gate for the running event loop."""
+    global _vllm_gate_cache
+    loop = asyncio.get_running_loop()
+    if _vllm_gate_cache is None or _vllm_gate_cache[0] is not loop:
+        _vllm_gate_cache = (loop, asyncio.Semaphore(VLLM_MAX_CONCURRENCY))
+    return _vllm_gate_cache[1]
 
 JUNK_DOMAINS = {
     "dictionary.com",
@@ -326,7 +350,7 @@ class PaperMetadata:
         return cls(**{k: v for k, v in d.items() if k in valid_fields})
 
 
-# --- Worker Services (IO + Fast Model) ---
+# --- Worker Services (IO + LLM) ---
 
 PUBMED_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 MIN_ACADEMIC_RESULTS = 5  # Sufficiency threshold for Tier 1
@@ -652,7 +676,7 @@ class ContentFetcher:
         self.cache = cache
 
     async def fetch_page(self, url: str) -> FetchedPage:
-        async with self.semaphore:
+        async with _vllm_gate():
             # SSRF guard — block private/link-local IPs
             if not is_safe_url(url):
                 logger.warning(f"Blocked SSRF-unsafe URL: {url}")
@@ -712,7 +736,6 @@ class SummaryWorker:
     def __init__(self, client: AsyncOpenAI, model: str = SMART_MODEL):
         self.client = client
         self.model = model
-        self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUMMARIES)
 
     def _parse_metadata_from_response(self, raw_text: str) -> tuple[str, StudyMetadata | None]:
         """Parse FACTS and METADATA sections from the model response.
@@ -918,6 +941,15 @@ class AgentDeps:
     summary_worker: Any
     search_service: Any
     fetcher: Any
+
+    def __post_init__(self):
+        # summary_worker used to be optional (None when no Fast model was configured),
+        # and _search_and_summarize guarded every use. The guards went with the Fast
+        # model on 2026-08-10, so a None here is now an AttributeError deep inside a
+        # gather — and inside _screen_abstracts it would be swallowed by the broad
+        # except and returned as {}, i.e. silently empty typing. Fail at construction.
+        if self.summary_worker is None:
+            raise ValueError("AgentDeps.summary_worker is required (it is no longer optional)")
 
 
 @dataclass
@@ -1400,7 +1432,7 @@ class ResearchAgent:
         return data
 
     async def _decompose_topic(self, topic: str, framing_context: str = "") -> dict:
-        """Pre-PICO: fast model extracts canonical scientific terms from folk-language topic."""
+        """Pre-PICO: extract canonical scientific terms from a folk-language topic."""
         system = (
             "You are a biomedical terminology specialist. Given a research topic (possibly in "
             "colloquial form), extract canonical scientific terms used in PubMed/MeSH searches.\n"
@@ -2011,12 +2043,11 @@ class ResearchAgent:
     async def _screen_abstracts(self, records: list[WideNetRecord]) -> list[dict]:
         """Extract study_type, sample_size, primary_objective from abstracts."""
         # Was Semaphore(2) to work around the Ollama-on-CPU footgun while vLLM held the
-        # GPU. That constraint died with the Fast model (2026-08-10); this now shares
-        # vLLM's queue, so it uses the same concurrency budget as the other batch work.
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUMMARIES)
+        # GPU. That constraint died with the Fast model; the replacement is the SHARED
+        # gate, not a bigger local one — see _vllm_gate.
 
         async def screen_one(record: WideNetRecord) -> dict:
-            async with semaphore:
+            async with _vllm_gate():
                 try:
                     resp = await self.summary_worker.client.chat.completions.create(
                         model=self.summary_worker.model,
@@ -2332,7 +2363,7 @@ class ResearchAgent:
     async def _deep_extract_batch(
         self, articles, records: list[WideNetRecord], pico: dict[str, str], log=logger.info, output_dir: str = None
     ) -> list[DeepExtraction]:
-        """Step 4: Extract clinical variables from full-text articles using fast model.
+        """Step 4: Extract clinical variables from full-text articles using the Smart model.
         Uses PMID-keyed cache to ensure identical NNT across runs for the same paper."""
         log(f"    [Step 4] Deep extraction from {len(articles)} articles (Smart Model)...")
         semaphore = asyncio.Semaphore(3)  # Reduced from 6 to avoid overloading model server
@@ -2431,8 +2462,10 @@ class ResearchAgent:
                             "}"
                         )
 
-                    # Always use Smart Model for extraction — Fast Model (1B params)
-                    # is too small for reliable 19-field JSON extraction from full-text
+                    # Extraction has always run on the Smart model: a 9B was judged too
+                    # small for reliable 19-field JSON extraction from full text. The Fast
+                    # model was removed entirely 2026-08-10; this comment is kept because the
+                    # *reason* still governs any future attempt to demote this call.
                     messages = [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Title: {record.title}\n\nContent:\n{content}"},

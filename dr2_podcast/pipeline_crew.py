@@ -72,7 +72,7 @@ class CrewBudget:
 def _build_sot_injection_for_stage(stage, sot: SotInjection):
     """Return SOT injection text for a context-degradation stage.
 
-    Stage 1: Full target-language fast-model summary + file path    (~3K tokens)
+    Stage 1: Full target-language condensed summary + file path    (~3K tokens)
     Stage 2: IMRaD Abstract + GRADE section from file + path         (~1.5K tokens)
     Stage 3: File path + pre-extracted GRADE/clinical numbers only   (~300 tokens)
     """

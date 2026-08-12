@@ -19,7 +19,7 @@ An AI-powered pipeline that deeply researches any scientific topic using a clini
        ┌───────────────────────────────────────────────────────────────────┐
        │  Phase 1 — Research Pipeline (clinical or social science)         │
        │                                                                   │
-       │  Pre-step: Concept Decomposition (Fast Model)                     │
+       │  Pre-step: Concept Decomposition                                  │
        │                              ▼                                    │
        │  ┌─ AFFIRMATIVE (a) ────────────┐ ┌─ FALSIFICATION (b) ─────────┐ │
        │  │ 1a: Tiered keywords (Smart)  │ │ 1b: Tiered keywords         │ │
@@ -124,7 +124,7 @@ The deep research pre-scan implements a 7-step systematic review methodology mod
 
 Steps 1–5 run identically for both tracks via `asyncio.gather()`. The only differences are the search terms (b targets adverse-effects, null-results, harms, and bias terms) and the final case mandate (a argues FOR, b argues AGAINST).
 
-**Pre-step — Concept Decomposition (Fast Model, ~5s)**
+**Pre-step — Concept Decomposition (~5s)**
 Before Step 1, the model extracts canonical scientific terms from the folk-language topic (e.g., "coffee" → canonical terms: caffeine, coffea; related concepts: adenosine, methylxanthine). These terms are fed into Step 1 to help the scientist generate accurate tier keywords.
 
 **Step 1 — Tiered Keyword Generation + Auditor Gate (Smart Model, ~15s)**
@@ -138,7 +138,7 @@ A Scientist agent (Smart) generates a **3-tier plain keyword plan** — no Boole
 
 An **Auditor agent** (Smart) then reviews the plan against 5 criteria (intervention anchor, outcome broadening, population broadening, no Boolean syntax, coverage). If rejected, the scientist revises — up to **2 revision rounds** before proceeding with a warning. `_build_tier_query()` then deterministically builds PubMed Boolean strings from the approved plain keywords — no LLM is involved in query construction.
 
-**Step 2 — Cascading PubMed Search + Scholar (PubMed + Fast Model, ~90s)**
+**Step 2 — Cascading PubMed Search + Scholar (~90s)**
 Searches PubMed using a **cascading tier strategy** — the pipeline stops adding tiers once a sufficient candidate pool is reached:
 
 1. **Tier 1** query (with `Humans[MeSH] AND English[la]` filters) → if pool ≥ 50, stop
@@ -156,7 +156,7 @@ Inclusion: RCTs, meta-analyses, systematic reviews, large cohort studies (n ≥ 
 
 The final top 20 are assembled via **priority fill**: Tier 1 first → Tier 2 fills remaining → Tier 3 capped at 50% of slots (minimum 3 if available). This ensures the evidence base is anchored in directly relevant studies while allowing speculative compound-class evidence to contribute.
 
-**Step 4 — Full-Text Deep Extraction (Fast Model, ~120s)**
+**Step 4 — Full-Text Deep Extraction (~120s)**
 For each of the top 20 studies, the full text is retrieved via a 4-tier fallback:
 1. **PubMed Central OA API** (`oai:pubmedcentral.nih.gov`)
 2. **Europe PMC REST API** (free full-text XML for OA articles)

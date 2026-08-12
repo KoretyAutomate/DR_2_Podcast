@@ -108,3 +108,11 @@ MAX_AUDITOR_REVISIONS = 2
 
 # --- Evidence Thresholds ---
 EVIDENCE_LIMITED_THRESHOLD = 30
+
+# --- vLLM concurrency ---
+# MUST match --max-num-seqs in start_vllm_docker.sh. Client concurrency above the
+# server's sequence limit does not buy throughput — it queues, and queued time counts
+# against the per-request timeout (180s). Removing the Fast model put page
+# summarization and abstract typing onto this same endpoint, so the budget is now
+# shared by every caller rather than split across two servers.
+VLLM_MAX_CONCURRENCY = int(os.environ.get("VLLM_MAX_CONCURRENCY", "8"))
