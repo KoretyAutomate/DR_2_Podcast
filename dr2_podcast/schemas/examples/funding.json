@@ -1,0 +1,12 @@
+{
+  "funding_raw": "Supported by grant R01-AG000000 from the National Institute on Aging; study drug donated by Acme Pharma.",
+  "funding_category": "mixed",
+  "funding_disclosure": "disclosed",
+  "funding_source_type": "extracted_text",
+  "funding_locator": {
+    "fields": ["funding_raw"],
+    "source_artifact_id": "pmid:12345678#fulltext",
+    "char_offset": 8801,
+    "quoted_span": "Supported by grant R01-AG000000 from the National Institute on Aging; study drug donated by Acme Pharma."
+  }
+}

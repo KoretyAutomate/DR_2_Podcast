@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dr2-podcast.local/schemas/derived.schema.json",
+  "title": "DerivedValue",
+  "description": "The carve-out for values that are computed rather than quoted (PLAN.md, 'Python-derived values have no span'). ARR/NNT/effect sizes from clinical_math.py, and GRADE modifiers such as an imprecision downgrade read off a confidence interval, exist in no paper as text — a literal-substring rule would reject them. They carry the formula and the locators of their inputs instead, and the check recomputes the arithmetic.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "formula", "inputs"],
+  "properties": {
+    "kind": { "const": "derived" },
+    "formula": {
+      "description": "Human- and machine-readable statement of the computation, e.g. 'ARR = CER - EER' or 'ci_low < 1 < ci_high'.",
+      "type": "string",
+      "minLength": 1
+    },
+    "inputs": {
+      "description": "Locators for every quoted value the formula consumes.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "locator.schema.json" }
+    }
+  }
+}

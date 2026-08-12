@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "level": "moderate",
+  "downgrades": [
+    {
+      "domain": "risk_of_bias",
+      "steps": 1,
+      "reason": "8 of 20 included trials were open-label with subjective outcome assessment.",
+      "locator": {
+        "fields": ["reason"],
+        "source_artifact_id": "pmid:12345678#fulltext",
+        "char_offset": 5120,
+        "quoted_span": "participants and outcome assessors were not blinded to treatment allocation"
+      }
+    },
+    {
+      "domain": "imprecision",
+      "steps": 1,
+      "reason": "Pooled 95% CI includes the null.",
+      "locator": {
+        "kind": "derived",
+        "formula": "ci_low < 0 < ci_high",
+        "inputs": [
+          {
+            "fields": ["ci_low", "ci_high"],
+            "source_artifact_id": "pmid:12345678#fulltext",
+            "char_offset": 1234,
+            "quoted_span": "absolute risk reduction 5.0% (95% CI 2.0 to 8.0), p=0.03"
+          }
+        ]
+      }
+    }
+  ],
+  "upgrades": [
+    {
+      "domain": "dose_response",
+      "steps": 1,
+      "reason": "Fracture risk fell monotonically across 400, 800 and 2000 IU/day arms.",
+      "locator": {
+        "fields": ["reason"],
+        "source_artifact_id": "pmid:23456789#fulltext",
+        "char_offset": 3300,
+        "quoted_span": "a monotonic dose-response relationship was observed across the three dose strata"
+      }
+    }
+  ]
+}

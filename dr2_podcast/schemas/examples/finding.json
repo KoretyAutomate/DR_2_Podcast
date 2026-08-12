@@ -1,0 +1,38 @@
+{
+  "finding_key": "84dbf579536986d319afc61f95b4f621d59a01dd",
+  "population": "50歳以上の地域在住成人",
+  "intervention": "ビタミンD 800 IU/日",
+  "comparator": "プラセボ",
+  "endpoint": "大腿骨近位部骨折",
+  "timepoint": "12か月",
+  "direction": "decrease",
+  "value": 5.0,
+  "unit": "%",
+  "ci_low": 2.0,
+  "ci_high": 8.0,
+  "p_value": 0.03,
+  "is_primary": true,
+  "control_event_rate": 0.15,
+  "experimental_event_rate": 0.1,
+  "outcome_is_adverse": true,
+  "locators": [
+    {
+      "fields": ["population", "intervention", "comparator", "endpoint", "timepoint"],
+      "source_artifact_id": "pmid:12345678#fulltext",
+      "char_offset": 402,
+      "quoted_span": "community-dwelling adults aged 50 years or older received 800 IU/day vitamin D or matching placebo, with hip fracture assessed at 12 months"
+    },
+    {
+      "fields": ["direction", "value", "unit", "ci_low", "ci_high", "p_value"],
+      "source_artifact_id": "pmid:12345678#fulltext",
+      "char_offset": 1234,
+      "quoted_span": "absolute risk reduction 5.0% (95% CI 2.0 to 8.0), p=0.03"
+    },
+    {
+      "fields": ["control_event_rate", "experimental_event_rate", "outcome_is_adverse"],
+      "source_artifact_id": "pmid:12345678#fulltext",
+      "char_offset": 1400,
+      "quoted_span": "hip fracture occurred in 45/300 (15.0%) of placebo and 30/300 (10.0%) of vitamin D participants"
+    }
+  ]
+}

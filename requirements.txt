@@ -18,6 +18,13 @@ httpx==0.28.1
 fastapi==0.127.1
 uvicorn==0.40.0
 
+# --- Artifact contracts ---
+# dr2_podcast/schemas/*.schema.json are validated at every stage boundary. Both were already
+# present as transitive dependencies (crewai, prefect); pinned here because the pipeline now
+# imports them directly and a fail-closed validator must not vanish with a transitive bump.
+jsonschema==4.25.1
+referencing==0.37.0
+
 # --- Research & Scraping ---
 requests==2.32.5
 beautifulsoup4==4.13.5
