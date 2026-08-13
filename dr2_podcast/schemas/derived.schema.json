@@ -30,8 +30,8 @@
       "additionalProperties": { "$ref": "#/$defs/operand" }
     },
     "result": {
-      "description": "The stated result. Recomputed and compared — a number for the arithmetic operations, a boolean for the confidence-interval ones.",
-      "type": ["number", "boolean"]
+      "description": "The stated result. Recomputed and compared — a number for the arithmetic operations, a boolean for the confidence-interval ones, and null where the quantity has no finite value. That last case is real and not an error state: calculate_impact returns nnt = inf when CER equals EER (clinical_math.py:52-58), and JSON cannot carry infinity, so null is how an infinite NNT or a ratio over a zero rate is written down. Python requires null exactly there and forbids it everywhere else.",
+      "type": ["number", "boolean", "null"]
     }
   },
   "$defs": {

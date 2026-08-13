@@ -65,7 +65,13 @@ class TestApplyGlossary:
         assert apply_tts_glossary(once) == once
 
     def test_acronyms(self):
-        assert apply_tts_glossary("NMNとBMI") == "エヌエムエヌとボディマスインデックス"
+        assert apply_tts_glossary("NMNとNIH") == "エヌエムエヌとアメリカ国立衛生研究所"
+
+    def test_bmi_is_left_alone(self):
+        # 2026-08-12 (ep14 listening): BMI→ボディマスインデックス was an expansion,
+        # not a misreading fix. AivisSpeech says ビイエムアイ for a bare BMI, which
+        # is what the user wants spoken.
+        assert apply_tts_glossary("たとえばBMIが正常な人") == "たとえばBMIが正常な人"
 
     # Ep09 listening round 2026-07-24: 五つ目→「ごつめ」, 建前→「けんまえ」,
     # 放っておけない→「はなっておけない」. Same family as the 2026-07-24 ep08
