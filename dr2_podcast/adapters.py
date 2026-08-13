@@ -128,6 +128,12 @@ def url_validation(run_dir: Path, run_config: dict[str, Any]) -> None:
 
     Reads ``research_sources.json`` from disk rather than taking the previous phase's return value,
     which is the whole point of the stage contract.
+
+    It writes the filtered library to a SEPARATE artifact rather than editing ``research_sources.json``
+    the way ``phase_2_url_validation`` does. Under a manifest that is not a style preference: a stage
+    that rewrites another stage's output makes the producer permanently stale — ``research`` would
+    record a hash that ``url_validation`` immediately invalidates, on every single run. Downstream
+    stages consume ``research_sources_validated.json``; the raw library stays as ``research`` left it.
     """
     from dr2_podcast.artifacts import read_json_strict
     from dr2_podcast.tools.link_validator import validate_multiple_urls_parallel
@@ -136,6 +142,30 @@ def url_validation(run_dir: Path, run_config: dict[str, Any]) -> None:
     urls = sorted({url for url in _iter_urls(sources) if url})
     results = validate_multiple_urls_parallel(urls, max_workers=15) if urls else {}
     write_json_atomic(run_dir / "research/url_validation_results.json", results)
+    write_json_atomic(
+        run_dir / "research/research_sources_validated.json", _without_broken(sources, results)
+    )
+
+
+def _without_broken(sources: Any, results: dict[str, str]) -> Any:
+    """The sources library with every URL the validator rejected removed.
+
+    Same predicate as the phase (``pipeline_flow.py:450``): Broken, Invalid, or an ERROR status.
+    Dropping this filtering would leave staged runs citing sources the pipeline has already
+    determined are unusable.
+    """
+    broken = {
+        url
+        for url, status in results.items()
+        if "Broken" in status or "Invalid" in status or str(status).startswith("ERROR")
+    }
+    if not broken or not isinstance(sources, dict):
+        return sources
+    filtered = dict(sources)
+    for role, entries in sources.items():
+        if isinstance(entries, list):
+            filtered[role] = [e for e in entries if not (isinstance(e, dict) and e.get("url") in broken)]
+    return filtered
 
 
 def _iter_urls(node: Any) -> list[str]:

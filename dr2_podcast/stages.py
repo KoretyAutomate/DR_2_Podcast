@@ -121,7 +121,9 @@ STAGES: tuple[Stage, ...] = (
     Stage(
         name="url_validation",
         consumes=("research/research_sources.json",),
-        produces=("research/url_validation_results.json",),
+        # The filtered library is a NEW artifact, not an edit of research's output. A stage that
+        # rewrites another stage's output would make the producer stale on every run.
+        produces=("research/url_validation_results.json", "research/research_sources_validated.json"),
         engine="python",
     ),
     Stage(

@@ -203,6 +203,38 @@ def test_url_validation_reads_its_input_from_disk(run_dir: Path, monkeypatch: py
     assert results["https://example.org/a"] == "Valid"
 
 
+# prepush codex 2026-08-12: the phase removes broken URLs from the library; dropping that would
+# leave staged runs citing sources the pipeline has already determined are unusable.
+def test_url_validation_filters_the_broken_sources(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (run_dir / "research/research_sources.json").write_text(
+        json.dumps(
+            {
+                "affirmative": [
+                    {"url": "https://ok.example/a", "title": "good"},
+                    {"url": "https://dead.example/b", "title": "broken"},
+                ],
+                "falsification": [{"url": "https://err.example/c"}],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        "dr2_podcast.tools.link_validator.validate_multiple_urls_parallel",
+        lambda urls, max_workers=15: {
+            "https://ok.example/a": "Valid (200)",
+            "https://dead.example/b": "Broken (404)",
+            "https://err.example/c": "ERROR: timeout",
+        },
+    )
+    adapters.url_validation(run_dir, RUN_CONFIG)
+
+    filtered = json.loads((run_dir / "research/research_sources_validated.json").read_text())
+    assert [e["url"] for e in filtered["affirmative"]] == ["https://ok.example/a"]
+    assert filtered["falsification"] == []
+
+    untouched = json.loads((run_dir / "research/research_sources.json").read_text())
+    assert len(untouched["affirmative"]) == 2, "the producer's own artifact is not edited"
+
+
 def test_url_validation_fails_closed_on_a_missing_sources_file(run_dir: Path) -> None:
     with pytest.raises(ArtifactError, match="cannot read"):
         adapters.url_validation(run_dir, RUN_CONFIG)
