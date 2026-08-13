@@ -589,6 +589,18 @@ def test_status_marks_stages_that_have_no_adapter(run_dir: Path, capsys: pytest.
     assert "No stage adapter is registered" in out
 
 
+# prepush codex 2026-08-12: --status does not use a stage, but the positional was required, so the
+# documented status invocation exited at argparse before ever reaching _print_status.
+def test_status_needs_no_stage_name(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
+    assert main(["--run", str(run_dir), "--status"]) == 0
+    assert "framing" in capsys.readouterr().out
+
+
+def test_omitting_the_stage_without_status_says_so(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
+    assert main(["--run", str(run_dir)]) == 1
+    assert "no stage given" in capsys.readouterr().err
+
+
 def test_cli_status_lists_every_available_stage(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")

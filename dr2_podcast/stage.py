@@ -265,6 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
     runnable = runnable_stage_names()
     parser.add_argument(
         "stage",
+        nargs="?",
         help=(
             f"stage to run. Separable: {', '.join(AVAILABLE_STAGE_NAMES)}. "
             + (
@@ -344,6 +345,8 @@ def main(argv: list[str] | None = None) -> int:
         # the same failure modes as running a stage and owes the same ERROR line and exit code.
         if args.status:
             return _print_status(run_dir)
+        if args.stage is None:
+            raise StageError("no stage given. Pass a stage name, or --status to see them all.")
         print(run_stage(run_dir, args.stage, force=args.force, new_config=new_config))
     except Exception as exc:
         # Broad on purpose, and only at the command-line boundary. A backend that is down, a CrewAI
