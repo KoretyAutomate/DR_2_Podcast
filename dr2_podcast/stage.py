@@ -30,9 +30,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from dr2_podcast.artifacts import ArtifactError, clear_candidates, read_json_strict, write_json_atomic
+from dr2_podcast.artifacts import clear_candidates, read_json_strict, write_json_atomic
 from dr2_podcast.manifest import Manifest, config_fingerprint
-from dr2_podcast.schemas import SchemaValidationError
 from dr2_podcast.stages import ADAPTERS, AVAILABLE_STAGE_NAMES, get_stage
 
 RUN_CONFIG_ARTIFACT = "meta/run_config.json"
@@ -311,7 +310,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.status:
             return _print_status(run_dir)
         print(run_stage(run_dir, args.stage, force=args.force, new_config=new_config))
-    except (StageError, ArtifactError, SchemaValidationError, KeyError) as exc:
+    except Exception as exc:
+        # Broad on purpose, and only at the command-line boundary. A backend that is down, a CrewAI
+        # error, an HTTP failure — these are ordinary operational outcomes for a stage, and the
+        # manifest has already recorded the failure by the time it reaches here, so a traceback adds
+        # nothing a user can act on. KeyboardInterrupt and SystemExit derive from BaseException and
+        # still pass through, so a deliberate stop stays a stop.
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     return 0

@@ -413,6 +413,29 @@ def test_a_corrupt_manifest_does_not_get_the_run_config_changed_underneath_it(ru
     assert load_run_config(run_dir) == before, "the run's source of truth was not touched"
 
 
+# prepush codex 2026-08-12: the boundary caught only validation errors, so a backend that was down
+# or any CrewAI failure produced a traceback instead of the intended ERROR line and exit code.
+def test_cli_reports_an_adapter_failure_as_an_error(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
+    def _explode(run_dir: Path, run_config: dict[str, Any]) -> None:
+        raise RuntimeError("no response from the LLM backend")
+
+    stage_mod.ADAPTERS["framing"] = _explode
+    assert main(["framing", "--run", str(run_dir)]) == 1
+    assert "no response from the LLM backend" in capsys.readouterr().err
+    assert Manifest.load(run_dir).status("framing") == "failed", "recorded before it was reported"
+
+
+def test_a_deliberate_stop_is_not_swallowed(run_dir: Path) -> None:
+    """KeyboardInterrupt derives from BaseException and must still reach the caller."""
+
+    def _interrupt(run_dir: Path, run_config: dict[str, Any]) -> None:
+        raise KeyboardInterrupt
+
+    stage_mod.ADAPTERS["framing"] = _interrupt
+    with pytest.raises(KeyboardInterrupt):
+        main(["framing", "--run", str(run_dir)])
+
+
 def test_cli_runs_a_stage_and_exits_zero(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     assert main(["framing", "--run", str(run_dir)]) == 0
