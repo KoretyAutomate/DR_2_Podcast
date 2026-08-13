@@ -1690,9 +1690,9 @@ def initialise_run_globals(
     english_instruction = "Write all content in English."
     target_instruction = language_config["instruction"]
 
-    speech_rate = language_config["speech_rate"]
-    target_minutes = target_minutes if target_minutes is not None else TARGET_MINUTES.get(
-        length_mode, TARGET_MINUTES["long"]
+    speech_rate = int(language_config["speech_rate"])
+    target_minutes = int(
+        target_minutes if target_minutes is not None else TARGET_MINUTES.get(length_mode, TARGET_MINUTES["long"])
     )
     target_length_int = target_minutes * speech_rate
     target_script = f"{target_length_int:,}"

@@ -161,10 +161,16 @@ def sot(run_dir: Path, run_config: dict[str, Any]) -> None:
     research adapter has to persist it as ``meta/deep_reports.json``. That artifact IS the process
     boundary the monolithic flow never needed — the SOT cannot be rebuilt from the Markdown alone.
     The domain comes from the classification artifact rather than from a phase return value.
+
+    It deliberately does NOT call :func:`_prepare_run`. That would build the LLM handles and every
+    Crew task, and probe the backend ten times before failing — for a stage that is declared
+    ``engine="python"`` and needs neither. A deterministic stage that cannot run while vLLM is down
+    is not deterministic in any useful sense.
     """
     from dr2_podcast.artifacts import read_json_strict
+    from dr2_podcast.pipeline import output_path
+    from dr2_podcast.pipeline_sot import build_imrad_sot
 
-    pipeline = _prepare_run(run_dir, run_config)
     data_path = run_dir / "meta/deep_reports.json"
     if not data_path.exists():
         raise ArtifactError(
@@ -172,10 +178,13 @@ def sot(run_dir: Path, run_config: dict[str, Any]) -> None:
             f"structured reports and cannot reconstruct them from the rendered Markdown."
         )
     classification = read_json_strict(run_dir / "research/domain_classification.json")
-    content = pipeline.build_imrad_sot(
+    content = build_imrad_sot(
         topic=run_config["topic"],
         reports=read_json_strict(data_path),
         domain=classification["domain"],
+        output_dir=run_dir,
+        output_path_fn=output_path,
+        language=run_config["language"],
     )
     if not content.strip():
         raise ArtifactError("build_imrad_sot produced an empty source of truth")

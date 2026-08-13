@@ -219,6 +219,22 @@ def test_urls_are_found_at_any_nesting_depth() -> None:
 # --------------------------------------------------------------------------- #
 # sot
 # --------------------------------------------------------------------------- #
+def test_sot_does_not_need_the_llm_backend(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """prepush codex 2026-08-12: sot is declared engine="python" but went through _prepare_run,
+    which probes the backend ten times before failing. A deterministic stage that cannot run while
+    vLLM is down is not deterministic in any useful sense."""
+
+    def _explode() -> str:
+        raise AssertionError("the SOT stage must not touch the LLM backend")
+
+    monkeypatch.setattr("dr2_podcast.pipeline.get_final_model_string", _explode)
+    (run_dir / "research/domain_classification.json").write_text('{"domain": "clinical"}')
+    (run_dir / "meta/deep_reports.json").write_text('{"affirmative": {"report": "x"}}')
+    monkeypatch.setattr("dr2_podcast.pipeline_sot.build_imrad_sot", lambda **kwargs: "# SOT\n")
+    adapters.sot(run_dir, RUN_CONFIG)
+    assert (run_dir / "research/source_of_truth.md").exists()
+
+
 def test_sot_names_the_artifact_the_monolithic_flow_never_had_to_persist(run_dir: Path) -> None:
     """build_imrad_sot consumes a live dict in the flow; across a process boundary it has to be a
     file, and saying which one beats failing on a KeyError deep inside the builder."""
@@ -232,11 +248,11 @@ def test_sot_builds_the_document_from_disk(run_dir: Path, monkeypatch: pytest.Mo
     (run_dir / "meta/deep_reports.json").write_text('{"affirmative": {"report": "x"}}')
     seen: dict[str, Any] = {}
 
-    def _fake_build(*, topic: str, reports: dict, domain: str = "clinical") -> str:
-        seen.update(topic=topic, reports=reports, domain=domain)
+    def _fake_build(**kwargs: Any) -> str:
+        seen.update(kwargs)
         return "# Source of Truth\n\n## Abstract\n…"
 
-    monkeypatch.setattr("dr2_podcast.pipeline.build_imrad_sot", _fake_build)
+    monkeypatch.setattr("dr2_podcast.pipeline_sot.build_imrad_sot", _fake_build)
     adapters.sot(run_dir, RUN_CONFIG)
 
     assert seen["topic"] == "ビタミンDと骨折"
@@ -247,6 +263,6 @@ def test_sot_builds_the_document_from_disk(run_dir: Path, monkeypatch: pytest.Mo
 def test_sot_fails_closed_on_an_empty_document(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (run_dir / "research/domain_classification.json").write_text('{"domain": "clinical"}')
     (run_dir / "meta/deep_reports.json").write_text("{}")
-    monkeypatch.setattr("dr2_podcast.pipeline.build_imrad_sot", lambda **kwargs: "   ")
+    monkeypatch.setattr("dr2_podcast.pipeline_sot.build_imrad_sot", lambda **kwargs: "   ")
     with pytest.raises(ArtifactError, match="empty source of truth"):
         adapters.sot(run_dir, RUN_CONFIG)
