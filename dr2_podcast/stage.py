@@ -178,10 +178,13 @@ def run_stage(
 
 
 def _run_stage_locked(run_dir: Path, name: str, *, force: bool, new_config: dict[str, Any] | None = None) -> str:
+    removed = clear_candidates(run_dir)
+    # The manifest is loaded BEFORE the config is replaced. Writing the config first meant that a
+    # corrupt manifest left the run described by parameters its artifacts were not generated from —
+    # the command reported failure having already changed the run's source of truth.
+    manifest = Manifest.load(run_dir)
     if new_config is not None:
         write_run_config(run_dir, **new_config)
-    removed = clear_candidates(run_dir)
-    manifest = Manifest.load(run_dir)
     # The run config is read BEFORE the currency check because it is part of currency: a stage
     # completed for a different topic is not current for this one.
     run_config = load_run_config(run_dir)

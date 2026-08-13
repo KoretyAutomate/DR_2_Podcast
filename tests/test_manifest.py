@@ -497,29 +497,36 @@ def test_dict_ordering_cannot_move_the_fingerprint() -> None:
     )
 
 
-# prepush codex 2026-08-12: initialise_run_globals reads several settings straight from the
-# environment, and none of them live in dr2_podcast.config — so a scan of that module missed them
-# and a changed channel brief left every completed stage "current". This test derives the list from
-# the initialiser's own source, so the next one cannot be forgotten either.
-def test_every_environment_variable_the_initialiser_reads_is_in_the_fingerprint() -> None:
-    import inspect
+# prepush codex 2026-08-12: limiting this to the initialiser missed PODCAST_HOSTS in assign_roles
+# and TTS_GLOSSARY_ENABLED in the audio engine — both change what a run produces while completed
+# stages compared as current. The scan now covers the whole package, and anything new has to be
+# classified as content-affecting or explicitly excluded before this passes.
+def test_every_environment_read_in_the_package_is_classified() -> None:
     import re
 
-    from dr2_podcast import config, pipeline
+    from dr2_podcast.manifest import CONTENT_ENV_KEYS, ENV_IDENTITY_EXCLUDE
+
+    pattern = re.compile(r"os\.(?:getenv|environ\.get)\(\s*[\"']([A-Z_]+)[\"']|os\.environ\[\s*[\"']([A-Z_]+)[\"']")
+    package = Path(__file__).resolve().parent.parent / "dr2_podcast"
+    found: set[str] = set()
+    for source in package.rglob("*.py"):
+        for a, b in pattern.findall(source.read_text(encoding="utf-8")):
+            found.add(a or b)
+    assert found, "the scan matched nothing — it has stopped tracking how the package reads env"
+
+    classified = set(CONTENT_ENV_KEYS) | ENV_IDENTITY_EXCLUDE
+    unclassified = sorted(found - classified)
+    assert not unclassified, (
+        f"{unclassified} are read from the environment but are neither part of stage identity nor "
+        f"excluded with a reason. Add each to CONTENT_ENV_KEYS or ENV_IDENTITY_EXCLUDE."
+    )
+
+
+@pytest.mark.parametrize("name", ["PODCAST_HOSTS", "TTS_GLOSSARY_ENABLED", "PODCAST_CHANNEL_INTRO"])
+def test_the_settings_that_were_missed_are_now_in_the_fingerprint(name: str) -> None:
     from dr2_podcast.manifest import config_identity_values
 
-    source = inspect.getsource(pipeline.initialise_run_globals)
-    read = set(re.findall(r"os\.getenv\(\s*[\"']([A-Z_]+)[\"']", source))
-    read |= set(re.findall(r"os\.environ\[[\"']([A-Z_]+)[\"']\]", source))
-    assert read, "the regex found nothing — it has stopped matching how the initialiser reads env"
-
-    covered = config_identity_values()
-    for name in sorted(read):
-        in_fingerprint = f"env:{name}" in covered or any(
-            getattr(config, key, None) is not None and key == name for key in covered
-        )
-        # LLM_BASE_URL is surfaced by config as SMART_BASE_URL, which IS in the fingerprint.
-        assert in_fingerprint or name == "LLM_BASE_URL", f"{name} changes output but invalidates nothing"
+    assert f"env:{name}" in config_identity_values()
 
 
 def test_a_changed_channel_brief_invalidates_a_stage() -> None:

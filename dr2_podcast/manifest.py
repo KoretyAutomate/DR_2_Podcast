@@ -49,18 +49,65 @@ CONFIG_IDENTITY_EXCLUDE = frozenset(
     }
 )
 
-#: Environment variables that change generated content but live nowhere in ``dr2_podcast.config``:
-#: ``initialise_run_globals`` reads them straight from the environment, so a scan of the config
-#: module alone misses them entirely and a changed channel brief would leave every stage "current".
-#: ``test_every_environment_variable_the_initialiser_reads_is_in_the_fingerprint`` derives this list
-#: from that function's source, so a new one cannot be forgotten.
-PROMPT_ENV_KEYS = (
-    "PODCAST_CHANNEL_INTRO",
-    "PODCAST_CORE_TARGET",
-    "PODCAST_CHANNEL_MISSION",
+#: Environment variables that change what a run produces but live nowhere in ``dr2_podcast.config``.
+#: They are read directly — ``initialise_run_globals`` takes the channel brief and accessibility
+#: level, ``assign_roles`` takes PODCAST_HOSTS, the audio engine takes TTS_GLOSSARY_ENABLED — so a
+#: scan of the config module alone misses every one of them and a changed channel brief would leave
+#: completed stages "current" while the prompts moved underneath.
+CONTENT_ENV_KEYS = (
     "ACCESSIBILITY_LEVEL",
+    "PODCAST_CHANNEL_INTRO",
+    "PODCAST_CHANNEL_MISSION",
+    "PODCAST_CORE_TARGET",
+    "PODCAST_HOSTS",
     "PODCAST_LENGTH",
+    "SEARXNG_URL",
+    "TTS_API_URL",
+    "TTS_ENGINE_EN",
+    "TTS_ENGINE_JA",
+    "TTS_GLOSSARY_ENABLED",
+    "TTS_INTONATION_OVERRIDES",
+    "TTS_INTONATION_SCALE",
+    "TTS_JUDGE_BASE_URL",
+    "TTS_JUDGE_CONCURRENCY",
+    "TTS_JUDGE_MODEL",
+    "TTS_RANDOM_VOICE",
+    "TTS_SPEED_OVERRIDES",
+    "TTS_SPEED_SCALE",
+    "VLLM_MAX_CONCURRENCY",
+    "VOICE_DUCKING_DB",
+    "MODEL_NAME",
+    "LLM_BASE_URL",
 )
+
+#: Environment variables read somewhere in the package that deliberately do NOT participate, each
+#: with its reason. ``test_every_environment_read_in_the_package_is_classified`` scans the source
+#: and fails on anything absent from both tuples, so a new read has to be classified rather than
+#: silently ignored — which is how PODCAST_HOSTS and TTS_GLOSSARY_ENABLED were missed the first time.
+ENV_IDENTITY_EXCLUDE = {
+    # Credentials. Rotating one does not change what was produced.
+    "BRAVE_API_KEY",
+    "BUZZSPROUT_ACCOUNT_ID",
+    "BUZZSPROUT_API_KEY",
+    "LLM_API_KEY",
+    "PUBMED_API_KEY",
+    "PODCAST_WEB_PASSWORD",
+    "PODCAST_WEB_USER",
+    "YOUTUBE_CLIENT_SECRET_PATH",
+    # Contact addresses sent to APIs as politeness headers. They identify us, not the content.
+    "CROSSREF_MAILTO",
+    "OPENALEX_EMAIL",
+    "UNPAYWALL_EMAIL",
+    # Where things are written or served, not what they contain.
+    "OUTPUT_DIR",
+    "PODCAST_WEB_BIND",
+    "PODCAST_WEB_PORT",
+    # The run's own inputs, which a staged run carries in meta/run_config.json instead. They are
+    # already part of identity through the run config; taking them from the environment as well
+    # would invalidate stages over a variable the staged path never reads.
+    "PODCAST_TOPIC",
+    "PODCAST_LANGUAGE",
+}
 
 #: Types safe to render into a stable fingerprint. Anything else on the module (a callable, a
 #: module, an object) is not configuration and is skipped.
@@ -88,7 +135,7 @@ def config_identity_values() -> dict[str, Any]:
         and name not in CONFIG_IDENTITY_EXCLUDE
         and isinstance(getattr(config, name), _IDENTITY_TYPES)
     }
-    values.update({f"env:{key}": os.environ.get(key) for key in PROMPT_ENV_KEYS})
+    values.update({f"env:{key}": os.environ.get(key) for key in CONTENT_ENV_KEYS})
     return values
 
 

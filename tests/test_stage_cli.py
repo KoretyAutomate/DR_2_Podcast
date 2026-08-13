@@ -401,6 +401,18 @@ def test_the_language_enum_matches_the_supported_languages() -> None:
     assert sorted(enum) == sorted(SUPPORTED_LANGUAGES)
 
 
+# prepush codex 2026-08-12: the config was written before the manifest was loaded, so a corrupt
+# manifest left the run described by parameters its artifacts were not generated from.
+def test_a_corrupt_manifest_does_not_get_the_run_config_changed_underneath_it(run_dir: Path) -> None:
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    (run_dir / "meta/manifest.json").write_text("{ not json")
+    before = load_run_config(run_dir)
+
+    assert main(["framing", "--run", str(run_dir), "--topic", "something else"]) == 1
+    assert load_run_config(run_dir) == before, "the run's source of truth was not touched"
+
+
 def test_cli_runs_a_stage_and_exits_zero(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     assert main(["framing", "--run", str(run_dir)]) == 0
