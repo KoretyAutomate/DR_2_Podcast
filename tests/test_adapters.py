@@ -254,6 +254,7 @@ def _stub_blueprint(monkeypatch: pytest.MonkeyPatch, produced: str) -> dict[str,
 def _blueprint_inputs(run_dir: Path) -> None:
     (run_dir / "research/source_of_truth.md").write_text("# Source of Truth\n\nBody.\n")
     (run_dir / "research/domain_classification.json").write_text('{"domain": "clinical"}')
+    (run_dir / "research/research_sources_validated.json").write_text("{}")
 
 
 def test_blueprint_writes_the_document_and_the_inventory(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -413,11 +414,12 @@ def test_a_regenerated_library_wins_over_a_stale_validated_copy(run_dir: Path) -
     assert research_sources_file(run_dir).name == "research_sources_validated.json"
 
 
-def test_blueprint_declares_the_validated_library_as_an_input() -> None:
-    """Declared, so producing it makes an existing blueprint stale rather than silently ignored."""
+def test_validation_gates_the_blueprint() -> None:
+    """Required, not optional: an optional gate lets the blueprint run before validation ever did,
+    research_sources_file() falls back to the raw library, and rejected URLs reach the episode."""
     from dr2_podcast.stages import direct_producers, get_stage
 
-    assert "research/research_sources_validated.json" in get_stage("blueprint").optional_consumes
+    assert "research/research_sources_validated.json" in get_stage("blueprint").consumes
     assert "url_validation" in direct_producers("blueprint")
 
 

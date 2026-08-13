@@ -165,6 +165,8 @@ def test_an_absent_optional_input_does_not_demand_its_producer(run_dir: Path) ->
     run_stage(run_dir, "research")
     _stub("sot", {"research/source_of_truth.md": "# sot"})
     run_stage(run_dir, "sot")
+    _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
+    run_stage(run_dir, "url_validation")
 
     calls = _stub("blueprint", {a: f"blueprint {a}" for a in stage_mod.get_stage("blueprint").produces})
     run_stage(run_dir, "blueprint")
@@ -178,6 +180,8 @@ def test_a_present_optional_input_does_demand_its_producer(run_dir: Path) -> Non
     run_stage(run_dir, "research")
     _stub("sot", {"research/source_of_truth.md": "# sot"})
     run_stage(run_dir, "sot")
+    _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
+    run_stage(run_dir, "url_validation")
     (run_dir / "research/source_of_truth_ja.md").write_text("translated, by nobody the manifest knows")
 
     _stub("blueprint", {a: f"blueprint {a}" for a in stage_mod.get_stage("blueprint").produces})

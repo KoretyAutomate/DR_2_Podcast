@@ -159,13 +159,13 @@ STAGES: tuple[Stage, ...] = (
             "research/domain_classification.json",
             "research/grade_synthesis.md",
             "meta/session_roles.json",
-        ),
-        optional_consumes=(
-            "research/source_of_truth_{language}.md",
-            # Read through pipeline.research_sources_file() when it exists, so validation actually
-            # gates the blueprint instead of producing an artifact nobody looks at.
+            # REQUIRED, not optional. Optional would let the blueprint run before validation had
+            # ever happened, research_sources_file() would fall back to the raw library, and rejected
+            # URLs would reach the episode — a gate that can be walked past is not a gate. The
+            # monolithic flow runs phase 2 before phase 4 for the same reason.
             "research/research_sources_validated.json",
         ),
+        optional_consumes=("research/source_of_truth_{language}.md",),
         # blueprint_inventory.json is what phases 5 and 6 take as the bp_inventory argument. In the
         # monolithic flow it is a return value; across a process boundary it has to be a file.
         produces=("research/EPISODE_BLUEPRINT.md", "meta/blueprint_inventory.json"),

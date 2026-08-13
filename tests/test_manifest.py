@@ -324,6 +324,7 @@ def test_a_failed_rerun_invalidates_everything_behind_it(run_dir: Path) -> None:
     _complete_framing(manifest, run_dir)
     _complete_research(manifest, run_dir)
     _write(run_dir, "research/source_of_truth.md", "sot v1")
+    _write(run_dir, "research/research_sources_validated.json", "{}")
     manifest.start("sot", model="test-model", config_sha256=config_fingerprint(CONFIG))
     manifest.complete("sot")
     for artifact in get_stage("blueprint").produces:
@@ -369,6 +370,7 @@ def test_an_optional_input_is_hashed_when_present(run_dir: Path) -> None:
     _complete_framing(manifest, run_dir)
     _complete_research(manifest, run_dir)
     _write(run_dir, "research/source_of_truth.md", "sot")
+    _write(run_dir, "research/research_sources_validated.json", "{}")
     _write(run_dir, "research/source_of_truth_ja.md", "translated v1")
     for artifact in get_stage("blueprint").produces:
         _write(run_dir, artifact, f"blueprint: {artifact}")
@@ -389,6 +391,7 @@ def test_an_absent_optional_input_is_not_a_failure(run_dir: Path) -> None:
     _complete_framing(manifest, run_dir)
     _complete_research(manifest, run_dir)
     _write(run_dir, "research/source_of_truth.md", "sot")
+    _write(run_dir, "research/research_sources_validated.json", "{}")
     for artifact in get_stage("blueprint").produces:
         _write(run_dir, artifact, f"blueprint: {artifact}")
     manifest.start("blueprint", model="test-model", config_sha256=config_fingerprint(CONFIG))
