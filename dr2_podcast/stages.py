@@ -124,25 +124,39 @@ STAGES: tuple[Stage, ...] = (
             "research/search_strategy_neg.json",
             "research/screening_results_aff.json",
             "research/screening_results_neg.json",
-            # The structured reports build_imrad_sot consumes. In the monolithic flow this crosses
-            # from phase 1 to the SOT builder as a live dict; a staged run needs it on disk, and the
-            # SOT cannot be rebuilt from the rendered Markdown.
-            "meta/deep_reports.json",
+            # The SOT is built HERE because phase 1 builds it here, on the live reports dict. See
+            # the `sot` stage below for why it cannot be a stage of its own.
+            "research/source_of_truth.md",
         ),
         engine="smart",
     ),
     Stage(
-        name="sot",
-        consumes=("meta/deep_reports.json", "research/domain_classification.json"),
-        produces=("research/source_of_truth.md",),
-        engine="python",
+        "sot",
+        (),
+        (),
+        "python",
+        available=False,
+        unavailable_reason=(
+            "not separable: build_imrad_sot runs inside phase 1 on the live deep_reports dict, and "
+            "that dict cannot cross a process boundary — _serialize_dataclass REPR-STRINGIFIES the "
+            "report objects, so 'audit' round-trips as the literal text \"namespace(report='…')\" "
+            "and no rehydration can recover it. An adapter was written against a reconstructed "
+            "artifact and withdrawn when a test with the real builder proved the artifact cannot "
+            "exist. The 'research' stage produces research/source_of_truth.md."
+        ),
     ),
     Stage(
         name="url_validation",
         consumes=("research/research_sources.json",),
         # The filtered library is a NEW artifact, not an edit of research's output. A stage that
         # rewrites another stage's output would make the producer stale on every run.
-        produces=("research/url_validation_results.json", "research/research_sources_validated.json"),
+        produces=(
+            "research/url_validation_results.json",
+            "research/research_sources_validated.json",
+            # The hash of the library the filtered copy was derived from, so consumers can CHECK
+            # that rather than trusting file timestamps.
+            "research/research_sources_validated.sha256",
+        ),
         engine="python",
     ),
     Stage(

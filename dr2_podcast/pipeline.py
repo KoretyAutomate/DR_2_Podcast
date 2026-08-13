@@ -5,6 +5,7 @@ import httpx
 import time
 import random
 import sys
+import hashlib
 import json
 import argparse
 import logging
@@ -280,6 +281,7 @@ _FILE_SUBDIR_MAP = {
     "SOURCE_OF_TRUTH.md": "research",
     "research_sources.json": "research",
     "research_sources_validated.json": "research",
+    "research_sources_validated.sha256": "research",
     "research_framing.md": "research",
     "affirmative_case.md": "research",
     "falsification_case.md": "research",
@@ -1760,15 +1762,21 @@ def research_sources_file(run_dir=None):
     directory = run_dir if run_dir is not None else output_dir
     raw = output_path(directory, "research_sources.json")
     validated = output_path(directory, "research_sources_validated.json")
-    if not validated.exists():
+    stamp = output_path(directory, "research_sources_validated.sha256")
+    if not validated.exists() or not stamp.exists() or not raw.exists():
         return raw
-    # Only while it is no older than the library it was filtered FROM. The legacy runner regenerates
-    # research_sources.json in place during phase 1 and knows nothing about the validated copy, so a
-    # run directory that had once been driven by stages would otherwise keep serving sources from
-    # the previous research result — silently, to the tools the blueprint reads through.
-    if raw.exists() and raw.stat().st_mtime > validated.stat().st_mtime:
+    # The validated copy is used only while it was derived from THIS raw library, proven by hash.
+    # An earlier version compared mtimes, which is not a fact about derivation: atomic replacement
+    # can preserve coarse or non-monotonic timestamps, and copying or restoring a run reorders them
+    # freely — either way the tools would quietly fall back to unvalidated URLs, or serve sources
+    # from a previous research result. The legacy runner regenerates research_sources.json in place
+    # and writes no stamp, so it simply never matches.
+    try:
+        expected = stamp.read_text(encoding="utf-8").strip()
+        actual = hashlib.sha256(raw.read_bytes()).hexdigest()
+    except OSError:
         return raw
-    return validated
+    return validated if expected == actual else raw
 
 
 def _create_agents_and_tasks():

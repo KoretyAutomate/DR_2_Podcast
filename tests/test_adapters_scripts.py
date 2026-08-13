@@ -71,6 +71,21 @@ def test_translate_does_nothing_for_an_english_episode(run_dir: Path, monkeypatc
     assert not list((run_dir / "research").glob("source_of_truth_*.md"))
 
 
+# prepush codex 2026-08-13: an English run that already contained source_of_truth_en.md — from an
+# earlier implementation, a manual copy, an interrupted migration — left it in place, and
+# Manifest.complete() recorded it as this execution's optional output.
+def test_an_english_run_removes_a_stale_translation(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    stale = run_dir / "research/source_of_truth_en.md"
+    stale.write_text("# a translation from some earlier implementation\n")
+
+    def _never(*args: Any, **kwargs: Any) -> str:
+        raise AssertionError("an English episode has nothing to translate")
+
+    monkeypatch.setattr("dr2_podcast.pipeline._translate_sot_pipelined", _never)
+    adapters.translate(run_dir, {**RUN_CONFIG, "language": "en"})
+    assert not stale.exists()
+
+
 def test_translate_fails_closed_on_an_empty_translation(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The phase returns None and carries on, building the episode from the wrong language."""
     (run_dir / "research/source_of_truth.md").write_text("# Source of Truth\n\nBody.\n")
@@ -130,6 +145,9 @@ def test_url_validation_filters_the_broken_sources(run_dir: Path, monkeypatch: p
     )
     adapters.url_validation(run_dir, RUN_CONFIG)
 
+    from dr2_podcast.pipeline import research_sources_file
+
+    assert research_sources_file(run_dir).name == "research_sources_validated.json", "the stamp matches"
     filtered = json.loads((run_dir / "research/research_sources_validated.json").read_text())
     assert [e["url"] for e in filtered["affirmative"]] == ["https://ok.example/a"]
     assert filtered["falsification"] == []
@@ -154,33 +172,49 @@ def test_every_rejected_status_shape_is_filtered(status: str) -> None:
 # prepush codex 2026-08-12: the filtered artifact was written and then read by nobody — the tools
 # still opened research_sources.json, so rejected URLs reached the blueprint anyway.
 def test_the_agents_read_the_validated_library_when_it_exists(run_dir: Path) -> None:
+    import hashlib
+
     from dr2_podcast.pipeline import research_sources_file
 
-    (run_dir / "research/research_sources.json").write_text("{}")
+    raw = run_dir / "research/research_sources.json"
+    raw.write_text("{}")
     assert research_sources_file(run_dir).name == "research_sources.json"
 
     (run_dir / "research/research_sources_validated.json").write_text("{}")
+    (run_dir / "research/research_sources_validated.sha256").write_text(
+        hashlib.sha256(raw.read_bytes()).hexdigest()
+    )
     assert research_sources_file(run_dir).name == "research_sources_validated.json"
 
 
-# prepush codex 2026-08-13: the legacy runner regenerates research_sources.json in place and knows
-# nothing about the validated copy, so a directory that had once been driven by stages would keep
-# serving sources from the previous research result.
-def test_a_regenerated_library_wins_over_a_stale_validated_copy(run_dir: Path) -> None:
-    import os
+# prepush codex 2026-08-13, twice. First: the legacy runner regenerates research_sources.json in
+# place and knows nothing about the validated copy. Then: comparing mtimes is not a fact about
+# derivation — atomic replacement preserves coarse timestamps and restoring a run reorders them —
+# so the validated copy is pinned to its source BY HASH.
+def test_a_regenerated_library_invalidates_the_validated_copy(run_dir: Path) -> None:
+    import hashlib
 
     from dr2_podcast.pipeline import research_sources_file
 
-    validated = run_dir / "research/research_sources_validated.json"
     raw = run_dir / "research/research_sources.json"
-    validated.write_text("{}")
-    raw.write_text("{}")
-    os.utime(validated, (1_000_000, 1_000_000))
-    os.utime(raw, (2_000_000, 2_000_000))
+    raw.write_text('{"affirmative": []}')
+    (run_dir / "research/research_sources_validated.json").write_text("{}")
+    (run_dir / "research/research_sources_validated.sha256").write_text(
+        hashlib.sha256(raw.read_bytes()).hexdigest()
+    )
+    assert research_sources_file(run_dir).name == "research_sources_validated.json"
+
+    raw.write_text('{"affirmative": [{"url": "https://new.example/x"}]}')
     assert research_sources_file(run_dir).name == "research_sources.json"
 
-    os.utime(validated, (3_000_000, 3_000_000))
-    assert research_sources_file(run_dir).name == "research_sources_validated.json"
+
+def test_a_validated_copy_with_no_stamp_is_not_trusted(run_dir: Path) -> None:
+    """The legacy runner writes no stamp, so its directory never matches by accident."""
+    from dr2_podcast.pipeline import research_sources_file
+
+    (run_dir / "research/research_sources.json").write_text("{}")
+    (run_dir / "research/research_sources_validated.json").write_text("{}")
+    assert research_sources_file(run_dir).name == "research_sources.json"
 
 
 def test_validation_gates_the_blueprint() -> None:

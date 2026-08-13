@@ -113,7 +113,7 @@ def _guard_inputs(
     run_dir: Path,
     name: str,
     manifest: Manifest,
-    fingerprint: str,
+    run_config: dict[str, Any],
     *,
     force: bool,
     substitutions: dict[str, str],
@@ -143,10 +143,14 @@ def _guard_inputs(
     optional = resolve(stage.optional_consumes, substitutions)
     reading = list(stage.consumes) + [a for a in optional if (run_dir / a).exists()]
     producers = {producer for artifact in reading if (producer := producer_of(artifact))}
+    # Each producer is judged by ITS OWN fingerprint, not this stage's: the identity is scoped per
+    # stage, so comparing research against audio's settings would answer a question nobody asked.
     stale = [
         producer
         for producer in sorted(producers)
-        if not manifest.is_current(producer, config_sha256=fingerprint)
+        if not manifest.is_current(
+            producer, config_sha256=config_fingerprint(run_config=run_config, stage=producer)
+        )
     ]
     if stale:
         raise StageError(
@@ -207,13 +211,13 @@ def _run_stage_locked(run_dir: Path, name: str, *, force: bool, new_config: dict
     if existing is None and new_config is None:
         load_run_config(run_dir)  # raises with the message that says how to create one
     prospective = {**(existing or {}), **(new_config or {})}
-    fingerprint = config_fingerprint(run_config=prospective)
+    fingerprint = config_fingerprint(run_config=prospective, stage=name)
 
     if manifest.is_current(name, config_sha256=fingerprint) and not force:
         return f"{name}: already current, skipped (use --force to re-run)"
 
     substitutions = {"language": str(prospective.get("language", ""))}
-    _guard_inputs(run_dir, name, manifest, fingerprint, force=force, substitutions=substitutions)
+    _guard_inputs(run_dir, name, manifest, prospective, force=force, substitutions=substitutions)
 
     if new_config is not None:
         write_run_config(run_dir, **new_config)
@@ -316,9 +320,9 @@ def _print_status(run_dir: Path) -> int:
     manifest = Manifest.load(run_dir)
     path = run_dir / RUN_CONFIG_ARTIFACT
     run_config = read_json_strict(path, schema="run_config") if path.exists() else None
-    fingerprint = config_fingerprint(run_config=run_config)
     load_adapters()
     for name in AVAILABLE_STAGE_NAMES:
+        fingerprint = config_fingerprint(run_config=run_config, stage=name)
         current = "current" if manifest.is_current(name, config_sha256=fingerprint) else "not current"
         reason = manifest.record_for(name).get("stale_reason") or ""
         adapter = "" if name in ADAPTERS else "  [no adapter]"

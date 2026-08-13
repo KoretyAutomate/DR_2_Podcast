@@ -56,7 +56,7 @@ FRAMING_OUTPUTS = {
     "research/domain_classification.json": '{"domain": "clinical"}',
     # Declared as a framing output: it fixes the presenter and questioner for every later Crew, so
     # editing or deleting it has to make framing non-current.
-    "meta/session_roles.json": '{"presenter": "Host 1", "questioner": "Host 2"}',
+    "meta/session_roles.json": '{"hosts_setting": "", "roles": {"presenter": "Host 1"}}',
 }
 
 

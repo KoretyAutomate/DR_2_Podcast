@@ -38,7 +38,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from dr2_podcast.artifacts import write_json_atomic
+from dr2_podcast.artifacts import ArtifactError, write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -57,19 +57,25 @@ def _session_roles(run_dir: Path, *, reassign: bool = False) -> dict[str, Any]:
     monolithic runner calls it exactly once per run; this makes "once per run" survive the process
     boundary.
 
-    ``reassign`` is for the stage that DECLARES this artifact as an output — framing. Without it, a
-    changed ``PODCAST_HOSTS`` makes framing stale, framing re-runs, and the old assignment is read
-    straight back while the manifest records the stage as current under the new setting.
+    ``reassign`` is for the stage that DECLARES this artifact as an output — framing. Even there it
+    only reassigns when ``PODCAST_HOSTS`` has actually CHANGED: a forced rerun after a transient
+    framing failure must not silently swap presenter and questioner and invalidate every downstream
+    script. The setting the roles were chosen under is stored beside them, which is what makes
+    "changed" answerable at all — under ``PODCAST_HOSTS=random`` the assignment differs every call,
+    so the roles themselves cannot tell you whether the configuration moved.
     """
     from dr2_podcast.artifacts import read_json_strict
 
     from dr2_podcast import pipeline
 
+    setting = os.environ.get("PODCAST_HOSTS", "")
     path = run_dir / SESSION_ROLES_ARTIFACT
-    if path.exists() and not reassign:
-        return read_json_strict(path)
+    if path.exists():
+        stored = read_json_strict(path)
+        if not reassign or stored.get("hosts_setting") == setting:
+            return stored["roles"]
     roles = pipeline.assign_roles()
-    write_json_atomic(path, roles)
+    write_json_atomic(path, {"hosts_setting": setting, "roles": roles})
     return roles
 
 
@@ -205,6 +211,49 @@ def promote(staging: Path, run_dir: Path) -> list[str]:
         os.replace(produced, target)
         promoted.append(str(relative))
     return promoted
+
+
+def snapshot_outputs(run_dir: Path, stage_name: str) -> dict[str, int]:
+    """Modification times of a stage's declared outputs, before it runs."""
+    from dr2_podcast.stages import get_stage
+
+    stage = get_stage(stage_name)
+    snapshot: dict[str, int] = {}
+    for artifact in stage.produces + stage.optional_outputs:
+        path = run_dir / artifact
+        if path.exists():
+            snapshot[artifact] = path.stat().st_mtime_ns
+    return snapshot
+
+
+def require_outputs_rewritten(run_dir: Path, stage_name: str, before: dict[str, int]) -> None:
+    """Refuse to complete if a declared output is a leftover from an earlier execution.
+
+    For a stage that writes in place rather than through staging, existence is not proof of
+    authorship: ``run_deep_research`` writes incrementally and ``_save_research_reports`` skips a
+    report it does not have, so a rerun that produced fewer artifacts leaves the previous run's
+    files behind — and ``Manifest.complete()`` sees every declared path and records a MIXED set of
+    old and new research as one coherent execution.
+
+    Comparing each file against its own modification time from moments earlier answers "did this
+    run write it", which existence cannot. It is deliberately not the mtime-ORDERING comparison that
+    was removed from the validated-library lookup: that one used relative timestamps as a proxy for
+    derivation between two different files, which they are not.
+    """
+    from dr2_podcast.stages import get_stage
+
+    stale = [
+        artifact
+        for artifact in get_stage(stage_name).produces
+        if artifact in before and (run_dir / artifact).exists()
+        and (run_dir / artifact).stat().st_mtime_ns == before[artifact]
+    ]
+    if stale:
+        raise ArtifactError(
+            f"stage {stage_name!r} declares {', '.join(stale)} but this run did not write "
+            f"{'them' if len(stale) > 1 else 'it'} — those are a previous execution's artifacts, and "
+            f"completing would record a mix of old and new as one coherent run."
+        )
 
 
 def drop_unproduced_optional_outputs(

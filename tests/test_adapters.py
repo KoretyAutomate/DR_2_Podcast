@@ -46,9 +46,17 @@ RUN_CONFIG = {"topic": "ビタミンDと骨折", "language": "ja", "target_lengt
 # Registration
 # --------------------------------------------------------------------------- #
 def test_the_adapters_register_themselves_against_declared_stages() -> None:
-    assert {"framing", "url_validation", "blueprint", "translate", "audio", "draft", "polish"} <= set(
-        ADAPTERS
-    )
+    assert {
+        "framing",
+        "research",
+        "url_validation",
+        "translate",
+        "blueprint",
+        "draft",
+        "polish",
+        "audit",
+        "audio",
+    } <= set(ADAPTERS)
 
 
 def test_registering_an_unknown_stage_is_refused() -> None:
@@ -120,18 +128,48 @@ def test_the_host_roles_are_assigned_once_and_then_reused(run_dir: Path, monkeyp
     assert seen == [], "a second process must read the roles, never reassign them"
 
 
+# prepush codex 2026-08-13: a forced framing rerun after a transient failure reassigned the hosts
+# under PODCAST_HOSTS=random, silently swapping presenter and questioner and invalidating every
+# downstream script. Reassignment follows the SETTING changing, not the rerun happening.
+def test_a_forced_rerun_keeps_the_roles_when_the_setting_is_unchanged(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PODCAST_HOSTS", "random")
+    first = _common._session_roles(run_dir, reassign=True)
+    for _ in range(5):
+        assert _common._session_roles(run_dir, reassign=True) == first
+
+
+def test_changing_the_hosts_setting_does_reassign(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PODCAST_HOSTS", "random")
+    _common._session_roles(run_dir, reassign=True)
+
+    monkeypatch.setenv("PODCAST_HOSTS", "host1_leads")
+    replacement = {"presenter": {"label": "Host 1"}, "questioner": {"label": "Host 2"}}
+    monkeypatch.setattr("dr2_podcast.pipeline.assign_roles", lambda: replacement)
+    assert _common._session_roles(run_dir, reassign=True) == replacement
+
+
 # prepush codex 2026-08-13: a changed PODCAST_HOSTS makes framing stale, but rerunning it read the
 # old assignment straight back while the manifest recorded the stage as current under the new one.
-def test_framing_reassigns_the_roles_when_it_reruns(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_framing_reassigns_the_roles_when_the_setting_changed(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from dr2_podcast.pipeline import assign_roles
+
+    monkeypatch.setenv("PODCAST_HOSTS", "host1_leads")
 
     old = assign_roles()
     new = {role: {**spec, "personality": "a different persona"} for role, spec in old.items()}
-    (run_dir / "meta/session_roles.json").write_text(json.dumps(old))
+    # The stored shape carries the SETTING the roles were chosen under, which is what makes
+    # "the configuration changed" answerable when the assignment itself is random.
+    (run_dir / "meta/session_roles.json").write_text(
+        json.dumps({"hosts_setting": "a previous setting", "roles": old})
+    )
     monkeypatch.setattr("dr2_podcast.pipeline.assign_roles", lambda: new)
     _stub_framing(monkeypatch, "# framing")
     adapters.framing(run_dir, RUN_CONFIG)
-    assert json.loads((run_dir / "meta/session_roles.json").read_text()) == new
+    assert json.loads((run_dir / "meta/session_roles.json").read_text())["roles"] == new
 
 
 def test_a_stage_that_only_reads_the_roles_leaves_them_alone(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,15 +177,18 @@ def test_a_stage_that_only_reads_the_roles_leaves_them_alone(run_dir: Path, monk
 
     chosen = assign_roles()
     other = {role: {**spec, "personality": "reassigned"} for role, spec in chosen.items()}
-    (run_dir / "meta/session_roles.json").write_text(json.dumps(chosen, ensure_ascii=False))
+    (run_dir / "meta/session_roles.json").write_text(
+        json.dumps({"hosts_setting": "", "roles": chosen}, ensure_ascii=False)
+    )
     monkeypatch.setattr("dr2_podcast.pipeline.assign_roles", lambda: other)
     _common._prepare_run(run_dir, RUN_CONFIG)
-    assert json.loads((run_dir / "meta/session_roles.json").read_text()) == chosen
+    assert json.loads((run_dir / "meta/session_roles.json").read_text())["roles"] == chosen
 
 
 def test_prepare_run_uses_the_persisted_roles(run_dir: Path) -> None:
     pipeline = _common._prepare_run(run_dir, RUN_CONFIG)
-    assert json.loads((run_dir / "meta/session_roles.json").read_text()) == pipeline.SESSION_ROLES
+    stored = json.loads((run_dir / "meta/session_roles.json").read_text())
+    assert stored["roles"] == pipeline.SESSION_ROLES
 
 
 def test_initialise_run_globals_is_the_one_owner_of_that_state() -> None:
@@ -254,6 +295,188 @@ def test_a_social_science_topic_gets_the_peco_directive(run_dir: Path, monkeypat
     note = _common._domain_note(classification)
     assert "PECO" in note
     assert "Do NOT use clinical terminology" in note
+
+
+# --------------------------------------------------------------------------- #
+# research
+# --------------------------------------------------------------------------- #
+def _research_inputs(run_dir: Path) -> None:
+    (run_dir / "research/research_framing.md").write_text("# Research Framework\n\nQuestions.\n")
+    (run_dir / "research/domain_classification.json").write_text('{"domain": "clinical"}')
+
+
+def _stub_research(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    aff: int = 50,  # comfortably above EVIDENCE_LIMITED_THRESHOLD
+    neg: int = 12,
+    sot: str = "# Source of Truth\n\n## Abstract\n…",
+    reports: Any = None,
+) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+
+    async def _fake_deep_research(*, topic: str, config: Any, framing_context: str, output_dir: str) -> Any:
+        seen.update(topic=topic, framing=framing_context, domain=config.domain, output_dir=output_dir)
+        return reports if reports is not None else {"audit": object()}
+
+    monkeypatch.setattr("dr2_podcast.research.clinical.run_deep_research", _fake_deep_research)
+    monkeypatch.setattr("dr2_podcast.pipeline_flow._read_candidate_counts", lambda d, log: (aff, neg))
+    monkeypatch.setattr("dr2_podcast.pipeline_flow._save_research_reports", lambda r, d, log: None)
+    monkeypatch.setattr("dr2_podcast.pipeline_flow._save_sources_json", lambda r, d, log: None)
+
+    def _fake_sot(*, topic: str, reports: Any, domain: str) -> str:
+        seen["sot_domain"] = domain
+        return sot
+
+    monkeypatch.setattr("dr2_podcast.pipeline.build_imrad_sot", _fake_sot)
+    return seen
+
+
+def test_research_runs_and_writes_the_source_of_truth(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The SOT is produced HERE because phase 1 produces it here — on the live reports dict that
+    cannot cross a process boundary."""
+    _research_inputs(run_dir)
+    seen = _stub_research(monkeypatch)
+    research_stages.research(run_dir, RUN_CONFIG)
+
+    assert seen["topic"] == "ビタミンDと骨折"
+    assert seen["framing"].startswith("# Research Framework")
+    assert seen["domain"] == "clinical"
+    assert seen["sot_domain"] == "clinical"
+    assert (run_dir / "research/source_of_truth.md").read_text().startswith("# Source of Truth")
+
+
+def test_research_takes_the_domain_from_the_classification_artifact(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _research_inputs(run_dir)
+    (run_dir / "research/domain_classification.json").write_text('{"domain": "social_science"}')
+    seen = _stub_research(monkeypatch)
+    research_stages.research(run_dir, RUN_CONFIG)
+    assert seen["domain"] == "social_science"
+
+
+def test_an_unrecognised_domain_falls_back_to_clinical(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The phase does the same; an unknown label must not reach the research config."""
+    _research_inputs(run_dir)
+    (run_dir / "research/domain_classification.json").write_text('{"domain": "astrology"}')
+    seen = _stub_research(monkeypatch)
+    research_stages.research(run_dir, RUN_CONFIG)
+    assert seen["domain"] == "clinical"
+
+
+def test_no_affirmative_candidates_is_a_terminal_verdict(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """InsufficientEvidenceError propagates unchanged — it is a real finding about the topic, with a
+    report written for the human who has to rephrase it."""
+    from dr2_podcast.pipeline import InsufficientEvidenceError
+
+    _research_inputs(run_dir)
+    _stub_research(monkeypatch, aff=0, neg=7)
+    written: dict[str, Any] = {}
+    monkeypatch.setattr(
+        "dr2_podcast.pipeline._write_insufficient_evidence_report",
+        lambda topic, a, n, d: written.update(topic=topic, aff=a, neg=n),
+    )
+    with pytest.raises(InsufficientEvidenceError, match="0 candidates"):
+        research_stages.research(run_dir, RUN_CONFIG)
+    assert written["neg"] == 7
+    assert not (run_dir / "research/source_of_truth.md").exists()
+
+
+def test_limited_evidence_is_declared_at_the_top_of_the_document(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A thin evidence base is stated where anyone reading the SOT meets it first, not buried."""
+    _research_inputs(run_dir)
+    _stub_research(monkeypatch, aff=2)
+    research_stages.research(run_dir, RUN_CONFIG)
+    sot = (run_dir / "research/source_of_truth.md").read_text()
+    assert sot.startswith("## Evidence Quality Notice")
+    assert sot.index("# Source of Truth") > 0
+
+
+def test_a_healthy_evidence_base_gets_no_notice(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _research_inputs(run_dir)
+    _stub_research(monkeypatch, aff=50)
+    research_stages.research(run_dir, RUN_CONFIG)
+    assert (run_dir / "research/source_of_truth.md").read_text().startswith("# Source of Truth")
+
+
+def test_research_fails_closed_on_an_empty_source_of_truth(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The phase catches everything and logs 'continuing without deep research', so a run whose
+    research never happened goes on to write an episode from nothing."""
+    _research_inputs(run_dir)
+    _stub_research(monkeypatch, sot="   ")
+    with pytest.raises(ArtifactError, match="nothing to write an episode from"):
+        research_stages.research(run_dir, RUN_CONFIG)
+    assert not (run_dir / "research/source_of_truth.md").exists()
+
+
+def test_research_lets_a_pipeline_failure_out(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _research_inputs(run_dir)
+
+    async def _explode(**kwargs: Any) -> Any:
+        raise RuntimeError("PubMed unreachable")
+
+    monkeypatch.setattr("dr2_podcast.research.clinical.run_deep_research", _explode)
+    with pytest.raises(RuntimeError, match="PubMed unreachable"):
+        research_stages.research(run_dir, RUN_CONFIG)
+
+
+# prepush codex 2026-08-13: run_deep_research writes incrementally and _save_research_reports skips
+# a report it does not have, so a rerun producing fewer artifacts left the previous run's files in
+# place — and Manifest.complete() saw every declared path and recorded a MIXED set as one run.
+def test_a_rerun_that_leaves_a_previous_artifact_behind_is_refused(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dr2_podcast.stages import get_stage
+
+    _research_inputs(run_dir)
+    stale = run_dir / "research/grade_synthesis.md"
+    stale.write_text("# GRADE from a previous, different run\n")
+
+    # Everything except the stale file gets rewritten by this run.
+    def _write_most(reports: Any, directory: Path, log: Any) -> None:
+        for artifact in get_stage("research").produces:
+            if artifact in ("research/grade_synthesis.md", "research/source_of_truth.md"):
+                continue
+            path = directory / artifact
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("written by this run")
+
+    _stub_research(monkeypatch)
+    monkeypatch.setattr("dr2_podcast.pipeline_flow._save_research_reports", _write_most)
+
+    with pytest.raises(ArtifactError, match="previous execution"):
+        research_stages.research(run_dir, RUN_CONFIG)
+    assert stale.read_text().startswith("# GRADE from a previous")
+
+
+def test_a_rerun_that_rewrites_everything_is_accepted(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dr2_podcast.stages import get_stage
+
+    _research_inputs(run_dir)
+    for artifact in get_stage("research").produces:
+        path = run_dir / artifact
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("from a previous run")
+
+    def _write_all(reports: Any, directory: Path, log: Any) -> None:
+        for artifact in get_stage("research").produces:
+            if artifact == "research/source_of_truth.md":
+                continue
+            (directory / artifact).write_text("written by this run")
+
+    _stub_research(monkeypatch)
+    monkeypatch.setattr("dr2_podcast.pipeline_flow._save_research_reports", _write_all)
+    research_stages.research(run_dir, RUN_CONFIG)
+    assert (run_dir / "research/grade_synthesis.md").read_text() == "written by this run"
+
+
+def test_research_fails_closed_without_a_framing_document(run_dir: Path) -> None:
+    (run_dir / "research/domain_classification.json").write_text('{"domain": "clinical"}')
+    with pytest.raises(ArtifactError, match="cannot read"):
+        research_stages.research(run_dir, RUN_CONFIG)
 
 
 # --------------------------------------------------------------------------- #

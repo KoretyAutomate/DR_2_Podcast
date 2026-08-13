@@ -27,7 +27,7 @@ from typing import Any
 
 from dr2_podcast.artifacts import ArtifactError, read_json_strict, sha256_file, write_json_atomic
 from dr2_podcast.schemas import SchemaValidationError, schema_errors
-from dr2_podcast.stages import MANIFEST_FILENAMES, direct_producers, downstream_of, get_stage, resolve
+from dr2_podcast.stages import MANIFEST_FILENAMES, downstream_of, get_stage, producer_of, resolve
 
 MANIFEST_SCHEMA_VERSION = 1
 
@@ -126,6 +126,79 @@ def _canonical(value: Any) -> str:
     return repr(value)
 
 
+#: Which settings each stage's identity is built from. A stage absent from this map gets ALL of
+#: them, which is the safe default: over-invalidating costs a re-run, under-invalidating ships
+#: artifacts built under settings that no longer hold.
+#:
+#: Scoped because a global fingerprint couples unrelated stages — changing TTS_SPEED_SCALE made
+#: `framing` and `research` non-current, and since a stage's producers must be current before it
+#: runs, an audio-only tweak forced the whole ~28-minute research chain to re-run before anything
+#: could render.
+CONFIG_GROUPS: dict[str, tuple[str, ...]] = {
+    "llm": ("SMART_MODEL", "SMART_BASE_URL", "VLLM_MAX_CONCURRENCY", "LLM_TIMEOUT",
+            "env:MODEL_NAME", "env:LLM_BASE_URL"),
+    "research": ("SCREENING_TOP_N", "TIER_CASCADE_THRESHOLD", "MIN_TIER3_STUDIES", "MAX_TIER3_RATIO",
+                 "EVIDENCE_LIMITED_THRESHOLD", "SEARXNG_URL", "PUBMED_TIMEOUT", "SCRAPING_TIMEOUT",
+                 "VALIDATION_TIMEOUT", "USER_AGENT", "env:SEARXNG_URL"),
+    "prompt": ("env:PODCAST_CHANNEL_INTRO", "env:PODCAST_CHANNEL_MISSION", "env:PODCAST_CORE_TARGET",
+               "env:ACCESSIBILITY_LEVEL", "env:PODCAST_HOSTS", "env:PODCAST_LENGTH"),
+    "tts": (),  # every TTS_* setting plus the ducking level; matched by prefix below
+}
+
+STAGE_CONFIG_GROUPS: dict[str, tuple[str, ...]] = {
+    "framing": ("llm", "prompt"),
+    "research": ("llm", "research", "prompt"),
+    "url_validation": ("research",),
+    "translate": ("llm", "prompt"),
+    "blueprint": ("llm", "prompt"),
+    "draft": ("llm", "prompt"),
+    "polish": ("llm", "prompt"),
+    "audit": ("llm", "prompt"),
+    "audio": ("tts", "prompt"),
+}
+
+
+#: Bundled data a stage's OUTPUT depends on, hashed into its identity. Configuration is not the
+#: only thing that changes what a stage produces: the TTS glossary is applied inside
+#: ``clean_script_for_tts`` (``audio/engine.py:873``), so editing it changes the rendered speech
+#: while the script stays byte-identical — PLAN.md Step 12 makes the same point about hashing the
+#: TTS input rather than the script. Paths are relative to the repository root.
+STAGE_DATA_ASSETS: dict[str, tuple[str, ...]] = {
+    "audio": ("dr2_podcast/data/tts_glossary.json",),
+}
+
+
+def _data_asset_values(stage: str | None) -> dict[str, Any]:
+    """Content hashes of the bundled data the named stage's output depends on."""
+    root = Path(__file__).resolve().parent.parent
+    values: dict[str, Any] = {}
+    for relative in STAGE_DATA_ASSETS.get(stage or "", ()):
+        path = root / relative
+        try:
+            values[f"data:{relative}"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            values[f"data:{relative}"] = None
+    return values
+
+
+def _in_group(name: str, group: str) -> bool:
+    if group == "tts":
+        return name.startswith(("TTS_", "env:TTS_")) or name in ("VOICE_DUCKING_DB", "env:VOICE_DUCKING_DB")
+    return name in CONFIG_GROUPS[group]
+
+
+def scoped_identity_values(values: dict[str, Any], stage: str | None) -> dict[str, Any]:
+    """The subset of the configuration a given stage's identity is built from.
+
+    An unmapped stage keeps everything: a new stage must over-invalidate rather than quietly ignore
+    a setting nobody remembered to classify.
+    """
+    groups = STAGE_CONFIG_GROUPS.get(stage or "")
+    if not groups:
+        return values
+    return {name: value for name, value in values.items() if any(_in_group(name, g) for g in groups)}
+
+
 def config_identity_values() -> dict[str, Any]:
     """Every config attribute that participates in stage identity, read from the live module."""
     from dr2_podcast import config
@@ -153,6 +226,7 @@ RUN_CONFIG_IDENTITY_KEYS = ("topic", "language", "target_length_minutes")
 def config_fingerprint(
     values: dict[str, Any] | None = None,
     run_config: dict[str, Any] | None = None,
+    stage: str | None = None,
 ) -> str:
     """sha256 over everything that changes what a stage would produce.
 
@@ -166,6 +240,7 @@ def config_fingerprint(
     """
     if values is None:
         values = config_identity_values()
+    values = {**scoped_identity_values(values, stage), **_data_asset_values(stage)}
     parts = [f"{key}={_canonical(values[key])}" for key in sorted(values)]
     if run_config is not None:
         parts += [f"run.{key}={run_config.get(key)!r}" for key in RUN_CONFIG_IDENTITY_KEYS]
@@ -321,10 +396,15 @@ class Manifest:
             record = self.document["stages"].get(name)
             if record is None or record.get("status") not in ("complete", "running"):
                 continue
+            # The producers of what this stage RECORDED consuming, not every producer the graph
+            # allows. An English blueprint records no translated SOT, so `translate` never produced
+            # anything it read — checking it anyway staled the whole script chain the next time an
+            # unrelated stage completed, purely because `translate` sits pending forever.
+            consumed = {producer_of(ref["artifact"]) for ref in record.get("inputs", [])}
             reasons = self.drift(name)
             reasons += [
                 f"{producer} is not current"
-                for producer in direct_producers(name)
+                for producer in sorted(p for p in consumed if p)
                 if not self.is_current(producer)
             ]
             if reasons:

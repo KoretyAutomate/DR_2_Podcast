@@ -39,7 +39,7 @@ def _write(run_dir: Path, artifact: str, text: str) -> None:
 def _complete_framing(manifest: Manifest, run_dir: Path, framing: str = "framing v1") -> None:
     _write(run_dir, "research/research_framing.md", framing)
     _write(run_dir, "research/domain_classification.json", '{"domain": "clinical"}')
-    _write(run_dir, "meta/session_roles.json", '{"presenter": "Host 1"}')
+    _write(run_dir, "meta/session_roles.json", '{"hosts_setting": "", "roles": {"presenter": "Host 1"}}')
     manifest.start("framing", model="test-model", config_sha256=config_fingerprint(CONFIG))
     manifest.complete("framing")
 
@@ -130,22 +130,24 @@ def test_an_unchanged_rerun_does_not_stale_downstream(run_dir: Path) -> None:
 
 def test_staleness_reaches_a_stage_whose_own_inputs_have_not_moved_yet(run_dir: Path) -> None:
     """The case a purely hash-based rule misses. When framing changes, `research` is stale but has
-    not re-run, so `sot`'s recorded inputs still hash the same. `sot` is nonetheless not current:
-    it is consistent with artifacts that are known to be out of date, and `research` is about to
-    re-run and change them."""
+    not re-run, so `blueprint`'s recorded inputs still hash the same. `blueprint` is nonetheless not
+    current: it is consistent with artifacts that are known to be out of date, and `research` is
+    about to re-run and change them."""
     manifest = Manifest.load(run_dir)
     _complete_framing(manifest, run_dir)
     _complete_research(manifest, run_dir)
-    _write(run_dir, "research/source_of_truth.md", "sot v1")
-    manifest.start("sot", model="test-model", config_sha256=config_fingerprint(CONFIG))
-    manifest.complete("sot")
-    assert manifest.status("sot") == "complete"
+    _write(run_dir, "research/research_sources_validated.json", "{}")
+    for artifact in get_stage("blueprint").produces:
+        _write(run_dir, artifact, f"blueprint v1: {artifact}")
+    manifest.start("blueprint", model="test-model", config_sha256=config_fingerprint(CONFIG))
+    manifest.complete("blueprint")
+    assert manifest.status("blueprint") == "complete"
 
     _complete_framing(manifest, run_dir, framing="framing v2")
     assert manifest.status("research") == "stale"
-    assert manifest.status("sot") == "stale"
-    assert "research is not current" in manifest.record_for("sot")["stale_reason"]
-    assert manifest.status("blueprint") == "pending", "never-run stages stay pending, not stale"
+    assert manifest.status("blueprint") == "stale"
+    assert "research is not current" in manifest.record_for("blueprint")["stale_reason"]
+    assert manifest.status("draft") == "pending", "never-run stages stay pending, not stale"
 
 
 # prepush codex 2026-08-12 [P1]: the failure path marked only the failing stage, so a descendant
@@ -154,10 +156,7 @@ def test_a_failed_rerun_invalidates_everything_behind_it(run_dir: Path) -> None:
     manifest = Manifest.load(run_dir)
     _complete_framing(manifest, run_dir)
     _complete_research(manifest, run_dir)
-    _write(run_dir, "research/source_of_truth.md", "sot v1")
     _write(run_dir, "research/research_sources_validated.json", "{}")
-    manifest.start("sot", model="test-model", config_sha256=config_fingerprint(CONFIG))
-    manifest.complete("sot")
     for artifact in get_stage("blueprint").produces:
         _write(run_dir, artifact, f"blueprint v1: {artifact}")
     manifest.start("blueprint", model="test-model", config_sha256=config_fingerprint(CONFIG))
@@ -170,7 +169,6 @@ def test_a_failed_rerun_invalidates_everything_behind_it(run_dir: Path) -> None:
     manifest.fail("research", "vLLM died mid-synthesis")
     manifest.invalidate_downstream("research")
 
-    assert manifest.status("sot") == "stale"
     assert manifest.status("blueprint") == "stale", "a descendant cannot stay current behind a failure"
     assert "is not current" in manifest.record_for("blueprint")["stale_reason"]
 
@@ -200,7 +198,6 @@ def test_an_optional_input_is_hashed_when_present(run_dir: Path) -> None:
     manifest = Manifest.load(run_dir)
     _complete_framing(manifest, run_dir)
     _complete_research(manifest, run_dir)
-    _write(run_dir, "research/source_of_truth.md", "sot")
     _write(run_dir, "research/research_sources_validated.json", "{}")
     _write(run_dir, "research/source_of_truth_ja.md", "translated v1")
     for artifact in get_stage("blueprint").produces:
@@ -216,12 +213,37 @@ def test_an_optional_input_is_hashed_when_present(run_dir: Path) -> None:
     assert not manifest.is_current("blueprint")
 
 
+# prepush codex 2026-08-13: invalidation checked every producer the GRAPH allows, so an English
+# blueprint — which records no translated SOT and never read one — went stale the next time any
+# unrelated stage completed, purely because `translate` sits pending forever.
+def test_a_producer_of_an_input_the_stage_never_read_does_not_stale_it(run_dir: Path) -> None:
+    manifest = Manifest.load(run_dir)
+    _complete_framing(manifest, run_dir)
+    _complete_research(manifest, run_dir)
+    _write(run_dir, "research/research_sources_validated.json", "{}")
+    for artifact in get_stage("blueprint").produces:
+        _write(run_dir, artifact, f"blueprint: {artifact}")
+    manifest.start("blueprint", model="test-model", config_sha256=config_fingerprint(CONFIG))
+    manifest.complete("blueprint", {"language": "en"})
+    assert manifest.status("blueprint") == "complete"
+
+    recorded = {ref["artifact"] for ref in manifest.record_for("blueprint")["inputs"]}
+    assert not any("source_of_truth_" in a for a in recorded), "an English run reads no translation"
+
+    # url_validation completes with byte-identical output; translate is pending and always will be.
+    for artifact in get_stage("url_validation").produces:
+        _write(run_dir, artifact, "{}")
+    manifest.start("url_validation", model="test-model", config_sha256=config_fingerprint(CONFIG))
+    manifest.complete("url_validation")
+
+    assert manifest.status("blueprint") == "complete", "a stage cannot stale on a producer it never read"
+
+
 def test_an_absent_optional_input_is_not_a_failure(run_dir: Path) -> None:
     """An English episode has no translated SOT."""
     manifest = Manifest.load(run_dir)
     _complete_framing(manifest, run_dir)
     _complete_research(manifest, run_dir)
-    _write(run_dir, "research/source_of_truth.md", "sot")
     _write(run_dir, "research/research_sources_validated.json", "{}")
     for artifact in get_stage("blueprint").produces:
         _write(run_dir, artifact, f"blueprint: {artifact}")
@@ -422,6 +444,82 @@ def test_a_changed_channel_brief_invalidates_a_stage() -> None:
     base = config_identity_values()
     altered = {**base, "env:PODCAST_CHANNEL_INTRO": "a completely different show"}
     assert config_fingerprint(base) != config_fingerprint(altered)
+
+
+# prepush codex 2026-08-13: a global fingerprint coupled unrelated stages — changing
+# TTS_SPEED_SCALE made framing and research non-current, and since producers must be current before
+# a stage runs, an audio-only tweak forced the whole ~28-minute research chain to re-run first.
+def test_an_audio_setting_does_not_invalidate_the_research_chain() -> None:
+    from dr2_podcast.manifest import config_identity_values
+
+    base = config_identity_values()
+    changed = {**base, "TTS_SPEED_SCALE": 9.9}
+    for upstream in ("framing", "research", "blueprint", "draft"):
+        assert config_fingerprint(base, stage=upstream) == config_fingerprint(changed, stage=upstream), upstream
+    assert config_fingerprint(base, stage="audio") != config_fingerprint(changed, stage="audio")
+
+
+def test_a_model_change_still_invalidates_every_llm_stage() -> None:
+    from dr2_podcast.manifest import config_identity_values
+
+    base = config_identity_values()
+    changed = {**base, "SMART_MODEL": "some-other-model"}
+    for stage in ("framing", "research", "translate", "blueprint", "draft", "polish", "audit"):
+        assert config_fingerprint(base, stage=stage) != config_fingerprint(changed, stage=stage), stage
+
+
+def test_an_unmapped_stage_keeps_the_whole_configuration() -> None:
+    """The safe default: a new stage over-invalidates rather than quietly ignoring a setting nobody
+    remembered to classify."""
+    from dr2_podcast.manifest import config_identity_values
+
+    base = config_identity_values()
+    assert config_fingerprint(base, stage="a_stage_nobody_mapped") == config_fingerprint(base)
+
+
+def test_every_mapped_stage_is_a_real_stage() -> None:
+    from dr2_podcast.manifest import STAGE_CONFIG_GROUPS
+    from dr2_podcast.stages import STAGE_NAMES
+
+    assert set(STAGE_CONFIG_GROUPS) <= set(STAGE_NAMES)
+
+
+def test_every_available_stage_has_a_scoped_identity() -> None:
+    """An unmapped stage still works, but silently taking the whole configuration is a decision
+    somebody should have made on purpose."""
+    from dr2_podcast.manifest import STAGE_CONFIG_GROUPS
+    from dr2_podcast.stages import AVAILABLE_STAGE_NAMES
+
+    assert set(AVAILABLE_STAGE_NAMES) <= set(STAGE_CONFIG_GROUPS)
+
+
+# prepush codex 2026-08-13: configuration is not the only thing that changes what a stage produces.
+# The TTS glossary is applied inside clean_script_for_tts, so editing it changes the rendered speech
+# while the script stays byte-identical — PLAN.md Step 12 makes the same point.
+def test_the_tts_glossary_is_part_of_the_audio_stage_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    import dr2_podcast.manifest as manifest_module
+
+    base = manifest_module.config_identity_values()
+    before = config_fingerprint(base, stage="audio")
+    monkeypatch.setattr(
+        manifest_module, "_data_asset_values", lambda stage: {"data:glossary": "a different glossary"}
+    )
+    assert config_fingerprint(base, stage="audio") != before
+
+
+def test_a_data_asset_belongs_only_to_the_stage_that_reads_it() -> None:
+    from dr2_podcast.manifest import _data_asset_values
+
+    assert _data_asset_values("audio"), "audio depends on the glossary"
+    assert _data_asset_values("research") == {}, "research does not read it, so it must not stale on it"
+
+
+def test_a_missing_data_asset_is_recorded_rather_than_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Absent is a state, not a non-answer: a deleted glossary changes the render too."""
+    import dr2_podcast.manifest as manifest_module
+
+    monkeypatch.setattr(manifest_module, "STAGE_DATA_ASSETS", {"audio": ("dr2_podcast/data/nonesuch.json",)})
+    assert manifest_module._data_asset_values("audio") == {"data:dr2_podcast/data/nonesuch.json": None}
 
 
 def test_the_run_config_is_part_of_identity() -> None:

@@ -38,6 +38,15 @@ def test_the_six_phase_one_substages_are_declared_unavailable_with_a_reason() ->
     assert get_stage("research").available, "the transitional composite has to be usable meanwhile"
 
 
+def test_sot_is_unavailable_and_says_exactly_why() -> None:
+    """It was written and withdrawn: build_imrad_sot runs inside phase 1 on the live reports dict,
+    and _serialize_dataclass destroys that dict rather than flattening it."""
+    stage = get_stage("sot")
+    assert not stage.available
+    assert "REPR-STRINGIFIES" in stage.unavailable_reason
+    assert producer_of("research/source_of_truth.md") == "research"
+
+
 def test_every_available_stage_declares_at_least_one_output() -> None:
     for name in AVAILABLE_STAGE_NAMES:
         stage = get_stage(name)
@@ -64,9 +73,9 @@ def test_downstream_is_transitive_and_ordered() -> None:
     # renders under, so framing feeds it directly as well as through research.
     # framing feeds research directly, sot and blueprint through domain_classification.json, and
     # draft and polish through meta/session_roles.json.
-    assert direct_consumers("framing") == ("research", "sot", "blueprint", "draft", "polish", "audit")
+    assert direct_consumers("framing") == ("research", "blueprint", "draft", "polish", "audit")
     chain = downstream_of("framing")
-    assert {"research", "sot", "blueprint", "draft", "polish", "audit", "audio"} <= set(chain)
+    assert {"research", "blueprint", "draft", "polish", "audit", "audio"} <= set(chain)
     assert chain.index("draft") < chain.index("polish") < chain.index("audit")
 
 

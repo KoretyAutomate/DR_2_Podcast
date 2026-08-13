@@ -9,7 +9,14 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from dr2_podcast.adapters._common import _classify_domain, _domain_note, _prepare_run
+from dr2_podcast.adapters._common import (
+    _classify_domain,
+    drop_unproduced_optional_outputs,
+    _domain_note,
+    _prepare_run,
+    require_outputs_rewritten,
+    snapshot_outputs,
+)
 from dr2_podcast.artifacts import ArtifactError, write_atomic, write_json_atomic
 from dr2_podcast.stages import register
 
@@ -62,6 +69,92 @@ def framing(run_dir: Path, run_config: dict[str, Any]) -> None:
     write_atomic(run_dir / "research/research_framing.md", output)
 
 
+@register("research")
+def research(run_dir: Path, run_config: dict[str, Any]) -> None:
+    """Phase 1 — the deep research pipeline, and the source of truth it builds.
+
+    **It produces the SOT because phase 1 does.** ``build_imrad_sot`` is called inside the phase,
+    on the live ``deep_reports`` dict, and that dict cannot cross a process boundary:
+    ``_serialize_dataclass`` repr-stringifies the report objects, so ``audit`` round-trips as the
+    literal text ``"namespace(report='…')"``. A separate ``sot`` stage was written against a
+    reconstructed artifact and withdrawn when a test with the real builder proved the artifact
+    cannot exist. Keeping the SOT here is not a workaround — it is where the pipeline actually
+    computes it, and it removes the need for the artifact that could not be built.
+
+    **It fails closed.** The phase catches every exception, logs "continuing without deep research",
+    and returns empty strings — so a run whose research never happened goes on to write an episode
+    from nothing. ``InsufficientEvidenceError`` still propagates unchanged: that one is a real
+    terminal verdict about the topic, with a report written for the human who has to rephrase it.
+
+    **It does NOT stage its writes**, unlike ``audit`` and ``audio``. ``run_deep_research`` writes
+    incrementally into the run directory and reads ``extraction_cache.json`` back out of it; a
+    staging tree would hide that cache and force full-text re-extraction of every paper, which is
+    the expensive part of a ~28-minute stage. The manifest still catches a partial run: every
+    declared output must exist for the stage to complete, a failure is recorded as one, and the
+    fail-closed readers downstream reject anything truncated.
+    """
+    from dr2_podcast.artifacts import read_json_strict, read_text_strict
+    from dr2_podcast.pipeline_flow import (
+        _evidence_limited_prefix,
+        _read_candidate_counts,
+        _save_research_reports,
+        _save_sources_json,
+        flow_or_module_logger,
+    )
+
+    import asyncio
+    import os
+
+    from dr2_podcast import config as app_config
+    from dr2_podcast.pipeline import InsufficientEvidenceError
+    from dr2_podcast.research.clinical import ResearchConfig, run_deep_research
+
+    pipeline = _prepare_run(run_dir, run_config)
+    topic = run_config["topic"]
+    before = snapshot_outputs(run_dir, "research")
+    framing = read_text_strict(run_dir / "research/research_framing.md")
+    declared = read_json_strict(run_dir / "research/domain_classification.json")["domain"]
+    domain = declared if declared in ("clinical", "social_science") else "clinical"
+    log = flow_or_module_logger()
+
+    # Held as Any, as the flow holds it: DeepResearchResult is a TypedDict whose values are typed
+    # `object`, so narrowing it here only moves the complaint from the call to the attribute access.
+    reports: Any = asyncio.run(
+        run_deep_research(
+            topic=topic,
+            config=ResearchConfig(
+                brave_api_key=os.getenv("BRAVE_API_KEY", ""),
+                results_per_query=15,
+                domain=domain,
+            ),
+            framing_context=framing,
+            output_dir=str(run_dir),
+        )
+    )
+
+    aff_candidates, neg_candidates = _read_candidate_counts(run_dir, log)
+    if aff_candidates == 0:
+        pipeline._write_insufficient_evidence_report(topic, 0, neg_candidates, run_dir)
+        raise InsufficientEvidenceError(
+            f"Affirmative track: 0 candidates for {topic!r}. Adversarial found {neg_candidates}. "
+            f"See insufficient_evidence_report.md for suggested rephrasing."
+        )
+
+    _save_research_reports(reports, run_dir, log)
+    _save_sources_json(reports, run_dir, log)
+
+    sot = pipeline.build_imrad_sot(topic=topic, reports=reports, domain=domain)
+    if not sot or not sot.strip():
+        raise ArtifactError("the source of truth came back empty; there is nothing to write an episode from")
+    if 0 < aff_candidates < app_config.EVIDENCE_LIMITED_THRESHOLD:
+        log.warning("evidence limited: %d affirmative candidates", aff_candidates)
+        sot = _evidence_limited_prefix(aff_candidates) + sot
+    write_atomic(run_dir / "research/source_of_truth.md", sot)
+    # Existence is not authorship for a stage that writes in place: a rerun producing fewer
+    # artifacts would otherwise complete on a mix of this run's and the previous one's.
+    require_outputs_rewritten(run_dir, "research", before)
+
+
 @register("url_validation")
 def url_validation(run_dir: Path, run_config: dict[str, Any]) -> None:
     """Phase 2 — batch HEAD validation of every cited URL. Python only, no LLM.
@@ -78,12 +171,22 @@ def url_validation(run_dir: Path, run_config: dict[str, Any]) -> None:
     from dr2_podcast.artifacts import read_json_strict
     from dr2_podcast.tools.link_validator import validate_multiple_urls_parallel
 
-    sources = read_json_strict(run_dir / "research/research_sources.json")
+    import hashlib
+
+    raw = run_dir / "research/research_sources.json"
+    sources = read_json_strict(raw)
     urls = sorted({url for url in _iter_urls(sources) if url})
     results = validate_multiple_urls_parallel(urls, max_workers=15) if urls else {}
     write_json_atomic(run_dir / "research/url_validation_results.json", results)
     write_json_atomic(
         run_dir / "research/research_sources_validated.json", _without_broken(sources, results)
+    )
+    # The hash of the library this was filtered FROM. pipeline.research_sources_file() serves the
+    # validated copy only while this still matches, so "derived from the current sources" is a fact
+    # it can check rather than an ordering it has to trust.
+    write_atomic(
+        run_dir / "research/research_sources_validated.sha256",
+        hashlib.sha256(raw.read_bytes()).hexdigest() + "\n",
     )
 
 
@@ -131,14 +234,21 @@ def translate(run_dir: Path, run_config: dict[str, Any]) -> None:
     process boundary because every stage rebuilds its own tasks. What survives the boundary is the
     file.
 
-    An English run writes nothing and completes; the output is optional for exactly that reason. A
+    An English run writes nothing and completes — and removes any translated SOT left behind by an
+    earlier implementation or a migration, because an optional output means "this run may not
+    produce one", not "keep whatever was there". A
     translation that comes back empty RAISES, though — the phase returns None and carries on, which
     leaves a Japanese episode built from an English source of truth.
     """
     from dr2_podcast.artifacts import read_text_strict
 
     language = run_config["language"]
+    substitutions = {"language": language}
     if language == "en":
+        # Not just "produce nothing": REMOVE a translated SOT left by an earlier implementation, a
+        # manual copy or an interrupted migration. Left there, Manifest.complete() would record it as
+        # this execution's optional output and blueprint would treat it as this run's translation.
+        drop_unproduced_optional_outputs(run_dir, "translate", [], substitutions)
         return
 
     pipeline = _prepare_run(run_dir, run_config)
@@ -149,4 +259,6 @@ def translate(run_dir: Path, run_config: dict[str, Any]) -> None:
             f"translation to {language!r} produced nothing. The monolithic phase returns None and "
             f"continues, which builds the episode from a source of truth in the wrong language."
         )
-    write_atomic(run_dir / f"research/source_of_truth_{language}.md", translated)
+    produced = f"research/source_of_truth_{language}.md"
+    write_atomic(run_dir / produced, translated)
+    drop_unproduced_optional_outputs(run_dir, "translate", [produced], substitutions)

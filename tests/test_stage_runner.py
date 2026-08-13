@@ -61,8 +61,11 @@ def test_a_stage_that_is_not_separable_yet_says_so(run_dir: Path) -> None:
 
 
 def test_a_stage_with_no_adapter_says_what_is_missing(run_dir: Path) -> None:
+    """Every available stage HAS an adapter now, so this removes one to check the refusal survives —
+    it is the message a future stage will meet before its adapter is written."""
+    stage_mod.ADAPTERS.pop("blueprint", None)
     with pytest.raises(StageError, match="no adapter yet"):
-        run_stage(run_dir, "research")
+        run_stage(run_dir, "blueprint")
 
 
 def test_an_unknown_stage_raises(run_dir: Path) -> None:
@@ -163,8 +166,6 @@ def test_an_absent_optional_input_does_not_demand_its_producer(run_dir: Path) ->
     run_stage(run_dir, "framing")
     _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
     run_stage(run_dir, "research")
-    _stub("sot", {"research/source_of_truth.md": "# sot"})
-    run_stage(run_dir, "sot")
     _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
     run_stage(run_dir, "url_validation")
 
@@ -178,8 +179,6 @@ def test_a_present_optional_input_does_demand_its_producer(run_dir: Path) -> Non
     run_stage(run_dir, "framing")
     _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
     run_stage(run_dir, "research")
-    _stub("sot", {"research/source_of_truth.md": "# sot"})
-    run_stage(run_dir, "sot")
     _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
     run_stage(run_dir, "url_validation")
     (run_dir / "research/source_of_truth_ja.md").write_text("translated, by nobody the manifest knows")
