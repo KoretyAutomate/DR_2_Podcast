@@ -3284,7 +3284,9 @@ class Orchestrator:
         log(f"  Falsification: {len(fal.extractions)} studies from {fal.wide_net_total} candidates")
         math_label = "Effect size math" if self.domain == "social_science" else "Clinical math"
         math_detail = "effect size data" if self.domain == "social_science" else "NNT data"
-        log(f"  {math_label}: {len(impacts)} studies with {math_detail}")
+        # "findings", not "studies": since slice 2 the math is computed per finding, so a paper
+        # reporting two endpoints contributes two rows and this count is no longer a study count.
+        log(f"  {math_label}: {len(impacts)} findings with {math_detail}")
         log(f"  Total articles analyzed: {len(all_extractions)}")
         log(f"{rule}\n")
 
@@ -3852,11 +3854,17 @@ class Orchestrator:
         research_dir = out / "research"
         _out = research_dir if research_dir.is_dir() else out
 
+        # write_atomic, not a bare open(): these are the `research` stage's DECLARED outputs, and a
+        # rerun interrupted partway — Ctrl-C, SIGKILL, power loss — truncated the last coherent
+        # result of a forty-minute stage with a half-written file that reads as finished (prepush
+        # codex 2026-08-13). Fixed here rather than by staging the stage, because run_deep_research
+        # also loads and saves the extraction cache from this directory, and staging that would
+        # make every rerun re-extract every paper.
+        from dr2_podcast.artifacts import write_atomic
+
         # Strategy files — TieredSearchPlan serialized via dataclasses.asdict
-        with open(_out / "search_strategy_aff.json", "w") as f:
-            json.dump(dataclasses.asdict(aff_strategy), f, indent=2)
-        with open(_out / "search_strategy_neg.json", "w") as f:
-            json.dump(dataclasses.asdict(fal_strategy), f, indent=2)
+        write_atomic(_out / "search_strategy_aff.json", json.dumps(dataclasses.asdict(aff_strategy), indent=2))
+        write_atomic(_out / "search_strategy_neg.json", json.dumps(dataclasses.asdict(fal_strategy), indent=2))
 
         # Screening decisions (one file per track) — full candidate list for debugging
         def _record_to_dict(r, selected: bool) -> dict:
@@ -3895,14 +3903,17 @@ class Orchestrator:
                 "all_candidates": [_record_to_dict(r, id(r) in selected_set) for r in records],
             }
 
-        with open(_out / "screening_results_aff.json", "w") as f:
-            json.dump(_screening_payload(aff_records, aff_top, aff_highest_tier), f, indent=2, ensure_ascii=False)
-        with open(_out / "screening_results_neg.json", "w") as f:
-            json.dump(_screening_payload(fal_records, fal_top, fal_highest_tier), f, indent=2, ensure_ascii=False)
-
-        # Math report
-        with open(_out / "clinical_math.md", "w") as f:
-            f.write(math_report)
+        write_atomic(
+            _out / "screening_results_aff.json",
+            json.dumps(_screening_payload(aff_records, aff_top, aff_highest_tier), indent=2, ensure_ascii=False),
+        )
+        write_atomic(
+            _out / "screening_results_neg.json",
+            json.dumps(_screening_payload(fal_records, fal_top, fal_highest_tier), indent=2, ensure_ascii=False),
+        )
+        # allow_empty: a run with no studies to compute on has an empty math report, and refusing to
+        # write it would fail the stage over the honest answer.
+        write_atomic(_out / "clinical_math.md", math_report, allow_empty=True)
 
 
 # --- Convenience functions ---

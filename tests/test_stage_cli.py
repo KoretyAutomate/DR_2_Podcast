@@ -335,3 +335,31 @@ def test_cli_status_lists_every_available_stage(run_dir: Path, capsys: pytest.Ca
     out = capsys.readouterr().out
     assert "framing" in out and "complete" in out
     assert "blueprint" in out and "pending" in out
+
+
+# prepush codex 2026-08-13 [P2]: the runner refuses a stage whose producer is stale, but --status
+# printed the same stage as "current". A status view that contradicts what running does is worse
+# than no status view.
+def test_status_reports_a_consumer_stale_when_its_producer_is(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    from dr2_podcast import stage as stage_mod
+    from dr2_podcast.manifest import config_fingerprint as real_fingerprint
+
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
+    run_stage(run_dir, "research")
+
+    main(["--run", str(run_dir), "--status"])
+    assert "research       complete  current" in capsys.readouterr().out
+
+    monkeypatch.setattr(
+        stage_mod, "config_fingerprint",
+        lambda run_config=None, stage=None, values=None: (
+            "moved" if stage == "framing" else real_fingerprint(values, run_config, stage)
+        ),
+    )
+    main(["--run", str(run_dir), "--status"])
+    out = capsys.readouterr().out
+    assert "producer: framing" in out, out

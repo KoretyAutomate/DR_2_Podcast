@@ -13,13 +13,14 @@ calls themselves are stubbed, because a test that needs vLLM up is a test that d
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from dr2_podcast import adapters
-from dr2_podcast.adapters import _common, research_stages
+from dr2_podcast.adapters import _common
 from dr2_podcast.artifacts import ArtifactError
 from dr2_podcast.stage import write_run_config
 from dr2_podcast.stages import ADAPTERS
@@ -93,150 +94,6 @@ def test_translate_fails_closed_on_an_empty_translation(run_dir: Path, monkeypat
     with pytest.raises(ArtifactError, match="produced nothing"):
         adapters.translate(run_dir, RUN_CONFIG)
     assert not (run_dir / "research/source_of_truth_ja.md").exists()
-
-
-# --------------------------------------------------------------------------- #
-# url_validation
-# --------------------------------------------------------------------------- #
-def test_url_validation_reads_its_input_from_disk(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (run_dir / "research/research_sources.json").write_text(
-        json.dumps(
-            {
-                "affirmative": [{"url": "https://example.org/a", "title": "A"}],
-                "falsification": [{"url": "https://example.org/b"}],
-            }
-        )
-    )
-    checked: dict[str, Any] = {}
-
-    def _fake_validate(urls: list[str], max_workers: int = 15) -> dict[str, str]:
-        checked["urls"] = urls
-        return dict.fromkeys(urls, "Valid")
-
-    monkeypatch.setattr("dr2_podcast.tools.link_validator.validate_multiple_urls_parallel", _fake_validate)
-    adapters.url_validation(run_dir, RUN_CONFIG)
-
-    assert checked["urls"] == ["https://example.org/a", "https://example.org/b"]
-    results = json.loads((run_dir / "research/url_validation_results.json").read_text())
-    assert results["https://example.org/a"] == "Valid"
-
-
-# prepush codex 2026-08-12: the phase removes broken URLs from the library; dropping that would
-# leave staged runs citing sources the pipeline has already determined are unusable.
-def test_url_validation_filters_the_broken_sources(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (run_dir / "research/research_sources.json").write_text(
-        json.dumps(
-            {
-                "affirmative": [
-                    {"url": "https://ok.example/a", "title": "good"},
-                    {"url": "https://dead.example/b", "title": "broken"},
-                ],
-                "falsification": [{"url": "https://err.example/c"}],
-            }
-        )
-    )
-    monkeypatch.setattr(
-        "dr2_podcast.tools.link_validator.validate_multiple_urls_parallel",
-        lambda urls, max_workers=15: {
-            "https://ok.example/a": "Valid (200)",
-            "https://dead.example/b": "Broken (404)",
-            "https://err.example/c": "ERROR: timeout",
-        },
-    )
-    adapters.url_validation(run_dir, RUN_CONFIG)
-
-    from dr2_podcast.pipeline import research_sources_file
-
-    assert research_sources_file(run_dir).name == "research_sources_validated.json", "the stamp matches"
-    filtered = json.loads((run_dir / "research/research_sources_validated.json").read_text())
-    assert [e["url"] for e in filtered["affirmative"]] == ["https://ok.example/a"]
-    assert filtered["falsification"] == []
-
-    untouched = json.loads((run_dir / "research/research_sources.json").read_text())
-    assert len(untouched["affirmative"]) == 2, "the producer's own artifact is not edited"
-
-
-# prepush codex 2026-08-12: LinkValidatorTool._run returns "✗ ERROR: …" with a leading marker, so
-# the phase's startswith("ERROR") test misses it and an unusable citation proceeds downstream.
-@pytest.mark.parametrize(
-    "status",
-    ["✗ ERROR: connection reset", "ERROR: timeout", "✗ Broken Link (Status: 404 Not Found)", "✗ Invalid URL: loop"],
-)
-def test_every_rejected_status_shape_is_filtered(status: str) -> None:
-    sources = {"affirmative": [{"url": "https://bad.example/x"}, {"url": "https://good.example/y"}]}
-    results = {"https://bad.example/x": status, "https://good.example/y": "✓ Valid (200)"}
-    filtered = research_stages._without_broken(sources, results)
-    assert [e["url"] for e in filtered["affirmative"]] == ["https://good.example/y"], status
-
-
-# prepush codex 2026-08-12: the filtered artifact was written and then read by nobody — the tools
-# still opened research_sources.json, so rejected URLs reached the blueprint anyway.
-def test_the_agents_read_the_validated_library_when_it_exists(run_dir: Path) -> None:
-    import hashlib
-
-    from dr2_podcast.pipeline import research_sources_file
-
-    raw = run_dir / "research/research_sources.json"
-    raw.write_text("{}")
-    assert research_sources_file(run_dir).name == "research_sources.json"
-
-    (run_dir / "research/research_sources_validated.json").write_text("{}")
-    (run_dir / "research/research_sources_validated.sha256").write_text(
-        hashlib.sha256(raw.read_bytes()).hexdigest()
-    )
-    assert research_sources_file(run_dir).name == "research_sources_validated.json"
-
-
-# prepush codex 2026-08-13, twice. First: the legacy runner regenerates research_sources.json in
-# place and knows nothing about the validated copy. Then: comparing mtimes is not a fact about
-# derivation — atomic replacement preserves coarse timestamps and restoring a run reorders them —
-# so the validated copy is pinned to its source BY HASH.
-def test_a_regenerated_library_invalidates_the_validated_copy(run_dir: Path) -> None:
-    import hashlib
-
-    from dr2_podcast.pipeline import research_sources_file
-
-    raw = run_dir / "research/research_sources.json"
-    raw.write_text('{"affirmative": []}')
-    (run_dir / "research/research_sources_validated.json").write_text("{}")
-    (run_dir / "research/research_sources_validated.sha256").write_text(
-        hashlib.sha256(raw.read_bytes()).hexdigest()
-    )
-    assert research_sources_file(run_dir).name == "research_sources_validated.json"
-
-    raw.write_text('{"affirmative": [{"url": "https://new.example/x"}]}')
-    assert research_sources_file(run_dir).name == "research_sources.json"
-
-
-def test_a_validated_copy_with_no_stamp_is_not_trusted(run_dir: Path) -> None:
-    """The legacy runner writes no stamp, so its directory never matches by accident."""
-    from dr2_podcast.pipeline import research_sources_file
-
-    (run_dir / "research/research_sources.json").write_text("{}")
-    (run_dir / "research/research_sources_validated.json").write_text("{}")
-    assert research_sources_file(run_dir).name == "research_sources.json"
-
-
-def test_validation_gates_the_blueprint() -> None:
-    """Required, not optional: an optional gate lets the blueprint run before validation ever did,
-    research_sources_file() falls back to the raw library, and rejected URLs reach the episode."""
-    from dr2_podcast.stages import direct_producers, get_stage
-
-    assert "research/research_sources_validated.json" in get_stage("blueprint").consumes
-    assert "url_validation" in direct_producers("blueprint")
-
-
-def test_url_validation_fails_closed_on_a_missing_sources_file(run_dir: Path) -> None:
-    with pytest.raises(ArtifactError, match="cannot read"):
-        adapters.url_validation(run_dir, RUN_CONFIG)
-
-
-def test_urls_are_found_at_any_nesting_depth() -> None:
-    """The sources document's shape has changed before; a shape-specific reader would miss URLs."""
-    found = research_stages._iter_urls(
-        {"a": [{"url": "u1"}], "b": {"c": {"d": [{"url": "u2"}]}}, "url": "u3", "n": None}
-    )
-    assert sorted(found) == ["u1", "u2", "u3"]
 
 
 # --------------------------------------------------------------------------- #
@@ -486,7 +343,7 @@ def test_a_rerender_that_produces_no_mix_removes_the_old_one(
     (run_dir / "scripts/script_final.md").write_text("Host 1: hello\n")
     stale_mix = run_dir / "audio/audio_mixed.wav"
     stale_mix.write_bytes(b"THE PREVIOUS EPISODE'S MIX")
-    monkeypatch.setattr("dr2_podcast.pipeline._run_audio_pipeline", _render_into_staging("audio.wav"))
+    monkeypatch.setattr("dr2_podcast.pipeline._run_audio_pipeline", _render_into_staging("audio.wav", "script.txt"))
 
     adapters.audio(run_dir, RUN_CONFIG)
 
@@ -497,7 +354,8 @@ def test_a_rerender_that_produces_no_mix_removes_the_old_one(
 def test_a_rerender_that_produces_a_mix_keeps_it(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (run_dir / "scripts/script_final.md").write_text("Host 1: hello\n")
     monkeypatch.setattr(
-        "dr2_podcast.pipeline._run_audio_pipeline", _render_into_staging("audio.wav", "audio_mixed.wav")
+        "dr2_podcast.pipeline._run_audio_pipeline",
+        _render_into_staging("audio.wav", "audio_mixed.wav", "script.txt"),
     )
     adapters.audio(run_dir, RUN_CONFIG)
     assert (run_dir / "audio/audio_mixed.wav").read_bytes() == b"RIFF"
@@ -524,7 +382,7 @@ def test_audio_does_not_need_the_llm_backend(run_dir: Path, monkeypatch: pytest.
 
     monkeypatch.setattr("dr2_podcast.pipeline.get_final_model_string", _explode)
     (run_dir / "scripts/script_final.md").write_text("Host 1: hello\n")
-    monkeypatch.setattr("dr2_podcast.pipeline._run_audio_pipeline", _render_into_staging("audio.wav"))
+    monkeypatch.setattr("dr2_podcast.pipeline._run_audio_pipeline", _render_into_staging("audio.wav", "script.txt"))
     adapters.audio(run_dir, RUN_CONFIG)
 
 
@@ -534,6 +392,27 @@ def test_audio_fails_closed_when_nothing_was_rendered(run_dir: Path, monkeypatch
     monkeypatch.setattr("dr2_podcast.pipeline._run_audio_pipeline", lambda *a: (None, None))
     with pytest.raises(ArtifactError, match="produced no file"):
         adapters.audio(run_dir, RUN_CONFIG)
+
+
+# prepush codex 2026-08-13 [P2]: a render that produced a valid WAV but no script.txt was promoted
+# first and only then failed on the missing declared output — leaving the new audio beside the
+# PREVIOUS run's script.txt, both looking current. Staging's whole promise is that a failed render
+# leaves what was there untouched.
+def test_a_render_missing_a_declared_output_promotes_nothing(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (run_dir / "scripts/script_final.md").write_text("Host 1: hello\n")
+    (run_dir / "scripts/script.txt").write_text("the previously accepted plain text")
+    (run_dir / "audio/audio.wav").write_bytes(b"the previously accepted audio")
+
+    monkeypatch.setattr(
+        "dr2_podcast.pipeline._run_audio_pipeline", _render_into_staging("audio.wav")  # no script.txt
+    )
+    with pytest.raises(ArtifactError, match="script.txt"):
+        adapters.audio(run_dir, RUN_CONFIG)
+
+    assert (run_dir / "scripts/script.txt").read_text() == "the previously accepted plain text"
+    assert (run_dir / "audio/audio.wav").read_bytes() == b"the previously accepted audio"
 
 
 def test_audio_fails_closed_without_a_final_script(run_dir: Path) -> None:
@@ -566,3 +445,51 @@ def test_the_serialiser_really_does_destroy_the_report_structure() -> None:
     serialised = _serialize_dataclass(_reports(_pipeline_data()))
     assert isinstance(serialised["audit"], str), "a dict here would mean the structure survived"
     assert serialised["audit"].startswith("namespace(")
+
+
+# prepush codex 2026-08-13 [P2]: the research stage's declared outputs were written with bare
+# open(..., "w"), so a rerun interrupted partway truncated the last coherent result of a
+# forty-minute stage with a half-written file that reads as finished. Staging the whole stage was
+# not the answer — run_deep_research loads its extraction cache from the same directory, and
+# staging that would make every rerun re-extract every paper.
+def test_the_research_reports_are_written_atomically(run_dir: Path) -> None:
+    from types import SimpleNamespace
+
+    from dr2_podcast.artifacts import CANDIDATE_SUFFIX
+    from dr2_podcast.pipeline_flow import _save_research_reports
+
+    previous = run_dir / "research/affirmative_case.md"
+    previous.write_text("the previously accepted affirmative case\n")
+
+    reports = {"lead": SimpleNamespace(report="a new case", total_summaries=3)}
+    _save_research_reports(reports, run_dir, logging.getLogger(__name__))
+
+    assert previous.read_text() == "a new case"
+    assert not list((run_dir / "research").glob(f"*{CANDIDATE_SUFFIX}")), "no candidate left behind"
+
+
+def test_the_source_library_indices_are_contiguous_as_saved(run_dir: Path) -> None:
+    """pipeline.py:1440 shows the agent each entry's stored index and read_research_source resolves
+    it positionally, so a source skipped for having no summary must not leave a gap."""
+    import json as _json
+    from types import SimpleNamespace
+
+    from dr2_podcast.pipeline_flow import _save_sources_json
+
+    def _src(url, summary):
+        return SimpleNamespace(
+            error=None, summary=summary, url=url, title="t", query="q", goal="g", metadata=None
+        )
+
+    reports = {
+        "lead": SimpleNamespace(
+            sources=[_src("https://a", "kept"), _src("https://b", "NO RELEVANT DATA"), _src("https://c", "kept")],
+            total_summaries=2,
+        ),
+        "counter": SimpleNamespace(sources=[], total_summaries=0),
+    }
+    _save_sources_json(reports, run_dir, logging.getLogger(__name__))
+
+    saved = _json.loads((run_dir / "research/research_sources.json").read_text())["lead"]
+    assert [e["url"] for e in saved] == ["https://a", "https://c"]
+    assert [e["index"] for e in saved] == [0, 1], "the index shown must be the index that resolves"

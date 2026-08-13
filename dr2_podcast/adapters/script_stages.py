@@ -21,7 +21,7 @@ from dr2_podcast.adapters._common import (
     staging_dir,
 )
 from dr2_podcast.artifacts import ArtifactError, write_atomic, write_json_atomic
-from dr2_podcast.stages import register
+from dr2_podcast.stages import get_stage, register
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +295,17 @@ def audio(run_dir: Path, run_config: dict[str, Any]) -> None:
                 )
             if not duration_minutes:
                 raise ArtifactError(f"{audio_file} was written but reports no duration; that is a failed render")
+            # Every declared output checked BEFORE anything moves. Promoting first and letting
+            # Manifest.complete() notice the gap afterwards replaces part of the last coherent
+            # audio set and then fails — leaving new audio beside a previous run's script.txt, both
+            # looking current (prepush codex 2026-08-13). Staging's whole promise is that a failed
+            # render leaves what was there untouched.
+            absent = [a for a in get_stage("audio").produces if not (staging / a).exists()]
+            if absent:
+                raise ArtifactError(
+                    f"the render did not produce {', '.join(absent)}; nothing is promoted, so the "
+                    f"previous audio is still the run's audio"
+                )
             promoted = promote(staging, run_dir)
         finally:
             pipeline.output_dir = previous_output_dir

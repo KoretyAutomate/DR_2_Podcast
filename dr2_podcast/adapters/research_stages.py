@@ -206,7 +206,17 @@ def _without_broken(sources: Any, results: dict[str, str]) -> Any:
     filtered = dict(sources)
     for role, entries in sources.items():
         if isinstance(entries, list):
-            filtered[role] = [e for e in entries if not (isinstance(e, dict) and e.get("url") in broken)]
+            kept = [e for e in entries if not (isinstance(e, dict) and e.get("url") in broken)]
+            # Renumbered, because the listing and the lookup are two different things that have to
+            # mean the same number: pipeline.py:1440 prints each entry's stored `index`, while
+            # read_research_source resolves the number it is given POSITIONALLY. Removing a
+            # non-final entry leaves a gap, and an agent asking for the index it was shown then
+            # gets a DIFFERENT source — the wrong evidence attached to a claim, silently, or an
+            # out-of-range error (prepush codex 2026-08-13).
+            filtered[role] = [
+                {**e, "index": i} if isinstance(e, dict) and "index" in e else e
+                for i, e in enumerate(kept)
+            ]
     return filtered
 
 

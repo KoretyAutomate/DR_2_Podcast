@@ -131,7 +131,21 @@ def _guard_inputs(
     from dr2_podcast.stages import producer_of, resolve
 
     stage = get_stage(name)
-    missing = [a for a in stage.consumes if not (run_dir / a).exists()]
+    # A `{language}` input is optional only because an ENGLISH run has no translated SOT. For any
+    # other language it is the evidence the stage is supposed to read, and treating it as optional
+    # let a Japanese run reach `blueprint` — and complete — with translate never having run
+    # (prepush codex 2026-08-13). The blueprint adapter continues with an empty translated summary,
+    # so nothing else would have said a word about it.
+    required = list(stage.consumes)
+    if substitutions.get("language", "en") != "en":
+        required += [
+            resolved
+            for pattern, resolved in zip(
+                stage.optional_consumes, resolve(stage.optional_consumes, substitutions), strict=True
+            )
+            if "{language}" in pattern
+        ]
+    missing = [a for a in required if not (run_dir / a).exists()]
     if missing:
         detail = ", ".join(f"{a} (run stage {producer_of(a)!r})" for a in missing)
         raise StageError(f"stage {name!r} cannot run: missing input(s) {detail}")
@@ -324,6 +338,25 @@ def _merged_run_config(run_dir: Path, args: argparse.Namespace) -> dict[str, Any
     }
 
 
+def _stale_producers(run_dir: Path, name: str, manifest: Manifest, run_config: dict[str, Any] | None) -> list[str]:
+    """Producers of what this stage reads that are not themselves current."""
+    from dr2_podcast.stages import producer_of, resolve
+
+    stage = get_stage(name)
+    substitutions = {"language": str((run_config or {}).get("language", ""))}
+    reading = list(stage.consumes) + [
+        a for a in resolve(stage.optional_consumes, substitutions) if (run_dir / a).exists()
+    ]
+    producers = {producer for artifact in reading if (producer := producer_of(artifact))}
+    return sorted(
+        producer
+        for producer in producers
+        if not manifest.is_current(
+            producer, config_sha256=config_fingerprint(run_config=run_config, stage=producer)
+        )
+    )
+
+
 def _print_status(run_dir: Path) -> int:
     manifest = Manifest.load(run_dir)
     path = run_dir / RUN_CONFIG_ARTIFACT
@@ -331,7 +364,16 @@ def _print_status(run_dir: Path) -> int:
     load_adapters()
     for name in AVAILABLE_STAGE_NAMES:
         fingerprint = config_fingerprint(run_config=run_config, stage=name)
-        current = "current" if manifest.is_current(name, config_sha256=fingerprint) else "not current"
+        # A stage's own hashes and fingerprint are not the whole answer. A producer can go stale on
+        # its own scoped configuration without its artifact bytes moving, and printing the consumer
+        # as "current" then contradicts what running it actually does — _guard_inputs refuses it
+        # (prepush codex 2026-08-13). The status view and the runner must agree, or the status view
+        # is worse than none.
+        blocked = _stale_producers(run_dir, name, manifest, run_config)
+        if manifest.is_current(name, config_sha256=fingerprint) and blocked:
+            current = f"not current (producer: {', '.join(blocked)})"
+        else:
+            current = "current" if manifest.is_current(name, config_sha256=fingerprint) else "not current"
         reason = manifest.record_for(name).get("stale_reason") or ""
         adapter = "" if name in ADAPTERS else "  [no adapter]"
         print(f"  {name:<14} {manifest.status(name):<9} {current}{adapter}{'  — ' + reason if reason else ''}")

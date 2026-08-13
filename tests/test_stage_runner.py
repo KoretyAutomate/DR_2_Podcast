@@ -172,6 +172,10 @@ def test_a_stage_is_not_skipped_as_current_on_top_of_a_stale_producer(
     run_stage(run_dir, "research")
     _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
     run_stage(run_dir, "url_validation")
+    # ja, so blueprint reads the translated SOT and translate has to have produced it. The output
+    # is declared with a {language} placeholder, so the stub writes the resolved name.
+    _stub("translate", {"research/source_of_truth_ja.md": "translated"})
+    run_stage(run_dir, "translate")
     _stub("blueprint", {a: f"blueprint {a}" for a in stage_mod.get_stage("blueprint").produces})
     run_stage(run_dir, "blueprint")
     assert "skipped" in run_stage(run_dir, "blueprint"), "the control: it really is current"
@@ -194,6 +198,7 @@ def test_a_stage_is_not_skipped_as_current_on_top_of_a_stale_producer(
 # be current made an English episode unable to run `blueprint` at all — `translate` produces the
 # translated SOT that no English run has, and it does not even have an adapter.
 def test_an_absent_optional_input_does_not_demand_its_producer(run_dir: Path) -> None:
+    write_run_config(run_dir, topic="vitamin D and fractures", language="en", target_length_minutes=25)
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
     _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
@@ -272,3 +277,36 @@ def test_leftover_candidates_are_cleared_before_a_stage_runs(run_dir: Path) -> N
     _stub("framing", FRAMING_OUTPUTS)
     assert "cleared 1 stale candidate" in run_stage(run_dir, "framing")
     assert not stray.exists()
+
+
+# prepush codex 2026-08-13 [P1]: the translated SOT is `optional_consumes` because an ENGLISH run
+# has none. For every other language it is the evidence blueprint exists to read, and _guard_inputs
+# ignoring absent optional inputs let a Japanese run reach blueprint — and complete — with translate
+# never having run. The blueprint adapter continues with an empty translated summary, silently.
+def test_a_japanese_run_cannot_reach_the_blueprint_without_its_translation(run_dir: Path) -> None:
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
+    run_stage(run_dir, "research")
+    _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
+    run_stage(run_dir, "url_validation")
+
+    calls = _stub("blueprint", {a: f"blueprint {a}" for a in stage_mod.get_stage("blueprint").produces})
+    with pytest.raises(StageError, match="source_of_truth_ja.md"):
+        run_stage(run_dir, "blueprint")
+    assert calls == []
+
+
+def test_an_english_run_reaches_the_blueprint_without_one(run_dir: Path) -> None:
+    """The control: this is the case optional_consumes exists for, and it must keep working."""
+    write_run_config(run_dir, topic="vitamin D and fractures", language="en", target_length_minutes=25)
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
+    run_stage(run_dir, "research")
+    _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
+    run_stage(run_dir, "url_validation")
+
+    calls = _stub("blueprint", {a: f"blueprint {a}" for a in stage_mod.get_stage("blueprint").produces})
+    run_stage(run_dir, "blueprint")
+    assert calls

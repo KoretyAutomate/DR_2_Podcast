@@ -220,6 +220,7 @@ _REPORT_FILENAMES = {
 
 def _save_research_reports(deep_reports: dict, output_dir_path: Path, run_logger) -> None:
     from dr2_podcast import pipeline as _pipeline
+    from dr2_podcast.artifacts import write_atomic
 
     for role_name, filename in _REPORT_FILENAMES.items():
         report = deep_reports.get(role_name)
@@ -227,26 +228,34 @@ def _save_research_reports(deep_reports: dict, output_dir_path: Path, run_logger
             run_logger.warning("%s report missing — skipping save", role_name.capitalize())
             continue
         report_file = _pipeline.output_path(output_dir_path, filename)
-        report_file.write_text(report.report)
+        # Atomic: these are the `research` stage's declared outputs, and an interrupted rerun
+        # otherwise truncates the last coherent result of a forty-minute stage.
+        write_atomic(Path(report_file), report.report)
         run_logger.info("%s report saved: %s (%d sources)", role_name.capitalize(), filename, report.total_summaries)
 
 
 def _save_sources_json(deep_reports: dict, output_dir_path: Path, run_logger) -> None:
     """Write research_sources.json, dropping sources that carry no usable summary."""
     from dr2_podcast import pipeline as _pipeline
+    from dr2_podcast.artifacts import write_atomic
 
     sources_json = {}
     for role_name in ("lead", "counter"):
         report = deep_reports[role_name]
-        role_sources = []
-        for idx, src in enumerate(report.sources):
+        role_sources: list[dict] = []
+        for src in report.sources:
             if src.error or not src.summary or src.summary.strip().upper() == "NO RELEVANT DATA":
                 continue
             if not src.url:
                 continue
             role_sources.append(
                 {
-                    "index": idx,
+                    # The position in the list AS SAVED, not in report.sources. Every skipped
+                    # source above left a gap between the index pipeline.py:1440 shows an agent and
+                    # the position read_research_source resolves, so asking for the source it was
+                    # shown returned a different one — the same defect the validator's filter had
+                    # (prepush codex 2026-08-13), one step earlier in the same file's life.
+                    "index": len(role_sources),
                     "url": src.url,
                     "title": src.title,
                     "query": src.query,
@@ -257,7 +266,7 @@ def _save_sources_json(deep_reports: dict, output_dir_path: Path, run_logger) ->
             )
         sources_json[role_name] = role_sources
     sources_file = _pipeline.output_path(output_dir_path, "research_sources.json")
-    sources_file.write_text(json.dumps(sources_json, indent=2, ensure_ascii=False))
+    write_atomic(Path(sources_file), json.dumps(sources_json, indent=2, ensure_ascii=False))
     run_logger.info(
         "Research library saved: %d lead, %d counter sources",
         len(sources_json.get("lead", [])),
