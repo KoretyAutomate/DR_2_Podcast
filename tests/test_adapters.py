@@ -97,6 +97,26 @@ def test_the_target_minutes_global_is_set_not_left_at_its_sentinel(
     assert pipeline.target_length_int == 33 * pipeline.language_config["speech_rate"]
 
 
+# prepush codex 2026-08-12: assign_roles() is random under the default PODCAST_HOSTS=random, and
+# every stage is a fresh process — so framing, blueprint and the script phases would each build
+# prompts with DIFFERENT host roles, with no manifest identity change to show for it.
+def test_the_host_roles_are_assigned_once_and_then_reused(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PODCAST_HOSTS", "random")
+    first = adapters._session_roles(run_dir)
+    assert (run_dir / "meta/session_roles.json").exists()
+
+    seen = []
+    monkeypatch.setattr("dr2_podcast.pipeline.assign_roles", lambda: seen.append(1) or {"changed": True})
+    for _ in range(5):
+        assert adapters._session_roles(run_dir) == first
+    assert seen == [], "a second process must read the roles, never reassign them"
+
+
+def test_prepare_run_uses_the_persisted_roles(run_dir: Path) -> None:
+    pipeline = adapters._prepare_run(run_dir, RUN_CONFIG)
+    assert json.loads((run_dir / "meta/session_roles.json").read_text()) == pipeline.SESSION_ROLES
+
+
 def test_initialise_run_globals_is_the_one_owner_of_that_state() -> None:
     """It was extracted from pipeline.py's __main__ so both runners share it. If an adapter
     reimplemented it, the two would drift and produce different episodes from the same inputs."""

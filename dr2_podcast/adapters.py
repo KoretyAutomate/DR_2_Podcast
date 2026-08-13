@@ -26,6 +26,31 @@ from dr2_podcast.artifacts import ArtifactError, write_atomic, write_json_atomic
 from dr2_podcast.stages import register
 
 
+SESSION_ROLES_ARTIFACT = "meta/session_roles.json"
+
+
+def _session_roles(run_dir: Path) -> dict[str, Any]:
+    """The run's host roles, assigned once and then read back.
+
+    ``assign_roles()`` is RANDOM under the default ``PODCAST_HOSTS=random``, and every stage is a
+    fresh process. Calling it per stage would reshuffle presenter and questioner between framing,
+    blueprint and the script phases — an episode whose own roles change between its parts, with no
+    manifest identity change to show for it, because the randomness is not in any input. The
+    monolithic runner calls it exactly once per run; this makes "once per run" survive the process
+    boundary.
+    """
+    from dr2_podcast.artifacts import read_json_strict
+
+    from dr2_podcast import pipeline
+
+    path = run_dir / SESSION_ROLES_ARTIFACT
+    if path.exists():
+        return read_json_strict(path)
+    roles = pipeline.assign_roles()
+    write_json_atomic(path, roles)
+    return roles
+
+
 def _prepare_run(run_dir: Path, run_config: dict[str, Any]) -> Any:
     """Rebuild the module state a Crew needs, from the run directory alone.
 
@@ -35,7 +60,7 @@ def _prepare_run(run_dir: Path, run_config: dict[str, Any]) -> Any:
 
     pipeline.output_dir = run_dir
     pipeline.topic_name = run_config["topic"]
-    pipeline.SESSION_ROLES = pipeline.assign_roles()
+    pipeline.SESSION_ROLES = _session_roles(run_dir)
     pipeline.initialise_run_globals(
         language_code=run_config["language"],
         target_minutes=run_config["target_length_minutes"],
