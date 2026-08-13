@@ -152,19 +152,32 @@ def _resolve(name: str) -> None:
         )
 
 
-def run_stage(run_dir: Path, name: str, *, force: bool = False) -> str:
+def run_stage(
+    run_dir: Path,
+    name: str,
+    *,
+    force: bool = False,
+    new_config: dict[str, Any] | None = None,
+) -> str:
     """Run one stage. Returns a human-readable outcome line.
 
     Order matters and each step is a guard: resolve, then skip-if-current, then check inputs, then
     run. A stage that is already current is not re-run without ``--force``, because re-running it
     would stale everything downstream of it for no reason.
+
+    ``new_config`` writes ``meta/run_config.json`` **inside the same lock as the run**. Writing it
+    outside would let an invocation rewrite the topic of a run that is already executing: the
+    running stage would carry on with the old parameters in memory while the run directory
+    described the new ones, and both processes would write through the same ``.candidate`` path.
     """
     _resolve(name)
     with run_lock(run_dir):
-        return _run_stage_locked(run_dir, name, force=force)
+        return _run_stage_locked(run_dir, name, force=force, new_config=new_config)
 
 
-def _run_stage_locked(run_dir: Path, name: str, *, force: bool) -> str:
+def _run_stage_locked(run_dir: Path, name: str, *, force: bool, new_config: dict[str, Any] | None = None) -> str:
+    if new_config is not None:
+        write_run_config(run_dir, **new_config)
     removed = clear_candidates(run_dir)
     manifest = Manifest.load(run_dir)
     # The run config is read BEFORE the currency check because it is part of currency: a stage
@@ -240,12 +253,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.status:
         return _print_status(run_dir)
+    # `is not None`, not truthiness: `--topic ""` is an invalid request, not an omitted option, and
+    # silently falling back to the previous topic would run the stage against parameters nobody asked
+    # for. An empty topic reaches the schema and is rejected there.
+    new_config = (
+        None
+        if args.topic is None
+        else {"topic": args.topic, "language": args.language, "target_length_minutes": args.target_length}
+    )
     try:
-        if args.topic:
-            write_run_config(
-                run_dir, topic=args.topic, language=args.language, target_length_minutes=args.target_length
-            )
-        print(run_stage(run_dir, args.stage, force=args.force))
+        print(run_stage(run_dir, args.stage, force=args.force, new_config=new_config))
     except (StageError, ArtifactError, SchemaValidationError, KeyError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

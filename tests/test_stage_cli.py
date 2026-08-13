@@ -290,6 +290,27 @@ def test_cli_reports_a_schema_violation_instead_of_a_traceback(
     assert "ERROR" in capsys.readouterr().err
 
 
+# prepush codex 2026-08-12 [P1]: the config write happened before the lock was acquired, so an
+# invocation could rewrite the topic of a run that was already executing — the running stage would
+# carry on with the old parameters while the directory described the new ones.
+def test_the_run_config_is_not_rewritten_while_another_stage_holds_the_run(run_dir: Path) -> None:
+    _stub("framing", FRAMING_OUTPUTS)
+    before = (run_dir / "meta/run_config.json").read_text()
+    with stage_mod.run_lock(run_dir):
+        assert main(["framing", "--run", str(run_dir), "--topic", "乗っ取られた話題"]) == 1
+    assert (run_dir / "meta/run_config.json").read_text() == before
+
+
+# prepush codex 2026-08-12 [P2]: `--topic ""` read as "option omitted" under a truthiness check, so
+# the command silently ran against the previous topic instead of rejecting the request.
+def test_an_empty_topic_is_rejected_rather_than_ignored(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
+    calls = _stub("framing", FRAMING_OUTPUTS)
+    assert main(["framing", "--run", str(run_dir), "--topic", ""]) == 1
+    assert "ERROR" in capsys.readouterr().err
+    assert calls == [], "the stage must not run against a topic nobody asked for"
+    assert load_run_config(run_dir)["topic"] == "ビタミンDと骨折"
+
+
 def test_cli_runs_a_stage_and_exits_zero(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     assert main(["framing", "--run", str(run_dir)]) == 0
