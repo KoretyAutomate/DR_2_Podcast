@@ -27,7 +27,7 @@ from typing import Any
 
 from dr2_podcast.artifacts import ArtifactError, read_json_strict, sha256_file, write_json_atomic
 from dr2_podcast.schemas import SchemaValidationError, schema_errors
-from dr2_podcast.stages import MANIFEST_FILENAMES, direct_producers, downstream_of, get_stage
+from dr2_podcast.stages import MANIFEST_FILENAMES, direct_producers, downstream_of, get_stage, resolve
 
 MANIFEST_SCHEMA_VERSION = 1
 
@@ -271,7 +271,7 @@ class Manifest:
     def transport_retries(self, stage: str) -> int:
         return sum(1 for a in self.record_for(stage).get("attempts", []) if a["outcome"] == "transport")
 
-    def complete(self, stage: str) -> tuple[str, ...]:
+    def complete(self, stage: str, substitutions: dict[str, str] | None = None) -> tuple[str, ...]:
         """Hash the stage's declared inputs and outputs, mark it complete, stale its downstream.
 
         Returns the stages marked stale. Marking happens on EVERY completion, not only on a
@@ -281,7 +281,8 @@ class Manifest:
         definition = get_stage(stage)
         record = self._stage_record(stage)
         inputs = [self._ref(name, required=True) for name in definition.consumes]
-        inputs += [ref for name in definition.optional_consumes if (ref := self._ref(name, required=False))]
+        optional_inputs = resolve(definition.optional_consumes, substitutions)
+        inputs += [ref for name in optional_inputs if (ref := self._ref(name, required=False))]
         record["inputs"] = inputs
         outputs = [self._ref(name, required=True) for name in definition.produces]
         outputs += [ref for name in definition.optional_outputs if (ref := self._ref(name, required=False))]

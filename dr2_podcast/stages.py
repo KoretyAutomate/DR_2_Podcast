@@ -63,6 +63,12 @@ class Stage:
     #: Artifacts this stage may or may not write, depending on the run (e.g. a translated SOT only
     #: exists for a non-English episode). Absent optional outputs are not a failure.
     optional_outputs: tuple[str, ...] = field(default_factory=tuple)
+    #: Entries may contain ``{language}``, resolved against the run config. The graph is static but
+    #: some artifact names are not: the translated SOT is ``source_of_truth_ja.md`` for a Japanese
+    #: run and does not exist at all for an English one. Without the placeholder, an English run that
+    #: had previously been Japanese would still see the stale ``_ja`` file, treat ``translate`` as a
+    #: required producer, and refuse to build a blueprint that never reads that file.
+    #:
     #: Artifacts this stage reads WHEN THEY EXIST. They are hashed like any other input when
     #: present, so regenerating one makes this stage stale — but their absence is not a failure.
     #: Without this category a stage would either demand a file that may not exist, or read one the
@@ -85,7 +91,14 @@ STAGES: tuple[Stage, ...] = (
     Stage(
         name="framing",
         consumes=(),
-        produces=("research/research_framing.md", "research/domain_classification.json"),
+        # session_roles.json fixes the presenter and questioner for every later Crew. It is an OUTPUT of
+        # framing, not loose metadata: unhashed, editing or deleting it left framing "current" while
+        # the roles the rest of the run builds prompts from had changed underneath.
+        produces=(
+            "research/research_framing.md",
+            "research/domain_classification.json",
+            "meta/session_roles.json",
+        ),
         engine="smart",
     ),
     Stage("keywords", (), (), "smart", available=False, unavailable_reason=_NOT_YET_SPLIT),
@@ -145,8 +158,9 @@ STAGES: tuple[Stage, ...] = (
             "research/source_of_truth.md",
             "research/domain_classification.json",
             "research/grade_synthesis.md",
+            "meta/session_roles.json",
         ),
-        optional_consumes=("research/source_of_truth_ja.md",),
+        optional_consumes=("research/source_of_truth_{language}.md",),
         # blueprint_inventory.json is what phases 5 and 6 take as the bp_inventory argument. In the
         # monolithic flow it is a return value; across a process boundary it has to be a file.
         produces=("research/EPISODE_BLUEPRINT.md", "meta/blueprint_inventory.json"),
@@ -188,6 +202,13 @@ STAGE_NAMES: tuple[str, ...] = tuple(stage.name for stage in STAGES)
 AVAILABLE_STAGE_NAMES: tuple[str, ...] = tuple(s.name for s in STAGES if s.available)
 
 
+def resolve(artifacts: tuple[str, ...], substitutions: dict[str, str] | None = None) -> tuple[str, ...]:
+    """Fill ``{language}``-style placeholders from the run's own configuration."""
+    if not substitutions:
+        return tuple(a for a in artifacts if "{" not in a)
+    return tuple(a.format(**substitutions) for a in artifacts)
+
+
 def get_stage(name: str) -> Stage:
     """Look a stage up by name, with a message that lists the alternatives."""
     try:
@@ -204,12 +225,36 @@ def producer_of(artifact: str) -> str | None:
     return None
 
 
+def _pattern_matches(artifact: str, pattern: str) -> bool:
+    """Whether an artifact name satisfies a possibly-placeholdered pattern.
+
+    Compared on the literal prefix and suffix around the placeholder, so
+    ``research/source_of_truth_{language}.md`` matches ``…_ja.md`` and ``…_en.md`` without the graph
+    having to know which language a given run is.
+    """
+    if "{" not in pattern:
+        return artifact == pattern
+    head, _, tail = pattern.partition("{")
+    return artifact.startswith(head) and artifact.endswith(tail.partition("}")[2])
+
+
+def _reads(stage: Stage) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    return stage.consumes, stage.optional_consumes
+
+
 def direct_producers(name: str) -> tuple[str, ...]:
     """Stages that write anything the named stage consumes, optional inputs included."""
-    stage = get_stage(name)
-    consumed = set(stage.consumes) | set(stage.optional_consumes)
+    required, optional = _reads(get_stage(name))
     return tuple(
-        other.name for other in STAGES if consumed & (set(other.produces) | set(other.optional_outputs))
+        other.name
+        for other in STAGES
+        if (set(other.produces) | set(other.optional_outputs))
+        & set(required)
+        or any(
+            _pattern_matches(written, pattern)
+            for written in set(other.produces) | set(other.optional_outputs)
+            for pattern in optional
+        )
     )
 
 
@@ -220,7 +265,8 @@ def direct_consumers(name: str) -> tuple[str, ...]:
     return tuple(
         other.name
         for other in STAGES
-        if written & (set(other.consumes) | set(other.optional_consumes))
+        if (written & set(other.consumes))
+        or any(_pattern_matches(w, pattern) for w in written for pattern in other.optional_consumes)
     )
 
 

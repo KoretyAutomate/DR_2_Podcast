@@ -105,8 +105,13 @@ def test_the_host_roles_are_assigned_once_and_then_reused(run_dir: Path, monkeyp
     first = adapters._session_roles(run_dir)
     assert (run_dir / "meta/session_roles.json").exists()
 
-    seen = []
-    monkeypatch.setattr("dr2_podcast.pipeline.assign_roles", lambda: seen.append(1) or {"changed": True})
+    seen: list[int] = []
+
+    def _reassign() -> dict[str, Any]:
+        seen.append(1)
+        return {"changed": True}
+
+    monkeypatch.setattr("dr2_podcast.pipeline.assign_roles", _reassign)
     for _ in range(5):
         assert adapters._session_roles(run_dir) == first
     assert seen == [], "a second process must read the roles, never reassign them"

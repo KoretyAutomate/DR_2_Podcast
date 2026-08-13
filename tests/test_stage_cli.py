@@ -66,6 +66,9 @@ def _stub(name: str, writes: dict[str, str]) -> list[str]:
 FRAMING_OUTPUTS = {
     "research/research_framing.md": "# framing\n",
     "research/domain_classification.json": '{"domain": "clinical"}',
+    # Declared as a framing output: it fixes the presenter and questioner for every later Crew, so
+    # editing or deleting it has to make framing non-current.
+    "meta/session_roles.json": '{"presenter": "Host 1", "questioner": "Host 2"}',
 }
 
 

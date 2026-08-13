@@ -51,6 +51,7 @@ def _write(run_dir: Path, artifact: str, text: str) -> None:
 def _complete_framing(manifest: Manifest, run_dir: Path, framing: str = "framing v1") -> None:
     _write(run_dir, "research/research_framing.md", framing)
     _write(run_dir, "research/domain_classification.json", '{"domain": "clinical"}')
+    _write(run_dir, "meta/session_roles.json", '{"presenter": "Host 1"}')
     manifest.start("framing", model="test-model", config_sha256=config_fingerprint(CONFIG))
     manifest.complete("framing")
 
@@ -350,6 +351,16 @@ def test_a_stage_that_did_not_write_what_it_promised_fails_closed(run_dir: Path)
         manifest.complete("framing")
 
 
+def test_an_unresolved_placeholder_is_never_hashed_as_a_literal_path() -> None:
+    """Without substitutions the pattern is skipped, not written into the manifest verbatim."""
+    from dr2_podcast.stages import resolve
+
+    assert resolve(("research/source_of_truth_{language}.md",)) == ()
+    assert resolve(("research/source_of_truth_{language}.md",), {"language": "ja"}) == (
+        "research/source_of_truth_ja.md",
+    )
+
+
 # prepush codex 2026-08-12: blueprint reads grade_synthesis.md and the translated SOT, but declared
 # neither — so regenerating either left an existing blueprint "current" and skipped, even though
 # re-running it would have produced different output.
@@ -362,7 +373,7 @@ def test_an_optional_input_is_hashed_when_present(run_dir: Path) -> None:
     for artifact in get_stage("blueprint").produces:
         _write(run_dir, artifact, f"blueprint: {artifact}")
     manifest.start("blueprint", model="test-model", config_sha256=config_fingerprint(CONFIG))
-    manifest.complete("blueprint")
+    manifest.complete("blueprint", {"language": "ja"})
 
     recorded = {ref["artifact"] for ref in manifest.record_for("blueprint")["inputs"]}
     assert "research/source_of_truth_ja.md" in recorded

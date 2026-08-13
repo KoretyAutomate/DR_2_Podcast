@@ -109,7 +109,15 @@ def load_run_config(run_dir: Path) -> dict[str, Any]:
     return read_json_strict(path, schema="run_config")
 
 
-def _guard_inputs(run_dir: Path, name: str, manifest: Manifest, fingerprint: str, *, force: bool) -> None:
+def _guard_inputs(
+    run_dir: Path,
+    name: str,
+    manifest: Manifest,
+    fingerprint: str,
+    *,
+    force: bool,
+    substitutions: dict[str, str],
+) -> None:
     """Inputs must exist AND the stages that wrote them must be current.
 
     Existence alone is not enough, and the gap is not hypothetical: change the model and every
@@ -120,7 +128,7 @@ def _guard_inputs(run_dir: Path, name: str, manifest: Manifest, fingerprint: str
     ``--force`` bypasses the currency half, because the honest reading of "these inputs are what I
     want" is a decision a human can make; it does not bypass existence.
     """
-    from dr2_podcast.stages import producer_of
+    from dr2_podcast.stages import producer_of, resolve
 
     stage = get_stage(name)
     missing = [a for a in stage.consumes if not (run_dir / a).exists()]
@@ -132,7 +140,8 @@ def _guard_inputs(run_dir: Path, name: str, manifest: Manifest, fingerprint: str
     # Currency is demanded of the producers of what this stage will ACTUALLY read. An optional input
     # that is not on disk is not read, so requiring its producer would make an English episode unable
     # to run `blueprint` at all — `translate` produces the translated SOT that no English run has.
-    reading = list(stage.consumes) + [a for a in stage.optional_consumes if (run_dir / a).exists()]
+    optional = resolve(stage.optional_consumes, substitutions)
+    reading = list(stage.consumes) + [a for a in optional if (run_dir / a).exists()]
     producers = {producer for artifact in reading if (producer := producer_of(artifact))}
     stale = [
         producer
@@ -203,7 +212,8 @@ def _run_stage_locked(run_dir: Path, name: str, *, force: bool, new_config: dict
     if manifest.is_current(name, config_sha256=fingerprint) and not force:
         return f"{name}: already current, skipped (use --force to re-run)"
 
-    _guard_inputs(run_dir, name, manifest, fingerprint, force=force)
+    substitutions = {"language": str(prospective.get("language", ""))}
+    _guard_inputs(run_dir, name, manifest, fingerprint, force=force, substitutions=substitutions)
 
     if new_config is not None:
         write_run_config(run_dir, **new_config)
@@ -223,7 +233,7 @@ def _run_stage_locked(run_dir: Path, name: str, *, force: bool, new_config: dict
         # on disk would still say "running" — a stage reported as live after the process exited.
         # The attempt is recorded only once that succeeds, so one execution never leaves both a
         # "complete" and a "failed" attempt in the history.
-        staled = manifest.complete(name)
+        staled = manifest.complete(name, substitutions)
         manifest.record_attempt(name, "complete")
     except BaseException as exc:
         # BaseException, not Exception: Ctrl-C during a 40-minute stage would otherwise leave the
