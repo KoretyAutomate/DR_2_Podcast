@@ -29,7 +29,7 @@ from dr2_podcast.stages import register
 SESSION_ROLES_ARTIFACT = "meta/session_roles.json"
 
 
-def _session_roles(run_dir: Path) -> dict[str, Any]:
+def _session_roles(run_dir: Path, *, reassign: bool = False) -> dict[str, Any]:
     """The run's host roles, assigned once and then read back.
 
     ``assign_roles()`` is RANDOM under the default ``PODCAST_HOSTS=random``, and every stage is a
@@ -38,20 +38,24 @@ def _session_roles(run_dir: Path) -> dict[str, Any]:
     manifest identity change to show for it, because the randomness is not in any input. The
     monolithic runner calls it exactly once per run; this makes "once per run" survive the process
     boundary.
+
+    ``reassign`` is for the stage that DECLARES this artifact as an output — framing. Without it, a
+    changed ``PODCAST_HOSTS`` makes framing stale, framing re-runs, and the old assignment is read
+    straight back while the manifest records the stage as current under the new setting.
     """
     from dr2_podcast.artifacts import read_json_strict
 
     from dr2_podcast import pipeline
 
     path = run_dir / SESSION_ROLES_ARTIFACT
-    if path.exists():
+    if path.exists() and not reassign:
         return read_json_strict(path)
     roles = pipeline.assign_roles()
     write_json_atomic(path, roles)
     return roles
 
 
-def _prepare_run(run_dir: Path, run_config: dict[str, Any]) -> Any:
+def _prepare_run(run_dir: Path, run_config: dict[str, Any], *, reassign_roles: bool = False) -> Any:
     """Rebuild the module state a Crew needs, from the run directory alone.
 
     Returns the :mod:`dr2_podcast.pipeline` module, whose globals the Crew builders read.
@@ -60,7 +64,7 @@ def _prepare_run(run_dir: Path, run_config: dict[str, Any]) -> Any:
 
     pipeline.output_dir = run_dir
     pipeline.topic_name = run_config["topic"]
-    pipeline.SESSION_ROLES = _session_roles(run_dir)
+    pipeline.SESSION_ROLES = _session_roles(run_dir, reassign=reassign_roles)
     pipeline.initialise_run_globals(
         language_code=run_config["language"],
         target_minutes=run_config["target_length_minutes"],
@@ -119,7 +123,9 @@ def framing(run_dir: Path, run_config: dict[str, Any]) -> None:
 
     from dr2_podcast.pipeline_flow import _append_to_description_once
 
-    pipeline = _prepare_run(run_dir, run_config)
+    # framing is the stage that declares meta/session_roles.json as an output, so it is the one that
+    # writes it — otherwise a changed PODCAST_HOSTS would rerun framing and keep the old assignment.
+    pipeline = _prepare_run(run_dir, run_config, reassign_roles=True)
     classification = _classify_domain(run_config["topic"])
 
     write_json_atomic(

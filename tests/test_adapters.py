@@ -117,6 +117,31 @@ def test_the_host_roles_are_assigned_once_and_then_reused(run_dir: Path, monkeyp
     assert seen == [], "a second process must read the roles, never reassign them"
 
 
+# prepush codex 2026-08-13: a changed PODCAST_HOSTS makes framing stale, but rerunning it read the
+# old assignment straight back while the manifest recorded the stage as current under the new one.
+def test_framing_reassigns_the_roles_when_it_reruns(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dr2_podcast.pipeline import assign_roles
+
+    old = assign_roles()
+    new = {role: {**spec, "personality": "a different persona"} for role, spec in old.items()}
+    (run_dir / "meta/session_roles.json").write_text(json.dumps(old))
+    monkeypatch.setattr("dr2_podcast.pipeline.assign_roles", lambda: new)
+    _stub_framing(monkeypatch, "# framing")
+    adapters.framing(run_dir, RUN_CONFIG)
+    assert json.loads((run_dir / "meta/session_roles.json").read_text()) == new
+
+
+def test_a_stage_that_only_reads_the_roles_leaves_them_alone(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dr2_podcast.pipeline import assign_roles
+
+    chosen = assign_roles()
+    other = {role: {**spec, "personality": "reassigned"} for role, spec in chosen.items()}
+    (run_dir / "meta/session_roles.json").write_text(json.dumps(chosen, ensure_ascii=False))
+    monkeypatch.setattr("dr2_podcast.pipeline.assign_roles", lambda: other)
+    adapters._prepare_run(run_dir, RUN_CONFIG)
+    assert json.loads((run_dir / "meta/session_roles.json").read_text()) == chosen
+
+
 def test_prepare_run_uses_the_persisted_roles(run_dir: Path) -> None:
     pipeline = adapters._prepare_run(run_dir, RUN_CONFIG)
     assert json.loads((run_dir / "meta/session_roles.json").read_text()) == pipeline.SESSION_ROLES
