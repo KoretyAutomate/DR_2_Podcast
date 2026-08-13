@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import importlib
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -32,26 +33,9 @@ from typing import Any
 from dr2_podcast.artifacts import ArtifactError, clear_candidates, read_json_strict, write_json_atomic
 from dr2_podcast.manifest import Manifest, config_fingerprint
 from dr2_podcast.schemas import SchemaValidationError
-from dr2_podcast.stages import AVAILABLE_STAGE_NAMES, get_stage
+from dr2_podcast.stages import ADAPTERS, AVAILABLE_STAGE_NAMES, get_stage
 
 RUN_CONFIG_ARTIFACT = "meta/run_config.json"
-
-#: stage name -> callable(run_dir, run_config) -> None. A stage writes its own artifacts; the
-#: runner hashes and records them afterwards from the graph's declaration.
-#:
-#: **Empty in production today**, and the CLI says so rather than advertising stages it cannot run.
-#: Two different facts are kept apart on purpose: a stage is *unavailable* when the pipeline cannot
-#: separate it at all (the six phase-1 sub-stages, blocked on Step 10), and *not runnable* when it
-#: is separable but its disk-driven adapter has not been written. Collapsing them into one flag
-#: would make `unavailable_reason` mean two things and lose the distinction that says which of the
-#: two pieces of work is outstanding.
-ADAPTERS: dict[str, Callable[[Path, dict[str, Any]], None]] = {}
-
-
-def runnable_stage_names() -> tuple[str, ...]:
-    """Stages that are both separable and have an adapter — i.e. that would actually run."""
-    return tuple(name for name in AVAILABLE_STAGE_NAMES if name in ADAPTERS)
-
 
 class StageError(RuntimeError):
     """Raised instead of proceeding. Every guard in this module fails closed."""
@@ -86,15 +70,20 @@ def run_lock(run_dir: Path) -> Iterator[None]:
         yield
 
 
-def register(name: str) -> Callable[[Callable[[Path, dict[str, Any]], None]], Callable[..., None]]:
-    """Decorator registering a stage adapter."""
-    get_stage(name)
+def load_adapters() -> None:
+    """Import the adapter module for its registration side effects.
 
-    def _wrap(func: Callable[[Path, dict[str, Any]], None]) -> Callable[..., None]:
-        ADAPTERS[name] = func
-        return func
+    By name rather than as a plain top-level import, because the import exists only for its side
+    effects and a bare one reads as unused to a linter — and inline suppressions are banned
+    house-wide.
+    """
+    importlib.import_module("dr2_podcast.adapters")
 
-    return _wrap
+
+def runnable_stage_names() -> tuple[str, ...]:
+    """Stages that are both separable and have an adapter — i.e. that would actually run."""
+    load_adapters()
+    return tuple(name for name in AVAILABLE_STAGE_NAMES if name in ADAPTERS)
 
 
 def write_run_config(run_dir: Path, *, topic: str, language: str, target_length_minutes: int) -> dict[str, Any]:
@@ -154,6 +143,7 @@ def _guard_inputs(run_dir: Path, name: str, manifest: Manifest, fingerprint: str
 
 
 def _resolve(name: str) -> None:
+    load_adapters()
     stage = get_stage(name)
     if not stage.available:
         raise StageError(f"stage {name!r} is not separable yet — {stage.unavailable_reason}")
@@ -262,6 +252,7 @@ def _print_status(run_dir: Path) -> int:
     path = run_dir / RUN_CONFIG_ARTIFACT
     run_config = read_json_strict(path, schema="run_config") if path.exists() else None
     fingerprint = config_fingerprint(run_config=run_config)
+    load_adapters()
     for name in AVAILABLE_STAGE_NAMES:
         current = "current" if manifest.is_current(name, config_sha256=fingerprint) else "not current"
         reason = manifest.record_for(name).get("stale_reason") or ""

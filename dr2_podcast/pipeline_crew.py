@@ -240,6 +240,19 @@ class CrewBuildConfig:
     link_validator: Any
 
 
+def _task_output_file(path) -> str:
+    """CrewAI's ``output_file``, as a path CrewAI will accept.
+
+    ``os.path.relpath`` is fine while the run directory sits under the working directory, which is
+    always true for the monolithic runner. It is NOT true for a staged run: ``python -m
+    dr2_podcast.stage --run /somewhere/else`` produces ``../../../somewhere/else/...``, and CrewAI
+    rejects any output_file containing a traversal outright. Absolute paths are accepted, so the
+    relative form is used only when it is genuinely relative.
+    """
+    relative = os.path.relpath(path)
+    return str(path) if relative.startswith("..") else relative
+
+
 def create_agents_and_tasks(cfg: CrewBuildConfig):
     """Construct all CrewAI Agents and Tasks.
 
@@ -467,7 +480,7 @@ def create_agents_and_tasks(cfg: CrewBuildConfig):
             f"evidence criteria, search directions, and hypotheses. {english_instruction}"
         ),
         agent=framing_agent,
-        output_file=os.path.relpath(output_path_fn(output_dir, "research_framing.md")),
+        output_file=_task_output_file(output_path_fn(output_dir, "research_framing.md")),
     )
 
     # Build channel intro directive for script
@@ -712,7 +725,7 @@ def create_agents_and_tasks(cfg: CrewBuildConfig):
         ),
         agent=auditor_agent,
         context=[polish_task],
-        output_file=os.path.relpath(output_path_fn(output_dir, "accuracy_audit.md")),
+        output_file=_task_output_file(output_path_fn(output_dir, "accuracy_audit.md")),
     )
 
     # --- Audience context for blueprint & script prompts ---
@@ -854,7 +867,7 @@ def create_agents_and_tasks(cfg: CrewBuildConfig):
         ),
         agent=producer_agent,
         context=[],
-        output_file=os.path.relpath(output_path_fn(output_dir, "EPISODE_BLUEPRINT.md")),
+        output_file=_task_output_file(output_path_fn(output_dir, "EPISODE_BLUEPRINT.md")),
     )
 
     # --- CONTEXT CHAIN: script_task always depends on blueprint_task ---

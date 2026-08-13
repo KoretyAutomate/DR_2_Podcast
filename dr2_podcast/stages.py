@@ -19,11 +19,35 @@ rather than omitting them keeps the target shape visible and makes the CLI's ref
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 #: Where the legacy monolithic runner and the staged runner each record themselves. Separate files
 #: so the two modes cannot collide on filenames while both are live (PLAN.md sequencing item 1).
 MANIFEST_FILENAMES = {"staged": "meta/manifest.json", "legacy": "meta/manifest_legacy.json"}
+
+
+#: stage name -> callable(run_dir, run_config) -> None. A stage writes its own artifacts; the runner
+#: hashes and records them afterwards from the graph's declaration.
+#:
+#: It lives HERE rather than in the runner for a reason that is not stylistic: `python -m
+#: dr2_podcast.stage` executes that file as `__main__`, and an adapter module importing
+#: `dr2_podcast.stage` gets a SECOND module object with its own registry — so registrations landed
+#: somewhere the running process could not see. A registry in this module is one dict either way.
+ADAPTERS: dict[str, Callable[[Path, dict[str, Any]], None]] = {}
+
+
+def register(name: str) -> Callable[[Callable[[Path, dict[str, Any]], None]], Callable[..., None]]:
+    """Decorator registering a stage adapter against a declared stage."""
+
+    def _wrap(func: Callable[[Path, dict[str, Any]], None]) -> Callable[..., None]:
+        get_stage(name)
+        ADAPTERS[name] = func
+        return func
+
+    return _wrap
 
 
 @dataclass(frozen=True)
@@ -81,12 +105,16 @@ STAGES: tuple[Stage, ...] = (
             "research/search_strategy_neg.json",
             "research/screening_results_aff.json",
             "research/screening_results_neg.json",
+            # The structured reports build_imrad_sot consumes. In the monolithic flow this crosses
+            # from phase 1 to the SOT builder as a live dict; a staged run needs it on disk, and the
+            # SOT cannot be rebuilt from the rendered Markdown.
+            "meta/deep_reports.json",
         ),
         engine="smart",
     ),
     Stage(
         name="sot",
-        consumes=("research/research_sources.json", "research/grade_synthesis.md"),
+        consumes=("meta/deep_reports.json", "research/domain_classification.json"),
         produces=("research/source_of_truth.md",),
         engine="python",
     ),

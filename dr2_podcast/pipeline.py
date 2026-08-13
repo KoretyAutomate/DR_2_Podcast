@@ -1072,6 +1072,17 @@ SMART_MODEL = os.environ.get("MODEL_NAME") or None
 SMART_BASE_URL = os.environ.get("LLM_BASE_URL") or None
 
 
+class BackendUnavailable(RuntimeError):
+    """The LLM backend did not answer.
+
+    It used to be ``sys.exit(1)`` inside ``get_final_model_string``, which is fine for a script and
+    wrong for anything a library calls: ``SystemExit`` derives from ``BaseException``, so it walks
+    straight through ``except Exception`` — a staged run whose backend was down would die without
+    the stage runner ever recording the failure, leaving a manifest that says the stage is still
+    running. ``__main__`` catches this and exits 1, so the command-line behaviour is unchanged.
+    """
+
+
 def get_final_model_string():
     model = SMART_MODEL
     base_url = SMART_BASE_URL
@@ -1088,9 +1099,7 @@ def get_final_model_string():
                 logger.warning(f"Waiting for Ollama server... ({i}s) - {e}")
             time.sleep(1)
 
-    logger.error("Error: Could not connect to Ollama server. Check if it is running.")
-    logger.error("Start Ollama with: ollama serve")
-    sys.exit(1)
+    raise BackendUnavailable(f"no response from the LLM backend at {base_url} after 10 attempts")
 
 
 final_model_string = None  # initialized in __main__
@@ -1648,6 +1657,90 @@ translation_task = None
 polish_task = None
 audit_task = None
 blueprint_task = None
+
+
+def initialise_run_globals(
+    *, language_code: str, length_mode: str = "long", target_minutes: int | None = None
+) -> dict:
+    """Set the module-level run state every Crew builder reads, and return the derived locals.
+
+    Extracted verbatim from the ``__main__`` block so that a staged run —
+    ``python -m dr2_podcast.stage <name> --run <dir>``, a fresh process with no caller holding any
+    of this — can reproduce it exactly. Duplicating sixty lines of initialisation in the stage
+    adapters would guarantee they drift from the monolithic runner, and the two producing
+    different episodes from the same inputs is precisely the failure that makes a staged pipeline
+    untrustworthy.
+
+    ``topic_name``, ``SESSION_ROLES`` and ``output_dir`` are NOT set here: the caller owns them,
+    because the monolithic runner takes them from argv while a staged run reads them from
+    ``meta/run_config.json`` and the run directory it was pointed at.
+
+    ``target_minutes`` overrides the ``length_mode`` lookup. The monolithic runner selects a mode
+    from ``PODCAST_LENGTH``; a staged run carries an explicit minute count in its run config, and
+    that count is part of the stage identity, so it has to be the value that actually applies.
+    """
+    global language, language_config, english_instruction, target_instruction
+    global target_length_int, target_script, target_unit_singular, target_unit_plural
+    global channel_intro, core_target, channel_mission
+    global ACCESSIBILITY_LEVEL, accessibility_instruction
+    global dgx_llm_strict, dgx_llm_creative
+
+    language = language_code
+    language_config = SUPPORTED_LANGUAGES[language]
+    english_instruction = "Write all content in English."
+    target_instruction = language_config["instruction"]
+
+    speech_rate = language_config["speech_rate"]
+    target_minutes = target_minutes if target_minutes is not None else TARGET_MINUTES.get(
+        length_mode, TARGET_MINUTES["long"]
+    )
+    target_length_int = target_minutes * speech_rate
+    target_script = f"{target_length_int:,}"
+    target_unit_singular = language_config["prompt_unit"]
+    target_unit_plural = language_config["length_unit"]
+
+    channel_intro = os.getenv("PODCAST_CHANNEL_INTRO", "").strip()
+    core_target = os.getenv("PODCAST_CORE_TARGET", "").strip()
+    channel_mission = os.getenv("PODCAST_CHANNEL_MISSION", "").strip()
+
+    ACCESSIBILITY_LEVEL = os.getenv("ACCESSIBILITY_LEVEL", "technical").lower()
+    if ACCESSIBILITY_LEVEL not in ("simple", "moderate", "technical"):
+        logger.warning(f"Warning: Unknown ACCESSIBILITY_LEVEL '{ACCESSIBILITY_LEVEL}', falling back to 'technical'")
+        ACCESSIBILITY_LEVEL = "technical"
+    logger.info(f"Accessibility level: {ACCESSIBILITY_LEVEL}")
+    accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL][language]
+
+    smart_base_url = os.environ["LLM_BASE_URL"]
+    final_model_string = get_final_model_string()
+    dgx_llm_strict = LLM(
+        model=final_model_string,
+        base_url=smart_base_url,
+        api_key="NA",
+        provider="openai",
+        timeout=600,
+        temperature=0.1,
+        max_tokens=8000,
+        stop=["<|im_end|>", "<|endoftext|>"],
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    dgx_llm_creative = LLM(
+        model=final_model_string,
+        base_url=smart_base_url,
+        api_key="NA",
+        provider="openai",
+        timeout=600,
+        temperature=0.7,
+        max_tokens=16000,
+        frequency_penalty=0.15,
+        stop=["<|im_end|>", "<|endoftext|>"],
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    return {
+        "language_instruction": language_config["instruction"],
+        "length_mode": length_mode,
+        "target_minutes": target_minutes,
+        "duration_label": f"{length_mode.capitalize()} ({target_minutes} min)",
+    }
 
 
 def _create_agents_and_tasks():
@@ -2424,59 +2517,18 @@ if __name__ == "__main__":
     check_tts_dependencies()
 
     language = get_language(args)
-    language_config = SUPPORTED_LANGUAGES[language]
-    english_instruction = "Write all content in English."
-    target_instruction = language_config["instruction"]
-    language_instruction = language_config["instruction"]
-
-    length_mode = os.getenv("PODCAST_LENGTH", "long").lower()
-    _speech_rate = language_config["speech_rate"]
-    _target_min = TARGET_MINUTES.get(length_mode, TARGET_MINUTES["long"])
-    target_length_int = _target_min * _speech_rate
-    target_script = f"{target_length_int:,}"
-    target_unit_singular = language_config["prompt_unit"]
-    target_unit_plural = language_config["length_unit"]
-    duration_label = f"{length_mode.capitalize()} ({_target_min} min)"
-
-    channel_intro = os.getenv("PODCAST_CHANNEL_INTRO", "").strip()
-    core_target = os.getenv("PODCAST_CORE_TARGET", "").strip()
-    channel_mission = os.getenv("PODCAST_CHANNEL_MISSION", "").strip()
-
-    ACCESSIBILITY_LEVEL = os.getenv("ACCESSIBILITY_LEVEL", "technical").lower()
-    if ACCESSIBILITY_LEVEL not in ("simple", "moderate", "technical"):
-        logger.warning(f"Warning: Unknown ACCESSIBILITY_LEVEL '{ACCESSIBILITY_LEVEL}', falling back to 'technical'")
-        ACCESSIBILITY_LEVEL = "technical"
-    logger.info(f"Accessibility level: {ACCESSIBILITY_LEVEL}")
-    accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL][language]
-
-    SMART_MODEL = os.environ["MODEL_NAME"]
-    SMART_BASE_URL = os.environ["LLM_BASE_URL"]
-
-    final_model_string = get_final_model_string()
-
-    dgx_llm_strict = LLM(
-        model=final_model_string,
-        base_url=SMART_BASE_URL,
-        api_key="NA",
-        provider="openai",
-        timeout=600,
-        temperature=0.1,
-        max_tokens=8000,
-        stop=["<|im_end|>", "<|endoftext|>"],
-        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-    )
-    dgx_llm_creative = LLM(
-        model=final_model_string,
-        base_url=SMART_BASE_URL,
-        api_key="NA",
-        provider="openai",
-        timeout=600,
-        temperature=0.7,
-        max_tokens=16000,
-        frequency_penalty=0.15,
-        stop=["<|im_end|>", "<|endoftext|>"],
-        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-    )
+    try:
+        _init = initialise_run_globals(
+            language_code=language, length_mode=os.getenv("PODCAST_LENGTH", "long").lower()
+        )
+    except BackendUnavailable as exc:
+        logger.error("Error: %s", exc)
+        logger.error("Check that vLLM is running: bash start_vllm_docker.sh")
+        sys.exit(1)
+    language_instruction = _init["language_instruction"]
+    length_mode = _init["length_mode"]
+    _target_min = _init["target_minutes"]
+    duration_label = _init["duration_label"]
 
     # Construct all Agent/Task objects with correct runtime values
     logger.info(f"Podcast Length Mode: {duration_label}")

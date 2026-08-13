@@ -103,7 +103,9 @@ def test_no_two_stages_claim_the_same_output() -> None:
 
 
 def test_downstream_is_transitive_and_ordered() -> None:
-    assert direct_consumers("framing") == ("research",)
+    # Two consumers, not one: `sot` reads research/domain_classification.json for the framework it
+    # renders under, so framing feeds it directly as well as through research.
+    assert direct_consumers("framing") == ("research", "sot")
     chain = downstream_of("framing")
     assert {"research", "sot", "blueprint", "draft", "polish", "audit", "audio"} <= set(chain)
     assert chain.index("draft") < chain.index("polish") < chain.index("audit")
