@@ -161,6 +161,52 @@ def test_rerunning_a_stage_reports_what_it_made_stale(run_dir: Path) -> None:
     assert Manifest.load(run_dir).status("research") == "stale"
 
 
+# prepush codex 2026-08-12 [P1]: currency did not include the run config, so rewriting --topic on
+# an existing run left every stage "current" and the runner skipped them — leaving artifacts about
+# the old topic beside a config file describing the new one.
+def test_changing_the_topic_makes_completed_stages_not_current(run_dir: Path) -> None:
+    calls = _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    assert len(calls) == 1
+
+    write_run_config(run_dir, topic="まったく別の話題", language="ja", target_length_minutes=25)
+    assert "complete" in run_stage(run_dir, "framing")
+    assert len(calls) == 2, "a stage completed for a different topic is not current for this one"
+
+
+def test_rewriting_the_run_config_unchanged_does_not_invalidate(run_dir: Path) -> None:
+    """created_at moves on every rewrite; only the semantic fields are part of identity."""
+    calls = _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    write_run_config(run_dir, topic="ビタミンDと骨折", language="ja", target_length_minutes=25)
+    assert "skipped" in run_stage(run_dir, "framing")
+    assert len(calls) == 1
+
+
+# prepush codex 2026-08-12 [P1]: existence is not currency. After a config change every upstream
+# record stops being current without any file disappearing, so a downstream stage would consume
+# artifacts built under the old configuration and record itself complete under the new one.
+def test_a_stage_refuses_to_consume_outputs_of_a_stage_that_is_not_current(run_dir: Path) -> None:
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    research_calls = _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
+
+    write_run_config(run_dir, topic="別の話題", language="ja", target_length_minutes=25)
+    with pytest.raises(StageError, match="are not current"):
+        run_stage(run_dir, "research")
+    assert research_calls == []
+
+
+def test_force_consumes_the_artifacts_as_they_stand(run_dir: Path) -> None:
+    """The escape hatch is explicit and named, not a silent default."""
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    research_calls = _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
+    write_run_config(run_dir, topic="別の話題", language="ja", target_length_minutes=25)
+    run_stage(run_dir, "research", force=True)
+    assert len(research_calls) == 1
+
+
 def test_a_failing_adapter_records_the_failure_and_reraises(run_dir: Path) -> None:
     def _explode(run_dir: Path, run_config: dict[str, Any]) -> None:
         raise RuntimeError("vLLM unreachable")
@@ -179,6 +225,20 @@ def test_a_stage_that_does_not_write_what_it_promised_fails_closed(run_dir: Path
     _stub("framing", {"research/research_framing.md": "# only one of two outputs\n"})
     with pytest.raises(ArtifactError, match="declared it produces"):
         run_stage(run_dir, "framing")
+
+
+# prepush codex 2026-08-12 [P2]: output hashing used to happen outside the failure handler, so an
+# adapter that returned normally without writing what it declared left "running" on disk with no
+# failed attempt — a stage reported as live after the process had exited.
+def test_a_broken_output_contract_is_persisted_as_a_failure_not_left_running(run_dir: Path) -> None:
+    _stub("framing", {"research/research_framing.md": "# only one of two outputs\n"})
+    with pytest.raises(ArtifactError):
+        run_stage(run_dir, "framing")
+
+    persisted = Manifest.load(run_dir)
+    assert persisted.status("framing") == "failed"
+    assert "declared it produces" in persisted.record_for("framing")["stale_reason"]
+    assert persisted.record_for("framing")["attempts"][-1]["outcome"] == "failed"
 
 
 def test_leftover_candidates_are_cleared_before_a_stage_runs(run_dir: Path) -> None:

@@ -32,10 +32,17 @@ MANIFEST_SCHEMA_VERSION = 1
 
 #: Settings whose value changes what a stage would produce. `.env` or model changes count as input
 #: changes (PLAN.md Step 8), so they are hashed into every stage's identity rather than ignored.
+#:
+#: These are attribute names on :mod:`dr2_podcast.config`, NOT the environment variables behind
+#: them, and the two differ: ``LLM_BASE_URL`` in ``.env`` is exposed as ``SMART_BASE_URL``
+#: (``config.py:10``). Naming the env var here would hash ``None`` forever and quietly invalidate
+#: nothing, so ``test_every_identity_key_exists_on_config`` pins every name against the module.
 CONFIG_IDENTITY_KEYS = (
     "SMART_MODEL",
-    "LLM_BASE_URL",
+    "SMART_BASE_URL",
     "TTS_ENGINE_JA",
+    "TTS_ENGINE_EN",
+    "TTS_API_URL",
     "VLLM_MAX_CONCURRENCY",
 )
 
@@ -45,18 +52,34 @@ def manifest_errors(manifest: dict[str, Any]) -> list[str]:
     return schema_errors("manifest", manifest)
 
 
-def config_fingerprint(values: dict[str, Any] | None = None) -> str:
-    """sha256 over the settings that change what a stage would produce.
+#: Fields of ``meta/run_config.json`` that change what a stage would produce. ``created_at`` and
+#: ``notes`` are excluded on purpose: rewriting the file with the same parameters must not
+#: invalidate work, and a timestamp changes on every rewrite.
+RUN_CONFIG_IDENTITY_KEYS = ("topic", "language", "target_length_minutes")
+
+
+def config_fingerprint(
+    values: dict[str, Any] | None = None,
+    run_config: dict[str, Any] | None = None,
+) -> str:
+    """sha256 over everything that changes what a stage would produce.
 
     Reads :mod:`dr2_podcast.config` when given nothing, so callers do not have to assemble it, but
     accepts an explicit mapping so tests never depend on the machine's ``.env``.
+
+    ``run_config`` belongs in here for the same reason the model does. Without it, rewriting
+    ``meta/run_config.json`` with a new ``--topic`` leaves every completed stage "current", so the
+    runner skips them and the run ends up with artifacts about the old topic and a config file
+    describing the new one.
     """
     if values is None:
         from dr2_podcast import config
 
         values = {key: getattr(config, key, None) for key in CONFIG_IDENTITY_KEYS}
-    joined = "\x1f".join(f"{key}={values.get(key)!r}" for key in sorted(values))
-    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+    parts = [f"{key}={values.get(key)!r}" for key in sorted(values)]
+    if run_config is not None:
+        parts += [f"run.{key}={run_config.get(key)!r}" for key in RUN_CONFIG_IDENTITY_KEYS]
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 
 def _now() -> str:

@@ -77,13 +77,36 @@ def load_run_config(run_dir: Path) -> dict[str, Any]:
     return read_json_strict(path, schema="run_config")
 
 
-def _guard_inputs(run_dir: Path, name: str) -> None:
+def _guard_inputs(run_dir: Path, name: str, manifest: Manifest, fingerprint: str, *, force: bool) -> None:
+    """Inputs must exist AND the stages that wrote them must be current.
+
+    Existence alone is not enough, and the gap is not hypothetical: change the model and every
+    upstream record stops being current *without any file disappearing*, so a downstream stage
+    would consume artifacts built under the old configuration and then record itself complete
+    under the new one — a run whose manifest says it is coherent when it is not.
+
+    ``--force`` bypasses the currency half, because the honest reading of "these inputs are what I
+    want" is a decision a human can make; it does not bypass existence.
+    """
+    from dr2_podcast.stages import direct_producers, producer_of
+
     missing = [a for a in get_stage(name).consumes if not (run_dir / a).exists()]
     if missing:
-        from dr2_podcast.stages import producer_of
-
         detail = ", ".join(f"{a} (run stage {producer_of(a)!r})" for a in missing)
         raise StageError(f"stage {name!r} cannot run: missing input(s) {detail}")
+    if force:
+        return
+    stale = [
+        producer
+        for producer in direct_producers(name)
+        if not manifest.is_current(producer, config_sha256=fingerprint)
+    ]
+    if stale:
+        raise StageError(
+            f"stage {name!r} cannot run: producer stage(s) {', '.join(sorted(stale))} are not current, "
+            f"so their artifacts on disk are not what this configuration would produce. Re-run them, "
+            f"or pass --force to consume the artifacts as they stand."
+        )
 
 
 def _resolve(name: str) -> None:
@@ -107,13 +130,15 @@ def run_stage(run_dir: Path, name: str, *, force: bool = False) -> str:
     _resolve(name)
     removed = clear_candidates(run_dir)
     manifest = Manifest.load(run_dir)
-    fingerprint = config_fingerprint()
+    # The run config is read BEFORE the currency check because it is part of currency: a stage
+    # completed for a different topic is not current for this one.
+    run_config = load_run_config(run_dir)
+    fingerprint = config_fingerprint(run_config=run_config)
 
     if manifest.is_current(name, config_sha256=fingerprint) and not force:
         return f"{name}: already current, skipped (use --force to re-run)"
 
-    _guard_inputs(run_dir, name)
-    run_config = load_run_config(run_dir)
+    _guard_inputs(run_dir, name, manifest, fingerprint, force=force)
 
     from dr2_podcast import config as app_config
 
@@ -121,13 +146,16 @@ def run_stage(run_dir: Path, name: str, *, force: bool = False) -> str:
     manifest.save()
     try:
         ADAPTERS[name](run_dir, run_config)
+        manifest.record_attempt(name, "complete")
+        # Output hashing is inside the try on purpose: an adapter that returns normally without
+        # writing what it declared raises here, and if that escaped the handler the manifest left
+        # on disk would still say "running" — a stage reported as live after the process exited.
+        staled = manifest.complete(name)
     except Exception as exc:
         manifest.record_attempt(name, "failed", str(exc)[:200])
         manifest.fail(name, str(exc)[:200])
         manifest.save()
         raise
-    manifest.record_attempt(name, "complete")
-    staled = manifest.complete(name)
     manifest.save()
 
     note = f" (cleared {len(removed)} stale candidate(s))" if removed else ""
@@ -153,7 +181,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _print_status(run_dir: Path) -> int:
     manifest = Manifest.load(run_dir)
-    fingerprint = config_fingerprint()
+    path = run_dir / RUN_CONFIG_ARTIFACT
+    run_config = read_json_strict(path, schema="run_config") if path.exists() else None
+    fingerprint = config_fingerprint(run_config=run_config)
     for name in AVAILABLE_STAGE_NAMES:
         current = "current" if manifest.is_current(name, config_sha256=fingerprint) else "not current"
         reason = manifest.record_for(name).get("stale_reason") or ""

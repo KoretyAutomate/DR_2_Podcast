@@ -382,3 +382,38 @@ def test_config_fingerprint_is_stable_and_sensitive() -> None:
 
 def test_config_fingerprint_reads_the_real_config_without_arguments() -> None:
     assert len(config_fingerprint()) == 64
+
+
+# prepush codex 2026-08-12 [P2]: the identity list named LLM_BASE_URL, which is the ENV VAR — the
+# config module exposes it as SMART_BASE_URL (config.py:10). getattr therefore hashed None forever,
+# so changing the endpoint invalidated nothing, contradicting the module's own stated contract.
+def test_every_identity_key_exists_on_config() -> None:
+    from dr2_podcast import config
+    from dr2_podcast.manifest import CONFIG_IDENTITY_KEYS
+
+    missing = [key for key in CONFIG_IDENTITY_KEYS if not hasattr(config, key)]
+    assert not missing, f"identity keys absent from dr2_podcast.config, so they hash None: {missing}"
+
+
+def test_the_endpoint_is_part_of_identity() -> None:
+    from dr2_podcast import config
+    from dr2_podcast.manifest import CONFIG_IDENTITY_KEYS
+
+    base = {key: getattr(config, key, None) for key in CONFIG_IDENTITY_KEYS}
+    assert config_fingerprint(base) != config_fingerprint({**base, "SMART_BASE_URL": "http://elsewhere/v1"})
+
+
+def test_the_run_config_is_part_of_identity() -> None:
+    run_config = {"topic": "A", "language": "ja", "target_length_minutes": 25}
+    assert config_fingerprint(CONFIG, run_config=run_config) != config_fingerprint(CONFIG)
+    assert config_fingerprint(CONFIG, run_config=run_config) != config_fingerprint(
+        CONFIG, run_config={**run_config, "topic": "B"}
+    )
+
+
+def test_run_config_bookkeeping_fields_are_not_part_of_identity() -> None:
+    """Rewriting the file with the same parameters must not invalidate completed work."""
+    run_config = {"topic": "A", "language": "ja", "target_length_minutes": 25}
+    assert config_fingerprint(CONFIG, run_config=run_config) == config_fingerprint(
+        CONFIG, run_config={**run_config, "created_at": "2026-08-12T00:00:00+09:00", "notes": "hi"}
+    )
