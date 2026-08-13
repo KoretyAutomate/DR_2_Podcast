@@ -252,6 +252,44 @@ def test_leftover_candidates_are_cleared_before_a_stage_runs(run_dir: Path) -> N
 # --------------------------------------------------------------------------- #
 # The command line
 # --------------------------------------------------------------------------- #
+# prepush codex 2026-08-12 [P1]: `sot` and `url_validation` are independent branches, so two
+# stages against one run is a real shape. Both would load the manifest, both would save a private
+# copy, and the later save would erase the other's status — and they share manifest.json.candidate.
+def test_a_second_stage_refuses_while_another_holds_the_run(run_dir: Path) -> None:
+    _stub("framing", FRAMING_OUTPUTS)
+    with stage_mod.run_lock(run_dir), pytest.raises(StageError, match="another stage is already running"):
+        run_stage(run_dir, "framing")
+
+
+def test_the_lock_is_released_afterwards(run_dir: Path) -> None:
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    with stage_mod.run_lock(run_dir):
+        pass  # acquiring again must not raise
+
+
+def test_the_lock_is_released_even_when_a_stage_fails(run_dir: Path) -> None:
+    def _explode(run_dir: Path, run_config: dict[str, Any]) -> None:
+        raise RuntimeError("boom")
+
+    stage_mod.ADAPTERS["framing"] = _explode
+    with pytest.raises(RuntimeError):
+        run_stage(run_dir, "framing")
+    with stage_mod.run_lock(run_dir):
+        pass
+
+
+# prepush codex 2026-08-12 [P2]: SchemaValidationError was not in the CLI's handled set, so an
+# invalid --topic produced a traceback instead of the intended ERROR line and exit code.
+def test_cli_reports_a_schema_violation_instead_of_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    (tmp_path / "meta").mkdir()
+    _stub("framing", FRAMING_OUTPUTS)
+    assert main(["framing", "--run", str(tmp_path), "--topic", "", "--language", "ja"]) == 1
+    assert "ERROR" in capsys.readouterr().err
+
+
 def test_cli_runs_a_stage_and_exits_zero(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     assert main(["framing", "--run", str(run_dir)]) == 0

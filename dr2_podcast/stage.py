@@ -21,14 +21,17 @@ faked here: an unregistered stage says exactly what it needs rather than pretend
 from __future__ import annotations
 
 import argparse
+import fcntl
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from dr2_podcast.artifacts import ArtifactError, clear_candidates, read_json_strict, write_json_atomic
 from dr2_podcast.manifest import Manifest, config_fingerprint
+from dr2_podcast.schemas import SchemaValidationError
 from dr2_podcast.stages import AVAILABLE_STAGE_NAMES, get_stage
 
 RUN_CONFIG_ARTIFACT = "meta/run_config.json"
@@ -40,6 +43,35 @@ ADAPTERS: dict[str, Callable[[Path, dict[str, Any]], None]] = {}
 
 class StageError(RuntimeError):
     """Raised instead of proceeding. Every guard in this module fails closed."""
+
+
+LOCK_ARTIFACT = "meta/.stage.lock"
+
+
+@contextmanager
+def run_lock(run_dir: Path) -> Iterator[None]:
+    """Serialise everything that touches one run's manifest.
+
+    The manifest is a read-modify-write of a single file. Two stages running concurrently against
+    one run — `sot` and `url_validation` are independent branches, so this is a real shape, not a
+    hypothetical — would each load it, each save their private copy, and the later save would erase
+    the other's status and attempts. They would also share `manifest.json.candidate`, and one
+    process's `clear_candidates()` would delete the other's live candidate mid-write.
+
+    Non-blocking on purpose: waiting silently on a lock held by a run that may last 40 minutes is
+    worse than saying so.
+    """
+    lock_path = run_dir / LOCK_ARTIFACT
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise StageError(
+                f"another stage is already running for {run_dir} (lock {lock_path}). "
+                f"Stages of one run are serialised because they share the manifest."
+            ) from exc
+        yield
 
 
 def register(name: str) -> Callable[[Callable[[Path, dict[str, Any]], None]], Callable[..., None]]:
@@ -128,6 +160,11 @@ def run_stage(run_dir: Path, name: str, *, force: bool = False) -> str:
     would stale everything downstream of it for no reason.
     """
     _resolve(name)
+    with run_lock(run_dir):
+        return _run_stage_locked(run_dir, name, force=force)
+
+
+def _run_stage_locked(run_dir: Path, name: str, *, force: bool) -> str:
     removed = clear_candidates(run_dir)
     manifest = Manifest.load(run_dir)
     # The run config is read BEFORE the currency check because it is part of currency: a stage
@@ -205,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_dir, topic=args.topic, language=args.language, target_length_minutes=args.target_length
             )
         print(run_stage(run_dir, args.stage, force=args.force))
-    except (StageError, ArtifactError, KeyError) as exc:
+    except (StageError, ArtifactError, SchemaValidationError, KeyError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     return 0

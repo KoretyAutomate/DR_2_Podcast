@@ -191,6 +191,24 @@ def test_read_text_strict_refuses_an_empty_artifact(tmp_path: Path) -> None:
         read_text_strict(path)
 
 
+# prepush codex 2026-08-12 [P2]: fsyncing the candidate persists its CONTENTS; the directory entry
+# created by os.replace is separate metadata, so without a directory fsync a power loss right after
+# the rename can leave the target missing — making the stated crash-safety contract untrue.
+def test_the_rename_itself_is_made_durable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os as os_module
+
+    synced: list[str] = []
+    real_fsync = os_module.fsync
+
+    def _record(fd: int) -> None:
+        synced.append("dir" if os_module.fstat(fd).st_mode & 0o040000 else "file")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os_module, "fsync", _record)
+    write_atomic(tmp_path / "a.md", "durable")
+    assert synced == ["file", "dir"], "the contents and the directory entry both have to be synced"
+
+
 def test_leftover_candidates_are_removed_not_recovered(run_dir: Path) -> None:
     """A candidate means a run died between writing and renaming. It is never a valid artifact."""
     stray = run_dir / "research" / "sot.md.candidate"

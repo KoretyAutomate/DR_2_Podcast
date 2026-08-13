@@ -31,6 +31,21 @@ from dr2_podcast.schemas._loading import loads_strict
 CANDIDATE_SUFFIX = ".candidate"
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Make the rename itself durable.
+
+    fsyncing the candidate persists its CONTENTS; the directory entry created by ``os.replace`` is
+    separate metadata. Without this, a power loss immediately after the rename can leave the target
+    missing or reverted — which would make this module's crash-safety contract another claim the
+    code does not honour.
+    """
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 class ArtifactError(RuntimeError):
     """Raised instead of degrading. Every path in this module fails closed."""
 
@@ -76,6 +91,7 @@ def write_atomic(
         if validate is not None:
             validate(payload)
         os.replace(candidate, path)
+        _fsync_directory(path.parent)
     except Exception:
         candidate.unlink(missing_ok=True)
         raise
