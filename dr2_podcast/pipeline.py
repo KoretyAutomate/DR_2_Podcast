@@ -1758,8 +1758,17 @@ def research_sources_file(run_dir=None):
     The monolithic phase edits in place, so for it both names resolve to the same content.
     """
     directory = run_dir if run_dir is not None else output_dir
+    raw = output_path(directory, "research_sources.json")
     validated = output_path(directory, "research_sources_validated.json")
-    return validated if validated.exists() else output_path(directory, "research_sources.json")
+    if not validated.exists():
+        return raw
+    # Only while it is no older than the library it was filtered FROM. The legacy runner regenerates
+    # research_sources.json in place during phase 1 and knows nothing about the validated copy, so a
+    # run directory that had once been driven by stages would otherwise keep serving sources from
+    # the previous research result — silently, to the tools the blueprint reads through.
+    if raw.exists() and raw.stat().st_mtime > validated.stat().st_mtime:
+        return raw
+    return validated
 
 
 def _create_agents_and_tasks():

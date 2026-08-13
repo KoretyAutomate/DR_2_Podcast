@@ -393,6 +393,26 @@ def test_the_agents_read_the_validated_library_when_it_exists(run_dir: Path) -> 
     assert research_sources_file(run_dir).name == "research_sources_validated.json"
 
 
+# prepush codex 2026-08-13: the legacy runner regenerates research_sources.json in place and knows
+# nothing about the validated copy, so a directory that had once been driven by stages would keep
+# serving sources from the previous research result.
+def test_a_regenerated_library_wins_over_a_stale_validated_copy(run_dir: Path) -> None:
+    import os
+
+    from dr2_podcast.pipeline import research_sources_file
+
+    validated = run_dir / "research/research_sources_validated.json"
+    raw = run_dir / "research/research_sources.json"
+    validated.write_text("{}")
+    raw.write_text("{}")
+    os.utime(validated, (1_000_000, 1_000_000))
+    os.utime(raw, (2_000_000, 2_000_000))
+    assert research_sources_file(run_dir).name == "research_sources.json"
+
+    os.utime(validated, (3_000_000, 3_000_000))
+    assert research_sources_file(run_dir).name == "research_sources_validated.json"
+
+
 def test_blueprint_declares_the_validated_library_as_an_input() -> None:
     """Declared, so producing it makes an existing blueprint stale rather than silently ignored."""
     from dr2_podcast.stages import direct_producers, get_stage
