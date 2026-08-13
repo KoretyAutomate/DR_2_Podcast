@@ -45,7 +45,7 @@ RUN_CONFIG = {"topic": "ビタミンDと骨折", "language": "ja", "target_lengt
 # Registration
 # --------------------------------------------------------------------------- #
 def test_the_adapters_register_themselves_against_declared_stages() -> None:
-    assert {"framing", "url_validation", "blueprint", "translate"} <= set(ADAPTERS)
+    assert {"framing", "url_validation", "blueprint", "translate", "audio"} <= set(ADAPTERS)
 
 
 def test_registering_an_unknown_stage_is_refused() -> None:
@@ -492,6 +492,63 @@ def test_urls_are_found_at_any_nesting_depth() -> None:
         {"a": [{"url": "u1"}], "b": {"c": {"d": [{"url": "u2"}]}}, "url": "u3", "n": None}
     )
     assert sorted(found) == ["u1", "u2", "u3"]
+
+
+# --------------------------------------------------------------------------- #
+# audio
+# --------------------------------------------------------------------------- #
+def test_audio_renders_from_the_script_on_disk(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (run_dir / "scripts/script_final.md").write_text("Host 1: hello\nHost 2: hi\n")
+    rendered = run_dir / "audio/audio_mixed.wav"
+    rendered.write_bytes(b"RIFF")
+    seen: dict[str, Any] = {}
+
+    def _fake_render(script_text: str, output_dir: Path, language_config: dict) -> tuple[Any, float]:
+        seen.update(script=script_text, output_dir=output_dir, language_config=language_config)
+        return rendered, 24.5
+
+    monkeypatch.setattr("dr2_podcast.pipeline._run_audio_pipeline", _fake_render)
+    adapters.audio(run_dir, RUN_CONFIG)
+    assert seen["script"].startswith("Host 1:")
+    assert seen["output_dir"] == run_dir
+    assert seen["language_config"]["speech_rate"]
+
+
+def test_audio_does_not_need_the_llm_backend(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rendering needs the TTS engines and the language config, not the Crews — building them would
+    make audio unrenderable whenever vLLM happens to be down."""
+
+    def _explode() -> str:
+        raise AssertionError("the audio stage must not touch the LLM backend")
+
+    monkeypatch.setattr("dr2_podcast.pipeline.get_final_model_string", _explode)
+    (run_dir / "scripts/script_final.md").write_text("Host 1: hello\n")
+    rendered = run_dir / "audio/audio_mixed.wav"
+    rendered.write_bytes(b"RIFF")
+    monkeypatch.setattr("dr2_podcast.pipeline._run_audio_pipeline", lambda *a: (rendered, 20.0))
+    adapters.audio(run_dir, RUN_CONFIG)
+
+
+def test_audio_fails_closed_when_nothing_was_rendered(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The phase logs a warning and returns, so a run reaches its terminal state with no audio."""
+    (run_dir / "scripts/script_final.md").write_text("Host 1: hello\n")
+    monkeypatch.setattr("dr2_podcast.pipeline._run_audio_pipeline", lambda *a: (None, None))
+    with pytest.raises(ArtifactError, match="produced no file"):
+        adapters.audio(run_dir, RUN_CONFIG)
+
+
+def test_audio_fails_closed_on_a_zero_duration_render(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (run_dir / "scripts/script_final.md").write_text("Host 1: hello\n")
+    rendered = run_dir / "audio/audio_mixed.wav"
+    rendered.write_bytes(b"RIFF")
+    monkeypatch.setattr("dr2_podcast.pipeline._run_audio_pipeline", lambda *a: (rendered, None))
+    with pytest.raises(ArtifactError, match="no duration"):
+        adapters.audio(run_dir, RUN_CONFIG)
+
+
+def test_audio_fails_closed_without_a_final_script(run_dir: Path) -> None:
+    with pytest.raises(ArtifactError, match="cannot read"):
+        adapters.audio(run_dir, RUN_CONFIG)
 
 
 # --------------------------------------------------------------------------- #

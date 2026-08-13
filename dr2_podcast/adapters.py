@@ -306,6 +306,34 @@ def blueprint(run_dir: Path, run_config: dict[str, Any]) -> None:
     write_json_atomic(run_dir / "meta/blueprint_inventory.json", _parse_blueprint_inventory(raw))
 
 
+@register("audio")
+def audio(run_dir: Path, run_config: dict[str, Any]) -> None:
+    """Phase 8 — TTS and the BGM mix. Python plus the TTS engines, no Crew.
+
+    Reads the final script from disk, which the phase received as an argument. It does not call
+    :func:`_prepare_run`: the audio path needs ``output_dir`` and the language config, not the LLM
+    handles or any Crew, and building them would make audio unrenderable whenever vLLM is down.
+
+    ``_run_audio_pipeline`` returns ``(None, None)`` when it fails and the phase only logs a
+    warning, so a run could reach its terminal state with no audio and nothing saying the run had
+    failed. This raises.
+    """
+    from dr2_podcast import pipeline
+    from dr2_podcast.artifacts import read_text_strict
+
+    script = read_text_strict(run_dir / "scripts/script_final.md")
+    pipeline.output_dir = run_dir
+    language_config = pipeline.SUPPORTED_LANGUAGES[run_config["language"]]
+    audio_file, duration_minutes = pipeline._run_audio_pipeline(script, run_dir, language_config)
+    if not audio_file or not Path(audio_file).exists():
+        raise ArtifactError(
+            "audio generation produced no file. The monolithic phase logs a warning and returns, "
+            "so a run reaches its terminal state with no audio and nothing saying it failed."
+        )
+    if not duration_minutes:
+        raise ArtifactError(f"{audio_file} was written but reports no duration; treat that as a failed render")
+
+
 # NOT HERE: an adapter for the `sot` stage. It was written, and then removed, because writing it
 # proved its input artifact cannot exist in the form assumed.
 #
@@ -329,4 +357,4 @@ def registered() -> tuple[str, ...]:
     return tuple(sorted(ADAPTERS))
 
 
-__all__ = ["blueprint", "framing", "registered", "translate", "url_validation"]
+__all__ = ["audio", "blueprint", "framing", "registered", "translate", "url_validation"]
