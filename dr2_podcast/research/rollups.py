@@ -42,6 +42,9 @@ class ReplicationGroup:
     #: Papers reporting this finding whose author group could not be read. They are counted as
     #: studies but cannot count as INDEPENDENT ones, which is a different thing and is said so.
     unattributed: int = 0
+    #: How many papers reported this finding at all, registered or not. Needed to tell "everyone
+    #: named the same trial" from "one paper named a trial and the others named nothing".
+    reports: int = 0
 
     @property
     def independent_groups(self) -> int:
@@ -71,8 +74,11 @@ class ReplicationGroup:
             return "not_replicated"
         if self.distinct_cohorts >= 2:
             return "replicated"
-        if self.distinct_cohorts == 1:
-            # Every report names the same trial. One trial reported twice is one trial.
+        if self.distinct_cohorts == 1 and len(self.registrations) == self.reports:
+            # EVERY report names it, and they all name the same one. One trial reported twice is one
+            # trial. If some report named nothing, overlap is unknown rather than proven — asserting
+            # "not replicated" there states a negative the records do not support (prepush codex
+            # 2026-08-13, the second half of the same defect).
             return "not_replicated"
         return "cohorts_unknown"
 
@@ -116,6 +122,7 @@ def replication_groups(extractions) -> list[ReplicationGroup]:
                     direction=finding.direction or "",
                 ),
             )
+            group.reports += 1
             if author_group:
                 group.author_groups.append(author_group)
             else:

@@ -161,6 +161,43 @@ def _funding_cell(ext) -> str:
     return f"{(funding.funding_raw or '')[:30]} — {funding.funding_category}{flag}"
 
 
+def _format_rollups(extractions: list, grade_record: dict | None) -> str:
+    """Funding, replication and bias over the whole extracted set, as n of N.
+
+    Rendered from the same functions the step pack projects, so the document and the projection
+    cannot disagree about what they counted. Every line names its denominator, and `unknown` is
+    stated rather than folded away — a rollup whose denominator quietly shrinks turns a missing
+    disclosure into silence, which is the opposite of what Ep09's thesis needs it to do.
+    """
+    from dr2_podcast.research.rollups import bias_rollup, funding_rollup, replication_rollup
+
+    if not extractions:
+        return ""
+    funding = funding_rollup(extractions)
+    replication = replication_rollup(extractions)
+    bias = bias_rollup(extractions, grade_record)
+    total = funding["studies_total"]
+
+    named = [f"{name} {count}" for name, count in funding["by_category"].items() if count]
+    lines = [
+        "\n#### Funding, replication and bias (aggregate)\n",
+        f"- Funding, n={total}: {', '.join(named) if named else 'nothing extracted'}"
+        f" — undisclosed {funding['undisclosed']}, unknown {funding['unknown']},"
+        f" API-sourced and unverifiable against the paper {funding['from_api_metadata_unverified']}\n",
+        f"- Replication, {replication['findings_total']} distinct finding(s):"
+        f" {replication['findings_replicated']} reproduced by two or more independent groups on"
+        f" separate cohorts; {replication['findings_cohorts_unknown']} reported by two or more groups"
+        f" whose cohorts cannot be told apart; {replication['findings_single_group']} reported once\n",
+        f"- Risk of bias, n={bias['studies_total']}: "
+        + ", ".join(f"{name} {count}" for name, count in bias["risk_of_bias"].items())
+        + "\n",
+    ]
+    if bias["grade_downgrades"]:
+        spelled = ", ".join(f"{domain} −{steps}" for domain, steps in bias["grade_downgrades"].items())
+        lines.append(f"- GRADE downgraded for: {spelled}\n")
+    return "".join(lines)
+
+
 def _format_references(extractions: list, wide_net_records: list) -> str:
     """Build a numbered reference list from extraction metadata enriched by WideNetRecords."""
     wnr_by_pmid = {r.pmid: r for r in wide_net_records if r.pmid}
@@ -736,6 +773,10 @@ def _imrad_results(c: _ImradCtx) -> list[str]:
     # 3.2 Study Characteristics
     out.append(t(tmpl, "results", "study_chars_header"))
     out.append(_format_study_characteristics_table(c.all_extractions))
+    # The aggregates the table's own columns cannot state (PLAN.md Step 9b item 3). Per-study
+    # funding and bias have always been in the table above; "14 of 20 industry-funded, 5
+    # undisclosed" is a different fact, and it is the one steps 5 and 8 ask for.
+    out.append(_format_rollups(c.all_extractions, c.pd.get("grade_record")))
 
     # 3.3 Clinical Impact
     out += _imrad_clinical_impact(c)

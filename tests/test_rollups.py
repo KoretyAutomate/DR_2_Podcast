@@ -125,6 +125,29 @@ def test_one_group_with_no_registration_is_simply_not_replicated() -> None:
     assert group.status == "not_replicated"
 
 
+# prepush codex 2026-08-13 [P2], the other half: with one paper registered and one not,
+# distinct_cohorts is 1, and reading that as "they all named the same trial" states a negative the
+# records do not support. Overlap is unknown unless EVERY report names a registration.
+def test_one_registered_report_and_one_unregistered_is_unknown_not_a_negative() -> None:
+    studies = [
+        _study(group="Tanaka H; Osaka", registration="NCT01"),
+        _study(group="Smith J; Yale", registration=None),
+    ]
+    [group] = replication_groups(studies)
+    assert group.distinct_cohorts == 1
+    assert group.status == "cohorts_unknown"
+
+
+def test_every_report_naming_the_same_trial_is_still_a_negative() -> None:
+    """The control: when all of them name it, one trial reported twice really is one trial."""
+    studies = [
+        _study(group="Tanaka H; Osaka", registration="NCT01"),
+        _study(group="Smith J; Yale", registration="NCT01"),
+    ]
+    [group] = replication_groups(studies)
+    assert group.status == "not_replicated"
+
+
 def test_a_paper_with_no_author_group_is_counted_but_not_as_independent() -> None:
     """'We could not tell' is not 'it was not replicated', and the rollup names it separately."""
     studies = [_study(group=None, registration="NCT01"), _study(group=None, registration="NCT02")]
@@ -250,3 +273,53 @@ def test_an_unreadable_design_is_counted_as_unreadable() -> None:
     answer = design_rollup([_study(design="parallel RCT"), _study(design="???")])
     assert answer["unreadable"] == 1
     assert answer["highest_rung"] == "rct", "one unreadable design does not lower the base"
+
+
+# --------------------------------------------------------------------------- #
+# What the SOT says out loud
+# --------------------------------------------------------------------------- #
+# PLAN.md Step 9b item 3: §4.1's per-study Funding and Bias Risk columns have always been there;
+# "14 of 20 industry-funded, 5 undisclosed" is a different fact, and it is the one steps 5 and 8 ask
+# for. Rendered from the same functions the step pack projects, so document and projection cannot
+# disagree about what they counted.
+def test_the_sot_states_the_aggregates_with_their_denominators() -> None:
+    from dr2_podcast.pipeline_sot import _format_rollups
+
+    studies = [
+        _study(group="Tanaka H; Osaka", registration="NCT01", category="industry"),
+        _study(group="Smith J; Yale", registration="NCT02", category="undisclosed", bias="high"),
+    ]
+    rendered = _format_rollups(studies, None)
+
+    assert "n=2" in rendered
+    assert "industry 1" in rendered and "undisclosed 1" in rendered
+    assert "undisclosed 1, unknown 0" in rendered, "the two states are stated apart"
+    assert "1 reproduced by two or more independent groups" in rendered
+    assert "low 1, some concerns 0, high 1, unclear 0" in rendered
+
+
+def test_the_sot_names_the_unverifiable_share_of_its_funding_rollup() -> None:
+    from dr2_podcast.pipeline_sot import _format_rollups
+
+    rendered = _format_rollups([_study(group="A", registration="NCT01")], None)
+    assert "API-sourced and unverifiable against the paper 1" in rendered
+
+
+def test_the_sot_spells_out_what_grade_downgraded_for() -> None:
+    from dr2_podcast.pipeline_sot import _format_rollups
+
+    record = {
+        "schema_version": 1, "level": "low", "upgrades": [],
+        "downgrades": [{"domain": "imprecision", "steps": 2, "reason": "r",
+                        "locator": {"fields": ["reason"], "source_artifact_id": "a",
+                                    "char_offset": 0, "quoted_span": "x"}}],
+    }
+    rendered = _format_rollups([_study(group="A", registration="NCT01")], record)
+    assert "GRADE downgraded for: imprecision" in rendered
+
+
+def test_no_studies_means_no_rollup_block_at_all() -> None:
+    """Rather than a section of zeroes, which reads as a measured result."""
+    from dr2_podcast.pipeline_sot import _format_rollups
+
+    assert _format_rollups([], None) == ""
