@@ -247,6 +247,20 @@ DERIVED_MUTATIONS: list[tuple[str, dict[str, Any], str]] = [
         "must be",
     ),
     ("null_result_where_the_operation_is_defined", _derived("negate", {"value": 0.05}, None), "is defined"),
+    # prepush codex 2026-08-12: transposed bounds made `ci_low <= null <= ci_high` false whatever
+    # the null was, so `ci_excludes_null: true` was certified off a malformed interval.
+    (
+        "transposed_confidence_interval",
+        _derived("ci_excludes_null", {"ci_low": 8.0, "ci_high": 2.0, "null_value": 0}, True,
+                 constants=("null_value",)),
+        "outside its domain",
+    ),
+    (
+        "transposed_interval_including_null",
+        _derived("ci_includes_null", {"ci_low": 2.8, "ci_high": -0.4, "null_value": 0}, True,
+                 constants=("null_value",)),
+        "outside its domain",
+    ),
     ("odds_ratio_out_of_domain", _derived("odds_ratio_to_d", {"odds_ratio": -1.0}, 0.0), "outside its domain"),
     ("correlation_out_of_domain", _derived("r_to_d", {"r": 1.0}, 0.0), "outside its domain"),
     (

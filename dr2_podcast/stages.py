@@ -66,7 +66,11 @@ STAGES: tuple[Stage, ...] = (
     Stage("grade", (), (), "claude", available=False, unavailable_reason=_NOT_YET_SPLIT),
     Stage(
         name="research",
-        consumes=("research/research_framing.md",),
+        # domain_classification.json is a real input, not metadata: the phase passes
+        # p0_result["domain"] into phase_1_research, where it selects the research domain and
+        # framework. Unhashed, research could run against a changed classification and still be
+        # recorded as current.
+        consumes=("research/research_framing.md", "research/domain_classification.json"),
         produces=(
             "research/affirmative_case.md",
             "research/falsification_case.md",

@@ -61,6 +61,11 @@ def _evaluate_arithmetic(operation: str, values: dict[str, float]) -> float | No
 
 def _evaluate_derived(operation: str, values: dict[str, float]) -> float | bool | None:
     if operation in ("ci_includes_null", "ci_excludes_null"):
+        if values["ci_low"] > values["ci_high"]:
+            # A transposed interval makes `ci_low <= null <= ci_high` false whatever the null is,
+            # which would certify `ci_excludes_null: true` off malformed bounds. The interval has
+            # to be rejected rather than silently answered.
+            return None
         inside = values["ci_low"] <= values["null_value"] <= values["ci_high"]
         return inside if operation == "ci_includes_null" else not inside
     return _evaluate_arithmetic(operation, values)
