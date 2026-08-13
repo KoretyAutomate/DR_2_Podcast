@@ -135,13 +135,19 @@ STAGES: tuple[Stage, ...] = (
     ),
     Stage(
         name="blueprint",
-        consumes=("research/source_of_truth.md",),
-        produces=("research/EPISODE_BLUEPRINT.md",),
+        consumes=("research/source_of_truth.md", "research/domain_classification.json"),
+        # blueprint_inventory.json is what phases 5 and 6 take as the bp_inventory argument. In the
+        # monolithic flow it is a return value; across a process boundary it has to be a file.
+        produces=("research/EPISODE_BLUEPRINT.md", "meta/blueprint_inventory.json"),
         engine="claude",
     ),
     Stage(
         name="draft",
-        consumes=("research/EPISODE_BLUEPRINT.md", "research/source_of_truth.md"),
+        consumes=(
+            "research/EPISODE_BLUEPRINT.md",
+            "meta/blueprint_inventory.json",
+            "research/source_of_truth.md",
+        ),
         produces=("scripts/script_draft.md",),
         engine="smart",
     ),

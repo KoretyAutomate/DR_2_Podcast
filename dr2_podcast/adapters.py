@@ -182,6 +182,69 @@ def _iter_urls(node: Any) -> list[str]:
     return found
 
 
+@register("blueprint")
+def blueprint(run_dir: Path, run_config: dict[str, Any]) -> None:
+    """Phase 4 — the episode blueprint, via the producer agent.
+
+    Two things it persists that the phase only returned in memory:
+
+    * ``meta/blueprint_inventory.json`` — ``_parse_blueprint_inventory``'s output, which phases 5
+      and 6 take as the ``bp_inventory`` argument. Across a process boundary it has to be a file.
+    * The SOT summaries are RECOMPUTED here rather than threaded through, because the phase receives
+      them from phases 1 and 3. Recomputing costs one Smart call and keeps the stage self-contained;
+      threading them would mean another artifact whose only consumer is this stage.
+    """
+    from crewai import Crew
+
+    from dr2_podcast.artifacts import read_json_strict, read_text_strict
+    from dr2_podcast.pipeline_crew import CrewBudget, SotInjection, _crew_kickoff_guarded
+    from dr2_podcast.pipeline_script import _parse_blueprint_inventory
+    from dr2_podcast.utils import strip_think_blocks
+
+    pipeline = _prepare_run(run_dir, run_config)
+    topic = run_config["topic"]
+    sot_file = run_dir / "research/source_of_truth.md"
+    sot_summary = pipeline.summarize_report(read_text_strict(sot_file), "sot", topic)
+
+    translated_file = run_dir / f"research/source_of_truth_{run_config['language']}.md"
+    translated_summary = ""
+    if translated_file.exists():
+        translated_summary = pipeline.summarize_report(read_text_strict(translated_file), "sot_translated", topic)
+    else:
+        translated_file = None
+
+    domain = read_json_strict(run_dir / "research/domain_classification.json")["domain"]
+    grade_injection = ""
+    if (run_dir / "research/grade_synthesis.md").exists():
+        # The third argument is only a truthiness guard meaning "there is research to quote"
+        # (pipeline.py:2439); the numbers themselves are read from grade_synthesis.md on disk.
+        grade_injection = pipeline._build_grade_injection(run_dir, domain, {"grade_synthesis": True})
+
+    task = pipeline.blueprint_task
+    task.output_file = None  # this module owns the write, atomically
+    _crew_kickoff_guarded(
+        lambda: Crew(agents=[pipeline.producer_agent], tasks=[task], verbose=True),
+        task,
+        pipeline.translation_task,
+        run_config["language"],
+        SotInjection(
+            sot_file=sot_file,
+            translated_sot_file=translated_file,
+            sot_summary=sot_summary,
+            translated_sot_summary=translated_summary,
+            grade_numbers_text=grade_injection,
+            language_config=pipeline.language_config,
+        ),
+        CrewBudget("blueprint"),
+    )
+
+    raw = strip_think_blocks(task.output.raw if getattr(task, "output", None) else "")
+    if not raw.strip():
+        raise ArtifactError("the blueprint crew returned nothing; a stage that produced nothing has failed")
+    write_atomic(run_dir / "research/EPISODE_BLUEPRINT.md", raw)
+    write_json_atomic(run_dir / "meta/blueprint_inventory.json", _parse_blueprint_inventory(raw))
+
+
 # NOT HERE: an adapter for the `sot` stage. It was written, and then removed, because writing it
 # proved its input artifact cannot exist in the form assumed.
 #
@@ -205,4 +268,4 @@ def registered() -> tuple[str, ...]:
     return tuple(sorted(ADAPTERS))
 
 
-__all__ = ["framing", "registered", "url_validation"]
+__all__ = ["blueprint", "framing", "registered", "url_validation"]

@@ -45,7 +45,7 @@ RUN_CONFIG = {"topic": "ビタミンDと骨折", "language": "ja", "target_lengt
 # Registration
 # --------------------------------------------------------------------------- #
 def test_the_adapters_register_themselves_against_declared_stages() -> None:
-    assert {"framing", "url_validation"} <= set(ADAPTERS)
+    assert {"framing", "url_validation", "blueprint"} <= set(ADAPTERS)
 
 
 def test_registering_an_unknown_stage_is_refused() -> None:
@@ -199,6 +199,90 @@ def test_a_social_science_topic_gets_the_peco_directive(run_dir: Path, monkeypat
     note = adapters._domain_note(classification)
     assert "PECO" in note
     assert "Do NOT use clinical terminology" in note
+
+
+# --------------------------------------------------------------------------- #
+# blueprint
+# --------------------------------------------------------------------------- #
+BLUEPRINT_TEXT = """# Episode Blueprint
+
+## 5. Discussion Points
+### Act 1
+- Q: What is the claim?
+  A: That vitamin D prevents fractures.
+"""
+
+
+def _stub_blueprint(monkeypatch: pytest.MonkeyPatch, produced: str) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+
+    def _fake_kickoff(factory, task, translation_task, language, sot, budget):
+        seen["sot"] = sot
+        seen["task"] = task
+        task.output = _FakeOutput(produced)
+
+    monkeypatch.setattr("dr2_podcast.pipeline_crew._crew_kickoff_guarded", _fake_kickoff)
+    monkeypatch.setattr("dr2_podcast.pipeline.summarize_report", lambda text, role, topic: f"summary of {role}")
+    return seen
+
+
+def _blueprint_inputs(run_dir: Path) -> None:
+    (run_dir / "research/source_of_truth.md").write_text("# Source of Truth\n\nBody.\n")
+    (run_dir / "research/domain_classification.json").write_text('{"domain": "clinical"}')
+
+
+def test_blueprint_writes_the_document_and_the_inventory(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The inventory is the process boundary: phases 5 and 6 take it as an argument, so a staged
+    run needs it on disk."""
+    _blueprint_inputs(run_dir)
+    _stub_blueprint(monkeypatch, BLUEPRINT_TEXT)
+    adapters.blueprint(run_dir, RUN_CONFIG)
+
+    assert (run_dir / "research/EPISODE_BLUEPRINT.md").read_text().startswith("# Episode Blueprint")
+    inventory = json.loads((run_dir / "meta/blueprint_inventory.json").read_text())
+    assert inventory, "section 5 parsed into something downstream can use"
+
+
+def test_blueprint_strips_think_blocks(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _blueprint_inputs(run_dir)
+    _stub_blueprint(monkeypatch, "<think>internal reasoning</think>\n" + BLUEPRINT_TEXT)
+    adapters.blueprint(run_dir, RUN_CONFIG)
+    assert "internal reasoning" not in (run_dir / "research/EPISODE_BLUEPRINT.md").read_text()
+
+
+def test_blueprint_passes_the_translated_sot_when_there_is_one(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _blueprint_inputs(run_dir)
+    (run_dir / "research/source_of_truth_ja.md").write_text("# 真実の源\n\n本文。\n")
+    seen = _stub_blueprint(monkeypatch, BLUEPRINT_TEXT)
+    adapters.blueprint(run_dir, RUN_CONFIG)
+    assert seen["sot"].translated_sot_file is not None
+    assert seen["sot"].translated_sot_summary
+
+
+def test_blueprint_tolerates_no_translation(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An English episode has no translated SOT; that is not a failure."""
+    _blueprint_inputs(run_dir)
+    seen = _stub_blueprint(monkeypatch, BLUEPRINT_TEXT)
+    adapters.blueprint(run_dir, RUN_CONFIG)
+    assert seen["sot"].translated_sot_file is None
+    assert seen["sot"].translated_sot_summary == ""
+
+
+def test_blueprint_fails_closed_on_an_empty_crew_output(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _blueprint_inputs(run_dir)
+    _stub_blueprint(monkeypatch, "<think>only reasoning</think>")
+    with pytest.raises(ArtifactError, match="returned nothing"):
+        adapters.blueprint(run_dir, RUN_CONFIG)
+    assert not (run_dir / "research/EPISODE_BLUEPRINT.md").exists()
+
+
+def test_blueprint_fails_closed_without_a_source_of_truth(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (run_dir / "research/domain_classification.json").write_text('{"domain": "clinical"}')
+    _stub_blueprint(monkeypatch, BLUEPRINT_TEXT)
+    with pytest.raises(ArtifactError, match="cannot read"):
+        adapters.blueprint(run_dir, RUN_CONFIG)
 
 
 # --------------------------------------------------------------------------- #
