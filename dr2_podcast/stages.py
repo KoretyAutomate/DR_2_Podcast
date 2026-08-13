@@ -63,6 +63,12 @@ class Stage:
     #: Artifacts this stage may or may not write, depending on the run (e.g. a translated SOT only
     #: exists for a non-English episode). Absent optional outputs are not a failure.
     optional_outputs: tuple[str, ...] = field(default_factory=tuple)
+    #: Artifacts this stage reads WHEN THEY EXIST. They are hashed like any other input when
+    #: present, so regenerating one makes this stage stale — but their absence is not a failure.
+    #: Without this category a stage would either demand a file that may not exist, or read one the
+    #: manifest never hashes, and the second is how a blueprint stays "current" after the
+    #: translation it quoted was regenerated.
+    optional_consumes: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not self.available and not self.unavailable_reason:
@@ -135,7 +141,12 @@ STAGES: tuple[Stage, ...] = (
     ),
     Stage(
         name="blueprint",
-        consumes=("research/source_of_truth.md", "research/domain_classification.json"),
+        consumes=(
+            "research/source_of_truth.md",
+            "research/domain_classification.json",
+            "research/grade_synthesis.md",
+        ),
+        optional_consumes=("research/source_of_truth_ja.md",),
         # blueprint_inventory.json is what phases 5 and 6 take as the bp_inventory argument. In the
         # monolithic flow it is a return value; across a process boundary it has to be a file.
         produces=("research/EPISODE_BLUEPRINT.md", "meta/blueprint_inventory.json"),
@@ -194,8 +205,9 @@ def producer_of(artifact: str) -> str | None:
 
 
 def direct_producers(name: str) -> tuple[str, ...]:
-    """Stages that write anything the named stage consumes."""
-    consumed = set(get_stage(name).consumes)
+    """Stages that write anything the named stage consumes, optional inputs included."""
+    stage = get_stage(name)
+    consumed = set(stage.consumes) | set(stage.optional_consumes)
     return tuple(
         other.name for other in STAGES if consumed & (set(other.produces) | set(other.optional_outputs))
     )
@@ -205,7 +217,11 @@ def direct_consumers(name: str) -> tuple[str, ...]:
     """Stages that consume anything the named stage produces."""
     stage = get_stage(name)
     written = set(stage.produces) | set(stage.optional_outputs)
-    return tuple(other.name for other in STAGES if written & set(other.consumes))
+    return tuple(
+        other.name
+        for other in STAGES
+        if written & (set(other.consumes) | set(other.optional_consumes))
+    )
 
 
 def downstream_of(name: str) -> tuple[str, ...]:

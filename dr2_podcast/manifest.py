@@ -280,7 +280,9 @@ class Manifest:
         """
         definition = get_stage(stage)
         record = self._stage_record(stage)
-        record["inputs"] = [self._ref(name, required=True) for name in definition.consumes]
+        inputs = [self._ref(name, required=True) for name in definition.consumes]
+        inputs += [ref for name in definition.optional_consumes if (ref := self._ref(name, required=False))]
+        record["inputs"] = inputs
         outputs = [self._ref(name, required=True) for name in definition.produces]
         outputs += [ref for name in definition.optional_outputs if (ref := self._ref(name, required=False))]
         record["outputs"] = outputs

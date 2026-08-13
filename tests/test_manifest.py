@@ -105,7 +105,7 @@ def test_no_two_stages_claim_the_same_output() -> None:
 def test_downstream_is_transitive_and_ordered() -> None:
     # Two consumers, not one: `sot` reads research/domain_classification.json for the framework it
     # renders under, so framing feeds it directly as well as through research.
-    assert direct_consumers("framing") == ("research", "sot")
+    assert direct_consumers("framing") == ("research", "sot", "blueprint")
     chain = downstream_of("framing")
     assert {"research", "sot", "blueprint", "draft", "polish", "audit", "audio"} <= set(chain)
     assert chain.index("draft") < chain.index("polish") < chain.index("audit")
@@ -325,7 +325,8 @@ def test_a_failed_rerun_invalidates_everything_behind_it(run_dir: Path) -> None:
     _write(run_dir, "research/source_of_truth.md", "sot v1")
     manifest.start("sot", model="test-model", config_sha256=config_fingerprint(CONFIG))
     manifest.complete("sot")
-    _write(run_dir, "research/EPISODE_BLUEPRINT.md", "blueprint v1")
+    for artifact in get_stage("blueprint").produces:
+        _write(run_dir, artifact, f"blueprint v1: {artifact}")
     manifest.start("blueprint", model="test-model", config_sha256=config_fingerprint(CONFIG))
     manifest.complete("blueprint")
     assert manifest.status("blueprint") == "complete"
@@ -347,6 +348,41 @@ def test_a_stage_that_did_not_write_what_it_promised_fails_closed(run_dir: Path)
     manifest.start("framing", model="test-model", config_sha256=config_fingerprint(CONFIG))
     with pytest.raises(ArtifactError, match="declared it produces"):
         manifest.complete("framing")
+
+
+# prepush codex 2026-08-12: blueprint reads grade_synthesis.md and the translated SOT, but declared
+# neither — so regenerating either left an existing blueprint "current" and skipped, even though
+# re-running it would have produced different output.
+def test_an_optional_input_is_hashed_when_present(run_dir: Path) -> None:
+    manifest = Manifest.load(run_dir)
+    _complete_framing(manifest, run_dir)
+    _complete_research(manifest, run_dir)
+    _write(run_dir, "research/source_of_truth.md", "sot")
+    _write(run_dir, "research/source_of_truth_ja.md", "translated v1")
+    for artifact in get_stage("blueprint").produces:
+        _write(run_dir, artifact, f"blueprint: {artifact}")
+    manifest.start("blueprint", model="test-model", config_sha256=config_fingerprint(CONFIG))
+    manifest.complete("blueprint")
+
+    recorded = {ref["artifact"] for ref in manifest.record_for("blueprint")["inputs"]}
+    assert "research/source_of_truth_ja.md" in recorded
+    assert "research/grade_synthesis.md" in recorded
+
+    _write(run_dir, "research/source_of_truth_ja.md", "translated v2 — different wording")
+    assert not manifest.is_current("blueprint")
+
+
+def test_an_absent_optional_input_is_not_a_failure(run_dir: Path) -> None:
+    """An English episode has no translated SOT."""
+    manifest = Manifest.load(run_dir)
+    _complete_framing(manifest, run_dir)
+    _complete_research(manifest, run_dir)
+    _write(run_dir, "research/source_of_truth.md", "sot")
+    for artifact in get_stage("blueprint").produces:
+        _write(run_dir, artifact, f"blueprint: {artifact}")
+    manifest.start("blueprint", model="test-model", config_sha256=config_fingerprint(CONFIG))
+    manifest.complete("blueprint")
+    assert manifest.is_current("blueprint")
 
 
 def test_optional_outputs_may_be_absent(run_dir: Path) -> None:
