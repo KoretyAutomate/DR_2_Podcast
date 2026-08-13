@@ -6,9 +6,11 @@ from collections import Counter
 from typing import Any
 
 from dr2_podcast.schemas._derived import _provenance_errors
-from dr2_podcast.schemas._loading import SchemaValidationError, _raise, schema_errors
+from dr2_podcast.schemas._loading import SchemaValidationError, _raise, structural_errors
 
 
+#: The five-level 確信度 ladder, ordinal 0..4. Both the conclusion-first opening and step 10
+#: speak a value from this list, and the model never picks the word.
 CONFIDENCE_LADDER: tuple[str, ...] = ("まだ分からない", "低い", "中程度", "高い", "ほぼ確実")
 
 #: The tuple ``finding_key`` hashes. Identity of a finding, not of a paper.
@@ -25,7 +27,7 @@ def _funding_locator_errors(block: dict[str, Any]) -> list[str]:
 
 def funding_errors(block: dict[str, Any], artifacts: dict[str, str]) -> list[str]:
     """All errors for a funding block, including the legal-combination table and its locator's span."""
-    errors = schema_errors("funding", block)
+    errors = structural_errors("funding", block)
     if errors:
         if any("is not valid under any of the given schemas" in error for error in errors):
             errors.append(
@@ -63,7 +65,7 @@ def _duplicate_domain_errors(record: dict[str, Any]) -> list[str]:
 
 def grade_errors(record: dict[str, Any], artifacts: dict[str, str]) -> list[str]:
     """All errors for a structured GRADE record, including every modifier's evidence."""
-    errors = schema_errors("grade", record)
+    errors = structural_errors("grade", record)
     if errors:
         return errors
     errors.extend(_duplicate_domain_errors(record))
@@ -88,7 +90,7 @@ def net_direction(record: dict[str, Any]) -> int:
     domain. It does NOT verify spans, because it does not need artifacts to add integers; the
     caller that writes the record is the one that must have run :func:`validate_grade`.
     """
-    _raise("grade", schema_errors("grade", record) + _duplicate_domain_errors(record))
+    _raise("grade", structural_errors("grade", record) + _duplicate_domain_errors(record))
     total = sum(entry["steps"] for entry in record["upgrades"]) - sum(entry["steps"] for entry in record["downgrades"])
     return (total > 0) - (total < 0)
 
@@ -160,7 +162,7 @@ def step_pack_errors(pack: dict[str, Any], artifacts: dict[str, str]) -> list[st
     and comparing, which belongs to the Step 9b generator; a validator handed a finished pack
     cannot tell a computed count from a plausible one. Recorded as open work in PLAN.md Step S.
     """
-    errors = schema_errors("step_pack", pack)
+    errors = structural_errors("step_pack", pack)
     if errors:
         return errors
     errors.extend(_provenance_errors(pack, artifacts))

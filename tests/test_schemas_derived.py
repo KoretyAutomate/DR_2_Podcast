@@ -159,6 +159,18 @@ def test_the_no_effect_case_is_representable() -> None:
         assert recompute_derived(record) == [], record
 
 
+def test_the_producer_and_the_contract_agree_that_a_zero_rate_ratio_is_undefined() -> None:
+    """prepush codex 2026-08-12 [P2]. Rather than blessing the producer's 0.0, the producer was
+    changed: RRR over a zero control-event rate is undefined, and calculate_impact now says None.
+    A zero-event control arm is real, so this had to agree in both directions."""
+    impact = calculate_impact("pmid:12345678", cer=0.0, eer=0.05, outcome_is_adverse=True)
+    assert impact is not None
+    assert impact.rrr is None
+    rrr = _derived("ratio", {"numerator": -0.05, "denominator": 0.0}, None)
+    assert schema_errors("derived", rrr) == []
+    assert recompute_derived(rrr) == []
+
+
 def test_an_infinite_result_cannot_be_fed_into_another_computation() -> None:
     nnt = _derived("reciprocal_abs", {"value": 0.0}, None)
     onward = _derived("negate", {"value": 0.0}, -0.0, computed={"value": nnt})

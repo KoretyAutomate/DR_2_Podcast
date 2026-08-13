@@ -8,18 +8,17 @@ from collections import Counter
 from typing import Any
 
 from dr2_podcast.schemas._derived import _provenance_errors
-from dr2_podcast.schemas._loading import _raise, schema_errors
+from dr2_podcast.schemas._loading import _raise, structural_errors
 from dr2_podcast.schemas._records import _funding_locator_errors
 
 
+#: The tuple ``finding_key`` hashes. Identity of a finding, not of a paper.
 FINDING_KEY_FIELDS: tuple[str, ...] = ("population", "intervention", "comparator", "endpoint", "timepoint")
 
 #: Every field of a finding that carries a claim and therefore needs provenance. `intervention`
 #: and `comparator` are here because they are two of the five ``finding_key`` inputs — leaving
 #: them unsourced would let the model invent an arm while passing validation, corrupting finding
 #: identity and therefore replication grouping, which is the whole reason the key exists.
-
-
 CLAIM_BEARING_FIELDS: tuple[str, ...] = (
     "population",
     "intervention",
@@ -93,7 +92,7 @@ def _rate_errors(finding: dict[str, Any]) -> list[str]:
 
 def finding_errors(finding: dict[str, Any], artifacts: dict[str, str]) -> list[str]:
     """All errors for one finding, spans included. ``artifacts`` maps artifact id -> text."""
-    errors = schema_errors("finding", finding)
+    errors = structural_errors("finding", finding)
     if errors:
         return errors
     expected = compute_finding_key(finding)
@@ -120,7 +119,7 @@ def validate_finding(finding: dict[str, Any], artifacts: dict[str, str]) -> None
 
 def extraction_errors(extraction: dict[str, Any], artifacts: dict[str, str]) -> list[str]:
     """All errors for one paper-level extraction, including every nested finding and the funding block."""
-    errors = schema_errors("extraction", extraction)
+    errors = structural_errors("extraction", extraction)
     if errors:
         return errors
     for index, finding in enumerate(extraction["findings"]):

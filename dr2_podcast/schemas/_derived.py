@@ -29,8 +29,6 @@ DERIVED_OPERATIONS: dict[str, tuple[str, ...]] = {
 #: Which operands may be declared ``constant`` rather than quoted or computed. Only the null a
 #: confidence interval is compared against — everything else is a measurement and needs an account
 #: of where it came from, or ``constant`` becomes the way to launder an unsourced number.
-
-
 CONSTANT_OPERANDS: dict[str, frozenset[str]] = {
     "ci_includes_null": frozenset({"null_value"}),
     "ci_excludes_null": frozenset({"null_value"}),
@@ -74,8 +72,6 @@ def _evaluate_derived(operation: str, values: dict[str, float]) -> float | bool 
 #: (``effect_size_math.py:153-155``). Full-precision equality would reject those producers' own
 #: correct output, so the tolerance has to accommodate their rounding — but it is THEIR rounding,
 #: fixed here, not a precision the submitted record gets to choose.
-
-
 DERIVED_RESULT_DECIMALS: dict[str, int] = {
     "difference": 6,
     "negate": 6,
@@ -104,8 +100,6 @@ def agrees_at_producer_precision(operation: str, expected: float, stated: float)
 
 #: The threshold ``clinical_math`` itself treats as zero (``clinical_math.py:49,69``). Mirrored
 #: exactly, so the two agree on where the degenerate branch begins rather than nearly agreeing.
-
-
 ZERO_THRESHOLD = 1e-10
 
 

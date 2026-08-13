@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from dr2_podcast.config import SMART_MODEL
+from dr2_podcast.research.clinical_math import format_rrr
 from dr2_podcast.utils import strip_think_blocks
 
 
@@ -657,7 +658,7 @@ def _imrad_clinical_impact(c: _ImradCtx) -> list[str]:
         for i in c.impacts:
             rows.append(
                 f"| {i.study_id} | {i.cer:.3f} | {i.eer:.3f} | "
-                f"{i.arr:+.4f} | {i.rrr:+.2%} | {i.nnt:.1f} | {i.direction} |"
+                f"{i.arr:+.4f} | {format_rrr(i.rrr)} | {i.nnt:.1f} | {i.direction} |"
             )
         out.append("\n".join(rows) + "\n\n")
         for i in c.impacts:

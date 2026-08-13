@@ -217,6 +217,44 @@ def test_a_rewritten_quote_is_rejected() -> None:
     assert any("not a literal substring" in error for error in finding_errors(finding, artifacts))
 
 
+# prepush codex 2026-08-12 [P1]: json.loads accepts NaN and Infinity as a non-standard extension,
+# JSON Schema's minimum/maximum are comparisons, and every comparison against NaN is False — so a
+# NaN walks through its own bounds AND through the semantic checks that rely on comparing it.
+NON_FINITE_MUTATIONS: list[tuple[str, str, float]] = [
+    ("nan_p_value", "p_value", float("nan")),
+    ("nan_control_event_rate", "control_event_rate", float("nan")),
+    ("infinite_value", "value", float("inf")),
+    ("nan_ci_low", "ci_low", float("nan")),
+]
+
+
+@pytest.mark.parametrize(
+    ("case", "field", "value"), NON_FINITE_MUTATIONS, ids=[c for c, _, _ in NON_FINITE_MUTATIONS]
+)
+def test_a_non_finite_number_is_rejected(case: str, field: str, value: float) -> None:
+    finding = load_example("finding")
+    finding[field] = value
+    errors = errors_for("finding", finding)
+    assert any("is not a finite number" in error for error in errors), errors
+
+
+def test_a_nan_bound_cannot_validate_an_interval_verdict() -> None:
+    """NaN <= 0 <= NaN is False, which would have validated an asserted ci_excludes_null."""
+    record = load_example("grade")
+    record["downgrades"][1]["locator"]["operands"]["ci_low"]["value"] = float("nan")
+    record["downgrades"][1]["locator"]["operation"] = "ci_excludes_null"
+    errors = errors_for("grade", record)
+    assert any("is not a finite number" in error for error in errors), errors
+
+
+def test_files_carrying_a_json_nan_literal_are_refused_at_parse_time() -> None:
+    from dr2_podcast.schemas._loading import loads_strict
+
+    assert loads_strict('{"x": 1.5}') == {"x": 1.5}
+    with pytest.raises(ValueError, match="not valid JSON"):
+        loads_strict('{"x": NaN}')
+
+
 def test_verify_locator_span_is_offset_sensitive() -> None:
     locator = {"fields": ["endpoint"], "source_artifact_id": "a", "char_offset": 5, "quoted_span": "beta"}
     assert verify_locator_span(locator, "alphabetagamma")

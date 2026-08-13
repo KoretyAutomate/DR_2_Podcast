@@ -49,11 +49,16 @@ class TestCalculateImpact:
         assert result is None
 
     def test_zero_cer(self):
-        """CER=0 edge case: avoid division by zero in RRR."""
+        """CER=0: RRR is UNDEFINED, not zero.
+
+        Changed 2026-08-12. It used to assert 0.0 "by guard", but a zero-event control arm is a
+        real situation and reporting 0% relative reduction there is a quantitative claim the data
+        does not support. dr2_podcast/schemas requires null for any derived record built from it.
+        """
         result = calculate_impact("Study-7", cer=0.0, eer=0.05)
         assert result is not None
         assert result.direction == "harm"
-        assert result.rrr == 0.0  # CER is 0, so RRR = ARR/0 = 0 by guard
+        assert result.rrr is None
 
     def test_very_small_effect(self):
         """Very small effect near epsilon threshold."""

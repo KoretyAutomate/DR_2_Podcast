@@ -20,7 +20,7 @@ class ClinicalImpact:
     cer: float  # Control Event Rate
     eer: float  # Experimental Event Rate
     arr: float  # Absolute Risk Reduction = CER - EER
-    rrr: float  # Relative Risk Reduction = ARR / CER
+    rrr: float | None  # Relative Risk Reduction = ARR / CER; None when CER is 0 and it is undefined
     nnt: float  # Number Needed to Treat = 1 / |ARR|
     nnt_interpretation: str  # "Treat 10 patients to prevent 1 event"
     direction: str  # "benefit" | "harm" | "no_effect"
@@ -53,13 +53,17 @@ def calculate_impact(
             cer=cer,
             eer=eer,
             arr=0.0,
-            rrr=0.0,
+            rrr=0.0 if abs(cer) > 1e-10 else None,
             nnt=float("inf"),
             nnt_interpretation="No measurable difference between groups",
             direction="no_effect",
         )
 
-    rrr = arr / cer if abs(cer) > 1e-10 else 0.0
+    # RRR over a zero control-event rate is UNDEFINED, not zero. Reporting 0.0 there states
+    # "no relative reduction", which is a quantitative claim the data does not support — a
+    # zero-event control arm is a known and real situation, not a rounding artefact. None is the
+    # honest value, and dr2_podcast/schemas requires it of any derived record built from this.
+    rrr = arr / cer if abs(cer) > 1e-10 else None
     nnt = 1.0 / abs(arr)
     direction = "benefit" if arr > 0 else "harm"
     verb = "prevent" if direction == "benefit" else "cause"
@@ -70,7 +74,7 @@ def calculate_impact(
         cer=cer,
         eer=eer,
         arr=round(arr, 6),
-        rrr=round(rrr, 4),
+        rrr=round(rrr, 4) if rrr is not None else None,
         nnt=round(nnt, 1),
         nnt_interpretation=interp,
         direction=direction,
@@ -91,6 +95,11 @@ def batch_calculate(extractions: list["DeepExtraction"]) -> list[ClinicalImpact]
             if impact:
                 results.append(impact)
     return results
+
+
+def format_rrr(rrr: float | None) -> str:
+    """RRR is undefined when the control-event rate is zero; say so rather than printing 0%."""
+    return f"{rrr:+.2%}" if rrr is not None else "n/a (CER=0)"
 
 
 def format_math_report(impacts: list[ClinicalImpact]) -> str:
@@ -117,7 +126,8 @@ def format_math_report(impacts: list[ClinicalImpact]) -> str:
     ]
     for i in impacts:
         lines.append(
-            f"| {i.study_id} | {i.cer:.3f} | {i.eer:.3f} | {i.arr:+.4f} | {i.rrr:+.2%} | {i.nnt:.1f} | {i.direction} |"
+            f"| {i.study_id} | {i.cer:.3f} | {i.eer:.3f} | {i.arr:+.4f} | "
+            f"{format_rrr(i.rrr)} | {i.nnt:.1f} | {i.direction} |"
         )
     lines.append("")
     for i in impacts:
