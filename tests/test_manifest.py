@@ -384,23 +384,72 @@ def test_config_fingerprint_reads_the_real_config_without_arguments() -> None:
     assert len(config_fingerprint()) == 64
 
 
-# prepush codex 2026-08-12 [P2]: the identity list named LLM_BASE_URL, which is the ENV VAR — the
-# config module exposes it as SMART_BASE_URL (config.py:10). getattr therefore hashed None forever,
-# so changing the endpoint invalidated nothing, contradicting the module's own stated contract.
-def test_every_identity_key_exists_on_config() -> None:
-    from dr2_podcast import config
-    from dr2_podcast.manifest import CONFIG_IDENTITY_KEYS
+# prepush codex 2026-08-12: an ALLOWLIST of output-affecting settings was wrong within a day — it
+# named four and missed TTS_SPEED_SCALE, TTS_RANDOM_VOICE, TTS_INTONATION_OVERRIDES and the rest,
+# so an .env change producing a different waveform left the audio stage "current". And it named
+# LLM_BASE_URL, the ENV VAR, which the config module exposes as SMART_BASE_URL — so getattr hashed
+# None forever and the endpoint invalidated nothing. The set is derived now, not maintained.
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SMART_MODEL",
+        "SMART_BASE_URL",
+        "TTS_ENGINE_JA",
+        "TTS_ENGINE_EN",
+        "TTS_API_URL",
+        "TTS_RANDOM_VOICE",
+        "TTS_SPEED_SCALE",
+        "TTS_SPEED_OVERRIDES",
+        "TTS_INTONATION_SCALE",
+        "TTS_INTONATION_OVERRIDES",
+        "TTS_HOST1_ID",
+        "TTS_HOST2_ID",
+        "SCREENING_TOP_N",
+        "TIER_CASCADE_THRESHOLD",
+        "MIN_TIER3_STUDIES",
+    ],
+)
+def test_every_output_affecting_setting_is_part_of_identity(name: str) -> None:
+    from dr2_podcast.manifest import config_identity_values
 
-    missing = [key for key in CONFIG_IDENTITY_KEYS if not hasattr(config, key)]
-    assert not missing, f"identity keys absent from dr2_podcast.config, so they hash None: {missing}"
+    assert name in config_identity_values(), f"{name} can change output but does not invalidate a stage"
 
 
-def test_the_endpoint_is_part_of_identity() -> None:
-    from dr2_podcast import config
-    from dr2_podcast.manifest import CONFIG_IDENTITY_KEYS
+def test_changing_any_identity_setting_changes_the_fingerprint() -> None:
+    from dr2_podcast.manifest import config_identity_values
 
-    base = {key: getattr(config, key, None) for key in CONFIG_IDENTITY_KEYS}
-    assert config_fingerprint(base) != config_fingerprint({**base, "SMART_BASE_URL": "http://elsewhere/v1"})
+    base = config_identity_values()
+    baseline = config_fingerprint(base)
+    for name, value in base.items():
+        altered = "sentinel" if not isinstance(value, bool) else not value
+        assert config_fingerprint({**base, name: altered}) != baseline, name
+
+
+def test_the_excluded_settings_each_have_a_stated_reason() -> None:
+    """A denylist is only safe while every entry is justified where it is written."""
+    import dr2_podcast.manifest as manifest_module
+    from dr2_podcast.manifest import CONFIG_IDENTITY_EXCLUDE
+
+    lines = Path(manifest_module.__file__).read_text().splitlines()
+    for name in CONFIG_IDENTITY_EXCLUDE:
+        entry = next(i for i, line in enumerate(lines) if line.strip().startswith(f'"{name}"'))
+        assert lines[entry - 1].strip().startswith("#"), f"{name} is excluded with no comment saying why"
+
+
+def test_the_output_root_is_not_part_of_identity() -> None:
+    """Where runs are written is not what they contain; hashing it would stale every stage on a
+    machine with a different output root."""
+    from dr2_podcast.manifest import config_identity_values
+
+    assert "OUTPUT_DIR_OVERRIDE" not in config_identity_values()
+
+
+def test_dict_ordering_cannot_move_the_fingerprint() -> None:
+    overrides = {1138003200: 1.0, 1937616896: 1.2}
+    reversed_overrides = dict(reversed(list(overrides.items())))
+    assert config_fingerprint({"TTS_SPEED_OVERRIDES": overrides}) == config_fingerprint(
+        {"TTS_SPEED_OVERRIDES": reversed_overrides}
+    )
 
 
 def test_the_run_config_is_part_of_identity() -> None:

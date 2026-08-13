@@ -30,21 +30,50 @@ from dr2_podcast.stages import MANIFEST_FILENAMES, direct_producers, downstream_
 
 MANIFEST_SCHEMA_VERSION = 1
 
-#: Settings whose value changes what a stage would produce. `.env` or model changes count as input
-#: changes (PLAN.md Step 8), so they are hashed into every stage's identity rather than ignored.
+#: Config attributes that are deliberately NOT part of a stage's identity, each with its reason.
+#: Everything else public and uppercase on :mod:`dr2_podcast.config` IS hashed in.
 #:
-#: These are attribute names on :mod:`dr2_podcast.config`, NOT the environment variables behind
-#: them, and the two differ: ``LLM_BASE_URL`` in ``.env`` is exposed as ``SMART_BASE_URL``
-#: (``config.py:10``). Naming the env var here would hash ``None`` forever and quietly invalidate
-#: nothing, so ``test_every_identity_key_exists_on_config`` pins every name against the module.
-CONFIG_IDENTITY_KEYS = (
-    "SMART_MODEL",
-    "SMART_BASE_URL",
-    "TTS_ENGINE_JA",
-    "TTS_ENGINE_EN",
-    "TTS_API_URL",
-    "VLLM_MAX_CONCURRENCY",
+#: A hand-maintained allowlist was the first version of this and it was wrong within a day: it
+#: named four settings and missed TTS_SPEED_SCALE, TTS_RANDOM_VOICE, TTS_INTONATION_OVERRIDES and
+#: the rest, so an `.env` change that produces a different waveform left the audio stage "current".
+#: An allowlist has to be remembered on every new setting; a denylist fails in the safe direction,
+#: because over-invalidating costs a re-run while under-invalidating ships artifacts built under
+#: settings that no longer hold. It also stopped naming environment variables: LLM_BASE_URL is
+#: exposed as SMART_BASE_URL (config.py:10), and naming the env var hashed None forever.
+CONFIG_IDENTITY_EXCLUDE = frozenset(
+    {
+        # Where runs are written, not what they contain. Hashing it would make every stage stale on
+        # a machine with a different output root.
+        "OUTPUT_DIR_OVERRIDE",
+    }
 )
+
+#: Types safe to render into a stable fingerprint. Anything else on the module (a callable, a
+#: module, an object) is not configuration and is skipped.
+_IDENTITY_TYPES = (str, int, float, bool, tuple, list, dict, type(None))
+
+
+def _canonical(value: Any) -> str:
+    """Render a config value deterministically, so dict ordering cannot move the fingerprint."""
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{k!r}: {_canonical(v)}" for k, v in sorted(value.items(), key=repr)) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_canonical(v) for v in value) + "]"
+    return repr(value)
+
+
+def config_identity_values() -> dict[str, Any]:
+    """Every config attribute that participates in stage identity, read from the live module."""
+    from dr2_podcast import config
+
+    return {
+        name: getattr(config, name)
+        for name in dir(config)
+        if name.isupper()
+        and not name.startswith("_")
+        and name not in CONFIG_IDENTITY_EXCLUDE
+        and isinstance(getattr(config, name), _IDENTITY_TYPES)
+    }
 
 
 def manifest_errors(manifest: dict[str, Any]) -> list[str]:
@@ -52,9 +81,6 @@ def manifest_errors(manifest: dict[str, Any]) -> list[str]:
     return schema_errors("manifest", manifest)
 
 
-#: Fields of ``meta/run_config.json`` that change what a stage would produce. ``created_at`` and
-#: ``notes`` are excluded on purpose: rewriting the file with the same parameters must not
-#: invalidate work, and a timestamp changes on every rewrite.
 RUN_CONFIG_IDENTITY_KEYS = ("topic", "language", "target_length_minutes")
 
 
@@ -73,10 +99,8 @@ def config_fingerprint(
     describing the new one.
     """
     if values is None:
-        from dr2_podcast import config
-
-        values = {key: getattr(config, key, None) for key in CONFIG_IDENTITY_KEYS}
-    parts = [f"{key}={values.get(key)!r}" for key in sorted(values)]
+        values = config_identity_values()
+    parts = [f"{key}={_canonical(values[key])}" for key in sorted(values)]
     if run_config is not None:
         parts += [f"run.{key}={run_config.get(key)!r}" for key in RUN_CONFIG_IDENTITY_KEYS]
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
