@@ -250,7 +250,9 @@ def _task_output_file(path) -> str:
     relative form is used only when it is genuinely relative.
     """
     relative = os.path.relpath(path)
-    return str(path) if relative.startswith("..") else relative
+    # resolve(), not str(path): `--run ../episode` gives a path that is itself a traversal, and
+    # CrewAI rejects it just as it rejects the relpath form.
+    return str(Path(path).resolve()) if relative.startswith("..") else relative
 
 
 def create_agents_and_tasks(cfg: CrewBuildConfig):

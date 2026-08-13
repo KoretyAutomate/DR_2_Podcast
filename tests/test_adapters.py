@@ -108,6 +108,19 @@ def test_initialise_run_globals_is_the_one_owner_of_that_state() -> None:
     assert callable(pipeline.initialise_run_globals)
 
 
+# prepush codex 2026-08-12: a run directory given as a relative path outside cwd (`--run
+# ../episode`) is itself a traversal, which CrewAI rejects exactly as it rejects the relpath form.
+@pytest.mark.parametrize("shape", ["absolute", "relative-outside"])
+def test_task_output_paths_never_contain_a_traversal(tmp_path: Path, shape: str) -> None:
+    import os
+
+    from dr2_podcast.pipeline_crew import _task_output_file
+
+    target = tmp_path / "research" / "research_framing.md"
+    given = target if shape == "absolute" else Path(os.path.relpath(target))
+    assert ".." not in _task_output_file(given)
+
+
 # --------------------------------------------------------------------------- #
 # framing
 # --------------------------------------------------------------------------- #
