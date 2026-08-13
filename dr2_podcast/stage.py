@@ -207,9 +207,14 @@ def _run_stage_locked(run_dir: Path, name: str, *, force: bool, new_config: dict
         # "complete" and a "failed" attempt in the history.
         staled = manifest.complete(name)
         manifest.record_attempt(name, "complete")
-    except Exception as exc:
-        manifest.record_attempt(name, "failed", str(exc)[:200])
-        manifest.fail(name, str(exc)[:200])
+    except BaseException as exc:
+        # BaseException, not Exception: Ctrl-C during a 40-minute stage would otherwise leave the
+        # persisted manifest saying "running" forever and skip downstream invalidation, even though
+        # the adapter may already have rewritten outputs. The interrupt is re-raised unchanged, so
+        # a deliberate stop still stops — it is just recorded on the way past.
+        detail = str(exc)[:200] or type(exc).__name__
+        manifest.record_attempt(name, "failed", detail)
+        manifest.fail(name, detail)
         # A failed rerun may already have rewritten some outputs, so everything behind it has to be
         # invalidated too — otherwise a descendant whose own inputs happen not to have moved stays
         # falsely current behind a stage that is known to be broken.

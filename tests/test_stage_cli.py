@@ -438,6 +438,23 @@ def test_a_deliberate_stop_is_not_swallowed(run_dir: Path) -> None:
         main(["framing", "--run", str(run_dir)])
 
 
+# prepush codex 2026-08-12: Ctrl-C bypassed `except Exception`, so the persisted manifest said
+# "running" forever and downstream was never invalidated — even though the adapter may already have
+# rewritten outputs.
+def test_an_interrupted_stage_is_recorded_as_failed_before_the_interrupt_propagates(run_dir: Path) -> None:
+    def _interrupt(run_dir: Path, run_config: dict[str, Any]) -> None:
+        raise KeyboardInterrupt
+
+    stage_mod.ADAPTERS["framing"] = _interrupt
+    with pytest.raises(KeyboardInterrupt):
+        run_stage(run_dir, "framing")
+
+    persisted = Manifest.load(run_dir)
+    assert persisted.status("framing") == "failed"
+    assert persisted.record_for("framing")["attempts"][-1]["outcome"] == "failed"
+    assert persisted.record_for("framing")["stale_reason"] == "KeyboardInterrupt"
+
+
 def test_cli_runs_a_stage_and_exits_zero(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     assert main(["framing", "--run", str(run_dir)]) == 0
