@@ -259,6 +259,19 @@ def test_url_validation_filters_the_broken_sources(run_dir: Path, monkeypatch: p
     assert len(untouched["affirmative"]) == 2, "the producer's own artifact is not edited"
 
 
+# prepush codex 2026-08-12: LinkValidatorTool._run returns "✗ ERROR: …" with a leading marker, so
+# the phase's startswith("ERROR") test misses it and an unusable citation proceeds downstream.
+@pytest.mark.parametrize(
+    "status",
+    ["✗ ERROR: connection reset", "ERROR: timeout", "✗ Broken Link (Status: 404 Not Found)", "✗ Invalid URL: loop"],
+)
+def test_every_rejected_status_shape_is_filtered(status: str) -> None:
+    sources = {"affirmative": [{"url": "https://bad.example/x"}, {"url": "https://good.example/y"}]}
+    results = {"https://bad.example/x": status, "https://good.example/y": "✓ Valid (200)"}
+    filtered = adapters._without_broken(sources, results)
+    assert [e["url"] for e in filtered["affirmative"]] == ["https://good.example/y"], status
+
+
 def test_url_validation_fails_closed_on_a_missing_sources_file(run_dir: Path) -> None:
     with pytest.raises(ArtifactError, match="cannot read"):
         adapters.url_validation(run_dir, RUN_CONFIG)

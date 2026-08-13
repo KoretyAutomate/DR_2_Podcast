@@ -150,15 +150,14 @@ def url_validation(run_dir: Path, run_config: dict[str, Any]) -> None:
 def _without_broken(sources: Any, results: dict[str, str]) -> Any:
     """The sources library with every URL the validator rejected removed.
 
-    Same predicate as the phase (``pipeline_flow.py:450``): Broken, Invalid, or an ERROR status.
-    Dropping this filtering would leave staged runs citing sources the pipeline has already
-    determined are unusable.
+    Broken, Invalid, or an ERROR status. The phase (``pipeline_flow.py:450``) tests
+    ``status.startswith("ERROR")``, which **misses the single-URL path**: ``LinkValidatorTool._run``
+    returns ``"✗ ERROR: …"`` with a leading marker (``link_validator.py:66``), while only the batch
+    path returns a bare ``"ERROR: …"`` (``link_validator.py:110``). A substring test covers both,
+    and matches how the same predicate already treats Broken and Invalid.
     """
-    broken = {
-        url
-        for url, status in results.items()
-        if "Broken" in status or "Invalid" in status or str(status).startswith("ERROR")
-    }
+    rejected = ("Broken", "Invalid", "ERROR")
+    broken = {url for url, status in results.items() if any(bad in str(status) for bad in rejected)}
     if not broken or not isinstance(sources, dict):
         return sources
     filtered = dict(sources)
