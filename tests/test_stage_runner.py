@@ -13,6 +13,7 @@ import pytest
 from dr2_podcast import stage as stage_mod
 from dr2_podcast.artifacts import ArtifactError
 from dr2_podcast.manifest import Manifest
+from dr2_podcast.manifest import config_fingerprint as _real_fingerprint
 from dr2_podcast.schemas import SchemaValidationError
 from dr2_podcast.stage import StageError, load_run_config, run_stage, write_run_config
 
@@ -156,6 +157,37 @@ def test_a_stage_refuses_to_consume_outputs_of_a_stage_that_is_not_current(run_d
     with pytest.raises(StageError, match="are not current"):
         run_stage(run_dir, "research")
     assert research_calls == []
+
+
+# prepush codex 2026-08-13 [P1]: the skip path returned BEFORE the guard ran, so a stage whose own
+# record said "current" was reported current on top of a stale producer. Identity is scoped per
+# stage, which is exactly what makes it reachable: a setting only url_validation reads leaves
+# blueprint's fingerprint and its recorded input hashes untouched while its producer goes stale.
+def test_a_stage_is_not_skipped_as_current_on_top_of_a_stale_producer(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
+    run_stage(run_dir, "research")
+    _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
+    run_stage(run_dir, "url_validation")
+    _stub("blueprint", {a: f"blueprint {a}" for a in stage_mod.get_stage("blueprint").produces})
+    run_stage(run_dir, "blueprint")
+    assert "skipped" in run_stage(run_dir, "blueprint"), "the control: it really is current"
+
+    # url_validation goes stale on its own terms — a research-scoped setting moved — while nothing
+    # blueprint reads changed on disk and blueprint's own fingerprint is unmoved.
+    Manifest.load(run_dir)
+    monkeypatch.setattr(
+        stage_mod, "config_fingerprint",
+        lambda run_config=None, stage=None, values=None: (
+            "stale-for-url-validation" if stage == "url_validation"
+            else _real_fingerprint(values, run_config, stage)
+        ),
+    )
+    with pytest.raises(StageError, match="url_validation"):
+        run_stage(run_dir, "blueprint")
 
 
 # prepush codex 2026-08-12: an optional input that is absent is not read, so demanding its producer

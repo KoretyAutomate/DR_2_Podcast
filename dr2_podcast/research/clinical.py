@@ -252,6 +252,46 @@ class WideNetRecord:
     paper_metadata: Optional["PaperMetadata"] = None
 
 
+def _findings_block(ex: "DeepExtraction") -> str:
+    """Every finding a paper reported, one line each, for the case-synthesis prompt."""
+    lines = []
+    for f in ex.findings or []:
+        parts = [f.endpoint or "unnamed endpoint"]
+        if f.timepoint:
+            parts.append(f"@ {f.timepoint}")
+        if f.direction:
+            parts.append(f.direction)
+        if f.value is not None:
+            parts.append(f"{f.value}{f.unit or ''}")
+        if f.ci_low is not None and f.ci_high is not None:
+            parts.append(f"95% CI {f.ci_low} to {f.ci_high}")
+        if f.p_value is not None:
+            parts.append(f"p={f.p_value}")
+        if f.control_event_rate is not None and f.experimental_event_rate is not None:
+            parts.append(f"CER {f.control_event_rate} / EER {f.experimental_event_rate}")
+        if f.is_primary:
+            parts.append("[primary]")
+        lines.append(f"  Finding: {' | '.join(parts)}\n")
+    if lines:
+        return "".join(lines)
+    # No findings and no rates is a legacy record; saying nothing is better than implying a null
+    # result the paper never reported.
+    if ex.control_event_rate is not None and ex.experimental_event_rate is not None:
+        return f"  CER: {ex.control_event_rate}\n  EER: {ex.experimental_event_rate}\n"
+    return ""
+
+
+def _funding_line(ex: "DeepExtraction") -> str:
+    """Funding as the block states it, with the provenance the reader needs to weigh it."""
+    funding = ex.funding
+    if funding is None or funding.funding_disclosure == "unknown":
+        return f"  Funding: {ex.funding_source}\n" if ex.funding_source else ""
+    if funding.funding_disclosure == "undisclosed":
+        return "  Funding: the paper does not state its funding (not the same as unknown)\n"
+    verified = "quoted from the paper" if funding.funding_source_type == "extracted_text" else "API metadata, unverified"
+    return f"  Funding: {funding.funding_raw} [{funding.funding_category}; {verified}]\n"
+
+
 def locate_span(text: str, span: str) -> tuple[int, str] | None:
     """Where ``span`` occurs in ``text``, as ``(offset, literal_text)``, or None if it does not.
 
@@ -3008,10 +3048,11 @@ class ResearchAgent:
                 block += f"  N: {ex.sample_size_total}\n"
             if ex.effect_size:
                 block += f"  Effect: {ex.effect_size}\n"
-            if ex.control_event_rate is not None:
-                block += f"  CER: {ex.control_event_rate}\n"
-            if ex.experimental_event_rate is not None:
-                block += f"  EER: {ex.experimental_event_rate}\n"
+            # Per FINDING, not per paper. Serialising one CER/EER pair meant the case synthesis
+            # only ever saw the primary endpoint: a study reporting benefit on fractures and no
+            # effect on falls presented as unambiguous support, and the secondary result — the one
+            # a falsification case most needs — never reached the model at all.
+            block += _findings_block(ex)
             if ex.demographics:
                 block += f"  Demographics: {ex.demographics}\n"
             if ex.follow_up_period:
@@ -3020,8 +3061,7 @@ class ResearchAgent:
                 block += f"  Blinding: {ex.blinding}\n"
             if ex.risk_of_bias:
                 block += f"  Risk of bias: {ex.risk_of_bias}\n"
-            if ex.funding_source:
-                block += f"  Funding: {ex.funding_source}\n"
+            block += _funding_line(ex)
             if ex.raw_facts:
                 block += f"  Key findings: {ex.raw_facts}\n"
             extraction_blocks.append(block)

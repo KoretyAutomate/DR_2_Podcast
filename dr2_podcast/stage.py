@@ -213,10 +213,18 @@ def _run_stage_locked(run_dir: Path, name: str, *, force: bool, new_config: dict
     prospective = {**(existing or {}), **(new_config or {})}
     fingerprint = config_fingerprint(run_config=prospective, stage=name)
 
+    substitutions = {"language": str(prospective.get("language", ""))}
     if manifest.is_current(name, config_sha256=fingerprint) and not force:
+        # Guarded BEFORE the skip, not only before a run. A stage's own record saying "current" is
+        # not enough: identity is scoped per stage, so a setting that only url_validation reads
+        # leaves blueprint's fingerprint and its recorded input hashes untouched while its producer
+        # goes stale — and the skip reported a stage as current on top of a stale producer, which
+        # is precisely the incoherent manifest the guard exists to prevent (prepush codex
+        # 2026-08-13). Recursion is not needed: a stale producer's OWN consumers are guarded the
+        # same way when they are asked for.
+        _guard_inputs(run_dir, name, manifest, prospective, force=force, substitutions=substitutions)
         return f"{name}: already current, skipped (use --force to re-run)"
 
-    substitutions = {"language": str(prospective.get("language", ""))}
     _guard_inputs(run_dir, name, manifest, prospective, force=force, substitutions=substitutions)
 
     if new_config is not None:

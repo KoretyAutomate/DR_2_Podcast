@@ -170,3 +170,85 @@ def test_every_funding_block_the_extractor_builds_is_legal(data: dict) -> None:
     block = ResearchAgent._build_funding(data, _record(), SOURCE, "pmid:12345678").to_dict()
     artifacts = {"pmid:12345678": SOURCE}
     assert funding_errors(block, artifacts) == [], block
+
+
+# --------------------------------------------------------------------------- #
+# What the block looks like where a reader meets it
+# --------------------------------------------------------------------------- #
+# Step 9a slice 2. `(ext.funding_source or 'N/A')[:30]` collapsed "the paper is silent" and "we
+# failed to extract" into one cell, which is the distinction Ep09's thesis is built on.
+def _ext(**overrides):
+    from types import SimpleNamespace
+
+    base = dict(title="t", pmid="1", findings=[], funding=None, funding_source=None)
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_a_silent_paper_and_a_failed_extraction_read_differently_in_the_sot() -> None:
+    from dr2_podcast.pipeline_sot import _funding_cell
+
+    silent = _ext(funding=FundingBlock(funding_category="undisclosed", funding_disclosure="undisclosed"))
+    failed = _ext(funding=FundingBlock())
+    assert _funding_cell(silent) != _funding_cell(failed)
+    assert "undisclosed" in _funding_cell(silent)
+    assert "unknown" in _funding_cell(failed)
+
+
+def test_api_derived_funding_is_flagged_as_unverifiable_in_the_sot() -> None:
+    from dr2_podcast.pipeline_sot import _funding_cell
+
+    cell = _funding_cell(
+        _ext(
+            funding=FundingBlock(
+                funding_raw="National Institute on Aging",
+                funding_category="unknown",
+                funding_disclosure="disclosed",
+                funding_source_type="api_metadata",
+            )
+        )
+    )
+    assert "API" in cell and "unverified" in cell
+
+
+def test_quoted_funding_is_not_flagged() -> None:
+    from dr2_podcast.pipeline_sot import _funding_cell
+
+    cell = _funding_cell(
+        _ext(
+            funding=FundingBlock(
+                funding_raw="Supported by the NIA",
+                funding_category="government",
+                funding_disclosure="disclosed",
+                funding_source_type="extracted_text",
+                funding_locator={"fields": ["funding_raw"], "source_artifact_id": "a", "char_offset": 0,
+                                 "quoted_span": "Supported by the NIA"},
+            )
+        )
+    )
+    assert "unverified" not in cell and "government" in cell
+
+
+def test_the_case_prompt_states_every_finding_not_just_the_primary() -> None:
+    """A study reporting benefit on one endpoint and no effect on another presented as unambiguous
+    support, because only one CER/EER pair was serialised."""
+    from dr2_podcast.research.clinical import Finding, _findings_block
+
+    ext = _ext(
+        findings=[
+            Finding(population="p", intervention="i", comparator="c", endpoint="hip fracture",
+                    direction="decrease", value=5.0, unit="%", is_primary=True, finding_key="k" * 40),
+            Finding(population="p", intervention="i", comparator="c", endpoint="falls",
+                    direction="null_result", p_value=0.41, finding_key="j" * 40),
+        ]
+    )
+    block = _findings_block(ext)
+    assert "hip fracture" in block and "falls" in block
+    assert "null_result" in block, "the result a falsification case most needs must reach the model"
+
+
+def test_a_legacy_record_still_states_its_rates() -> None:
+    from dr2_podcast.research.clinical import _findings_block
+
+    legacy = _ext(control_event_rate=0.2, experimental_event_rate=0.1)
+    assert "CER: 0.2" in _findings_block(legacy)

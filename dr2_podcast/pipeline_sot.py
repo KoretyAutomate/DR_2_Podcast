@@ -109,7 +109,7 @@ def _format_study_characteristics_table(extractions: list) -> str:
             f"| {ext.sample_size_total or 'N/A'} "
             f"| {(ext.demographics or 'N/A')[:40]} "
             f"| {ext.follow_up_period or 'N/A'} "
-            f"| {(ext.funding_source or 'N/A')[:30]} "
+            f"| {_funding_cell(ext)} "
             f"| {ext.risk_of_bias or 'N/A'} "
         )
         if has_metadata:
@@ -120,6 +120,23 @@ def _format_study_characteristics_table(extractions: list) -> str:
         base += f"| {tier_label} |"
         rows.append(base)
     return "\n".join(rows) + "\n"
+
+
+def _funding_cell(ext) -> str:
+    """The funding column: category, disclosure state, and whether anyone can check it.
+
+    undisclosed (the paper is silent) is NOT unknown (we failed to extract) — Ep09's thesis makes
+    that distinction the finding, so the two never collapse into one 'N/A'. The API-derived variant
+    is flagged because it exists nowhere in the paper and cannot be verified against it.
+    """
+    funding = getattr(ext, "funding", None)
+    if funding is None or funding.funding_disclosure == "unknown":
+        legacy = getattr(ext, "funding_source", None)
+        return (legacy or "unknown")[:30]
+    if funding.funding_disclosure == "undisclosed":
+        return "undisclosed (paper silent)"
+    flag = "" if funding.funding_source_type == "extracted_text" else " (API, unverified)"
+    return f"{(funding.funding_raw or '')[:30]} — {funding.funding_category}{flag}"
 
 
 def _format_references(extractions: list, wide_net_records: list) -> str:
