@@ -381,6 +381,26 @@ def test_every_rejected_status_shape_is_filtered(status: str) -> None:
     assert [e["url"] for e in filtered["affirmative"]] == ["https://good.example/y"], status
 
 
+# prepush codex 2026-08-12: the filtered artifact was written and then read by nobody — the tools
+# still opened research_sources.json, so rejected URLs reached the blueprint anyway.
+def test_the_agents_read_the_validated_library_when_it_exists(run_dir: Path) -> None:
+    from dr2_podcast.pipeline import research_sources_file
+
+    (run_dir / "research/research_sources.json").write_text("{}")
+    assert research_sources_file(run_dir).name == "research_sources.json"
+
+    (run_dir / "research/research_sources_validated.json").write_text("{}")
+    assert research_sources_file(run_dir).name == "research_sources_validated.json"
+
+
+def test_blueprint_declares_the_validated_library_as_an_input() -> None:
+    """Declared, so producing it makes an existing blueprint stale rather than silently ignored."""
+    from dr2_podcast.stages import direct_producers, get_stage
+
+    assert "research/research_sources_validated.json" in get_stage("blueprint").optional_consumes
+    assert "url_validation" in direct_producers("blueprint")
+
+
 def test_url_validation_fails_closed_on_a_missing_sources_file(run_dir: Path) -> None:
     with pytest.raises(ArtifactError, match="cannot read"):
         adapters.url_validation(run_dir, RUN_CONFIG)

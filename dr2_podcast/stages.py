@@ -160,7 +160,12 @@ STAGES: tuple[Stage, ...] = (
             "research/grade_synthesis.md",
             "meta/session_roles.json",
         ),
-        optional_consumes=("research/source_of_truth_{language}.md",),
+        optional_consumes=(
+            "research/source_of_truth_{language}.md",
+            # Read through pipeline.research_sources_file() when it exists, so validation actually
+            # gates the blueprint instead of producing an artifact nobody looks at.
+            "research/research_sources_validated.json",
+        ),
         # blueprint_inventory.json is what phases 5 and 6 take as the bp_inventory argument. In the
         # monolithic flow it is a return value; across a process boundary it has to be a file.
         produces=("research/EPISODE_BLUEPRINT.md", "meta/blueprint_inventory.json"),

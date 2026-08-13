@@ -279,6 +279,7 @@ _FILE_SUBDIR_MAP = {
     "source_of_truth.md": "research",
     "SOURCE_OF_TRUTH.md": "research",
     "research_sources.json": "research",
+    "research_sources_validated.json": "research",
     "research_framing.md": "research",
     "affirmative_case.md": "research",
     "falsification_case.md": "research",
@@ -1404,7 +1405,7 @@ def list_research_sources(role: str) -> str:
     Returns a numbered index with title, URL, and research goal for each source.
     Use ReadResearchSource to read the full summary of any specific source.
     """
-    sources_file = output_path(output_dir, "research_sources.json")
+    sources_file = research_sources_file()
     if not sources_file.exists():
         return "No research library available. Deep research pre-scan may not have run."
     try:
@@ -1436,7 +1437,7 @@ def read_research_source(role_and_index: str) -> str:
     Returns the full extracted summary for that source, including URL, title,
     research goal, and all extracted facts.
     """
-    sources_file = output_path(output_dir, "research_sources.json")
+    sources_file = research_sources_file()
     if not sources_file.exists():
         return "No research library available."
     try:
@@ -1745,6 +1746,20 @@ def initialise_run_globals(
         "target_minutes": target_minutes,
         "duration_label": f"{length_mode.capitalize()} ({target_minutes} min)",
     }
+
+
+def research_sources_file(run_dir=None):
+    """The sources library the agents should read: the VALIDATED one when it exists.
+
+    The staged `url_validation` stage writes `research_sources_validated.json` rather than editing
+    `research_sources.json` in place, because a stage that rewrites another stage's output makes the
+    producer permanently stale. That only helps if the consumers actually read it — otherwise the
+    filtering happens and nothing downstream notices, and rejected URLs reach the blueprint anyway.
+    The monolithic phase edits in place, so for it both names resolve to the same content.
+    """
+    directory = run_dir if run_dir is not None else output_dir
+    validated = output_path(directory, "research_sources_validated.json")
+    return validated if validated.exists() else output_path(directory, "research_sources.json")
 
 
 def _create_agents_and_tasks():
