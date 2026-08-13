@@ -19,11 +19,14 @@ nothing is a failed stage.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from dr2_podcast.artifacts import ArtifactError, write_atomic, write_json_atomic
 from dr2_podcast.stages import register
+
+logger = logging.getLogger(__name__)
 
 
 SESSION_ROLES_ARTIFACT = "meta/session_roles.json"
@@ -281,6 +284,7 @@ def blueprint(run_dir: Path, run_config: dict[str, Any]) -> None:
         # (pipeline.py:2439); the numbers themselves are read from grade_synthesis.md on disk.
         grade_injection = pipeline._build_grade_injection(run_dir, domain, {"grade_synthesis": True})
 
+    _prime_translation_task(pipeline, run_dir, run_config["language"])
     task = pipeline.blueprint_task
     task.output_file = None  # this module owns the write, atomically
     _crew_kickoff_guarded(
@@ -306,6 +310,127 @@ def blueprint(run_dir: Path, run_config: dict[str, Any]) -> None:
     write_json_atomic(run_dir / "meta/blueprint_inventory.json", _parse_blueprint_inventory(raw))
 
 
+def _prime_translation_task(pipeline: Any, run_dir: Path, language: str) -> None:
+    """Give the freshly built translation task the output the monolithic run would have left on it.
+
+    In the flow the translation task has already run by the time the script phases use it as
+    context. A fresh process rebuilds it empty, so a Japanese episode would be polished against no
+    translated evidence at all — and CrewAI context resolution can fail on an output-less task.
+
+    What goes on the task is a COMPACT MARKER, not the translated text, exactly as the monolithic
+    path does it (``pipeline.py:2422``). The comment there records why: the full SOT in a context
+    task overflows the model window and sends CrewAI into an infinite summariser loop — "observed:
+    36 cycles, 9.6h wasted". Both blueprint and polish put this task in their context, and the
+    blueprint's own degradation guard cannot help, because degrading the injected summary never
+    shrinks a task's output.
+    """
+    task = getattr(pipeline, "translation_task", None)
+    if task is None or language == "en":
+        return
+    translated = run_dir / f"research/source_of_truth_{language}.md"
+    if not translated.exists():
+        return
+    size = len(translated.read_text(encoding="utf-8"))
+    task.output = _DraftOutput(
+        f"[Translation complete — {size:,} chars]\n"
+        f"Translated SOT saved: {translated}\n"
+        f"Read that file for the translated evidence."
+    )
+
+
+def _script_context(pipeline: Any, run_config: dict[str, Any], sot: str) -> Any:
+    """The ScriptRunContext both script phases build, from module state plus the run config.
+
+    One helper rather than two copies: phases 5 and 6 assemble the same nine values, and the two
+    drifting apart is how a draft and its polish end up written to different targets.
+    """
+    return pipeline.ScriptRunContext(
+        language_config=pipeline.language_config,
+        session_roles=pipeline.SESSION_ROLES,
+        topic_name=run_config["topic"],
+        target_instruction=pipeline.target_instruction,
+        target_length_int=pipeline.target_length_int,
+        sot_content=sot,
+        channel_intro=pipeline.channel_intro,
+        target_min=pipeline._target_min,
+    )
+
+
+@register("draft")
+def draft(run_dir: Path, run_config: dict[str, Any]) -> None:
+    """Phase 5 — the sectional script draft.
+
+    Everything it needs is on disk already: the blueprint inventory the blueprint adapter persisted,
+    and the English source of truth. The flow hands phase 5 the ENGLISH SOT even for a Japanese
+    episode — translation reaches the script through the Crew task descriptions, not through this
+    context — so that is what is read here. Deviating would change what the episode says.
+    """
+    from dr2_podcast.artifacts import read_json_strict, read_text_strict
+
+    pipeline = _prepare_run(run_dir, run_config)
+    inventory = read_json_strict(run_dir / "meta/blueprint_inventory.json")
+    sot = read_text_strict(run_dir / "research/source_of_truth.md")
+
+    text, count = pipeline._run_sectional_draft(
+        inventory,
+        _script_context(pipeline, run_config, sot),
+        _call_smart_model=pipeline._call_smart_model,
+    )
+    if not text or not text.strip():
+        raise ArtifactError("the sectional draft produced no script; a stage that produced nothing has failed")
+    write_atomic(run_dir / "scripts/script_draft.md", text)
+    logger.info("draft: %d %s", count, pipeline.language_config["length_unit"])
+
+
+@register("polish")
+def polish(run_dir: Path, run_config: dict[str, Any]) -> None:
+    """Phase 6 — the polish loop, with its shrinkage guard.
+
+    ``draft_count`` is RECOMPUTED from the draft on disk with ``_count_words``, the same function
+    phase 5 used to produce it. The alternative was persisting the number, and a number that can be
+    derived from the artifact it describes is a second source of truth waiting to disagree with it.
+
+    ``_run_polish_loop`` reads the draft off ``script_task.output.raw``, so the task is primed the
+    way the phase primes it. The polish task's description and expected output are taken straight
+    from the freshly built task, which in a fresh process IS the base — the monolithic flow has to
+    pass them separately precisely because it mutates the live task between phases.
+    """
+    from dr2_podcast.artifacts import read_json_strict, read_text_strict
+
+    pipeline = _prepare_run(run_dir, run_config)
+    draft_text = read_text_strict(run_dir / "scripts/script_draft.md")
+    inventory = read_json_strict(run_dir / "meta/blueprint_inventory.json")
+    sot = read_text_strict(run_dir / "research/source_of_truth.md")
+    draft_count = pipeline._count_words(draft_text, pipeline.language_config)
+
+    pipeline.script_task.output = _DraftOutput(draft_text)
+    _prime_translation_task(pipeline, run_dir, run_config["language"])
+    polished, _final_task = pipeline._run_polish_loop(
+        draft_text,
+        draft_count,
+        inventory,
+        _script_context(pipeline, run_config, sot),
+        pipeline.Crew3Refs(
+            script_task=pipeline.script_task,
+            polish_task=pipeline.polish_task,
+            translation_task=pipeline.translation_task,
+            editor_agent=pipeline.editor_agent,
+            polish_base_desc=pipeline.polish_task.description,
+            polish_expected=pipeline.polish_task.expected_output,
+        ),
+    )
+    if not polished or not polished.strip():
+        raise ArtifactError("the polish loop produced no script; a stage that produced nothing has failed")
+    write_atomic(run_dir / "scripts/script_polished.md", polished)
+
+
+class _DraftOutput:
+    """What ``_run_polish_loop`` expects to find on ``script_task.output``."""
+
+    def __init__(self, raw: str) -> None:
+        self.raw = raw
+
+
 @register("audio")
 def audio(run_dir: Path, run_config: dict[str, Any]) -> None:
     """Phase 8 — TTS and the BGM mix. Python plus the TTS engines, no Crew.
@@ -314,24 +439,53 @@ def audio(run_dir: Path, run_config: dict[str, Any]) -> None:
     :func:`_prepare_run`: the audio path needs ``output_dir`` and the language config, not the LLM
     handles or any Crew, and building them would make audio unrenderable whenever vLLM is down.
 
+    **Rendering happens in a staging directory and the results are promoted by rename.**
+    ``_run_audio_pipeline`` writes ``script.txt`` and the WAVs straight to their final paths, so a
+    render interrupted midway would destroy the previous good audio or leave a truncated WAV that
+    looks finished — the exact failure the atomic-artifact rule exists to prevent, and worse here
+    because a WAV's truncation is not visible until someone listens to it. Staging sits inside the
+    run directory, so the promotion is a same-filesystem rename.
+
     ``_run_audio_pipeline`` returns ``(None, None)`` when it fails and the phase only logs a
     warning, so a run could reach its terminal state with no audio and nothing saying the run had
     failed. This raises.
     """
+    import os
+    import shutil
+
     from dr2_podcast import pipeline
     from dr2_podcast.artifacts import read_text_strict
 
     script = read_text_strict(run_dir / "scripts/script_final.md")
-    pipeline.output_dir = run_dir
     language_config = pipeline.SUPPORTED_LANGUAGES[run_config["language"]]
-    audio_file, duration_minutes = pipeline._run_audio_pipeline(script, run_dir, language_config)
-    if not audio_file or not Path(audio_file).exists():
-        raise ArtifactError(
-            "audio generation produced no file. The monolithic phase logs a warning and returns, "
-            "so a run reaches its terminal state with no audio and nothing saying it failed."
-        )
-    if not duration_minutes:
-        raise ArtifactError(f"{audio_file} was written but reports no duration; treat that as a failed render")
+
+    staging = run_dir / "meta/.audio_staging"
+    shutil.rmtree(staging, ignore_errors=True)
+    # The subdirectories have to exist BEFORE the render: output_path() falls back to a flat path
+    # when its target subdirectory is absent (pipeline.py:322, for legacy runs), so an empty staging
+    # directory would put script.txt and audio.wav at its root, promote them to the run root, and
+    # fail manifest.complete() — after the expensive part had already happened.
+    for subdir in ("scripts", "audio", "research", "meta"):
+        (staging / subdir).mkdir(parents=True)
+    previous_output_dir = pipeline.output_dir
+    try:
+        pipeline.output_dir = staging
+        audio_file, duration_minutes = pipeline._run_audio_pipeline(script, staging, language_config)
+        if not audio_file or not Path(audio_file).exists():
+            raise ArtifactError(
+                "audio generation produced no file. The monolithic phase logs a warning and returns, "
+                "so a run reaches its terminal state with no audio and nothing saying it failed."
+            )
+        if not duration_minutes:
+            raise ArtifactError(f"{audio_file} was written but reports no duration; that is a failed render")
+        for produced in sorted(path for path in staging.rglob("*") if path.is_file()):
+            target = run_dir / produced.relative_to(staging)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(produced, target)
+        logger.info("audio: %.2f min", duration_minutes)
+    finally:
+        pipeline.output_dir = previous_output_dir
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 # NOT HERE: an adapter for the `sot` stage. It was written, and then removed, because writing it
@@ -357,4 +511,4 @@ def registered() -> tuple[str, ...]:
     return tuple(sorted(ADAPTERS))
 
 
-__all__ = ["audio", "blueprint", "framing", "registered", "translate", "url_validation"]
+__all__ = ["audio", "blueprint", "draft", "framing", "polish", "registered", "translate", "url_validation"]

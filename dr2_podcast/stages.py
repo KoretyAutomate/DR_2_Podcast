@@ -173,17 +173,28 @@ STAGES: tuple[Stage, ...] = (
     ),
     Stage(
         name="draft",
+        # The blueprint TEXT is not read — the sectional draft is built from the parsed inventory
+        # and the SOT. Declaring the text as well would make a blueprint reword that leaves the
+        # inventory identical rerun the draft for nothing.
         consumes=(
-            "research/EPISODE_BLUEPRINT.md",
             "meta/blueprint_inventory.json",
             "research/source_of_truth.md",
+            "meta/session_roles.json",
         ),
         produces=("scripts/script_draft.md",),
         engine="smart",
     ),
     Stage(
         name="polish",
-        consumes=("scripts/script_draft.md",),
+        consumes=(
+            "scripts/script_draft.md",
+            "meta/blueprint_inventory.json",
+            "research/source_of_truth.md",
+            "meta/session_roles.json",
+        ),
+        # Loaded into translation_task and passed into the polish loop, so a regenerated or edited
+        # translation has to make the polish stale — it was polished against that evidence.
+        optional_consumes=("research/source_of_truth_{language}.md",),
         produces=("scripts/script_polished.md",),
         engine="smart",
     ),
