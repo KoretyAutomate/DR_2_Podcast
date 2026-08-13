@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dr2-podcast.local/schemas/run_config.schema.json",
+  "title": "RunConfig",
+  "description": "meta/run_config.json — the parameters of one run, on disk. A staged run has no caller holding them in memory: `python -m dr2_podcast.stage draft --run <dir>` is a fresh process that has to reconstruct everything the stage needs from the run directory alone. Today those values are function arguments threaded between Prefect tasks (topic_name, language, language_config, target_length_int), which is exactly why the phases cannot be invoked independently.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "topic", "language", "target_length_minutes"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "topic": { "type": "string", "minLength": 1 },
+    "language": {
+      "description": "Episode language. Drives translation, TTS engine and voice selection.",
+      "type": "string",
+      "minLength": 2
+    },
+    "target_length_minutes": { "type": "integer", "minimum": 1, "maximum": 180 },
+    "created_at": { "type": ["string", "null"] },
+    "notes": { "type": ["string", "null"] }
+  }
+}

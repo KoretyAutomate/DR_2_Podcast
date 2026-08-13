@@ -1,0 +1,216 @@
+"""The run manifest: what each stage consumed, produced, and ran under.
+
+PLAN.md Step 8. The first draft of the plan asserted that the existing ``--resume`` and Prefect
+caching "stay valid" for fourteen independently re-runnable stages. That is an assertion, not a
+design, and it is not true as written: ``session_metadata.txt`` records no completed-phase list
+(``pipeline.py:590``), Prefect caching is keyed around whole-phase tasks (``pipeline.py:2984``),
+and legacy checkpoint read errors already fall back to empty state (``pipeline.py:502``). Re-running
+``keywords`` would leave search, synthesis, blueprint and script artifacts falsely current.
+
+So staleness is *derived*, never assumed. A stage is current only while every artifact it recorded
+as an input still hashes to what it recorded, under the same model and configuration. Anything else
+is stale, and stale propagates along the graph in :mod:`dr2_podcast.stages`.
+
+Transport retries are recorded as attempts with outcome ``transport`` and are deliberately NOT
+revision rounds: a malformed or empty response is retried without consuming one of the three rounds
+a loop is bounded at, because conflating them silently shortens the loop.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from dr2_podcast.artifacts import ArtifactError, read_json_strict, sha256_file, write_json_atomic
+from dr2_podcast.schemas import SchemaValidationError, schema_errors
+from dr2_podcast.stages import MANIFEST_FILENAMES, direct_producers, downstream_of, get_stage
+
+MANIFEST_SCHEMA_VERSION = 1
+
+#: Settings whose value changes what a stage would produce. `.env` or model changes count as input
+#: changes (PLAN.md Step 8), so they are hashed into every stage's identity rather than ignored.
+CONFIG_IDENTITY_KEYS = (
+    "SMART_MODEL",
+    "LLM_BASE_URL",
+    "TTS_ENGINE_JA",
+    "VLLM_MAX_CONCURRENCY",
+)
+
+
+def manifest_errors(manifest: dict[str, Any]) -> list[str]:
+    """Structural errors for a manifest document."""
+    return schema_errors("manifest", manifest)
+
+
+def config_fingerprint(values: dict[str, Any] | None = None) -> str:
+    """sha256 over the settings that change what a stage would produce.
+
+    Reads :mod:`dr2_podcast.config` when given nothing, so callers do not have to assemble it, but
+    accepts an explicit mapping so tests never depend on the machine's ``.env``.
+    """
+    if values is None:
+        from dr2_podcast import config
+
+        values = {key: getattr(config, key, None) for key in CONFIG_IDENTITY_KEYS}
+    joined = "\x1f".join(f"{key}={values.get(key)!r}" for key in sorted(values))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
+def _now() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+@dataclass
+class Manifest:
+    """Read/modify/write access to one run's manifest. Every write is atomic and schema-checked."""
+
+    run_dir: Path
+    mode: str
+    document: dict[str, Any]
+
+    @classmethod
+    def path_for(cls, run_dir: Path, mode: str = "staged") -> Path:
+        try:
+            return run_dir / MANIFEST_FILENAMES[mode]
+        except KeyError:
+            raise KeyError(f"unknown mode {mode!r}; known: {', '.join(MANIFEST_FILENAMES)}") from None
+
+    @classmethod
+    def load(cls, run_dir: Path, mode: str = "staged") -> Manifest:
+        """Load a run's manifest, or start an empty one. A corrupt manifest raises rather than resets.
+
+        Resetting on a read error is exactly the ``pipeline.py:502`` behaviour this replaces: it
+        turns "I cannot tell what ran" into "nothing ran", which then re-runs an 87-minute pipeline
+        or, worse, marks completed work as pending and overwrites it.
+        """
+        path = cls.path_for(run_dir, mode)
+        if not path.exists():
+            return cls(run_dir, mode, {"schema_version": MANIFEST_SCHEMA_VERSION, "mode": mode, "stages": {}})
+        document = read_json_strict(path, schema="manifest")
+        if document["mode"] != mode:
+            raise ArtifactError(f"{path} is a {document['mode']!r} manifest, opened as {mode!r}")
+        return cls(run_dir, mode, document)
+
+    def save(self) -> str:
+        errors = manifest_errors(self.document)
+        if errors:
+            raise SchemaValidationError("manifest", errors)
+        return write_json_atomic(self.path_for(self.run_dir, self.mode), self.document, schema="manifest")
+
+    # -- reading ---------------------------------------------------------- #
+    def record_for(self, stage: str) -> dict[str, Any]:
+        get_stage(stage)
+        return self.document["stages"].get(stage, {"status": "pending", "inputs": [], "outputs": [], "attempts": []})
+
+    def status(self, stage: str) -> str:
+        return str(self.record_for(stage).get("status", "pending"))
+
+    def drift(self, stage: str) -> list[str]:
+        """Why this stage is not current: each recorded artifact whose hash no longer matches disk.
+
+        Missing counts as drift. An artifact that is gone has not been checked, and treating an
+        unresolvable input as unchanged is how unverified state passes for verified.
+        """
+        record = self.record_for(stage)
+        reasons: list[str] = []
+        for kind in ("inputs", "outputs"):
+            for ref in record.get(kind, []):
+                path = self.run_dir / ref["artifact"]
+                if not path.exists():
+                    reasons.append(f"{kind[:-1]} {ref['artifact']} is missing")
+                elif sha256_file(path) != ref["sha256"]:
+                    reasons.append(f"{kind[:-1]} {ref['artifact']} changed since this stage ran")
+        return reasons
+
+    def is_current(self, stage: str, *, config_sha256: str | None = None) -> bool:
+        """True only if the stage completed, nothing it touched has drifted, and config still matches."""
+        record = self.record_for(stage)
+        if record.get("status") != "complete" or self.drift(stage):
+            return False
+        if config_sha256 is None:
+            return True
+        return record.get("identity", {}).get("config_sha256") == config_sha256
+
+    # -- writing ---------------------------------------------------------- #
+    def _stage_record(self, stage: str) -> dict[str, Any]:
+        return self.document["stages"].setdefault(
+            stage,
+            {"status": "pending", "inputs": [], "outputs": [], "attempts": [], "identity": {}},
+        )
+
+    def start(self, stage: str, *, model: str, config_sha256: str) -> None:
+        """Mark a stage running and stamp the identity it is running under."""
+        record = self._stage_record(stage)
+        record.update(
+            status="running",
+            identity={"model": model, "config_sha256": config_sha256},
+            started_at=_now(),
+            finished_at=None,
+            stale_reason=None,
+        )
+
+    def record_attempt(self, stage: str, outcome: str, detail: str | None = None) -> None:
+        """Append an attempt. ``transport`` is a retry and is not a revision round."""
+        record = self._stage_record(stage)
+        attempts = record.setdefault("attempts", [])
+        attempts.append({"number": len(attempts) + 1, "outcome": outcome, "at": _now(), "detail": detail})
+
+    def transport_retries(self, stage: str) -> int:
+        return sum(1 for a in self.record_for(stage).get("attempts", []) if a["outcome"] == "transport")
+
+    def complete(self, stage: str) -> tuple[str, ...]:
+        """Hash the stage's declared inputs and outputs, mark it complete, stale its downstream.
+
+        Returns the stages marked stale. Marking happens on EVERY completion, not only on a
+        re-run: the point is that a downstream stage can never be silently reused across a change
+        to something it consumed.
+        """
+        definition = get_stage(stage)
+        record = self._stage_record(stage)
+        record["inputs"] = [self._ref(name, required=True) for name in definition.consumes]
+        outputs = [self._ref(name, required=True) for name in definition.produces]
+        outputs += [ref for name in definition.optional_outputs if (ref := self._ref(name, required=False))]
+        record["outputs"] = outputs
+        record.update(status="complete", finished_at=_now(), stale_reason=None)
+        return self.invalidate_downstream(stage)
+
+    def fail(self, stage: str, detail: str) -> None:
+        record = self._stage_record(stage)
+        record.update(status="failed", finished_at=_now(), stale_reason=detail)
+
+    def invalidate_downstream(self, stage: str) -> tuple[str, ...]:
+        """Mark every stage this one invalidated as stale, and say why.
+
+        Two ways to be invalidated, and the second is the one a purely hash-based rule misses. A
+        stage is stale if an artifact it recorded has drifted — or if a stage it consumes from is
+        itself stale, even though nothing on disk has moved yet. Consistency with an artifact that
+        is known to be out of date is not currency: that upstream stage is going to re-run and
+        change the very input this one was built on. ``downstream_of`` returns declaration order,
+        which is run order, so a producer is always visited before its consumers.
+        """
+        marked: list[str] = []
+        staled: set[str] = set()
+        for name in downstream_of(stage):
+            record = self.document["stages"].get(name)
+            if record is None or record.get("status") not in ("complete", "running"):
+                if record is not None and record.get("status") == "stale":
+                    staled.add(name)
+                continue
+            reasons = self.drift(name)
+            reasons += [f"{producer} is stale" for producer in direct_producers(name) if producer in staled]
+            if reasons:
+                record.update(status="stale", stale_reason="; ".join(reasons))
+                marked.append(name)
+                staled.add(name)
+        return tuple(marked)
+
+    def _ref(self, artifact: str, *, required: bool) -> dict[str, str] | None:
+        path = self.run_dir / artifact
+        if not path.exists():
+            if required:
+                raise ArtifactError(f"stage declared it produces {artifact}, but it is not on disk")
+            return None
+        return {"artifact": artifact, "sha256": sha256_file(path)}

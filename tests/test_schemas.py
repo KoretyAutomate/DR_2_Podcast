@@ -205,6 +205,8 @@ def test_a_span_absent_from_its_artifact_is_rejected(
 def test_validation_against_no_artifacts_at_all_fails(name: str) -> None:
     """An empty artifact map is not a free pass — every locator becomes unresolvable."""
     instance = load_example(name)
+    if not iter_locators(instance):
+        pytest.skip(f"{name} carries no locators — provenance is not what its contract is about")
     errors = VALIDATORS[name](instance, {})
     assert errors, f"{name} validated with nothing to check its provenance against"
     assert all("unknown artifact" in error for error in errors), errors

@@ -31,11 +31,13 @@ SCHEMA_NAMES: tuple[str, ...] = (
     "extraction",
     "grade",
     "step_pack",
+    "manifest",
+    "run_config",
 )
 
 #: Schemas that ship a canonical valid instance under ``examples/``. These are the fixtures the
 #: mutation-matrix tests start from, and the worked example an implementer reads first.
-EXAMPLE_NAMES: tuple[str, ...] = ("finding", "funding", "extraction", "grade", "step_pack")
+EXAMPLE_NAMES: tuple[str, ...] = ("finding", "funding", "extraction", "grade", "step_pack", "manifest", "run_config")
 
 #: Bumped when any on-disk artifact shape changes. Also the value the extraction cache keys on —
 #: without a bump, cached entries deserialize into records with silently missing ``findings[]``.

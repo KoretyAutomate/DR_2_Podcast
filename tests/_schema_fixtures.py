@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from dr2_podcast.manifest import manifest_errors
 from dr2_podcast.schemas import (
     extraction_errors,
     finding_errors,
@@ -18,6 +19,7 @@ from dr2_podcast.schemas import (
     grade_errors,
     iter_locators,
     load_example,
+    schema_errors,
     step_pack_errors,
 )
 
@@ -70,4 +72,8 @@ VALIDATORS: dict[str, Callable[[dict[str, Any], dict[str, str]], list[str]]] = {
     "extraction": extraction_errors,
     "grade": grade_errors,
     "step_pack": step_pack_errors,
+    # A manifest and a run config carry no locators — hashes ARE their provenance —
+    # so they take the artifacts argument only to keep one shape for every validator.
+    "manifest": lambda instance, _artifacts: manifest_errors(instance),
+    "run_config": lambda instance, _artifacts: schema_errors("run_config", instance),
 }
