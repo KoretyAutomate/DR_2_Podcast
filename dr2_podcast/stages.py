@@ -173,10 +173,11 @@ STAGES: tuple[Stage, ...] = (
             "research/domain_classification.json",
             "research/grade_synthesis.md",
             "meta/session_roles.json",
-            # REQUIRED, not optional. Optional would let the blueprint run before validation had
-            # ever happened, research_sources_file() would fall back to the raw library, and rejected
-            # URLs would reach the episode — a gate that can be walked past is not a gate. The
-            # monolithic flow runs phase 2 before phase 4 for the same reason.
+            # An ORDERING GATE, not a read: producer_agent has no tools, so the blueprint never
+            # opens the library itself. Declaring it here is what stops an episode being designed
+            # before its citations were checked at all — the monolithic flow runs phase 2 before
+            # phase 4 for the same reason — and the cost is that re-validating re-runs the
+            # blueprint, which is the safe direction.
             "research/research_sources_validated.json",
         ),
         optional_consumes=("research/source_of_truth_{language}.md",),
@@ -218,6 +219,14 @@ STAGES: tuple[Stage, ...] = (
             "scripts/script_polished.md",
             "research/source_of_truth.md",
             "meta/session_roles.json",
+            # The auditor agent — and ONLY the auditor; producer_agent carries no tools
+            # (pipeline_crew.py:328 vs :356) — reads the source library through
+            # pipeline.research_sources_file(), which consults all three of these to decide WHICH
+            # library it serves. Hashing only the validated copy would let a change to the raw
+            # library or the stamp leave this stage current while it would now read something else.
+            "research/research_sources.json",
+            "research/research_sources_validated.json",
+            "research/research_sources_validated.sha256",
         ),
         # The translated SOT joins the audit task's context for a non-English episode, so a
         # regenerated translation has to make the audit stale.

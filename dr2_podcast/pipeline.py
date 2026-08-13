@@ -2293,13 +2293,22 @@ def _finalize_script(polished_text, polish_task, language, language_config, outp
         for _issue in validate_grade_consistency(script_text, str(_grade), str(_sot)):
             logger.warning(f"  GRADE_CHECK: {_issue}")
     except Exception as exc:
-        logger.debug("GRADE consistency check skipped: %s", exc)
+        # Was logger.debug. A check that skips itself in silence is a check nobody knows they lost:
+        # pointing finalisation at a directory without research/ turned this into a no-op and
+        # nothing said so (prepush codex 2026-08-13). The skip is still not fatal here — the live
+        # Prefect path gates on the same validator — but it is now audible.
+        logger.warning("GRADE_CHECK skipped, so script/GRADE contradictions went unchecked: %s", exc)
 
     logger.info("\nAdding reaction/emotion guidance to script...")
     script_text = _add_reaction_guidance(script_text, language_config)
 
-    with open(output_path(output_dir, "script_final.md"), "w", encoding="utf-8") as f:
-        f.write(script_text)
+    # Atomic, not a bare open(): this file is what audio renders, and a write interrupted partway
+    # replaces the previous accepted script with a truncated one that looks finished. Doing it here
+    # rather than in the caller keeps the validation reads above and the write pointed at the SAME
+    # directory — redirecting the write to a scratch tree is what silently disabled the GRADE check.
+    from dr2_podcast.artifacts import write_atomic
+
+    write_atomic(Path(output_path(output_dir, "script_final.md")), script_text)
 
     return script_text
 

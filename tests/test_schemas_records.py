@@ -238,31 +238,37 @@ def _todays_extraction_dict() -> dict[str, Any]:
     ).to_dict()
 
 
-def test_todays_deepextraction_names_exactly_the_step_9a_migration() -> None:
-    """This test is expected to FAIL-to-validate until Step 9a lands, and it says why.
+def test_step_9a_added_every_field_the_contract_requires() -> None:
+    """Inverted 2026-08-13, as its predecessor said to do. The four fields the contract required and
+    DeepExtraction lacked — trial_registration, author_group, funding, findings — are all present."""
+    errors = schema_errors("extraction", _todays_extraction_dict())
+    for field in ("trial_registration", "author_group", "funding", "findings"):
+        assert not any(f"'{field}' is a required property" in error for error in errors), field
 
-    It exists so the migration is a checklist rather than a discovery: when someone changes
-    DeepExtraction, the diff between this and the contract is what is left to do. When 9a is
-    complete this test flips to asserting the record validates — do not delete it, invert it.
+
+def test_the_paper_level_effect_fields_are_what_step_9a_still_has_to_remove() -> None:
+    """The remaining gap, kept as a checklist rather than a discovery.
+
+    findings[] is populated and every consumer still reads the paper-level CER/EER/polarity, which
+    slice 1 DERIVES from the primary finding so nothing breaks. They come out when clinical_math,
+    _build_case and the two SOT renderers read findings[] instead — the second half of 9a. Until
+    then the record does not satisfy the contract, and this says exactly why.
     """
     errors = schema_errors("extraction", _todays_extraction_dict())
-    missing = {"trial_registration", "author_group", "funding", "findings"}
-    moved_away = {"funding_source", "control_event_rate", "experimental_event_rate", "outcome_is_adverse"}
-    for field in missing:
-        assert any(f"'{field}' is a required property" in error for error in errors), field
-    for field in moved_away:
+    for field in ("funding_source", "control_event_rate", "experimental_event_rate", "outcome_is_adverse"):
         assert any(field in error and "not allowed" in error for error in errors), field
 
 
-def test_to_dict_dropping_nulls_is_itself_part_of_the_migration() -> None:
-    """DeepExtraction.to_dict() omits any field that is None (clinical.py:288), but the contract
-    requires the key to be present and explicitly null: absent cannot distinguish 'we looked and
-    found nothing' from 'this producer version does not set it'. 9a's to_dict must emit nulls."""
+def test_to_dict_now_emits_explicit_nulls() -> None:
+    """Inverted 2026-08-13. It used to drop every None, and absent cannot distinguish "we looked and
+    the paper does not say" from "this producer version does not set the field"."""
     from dr2_podcast.research.clinical import DeepExtraction
 
     record = DeepExtraction(pmid="1", doi=None, title="t", url="u").to_dict()
-    assert "doi" not in record
-    assert any("'doi' is a required property" in error for error in schema_errors("extraction", record))
+    assert "doi" in record and record["doi"] is None
+    assert record["findings"] == []
+    assert record["funding"]["funding_disclosure"] == "unknown"
+    assert not any("'doi' is a required property" in error for error in schema_errors("extraction", record))
 
 
 # --------------------------------------------------------------------------- #

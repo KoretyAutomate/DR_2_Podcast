@@ -16,6 +16,8 @@ from dr2_podcast.adapters._common import (
     _script_context,
     drop_unproduced_optional_outputs,
     promote,
+    require_outputs_rewritten,
+    snapshot_outputs,
     staging_dir,
 )
 from dr2_podcast.artifacts import ArtifactError, write_atomic, write_json_atomic
@@ -186,6 +188,9 @@ def audit(run_dir: Path, run_config: dict[str, Any]) -> None:
 
     pipeline = _prepare_run(run_dir, run_config)
     language = run_config["language"]
+    # Taken before the stage writes anything, so it can answer "did THIS execution write each
+    # declared output" at the end — the guarantee staging used to provide for script_final.md.
+    before = snapshot_outputs(run_dir, "audit")
     # A corrections report from an EARLIER audit must not survive this one: if the gate does not
     # fire this time, that file describes a different script and a different verdict, and
     # Manifest.complete() would record it as this execution's optional output.
@@ -235,15 +240,19 @@ def audit(run_dir: Path, run_config: dict[str, Any]) -> None:
                 "research/accuracy_audit.md and ACCURACY_CORRECTIONS.md."
             )
 
-    # _finalize_script writes script_final.md with a bare open(), so an interruption partway would
-    # replace the previous valid final script with a truncated one. Staged and promoted instead.
-    with staging_dir(run_dir) as staging:
-        final = pipeline._finalize_script(
-            polished, pipeline.polish_task, language, pipeline.language_config, staging, corrected_text=corrected
-        )
-        if not final or not final.strip():
-            raise ArtifactError("finalisation produced no script; there is nothing for audio to render")
-        promote(staging, run_dir)
+    # Finalisation runs against the RUN directory, not a staging tree. It reads
+    # research/source_of_truth*.md and research/grade_synthesis.md to run validate_grade_consistency,
+    # and a staging tree does not have them: the check found no inputs and skipped itself for every
+    # staged run, silently (prepush codex 2026-08-13). The truncation risk staging was covering is
+    # now handled where it belongs — _finalize_script writes script_final.md with write_atomic — so
+    # every caller gets it, the live Prefect path included. What staging also gave us, a guarantee
+    # that the recorded output is THIS execution's and not a leftover, is kept explicitly below.
+    final = pipeline._finalize_script(
+        polished, pipeline.polish_task, language, pipeline.language_config, run_dir, corrected_text=corrected
+    )
+    if not final or not final.strip():
+        raise ArtifactError("finalisation produced no script; there is nothing for audio to render")
+    require_outputs_rewritten(run_dir, "audit", before)
 
 
 @register("audio")

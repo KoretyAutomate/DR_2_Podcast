@@ -211,6 +211,17 @@ def safe_str(v):
     return str(v)
 
 
+def safe_bool(v):
+    """A bool the model actually stated, or None. Never a coercion.
+
+    Beside its siblings because more than one caller needs it now, and a truthiness coercion here
+    would turn "the paper does not say" into False — which for a polarity flag is a claim.
+    """
+    if isinstance(v, bool):
+        return v
+    return None
+
+
 _utils_logger = logging.getLogger(__name__)
 
 

@@ -19,6 +19,7 @@ import pytest
 
 from dr2_podcast import adapters
 from dr2_podcast.artifacts import ArtifactError
+from dr2_podcast.artifacts import write_atomic as _real_write_atomic
 from dr2_podcast.stage import write_run_config
 
 
@@ -59,6 +60,30 @@ def _audit_inputs(run_dir: Path) -> None:
     (run_dir / "research/source_of_truth.md").write_text("# Source of Truth\n\nBody.\n")
 
 
+# prepush codex 2026-08-13 named `blueprint` for this; it is `audit`. The library tools belong to
+# auditor_agent (pipeline_crew.py:328) and producer_agent carries none at all (:356), so the
+# blueprint never opens the library — but the auditor does, through research_sources_file(), which
+# consults all three files to decide which library to serve.
+def test_the_stage_that_reads_the_library_declares_all_three_files() -> None:
+    from dr2_podcast.stages import get_stage
+
+    consumed = set(get_stage("audit").consumes)
+    assert {
+        "research/research_sources.json",
+        "research/research_sources_validated.json",
+        "research/research_sources_validated.sha256",
+    } <= consumed
+
+
+def test_the_blueprint_declares_the_validated_library_as_a_gate_only() -> None:
+    """producer_agent has no tools, so this is an ordering gate rather than a read: an episode must
+    not be designed before its citations were checked at all."""
+    from dr2_podcast.stages import get_stage
+
+    assert "research/research_sources_validated.json" in get_stage("blueprint").consumes
+    assert "research/research_sources.json" not in get_stage("blueprint").consumes
+
+
 def _stub_audit(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -91,6 +116,7 @@ def _stub_audit(
 
     def _finalize(polished, task, language, config, output_dir, corrected_text=None):
         seen["finalized_from"] = corrected_text or polished
+        seen["finalized_in"] = output_dir
         (Path(output_dir) / "scripts/script_final.md").write_text(seen["finalized_from"])
         return seen["finalized_from"]
 
@@ -152,22 +178,64 @@ def test_a_stale_corrections_report_does_not_survive_a_clean_audit(
     assert not stale.exists()
 
 
-def test_the_final_script_is_staged_not_written_in_place(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """_finalize_script writes with a bare open(), so an interruption partway would replace the
-    previous valid final script with a truncated one."""
+# prepush codex 2026-08-13. Finalisation was handed a staging directory so its bare open() could
+# not truncate the previous script — but it reads research/source_of_truth*.md and
+# research/grade_synthesis.md from that same directory to run validate_grade_consistency, and a
+# staging tree has neither. The check found no inputs and skipped itself on every staged run, in
+# silence. The write is atomic at its source now, so finalisation sees the real run directory.
+def test_finalisation_can_reach_the_research_inputs_its_grade_check_needs(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _audit_inputs(run_dir)
+    (run_dir / "research/grade_synthesis.md").write_text("### Overall Certainty\nLOW\n")
+    seen = _stub_audit(monkeypatch)
+    adapters.audit(run_dir, RUN_CONFIG)
+
+    finalize_dir = Path(seen["finalized_in"])
+    assert (finalize_dir / "research/grade_synthesis.md").exists(), (
+        "finalisation cannot run validate_grade_consistency from a directory without the research inputs"
+    )
+    assert (finalize_dir / "research/source_of_truth.md").exists()
+
+
+def test_the_final_script_is_written_atomically(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real _finalize_script, not a stub: a failure partway through must leave the previously
+    accepted script intact rather than a truncated one that looks finished."""
+    from dr2_podcast import pipeline as real_pipeline
+
     previous = run_dir / "scripts/script_final.md"
     previous.write_text("Host 1: the previously accepted final script\n")
+
+    def _dies_on_validate(payload: bytes) -> None:
+        raise RuntimeError("finalisation died after the candidate was written")
+
+    monkeypatch.setattr(real_pipeline, "_add_reaction_guidance", lambda text, cfg: text)
+    monkeypatch.setattr(
+        "dr2_podcast.artifacts.write_atomic",
+        lambda path, data, **kw: _real_write_atomic(path, data, validate=_dies_on_validate),
+    )
+    with pytest.raises(RuntimeError, match="finalisation died"):
+        real_pipeline._finalize_script(
+            "Host 1: a new script\n", None, "en", {}, run_dir, corrected_text=None
+        )
+    assert previous.read_text().startswith("Host 1: the previously accepted")
+    assert not list((run_dir / "scripts").glob("*.candidate")), "the candidate must not be left behind"
+
+
+def test_a_leftover_final_script_is_not_recorded_as_this_runs_output(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Staging used to prove authorship by construction. Without it, the mtime snapshot must."""
+    _audit_inputs(run_dir)
+    (run_dir / "scripts/script_final.md").write_text("Host 1: a previous execution's final script\n")
     _stub_audit(monkeypatch)
 
-    def _dies_midway(polished, task, language, config, output_dir, corrected_text=None):
-        (Path(output_dir) / "scripts/script_final.md").write_text("trunc")
-        raise RuntimeError("finalisation died")
+    def _writes_nothing(polished, task, language, config, output_dir, corrected_text=None):
+        return polished
 
-    monkeypatch.setattr("dr2_podcast.pipeline._finalize_script", _dies_midway)
-    with pytest.raises(RuntimeError, match="finalisation died"):
+    monkeypatch.setattr("dr2_podcast.pipeline._finalize_script", _writes_nothing)
+    with pytest.raises(ArtifactError, match="previous execution"):
         adapters.audit(run_dir, RUN_CONFIG)
-    assert previous.read_text().startswith("Host 1: the previously accepted")
 
 
 def test_audit_fails_closed_on_an_empty_verdict(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:

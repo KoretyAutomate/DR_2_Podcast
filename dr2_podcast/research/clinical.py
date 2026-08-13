@@ -44,6 +44,7 @@ from dr2_podcast.utils import (
     gated_create,
     strip_think_blocks,
     is_safe_url,
+    safe_bool,
     safe_float,
     safe_int,
     safe_str,
@@ -251,6 +252,113 @@ class WideNetRecord:
     paper_metadata: Optional["PaperMetadata"] = None
 
 
+def locate_span(text: str, span: str) -> tuple[int, str] | None:
+    """Where ``span`` occurs in ``text``, as ``(offset, literal_text)``, or None if it does not.
+
+    The model supplies the QUOTED SPAN; Python finds the offset. Asking a model for a character
+    offset would be asking it to count, and a number it invented would satisfy the locator contract
+    while pointing nowhere — the contract's whole value is that a Python check can refute it. A span
+    that cannot be found is a fabricated quote, and the finding carrying it is dropped.
+
+    Whitespace is normalised for the SEARCH, because extracted full text re-wraps lines and a model
+    quoting it will not reproduce the wrap. But the second element is the LITERAL substring of
+    ``text`` that matched, not the model's version of it, and that is what a caller must store:
+    ``verify_locator_span`` asserts ``text[offset:offset + len(span)] == span``, so storing the
+    model's spaces against an offset into line-wrapped source builds a locator that cannot verify.
+    """
+    if not span or not text:
+        return None
+    direct = text.find(span)
+    if direct >= 0:
+        return direct, span
+    collapsed = " ".join(span.split())
+    if not collapsed:
+        return None
+    pattern = re.compile(r"\s+".join(re.escape(word) for word in collapsed.split()))
+    match = pattern.search(text)
+    if not match:
+        return None
+    return match.start(), match.group(0)
+
+
+def _primary_flag(raw_value: Any, endpoint: str) -> bool:
+    """Whether the model actually said this finding is the primary one."""
+    stated = safe_bool(raw_value)
+    if stated is None and raw_value is not None:
+        logger.warning(
+            "is_primary for %r was %r, not a JSON boolean — treating it as not primary",
+            endpoint[:60],
+            raw_value,
+        )
+    return stated is True
+
+
+@dataclass
+class FundingBlock:
+    """Paper-level funding, as five fields rather than one free-text line.
+
+    Funding has two provenances and only one can satisfy the locator contract: the extractor falls
+    back to ``paper_metadata.funding_sources`` from API metadata, which exists nowhere in the paper
+    text. ``undisclosed`` (the paper is silent) is NOT ``unknown`` (extraction failed) — Ep09's
+    thesis makes that distinction the finding, so they are counted separately.
+    """
+
+    funding_raw: str | None = None
+    funding_category: str = "unknown"
+    funding_disclosure: str = "unknown"
+    funding_source_type: str = "none"
+    funding_locator: dict | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "funding_raw": self.funding_raw,
+            "funding_category": self.funding_category,
+            "funding_disclosure": self.funding_disclosure,
+            "funding_source_type": self.funding_source_type,
+            "funding_locator": self.funding_locator,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "FundingBlock":
+        return cls(**{k: v for k, v in (d or {}).items() if k in {f.name for f in fields(cls)}})
+
+
+@dataclass
+class Finding:
+    """One result: a (population, intervention, comparator, endpoint, timepoint) tuple.
+
+    A PAPER IS NOT A FINDING. The extraction prompt already asks for a primary outcome, a
+    secondary_outcomes list and 3-5 key findings, so one paper routinely reports benefit on one
+    endpoint and a null result on another. Hanging a singular direction off the paper forces an
+    arbitrary pick and silently discards the rest, which breaks replication grouping.
+    """
+
+    population: str
+    intervention: str
+    comparator: str
+    endpoint: str
+    timepoint: str | None = None
+    direction: str = "null_result"
+    value: float | None = None
+    unit: str | None = None
+    ci_low: float | None = None
+    ci_high: float | None = None
+    p_value: float | None = None
+    is_primary: bool = False
+    control_event_rate: float | None = None
+    experimental_event_rate: float | None = None
+    outcome_is_adverse: bool | None = None
+    finding_key: str = ""
+    locators: list = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {f.name: getattr(self, f.name) for f in fields(self)}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Finding":
+        return cls(**{k: v for k, v in d.items() if k in {f.name for f in fields(cls)}})
+
+
 @dataclass
 class DeepExtraction:
     """Clinical variable extraction from full-text articles (Step 4)."""
@@ -282,16 +390,33 @@ class DeepExtraction:
     research_tier: int | None = None  # 1=folk 2=synonym 3=compound
     raw_facts: str = ""
     paper_metadata: Optional["PaperMetadata"] = None
+    # --- Step 9a ---------------------------------------------------------
+    # findings[] is the real result set; the paper-level effect fields above are DERIVED from the
+    # primary finding so every existing consumer keeps working until they are migrated.
+    findings: list = field(default_factory=list)
+    funding: Optional["FundingBlock"] = None
+    trial_registration: str | None = None  # NCT/UMIN — a trial has exactly one, so paper-level
+    author_group: str | None = None  # normalised, for counting DISTINCT groups per finding_key
 
     def to_dict(self) -> dict:
+        """Every field, INCLUDING the null ones.
+
+        It used to drop anything None or empty. Absent cannot distinguish "we looked and the paper
+        does not say" from "this producer version does not set the field", and the extraction
+        contract in dr2_podcast/schemas requires the key to be present and explicitly null. Nested
+        records serialise through their own to_dict rather than being handed out as objects.
+        """
         d = {}
         for f in fields(self):
             v = getattr(self, f.name)
-            if v is not None and v != "" and v != []:
-                if f.name == "paper_metadata" and v is not None:
-                    d[f.name] = v.to_dict()
-                else:
-                    d[f.name] = v
+            if f.name == "paper_metadata":
+                d[f.name] = v.to_dict() if v is not None else None
+            elif f.name == "funding":
+                d[f.name] = v.to_dict() if v is not None else FundingBlock().to_dict()
+            elif f.name == "findings":
+                d[f.name] = [finding.to_dict() for finding in (v or [])]
+            else:
+                d[f.name] = v
         return d
 
 
@@ -1080,6 +1205,10 @@ class ResearchAgent:
     5. Repeats until satisfied or max iterations reached
     6. Writes a final report
     """
+
+    # Set by the Orchestrator once the domain is classified, and read through getattr in three
+    # places. Declared here so it is a real attribute rather than one mypy has to guess at.
+    _domain: str = "clinical"
 
     def __init__(
         self,
@@ -2294,6 +2423,204 @@ class ResearchAgent:
             json.dump(cache, f, indent=2)
 
     @staticmethod
+    def _build_findings(data: dict, source_text: str, artifact_id: str) -> list:
+        """Turn the model's findings into records Python vouches for.
+
+        Three things the model does NOT get to decide. The ``finding_key`` is computed here from the
+        normalised identity tuple — a model-authored key makes replication grouping a semantic task
+        again, which is the one thing the key exists to remove. The ``char_offset`` is found by
+        searching the source, because a model asked for an offset would be asked to count, and an
+        invented number satisfies the contract while pointing nowhere. And a quote that cannot be
+        found in the source **drops the finding**: an unverifiable quote is not evidence.
+        """
+        from dr2_podcast.schemas import compute_finding_key, finding_errors
+
+        built = []
+        for raw in data.get("findings") or []:
+            if not isinstance(raw, dict):
+                continue
+            identity = {
+                "population": safe_str(raw.get("population")) or "",
+                "intervention": safe_str(raw.get("intervention")) or "",
+                "comparator": safe_str(raw.get("comparator")) or "",
+                "endpoint": safe_str(raw.get("endpoint")) or "",
+                "timepoint": safe_str(raw.get("timepoint")),
+            }
+            if not identity["endpoint"]:
+                logger.debug("dropping a finding with no endpoint")
+                continue
+            quote = safe_str(raw.get("quote")) or ""
+            identity_quote = safe_str(raw.get("identity_quote")) or ""
+            result_hit = locate_span(source_text, quote) if quote else None
+            identity_hit = locate_span(source_text, identity_quote) if identity_quote else None
+            if result_hit is None or identity_hit is None:
+                logger.warning(
+                    "dropping finding %r: a quote is not in the source text", identity["endpoint"][:60]
+                )
+                continue
+
+            values = {
+                "direction": safe_str(raw.get("direction")) or "null_result",
+                "value": safe_float(raw.get("value")),
+                "unit": safe_str(raw.get("unit")),
+                "ci_low": safe_float(raw.get("ci_low")),
+                "ci_high": safe_float(raw.get("ci_high")),
+                "p_value": safe_float(raw.get("p_value")),
+                "control_event_rate": safe_float(raw.get("control_event_rate")),
+                "experimental_event_rate": safe_float(raw.get("experimental_event_rate")),
+                "outcome_is_adverse": safe_bool(raw.get("outcome_is_adverse")),
+            }
+            # Field-level coverage, which is why there are two quotes: every claim-bearing field the
+            # record actually carries must be named by a locator, and one span cannot honestly
+            # substantiate both who was studied and what happened to them.
+            identity_fields = [name for name in ("population", "intervention", "comparator", "timepoint")
+                               if identity.get(name)]
+            result_fields = ["endpoint"] + [name for name, value in values.items() if value is not None]
+            finding = Finding(
+                **identity,
+                **values,
+                # safe_bool, not bool(): the model returns JSON, and a JSON string "false" is
+                # truthy (prepush codex 2026-08-13). Getting this wrong picks the wrong finding as
+                # the paper's primary result at clinical.py:2789, and its CER/EER are what the
+                # deterministic ARR/NNT math is computed from. safe_bool refuses to coerce, so only
+                # a real boolean true counts; anything else is "not stated", and said out loud
+                # rather than silently demoting every finding a string-emitting model produced.
+                is_primary=_primary_flag(raw.get("is_primary"), identity["endpoint"]),
+                locators=[
+                    {
+                        "fields": identity_fields,
+                        "source_artifact_id": artifact_id,
+                        "char_offset": identity_hit[0],
+                        # The LITERAL source substring, not the model's rendering of it: the source
+                        # may be line-wrapped where the model used a space, and the locator contract
+                        # is an exact-substring check at the offset.
+                        "quoted_span": identity_hit[1],
+                    },
+                    {
+                        "fields": result_fields,
+                        "source_artifact_id": artifact_id,
+                        "char_offset": result_hit[0],
+                        "quoted_span": result_hit[1],
+                    },
+                ],
+            )
+            finding.finding_key = compute_finding_key(identity)
+            # The contract is enforced HERE, on the production path, or it is not enforced at all
+            # (prepush codex 2026-08-13): schemas/ was written and then only ever called by its own
+            # tests, so an unknown `direction`, an empty population, one of CER/EER without the
+            # other or a rate outside [0, 1] would flow into primary-result selection, the
+            # deterministic ARR/NNT math and the v2 cache. A finding that fails is DROPPED, which is
+            # what this function already does with a quote it cannot find in the source — one bad
+            # record must not cost the paper its good ones.
+            problems = finding_errors(finding.to_dict(), {artifact_id: source_text})
+            if problems:
+                logger.warning(
+                    "dropping finding %r: it does not satisfy the finding contract (%s)",
+                    identity["endpoint"][:60],
+                    "; ".join(problems[:3]),
+                )
+                continue
+            built.append(finding)
+        return built
+
+    @staticmethod
+    def _build_funding(data: dict, record: WideNetRecord, source_text: str, artifact_id: str) -> FundingBlock:
+        """The five-field funding block, with its provenance stated rather than assumed.
+
+        The extractor already falls back to ``paper_metadata.funding_sources`` when the model finds
+        nothing in the text. That fallback is real information and worth keeping — but it is API
+        metadata, it appears nowhere in the paper, and it therefore cannot carry a locator. Saying
+        which of the two a value came from is the whole point of the split.
+        """
+        from dr2_podcast.schemas import funding_errors
+
+        raw = safe_str(data.get("funding_raw"))
+        quote = safe_str(data.get("funding_quote")) or ""
+        category = safe_str(data.get("funding_category")) or "unknown"
+        disclosure = safe_str(data.get("funding_disclosure")) or "unknown"
+
+        hit = locate_span(source_text, quote) if (raw and quote) else None
+        if raw and hit is not None:
+            block = FundingBlock(
+                funding_raw=raw,
+                funding_category=category if category not in ("undisclosed", "unknown") else "unknown",
+                funding_disclosure="disclosed",
+                funding_source_type="extracted_text",
+                funding_locator={
+                    "fields": ["funding_raw"],
+                    "source_artifact_id": artifact_id,
+                    "char_offset": hit[0],
+                    "quoted_span": hit[1],
+                },
+            )
+            # Same reason as the findings above: the contract has to run where the model's output
+            # actually enters the pipeline. A block that fails it is not silently downgraded to
+            # api_metadata — that would fabricate provenance — it falls through to "unknown".
+            problems = funding_errors(block.to_dict(), {artifact_id: source_text})
+            if not problems:
+                return block
+            logger.warning(
+                "discarding extracted funding: it does not satisfy the funding contract (%s)",
+                "; ".join(problems[:3]),
+            )
+        if raw:
+            # The model produced a funder but no quote that is actually in the paper. It is NOT
+            # api_metadata — nothing from an API produced it — and calling it that would fabricate
+            # exactly the provenance this split exists to guarantee. The value is discarded; what
+            # follows is the real API fallback, or nothing.
+            logger.warning("discarding unverifiable funding text %r: its quote is not in the source", raw[:60])
+
+        api = getattr(record.paper_metadata, "funding_sources", None) if record.paper_metadata else None
+        if api:
+            # The API names a funder, which settles DISCLOSURE. It does not settle CATEGORY, and the
+            # model's guess about a statement it could not quote is not evidence of one, so an
+            # unusable category stays 'unknown' — a state funding.schema.json now admits on this
+            # branch specifically, because the two questions have different answers here.
+            block = FundingBlock(
+                funding_raw=", ".join(api[:3]),
+                # ALWAYS unknown. The category the model returned describes a funding statement it
+                # could not quote — the one discarded a few lines above — so carrying it here would
+                # attach an unverifiable 'industry' or 'government' label, the exact conflict-of-
+                # interest classification the episode reasons about, to a name an API supplied
+                # (prepush codex 2026-08-13). The API gives names, not categories.
+                funding_category="unknown",
+                funding_disclosure="disclosed",
+                funding_source_type="api_metadata",
+                funding_locator=None,
+            )
+            problems = funding_errors(block.to_dict(), {artifact_id: source_text})
+            if not problems:
+                return block
+            logger.warning(
+                "discarding API funding metadata %r: it does not satisfy the funding contract (%s)",
+                (block.funding_raw or "")[:60],
+                "; ".join(problems[:3]),
+            )
+        if disclosure == "undisclosed":
+            return FundingBlock(funding_category="undisclosed", funding_disclosure="undisclosed")
+        return FundingBlock()
+
+    @staticmethod
+    def _cache_entry_still_verifies(cached: DeepExtraction, text: str, artifact_id: str) -> bool:
+        """Whether everything a cache entry claims still holds against the text fetched this run.
+
+        Findings AND funding: an ``extracted_text`` funding block carries a locator into the same
+        source, and checking only the findings would let a stale, unquotable funder — the conflict
+        of interest the episode reasons about — ride through on a cache hit.
+        """
+        from dr2_podcast.schemas import finding_errors, funding_errors
+
+        if not text.strip():
+            # Nothing to check it against. The cached record is all there is, and refusing it would
+            # only trade a verified-when-written extraction for no extraction at all.
+            return True
+        artifacts = {artifact_id: text}
+        if any(finding_errors(f.to_dict(), artifacts) for f in cached.findings):
+            return False
+        funding = cached.funding
+        return not (funding is not None and funding_errors(funding.to_dict(), artifacts))
+
+    @staticmethod
     def _extraction_from_cache(record: WideNetRecord, cached: dict) -> DeepExtraction:
         """Reconstruct a DeepExtraction from cached data."""
         return DeepExtraction(
@@ -2323,6 +2650,18 @@ class ResearchAgent:
             risk_of_bias=cached.get("risk_of_bias"),
             research_tier=record.research_tier,
             raw_facts=cached.get("raw_facts", ""),
+            # Step 9a. Rebuilt, not skipped: a cache hit that dropped these would silently lose the
+            # structured findings and provenance the first run paid to extract, and the paper would
+            # contribute nothing on every subsequent run — the exact failure the v2 key was for.
+            findings=[Finding.from_dict(f) for f in (cached.get("findings") or []) if isinstance(f, dict)],
+            funding=FundingBlock.from_dict(cached.get("funding")),
+            trial_registration=cached.get("trial_registration"),
+            author_group=cached.get("author_group"),
+            paper_metadata=(
+                PaperMetadata.from_dict(cached["paper_metadata"])
+                if isinstance(cached.get("paper_metadata"), dict)
+                else record.paper_metadata
+            ),
         )
 
     @staticmethod
@@ -2350,20 +2689,35 @@ class ResearchAgent:
         # Load extraction cache
         extraction_cache = self._load_extraction_cache(output_dir)
         cache_hits = 0
-        new_cache_entries = {}
 
         async def extract_one(article, record: WideNetRecord) -> DeepExtraction:
             nonlocal cache_hits
             # Check cache first (PMID-keyed)
-            cache_key = record.pmid or record.doi or ""
-            if cache_key and cache_key in extraction_cache:
-                cache_hits += 1
-                log(f"    [Cache hit] {record.title[:50]}...")
-                return self._extraction_from_cache(record, extraction_cache[cache_key])
+            # v2 — Step 9a. Without the prefix, a cached v1 entry deserialises into a record with
+            # no findings[] and no funding block, silently, and the paper simply contributes nothing.
+            cache_key = f"v2:{record.pmid or record.doi or ''}" if (record.pmid or record.doi) else ""
             text = getattr(article, "full_text", "") or ""
             # Fall back to abstract if full-text is empty or too short
             if len(text.strip()) < 200 and record.abstract:
                 text = record.abstract
+            artifact_id = f"pmid:{record.pmid}" if record.pmid else (record.doi or record.url or record.title)
+            if cache_key and cache_key in extraction_cache:
+                cached = self._extraction_from_cache(record, extraction_cache[cache_key])
+                # A locator is a claim about THIS text. The cache is keyed by PMID/DOI, and the same
+                # paper fetched from a different provider — PMC one run, a publisher scrape the next
+                # — is a different string, so the stored offsets can point at the wrong words or
+                # nowhere at all while their CER/EER keep feeding the ARR/NNT math (prepush codex
+                # 2026-08-13). Re-checked against what this run actually fetched; an entry that no
+                # longer verifies is not this paper's extraction, and the paper is re-extracted.
+                if self._cache_entry_still_verifies(cached, text, artifact_id):
+                    cache_hits += 1
+                    log(f"    [Cache hit] {record.title[:50]}...")
+                    return cached
+                logger.warning(
+                    "cache entry for %r no longer verifies against the text fetched this run; "
+                    "re-extracting",
+                    (record.title or record.pmid or "")[:60],
+                )
             if not text.strip():
                 return DeepExtraction(
                     pmid=record.pmid,
@@ -2436,8 +2790,42 @@ class ResearchAgent:
                             '  "sample_size_control": 500,\n'
                             '  "study_design": "parallel RCT | crossover RCT | meta-analysis | cohort | etc.",\n'
                             '  "risk_of_bias": "low | some concerns | high | unclear",\n'
-                            '  "raw_facts": "3-5 key findings as bullet points"\n'
-                            "}"
+                            '  "raw_facts": "3-5 key findings as bullet points",\n'
+                            '  "trial_registration": "NCT/UMIN identifier or null",\n'
+                            '  "author_group": "first author + institution, e.g. Tanaka H; Osaka University",\n'
+                            '  "funding_raw": "verbatim funding statement as printed, or null"\n'
+                            '                  " if the paper is silent",\n'
+                            '  "funding_category": "industry | government | foundation"\n'
+                            '                       " | institutional | mixed | none_declared"\n'
+                            '                       " | undisclosed | unknown",\n'
+                            '  "funding_disclosure": "disclosed | undisclosed | unknown",\n'
+                            '  "funding_quote": "the exact sentence the funding statement appears in, or null",\n'
+                            '  "findings": [\n'
+                            "    {\n"
+                            '      "population": "who was studied",\n'
+                            '      "intervention": "what they received",\n'
+                            '      "comparator": "what it was compared against",\n'
+                            '      "endpoint": "the outcome measured",\n'
+                            '      "timepoint": "when it was measured, or null",\n'
+                            '      "direction": "increase | decrease | null_result",\n'
+                            '      "value": 5.0, "unit": "%", "ci_low": 2.0, "ci_high": 8.0, "p_value": 0.03,\n'
+                            '      "is_primary": true,\n'
+                            '      "control_event_rate": 0.15, "experimental_event_rate": 0.10,\n'
+                            '      "outcome_is_adverse": true,\n'
+                            '      "identity_quote": "the exact sentence establishing WHO was studied, what\n'
+                            '                          they received and what it was compared against",\n'
+                            '      "quote": "the exact sentence from the paper that states this result"\n'
+                            "    }\n"
+                            "  ]\n"
+                            "}\n\n"
+                            "ONE ENTRY IN findings PER (population, intervention, comparator, endpoint, timepoint).\n"
+                            "A paper that reports benefit on one endpoint and no effect on another has TWO entries. "
+                            "Do NOT collapse them, and do NOT invent an entry for an endpoint\n"
+                            "the paper does not report.\n"
+                            "BOTH quotes MUST be copied VERBATIM from the study text above. Each is checked "
+                            "against the source, and a finding whose quotes cannot be found there is DISCARDED. "
+                            "Two quotes because the facts live in two places: who was studied is in the "
+                            "methods, what happened to them is in the results."
                         )
 
                     # Extraction has always run on the Smart model: a 9B was judged too
@@ -2480,24 +2868,33 @@ class ResearchAgent:
                     raw = safe_message_text(resp)
                     data = self._parse_json_response(raw)
 
-                    def safe_bool(v):
-                        if v is None or v == "null":
-                            return None
-                        if isinstance(v, bool):
-                            return v
-                        return None
-
                     def safe_list(v):
                         if isinstance(v, list):
                             return v
                         return None
 
-                    # Supplement funding_source with API data if LLM returned None
-                    llm_funding = safe_str(data.get("funding_source"))
-                    if not llm_funding and record.paper_metadata and record.paper_metadata.funding_sources:
-                        llm_funding = ", ".join(record.paper_metadata.funding_sources[:3])
+                    # Step 9a. findings[] is the real result set; the paper-level effect fields below
+                    # are DERIVED from the primary finding so every consumer keeps working until it
+                    # is migrated. Deriving rather than parsing them twice is what keeps the two from
+                    # disagreeing about the same paper.
+                    findings = self._build_findings(data, text, artifact_id)
+                    funding = self._build_funding(data, record, text, artifact_id)
+                    primary = next((f for f in findings if f.is_primary), findings[0] if findings else None)
+                    # extraction.schema.json requires at least one finding and calls a paper with
+                    # none an extraction FAILURE. That is the clinical contract; the social-science
+                    # prompt does not ask for findings at all, so only the clinical path is judged
+                    # by it. Not raising here — the record's narrative fields are still usable and
+                    # dropping the paper outright would shrink the corpus on a model hiccup — but it
+                    # is said out loud, it contributes no rates (above), and it is not cached, so a
+                    # rerun retries instead of inheriting the failure.
+                    if not is_social and not findings:
+                        logger.warning(
+                            "no verified finding survived extraction for %r; it contributes no "
+                            "event rates to the clinical math",
+                            (record.title or record.pmid or "")[:60],
+                        )
 
-                    return DeepExtraction(
+                    extraction = DeepExtraction(
                         pmid=record.pmid,
                         doi=record.doi,
                         title=record.title,
@@ -2506,12 +2903,23 @@ class ResearchAgent:
                         effect_size=safe_str(data.get("effect_size")),
                         demographics=safe_str(data.get("demographics")),
                         follow_up_period=safe_str(data.get("follow_up_period")),
-                        funding_source=llm_funding,
+                        # From the VALIDATED block, never from data["funding_source"]. _build_case
+                        # injects this legacy field into the synthesis prompt as "Funding", so
+                        # reading the raw model response here handed the episode exactly the
+                        # unverifiable claim _build_funding had just discarded (prepush codex
+                        # 2026-08-13). Slice 2 removes the field; until then it mirrors the block.
+                        funding_source=funding.funding_raw,
                         conflicts_of_interest=safe_str(data.get("conflicts_of_interest")),
                         biological_mechanism=safe_str(data.get("biological_mechanism")),
-                        control_event_rate=safe_float(data.get("control_event_rate")),
-                        experimental_event_rate=safe_float(data.get("experimental_event_rate")),
-                        outcome_is_adverse=safe_bool(data.get("outcome_is_adverse")),
+                        # ONLY from a verified finding. The fallback these three used to have read
+                        # the model's paper-level numbers directly — no quote, no locator, nothing
+                        # a Python check could refute — and fed them to the deterministic ARR/NNT
+                        # math, which is the one place in this pipeline where an unverified number
+                        # becomes a number the episode states out loud (prepush codex 2026-08-13).
+                        # A paper whose every finding failed verification contributes no rates.
+                        control_event_rate=primary.control_event_rate if primary else None,
+                        experimental_event_rate=primary.experimental_event_rate if primary else None,
+                        outcome_is_adverse=primary.outcome_is_adverse if primary else None,
                         primary_outcome=safe_str(data.get("primary_outcome")),
                         secondary_outcomes=safe_list(data.get("secondary_outcomes")),
                         blinding=safe_str(data.get("blinding")),
@@ -2525,7 +2933,12 @@ class ResearchAgent:
                         research_tier=record.research_tier,
                         raw_facts=safe_str(data.get("raw_facts")) or "",
                         paper_metadata=record.paper_metadata,
+                        findings=findings,
+                        funding=funding,
+                        trial_registration=safe_str(data.get("trial_registration")),
+                        author_group=safe_str(data.get("author_group")),
                     )
+                    return extraction
                 except Exception as e:
                     logger.warning(f"Deep extraction failed for {record.title[:50]}: {e}")
                     return DeepExtraction(
@@ -2542,17 +2955,37 @@ class ResearchAgent:
         good = sum(1 for r in results if r.raw_facts and "failed" not in r.raw_facts.lower())
         log(f"    [Step 4] Extracted data from {good}/{len(results)} articles (cache hits: {cache_hits})")
 
-        # Save new extractions to cache
+        self._persist_new_extractions(
+            list(results), extraction_cache, output_dir, log, findings_required=not is_social
+        )
+        return list(results)
+
+    def _persist_new_extractions(
+        self, results, extraction_cache: dict, output_dir, log, *, findings_required: bool
+    ) -> None:
+        """Remember the extractions worth remembering, and only those.
+
+        ``findings_required`` is the contract the batch ran under — the clinical prompt asks for
+        findings and the social-science prompt does not — and it arrives as an argument rather than
+        riding on each record, because it describes the extraction, not the paper.
+        """
+        new_cache_entries: dict[str, Any] = {}
         for r in results:
-            cache_key = r.pmid or r.doi or ""
-            if cache_key and cache_key not in extraction_cache and "failed" not in (r.raw_facts or "").lower():
+            cache_key = f"v2:{r.pmid or r.doi or ''}" if (r.pmid or r.doi) else ""
+            # A clinical extraction that produced no verified finding is not a result worth
+            # remembering: caching it would make the next run inherit the failure without retrying.
+            unverified = findings_required and not r.findings
+            if (
+                cache_key
+                and cache_key not in extraction_cache
+                and "failed" not in (r.raw_facts or "").lower()
+                and not unverified
+            ):
                 new_cache_entries[cache_key] = self._cache_extraction(r)
         if new_cache_entries:
             extraction_cache.update(new_cache_entries)
             self._save_extraction_cache(extraction_cache, output_dir)
             log(f"    [Step 4] Saved {len(new_cache_entries)} new extractions to cache")
-
-        return list(results)
 
     async def _build_case(
         self, topic: str, strategy: TieredSearchPlan, extractions: list[DeepExtraction], case_type: str, log=logger.info
