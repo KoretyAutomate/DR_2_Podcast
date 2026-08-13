@@ -213,6 +213,36 @@ def _iter_urls(node: Any) -> list[str]:
     return found
 
 
+@register("translate")
+def translate(run_dir: Path, run_config: dict[str, Any]) -> None:
+    """Phase 3 — translate the source of truth, for a non-English episode.
+
+    Calls ``_translate_sot_pipelined`` directly rather than ``_translate_and_inject_sot``: the
+    latter also injects the summary into Crew 3 task descriptions, which is meaningless across a
+    process boundary because every stage rebuilds its own tasks. What survives the boundary is the
+    file.
+
+    An English run writes nothing and completes; the output is optional for exactly that reason. A
+    translation that comes back empty RAISES, though — the phase returns None and carries on, which
+    leaves a Japanese episode built from an English source of truth.
+    """
+    from dr2_podcast.artifacts import read_text_strict
+
+    language = run_config["language"]
+    if language == "en":
+        return
+
+    pipeline = _prepare_run(run_dir, run_config)
+    sot = read_text_strict(run_dir / "research/source_of_truth.md")
+    translated = pipeline._translate_sot_pipelined(sot, language, pipeline.language_config)
+    if not translated or not translated.strip():
+        raise ArtifactError(
+            f"translation to {language!r} produced nothing. The monolithic phase returns None and "
+            f"continues, which builds the episode from a source of truth in the wrong language."
+        )
+    write_atomic(run_dir / f"research/source_of_truth_{language}.md", translated)
+
+
 @register("blueprint")
 def blueprint(run_dir: Path, run_config: dict[str, Any]) -> None:
     """Phase 4 — the episode blueprint, via the producer agent.
@@ -299,4 +329,4 @@ def registered() -> tuple[str, ...]:
     return tuple(sorted(ADAPTERS))
 
 
-__all__ = ["blueprint", "framing", "registered", "url_validation"]
+__all__ = ["blueprint", "framing", "registered", "translate", "url_validation"]

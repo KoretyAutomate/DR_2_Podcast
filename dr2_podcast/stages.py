@@ -149,7 +149,7 @@ STAGES: tuple[Stage, ...] = (
         name="translate",
         consumes=("research/source_of_truth.md",),
         produces=(),
-        optional_outputs=("research/source_of_truth_ja.md",),
+        optional_outputs=("research/source_of_truth_{language}.md",),
         engine="smart",
     ),
     Stage(
@@ -214,22 +214,6 @@ def resolve(artifacts: tuple[str, ...], substitutions: dict[str, str] | None = N
     return tuple(a.format(**substitutions) for a in artifacts)
 
 
-def get_stage(name: str) -> Stage:
-    """Look a stage up by name, with a message that lists the alternatives."""
-    try:
-        return STAGES_BY_NAME[name]
-    except KeyError:
-        raise KeyError(f"unknown stage {name!r}; known: {', '.join(STAGE_NAMES)}") from None
-
-
-def producer_of(artifact: str) -> str | None:
-    """Which stage writes this artifact, or None if nothing declares it."""
-    for stage in STAGES:
-        if artifact in stage.produces or artifact in stage.optional_outputs:
-            return stage.name
-    return None
-
-
 def _pattern_matches(artifact: str, pattern: str) -> bool:
     """Whether an artifact name satisfies a possibly-placeholdered pattern.
 
@@ -241,6 +225,29 @@ def _pattern_matches(artifact: str, pattern: str) -> bool:
         return artifact == pattern
     head, _, tail = pattern.partition("{")
     return artifact.startswith(head) and artifact.endswith(tail.partition("}")[2])
+
+
+def get_stage(name: str) -> Stage:
+    """Look a stage up by name, with a message that lists the alternatives."""
+    try:
+        return STAGES_BY_NAME[name]
+    except KeyError:
+        raise KeyError(f"unknown stage {name!r}; known: {', '.join(STAGE_NAMES)}") from None
+
+
+def producer_of(artifact: str) -> str | None:
+    """Which stage writes this artifact, or None if nothing declares it.
+
+    Pattern-aware, because an optional output may be declared as
+    ``research/source_of_truth_{language}.md``. Exact matching here would silently answer None for
+    the very artifact the graph exists to attribute.
+    """
+    for stage in STAGES:
+        if artifact in stage.produces:
+            return stage.name
+        if any(_pattern_matches(artifact, pattern) for pattern in stage.optional_outputs):
+            return stage.name
+    return None
 
 
 def _reads(stage: Stage) -> tuple[tuple[str, ...], tuple[str, ...]]:

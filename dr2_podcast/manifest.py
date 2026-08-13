@@ -285,7 +285,8 @@ class Manifest:
         inputs += [ref for name in optional_inputs if (ref := self._ref(name, required=False))]
         record["inputs"] = inputs
         outputs = [self._ref(name, required=True) for name in definition.produces]
-        outputs += [ref for name in definition.optional_outputs if (ref := self._ref(name, required=False))]
+        optional_outputs = resolve(definition.optional_outputs, substitutions)
+        outputs += [ref for name in optional_outputs if (ref := self._ref(name, required=False))]
         record["outputs"] = outputs
         record.update(status="complete", finished_at=_now(), stale_reason=None)
         return self.invalidate_downstream(stage)

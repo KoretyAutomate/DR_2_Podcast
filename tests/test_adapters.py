@@ -45,7 +45,7 @@ RUN_CONFIG = {"topic": "ビタミンDと骨折", "language": "ja", "target_lengt
 # Registration
 # --------------------------------------------------------------------------- #
 def test_the_adapters_register_themselves_against_declared_stages() -> None:
-    assert {"framing", "url_validation", "blueprint"} <= set(ADAPTERS)
+    assert {"framing", "url_validation", "blueprint", "translate"} <= set(ADAPTERS)
 
 
 def test_registering_an_unknown_stage_is_refused() -> None:
@@ -334,6 +334,39 @@ def test_blueprint_fails_closed_without_a_source_of_truth(run_dir: Path, monkeyp
     _stub_blueprint(monkeypatch, BLUEPRINT_TEXT)
     with pytest.raises(ArtifactError, match="cannot read"):
         adapters.blueprint(run_dir, RUN_CONFIG)
+
+
+# --------------------------------------------------------------------------- #
+# translate
+# --------------------------------------------------------------------------- #
+def test_translate_writes_the_translated_source_of_truth(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (run_dir / "research/source_of_truth.md").write_text("# Source of Truth\n\nBody.\n")
+    monkeypatch.setattr(
+        "dr2_podcast.pipeline._translate_sot_pipelined",
+        lambda text, language, config: "# 真実の源\n\n本文。\n",
+    )
+    adapters.translate(run_dir, RUN_CONFIG)
+    assert (run_dir / "research/source_of_truth_ja.md").read_text().startswith("# 真実の源")
+
+
+def test_translate_does_nothing_for_an_english_episode(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The output is optional for exactly this reason."""
+
+    def _never(*args: Any, **kwargs: Any) -> str:
+        raise AssertionError("an English episode has nothing to translate")
+
+    monkeypatch.setattr("dr2_podcast.pipeline._translate_sot_pipelined", _never)
+    adapters.translate(run_dir, {**RUN_CONFIG, "language": "en"})
+    assert not list((run_dir / "research").glob("source_of_truth_*.md"))
+
+
+def test_translate_fails_closed_on_an_empty_translation(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The phase returns None and carries on, building the episode from the wrong language."""
+    (run_dir / "research/source_of_truth.md").write_text("# Source of Truth\n\nBody.\n")
+    monkeypatch.setattr("dr2_podcast.pipeline._translate_sot_pipelined", lambda text, lang, cfg: "")
+    with pytest.raises(ArtifactError, match="produced nothing"):
+        adapters.translate(run_dir, RUN_CONFIG)
+    assert not (run_dir / "research/source_of_truth_ja.md").exists()
 
 
 # --------------------------------------------------------------------------- #
