@@ -10,9 +10,8 @@
     "schema_version": { "const": 1 },
     "topic": { "type": "string", "minLength": 1 },
     "language": {
-      "description": "Episode language. Drives translation, TTS engine and voice selection.",
-      "type": "string",
-      "minLength": 2
+      "description": "Episode language. Drives translation, TTS engine and voice selection. Enumerated rather than any string, because initialise_run_globals indexes SUPPORTED_LANGUAGES with it: a free string let `--language fr` overwrite the run config and only then fail the stage with a KeyError. Rejecting it here means the invalid configuration is never committed. Kept in step with pipeline.SUPPORTED_LANGUAGES by test_the_language_enum_matches_the_supported_languages.",
+      "enum": ["en", "ja"]
     },
     "target_length_minutes": { "type": "integer", "minimum": 1, "maximum": 180 },
     "created_at": { "type": ["string", "null"] },

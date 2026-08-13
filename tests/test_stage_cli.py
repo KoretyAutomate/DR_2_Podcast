@@ -379,6 +379,28 @@ def test_a_corrupt_run_config_during_a_topic_update_is_an_error_not_a_traceback(
     assert "ERROR" in capsys.readouterr().err
 
 
+# prepush codex 2026-08-12: a free-string language let `--language fr` overwrite the run config and
+# only then fail the stage with a KeyError from SUPPORTED_LANGUAGES.
+def test_an_unsupported_language_is_rejected_before_it_is_committed(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    (tmp_path / "meta").mkdir()
+    write_run_config(tmp_path, topic="original", language="en", target_length_minutes=60)
+    _stub("framing", FRAMING_OUTPUTS)
+    assert main(["framing", "--run", str(tmp_path), "--language", "fr"]) == 1
+    assert "ERROR" in capsys.readouterr().err
+    assert load_run_config(tmp_path)["language"] == "en", "the good config survives"
+
+
+def test_the_language_enum_matches_the_supported_languages() -> None:
+    """Two lists that must agree; this is what keeps them agreeing."""
+    from dr2_podcast.pipeline import SUPPORTED_LANGUAGES
+    from dr2_podcast.schemas import load_schema
+
+    enum = load_schema("run_config")["properties"]["language"]["enum"]
+    assert sorted(enum) == sorted(SUPPORTED_LANGUAGES)
+
+
 def test_cli_runs_a_stage_and_exits_zero(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     assert main(["framing", "--run", str(run_dir)]) == 0
