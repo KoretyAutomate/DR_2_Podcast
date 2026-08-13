@@ -329,6 +329,7 @@ def _run_batch(
     *,
     social: bool = False,
     source_text: str = SOURCE,
+    respond: Any = None,
 ) -> Any:
     import asyncio
     import json as _json
@@ -345,7 +346,7 @@ def _run_batch(
         message = types.SimpleNamespace(content=_json.dumps(payload))
         return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
 
-    monkeypatch.setattr(clinical, "gated_create", _fake_create)
+    monkeypatch.setattr(clinical, "gated_create", respond or _fake_create)
     article = types.SimpleNamespace(full_text=source_text)
     return asyncio.run(
         agent._deep_extract_batch(
@@ -453,3 +454,38 @@ def test_a_cache_entry_whose_funding_quote_no_longer_holds_is_re_extracted(
     assert second.funding.funding_source_type != "extracted_text", (
         "the cached funding quote does not appear in the text this run fetched"
     )
+
+
+# prepush codex 2026-08-13: the template is assembled from adjacent Python string literals, and a
+# description wrapped across two source lines renders as `"...or null" " if the paper is silent"` —
+# two quoted fragments where JSON allows one string. A model copying the shape it was shown returns
+# something the parser rejects, on every paper.
+def _prompt_json_template(prompt: str) -> str:
+    start = prompt.index("{", prompt.index("Return ONLY valid JSON:"))
+    depth = 0
+    for i in range(start, len(prompt)):
+        if prompt[i] == "{":
+            depth += 1
+        elif prompt[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return prompt[start : i + 1]
+    raise AssertionError("the template's braces never close")
+
+
+@pytest.mark.parametrize("social", [False, True])
+def test_the_prompt_shows_the_model_a_template_that_is_valid_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, social: bool
+) -> None:
+    import json as _json
+
+    seen: dict[str, str] = {}
+
+    async def _capture(client, **kwargs):
+        seen["prompt"] = kwargs["messages"][0]["content"]
+        raise RuntimeError("stop here; the prompt is what is under test")
+
+    _run_batch(monkeypatch, tmp_path, {}, social=social, respond=_capture)
+
+    assert "prompt" in seen, "the extraction call was never made"
+    _json.loads(_prompt_json_template(seen["prompt"]))

@@ -434,13 +434,25 @@ def _restore_wide_net_record(d):
 
 
 def _restore_deep_extraction(d):
-    from dr2_podcast.research.clinical import DeepExtraction
+    from dr2_podcast.research.clinical import DeepExtraction, Finding, FundingBlock
 
     if not isinstance(d, dict):
         return d
     pm = _restore_paper_metadata(d.get("paper_metadata"))
     valid_keys = {f.name for f in dc_fields(DeepExtraction)}
     kwargs = {k: v for k, v in d.items() if k in valid_keys and k != "paper_metadata"}
+    # Step 9a. _serialize_dataclass flattens the nested records to plain dicts, and a resumed run
+    # would hand those dicts to consumers that call finding.to_dict() and read
+    # finding.control_event_rate — so the clinical math would raise, or silently compute nothing,
+    # on exactly the runs that already cost the most (prepush codex 2026-08-13).
+    kwargs["findings"] = [
+        f if isinstance(f, Finding) else Finding.from_dict(f)
+        for f in (kwargs.get("findings") or [])
+        if isinstance(f, (Finding, dict))
+    ]
+    funding = kwargs.get("funding")
+    if isinstance(funding, dict):
+        kwargs["funding"] = FundingBlock.from_dict(funding)
     # Required positional args that to_dict() may have dropped when None/empty
     kwargs.setdefault("pmid", None)
     kwargs.setdefault("doi", None)

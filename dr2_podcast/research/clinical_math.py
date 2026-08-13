@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from dr2_podcast.research.clinical import DeepExtraction
+    from dr2_podcast.research.clinical import DeepExtraction, Finding
 
 
 @dataclass
@@ -24,10 +24,32 @@ class ClinicalImpact:
     nnt: float  # Number Needed to Treat = 1 / |ARR|
     nnt_interpretation: str  # "Treat 10 patients to prevent 1 event"
     direction: str  # "benefit" | "harm" | "no_effect"
+    # Step 9a slice 2. A paper is not a finding: one study reporting benefit on one endpoint and no
+    # effect on another produced two rows keyed by the same study_id, which rendered as ambiguous
+    # duplicates and gave replication grouping nothing to group by. Optional and last so the
+    # positional construction in the checkpoint tests keeps working.
+    finding_key: str | None = None
+    endpoint: str | None = None
+    timepoint: str | None = None
+
+    @property
+    def row_label(self) -> str:
+        """How this row names itself: the study, and which of its findings this is."""
+        if not self.endpoint:
+            return self.study_id
+        at = f" @ {self.timepoint}" if self.timepoint else ""
+        return f"{self.study_id} — {self.endpoint}{at}"
 
 
 def calculate_impact(
-    study_id: str, cer: float, eer: float, outcome_is_adverse: bool | None = None
+    study_id: str,
+    # Optional in the annotation because it always was in fact: the first thing the body does is
+    # return None when either rate is missing, and both the legacy fallback and a finding without
+    # event rates reach it that way.
+    cer: float | None,
+    eer: float | None,
+    outcome_is_adverse: bool | None = None,
+    finding: "Finding | None" = None,
 ) -> ClinicalImpact | None:
     """
     Calculate ARR, RRR, NNT from CER and EER.
@@ -57,6 +79,9 @@ def calculate_impact(
             nnt=float("inf"),
             nnt_interpretation="No measurable difference between groups",
             direction="no_effect",
+            finding_key=finding.finding_key if finding else None,
+            endpoint=finding.endpoint if finding else None,
+            timepoint=finding.timepoint if finding else None,
         )
 
     # RRR over a zero control-event rate is UNDEFINED, not zero. Reporting 0.0 there states
@@ -78,19 +103,48 @@ def calculate_impact(
         nnt=round(nnt, 1),
         nnt_interpretation=interp,
         direction=direction,
+        finding_key=finding.finding_key if finding else None,
+        endpoint=finding.endpoint if finding else None,
+        timepoint=finding.timepoint if finding else None,
     )
 
 
 def batch_calculate(extractions: list["DeepExtraction"]) -> list[ClinicalImpact]:
-    """Calculate clinical impact for all studies that have CER and EER."""
+    """Calculate clinical impact for every FINDING that has CER and EER.
+
+    Per finding, not per paper. A study reporting a benefit on its primary endpoint and a null
+    result on a secondary one contributes two rows, each with its own polarity — and
+    ``outcome_is_adverse`` is per-finding precisely because applying one paper's polarity to both
+    flips the ARR interpretation on one of them and produces a directionally wrong NNT.
+    """
     results = []
     for ex in extractions:
-        if ex.control_event_rate is not None and ex.experimental_event_rate is not None:
-            impact = calculate_impact(
-                study_id=ex.pmid or ex.title,
-                cer=ex.control_event_rate,
-                eer=ex.experimental_event_rate,
+        study_id = ex.pmid or ex.title
+        findings = getattr(ex, "findings", None) or []
+        if not findings:
+            # A checkpoint written before findings[] existed carries its rates at the paper level,
+            # and dropping it would replace previously computed ARR/NNT with "Data Insufficient" on
+            # a resumed run (prepush codex 2026-08-13). This does NOT reopen the door slice 1
+            # closed: an extraction produced since then has no verified finding only when its rates
+            # are None, so it still contributes nothing here.
+            legacy = calculate_impact(
+                study_id=study_id,
+                cer=getattr(ex, "control_event_rate", None),
+                eer=getattr(ex, "experimental_event_rate", None),
                 outcome_is_adverse=getattr(ex, "outcome_is_adverse", None),
+            )
+            if legacy:
+                results.append(legacy)
+            continue
+        for finding in findings:
+            if finding.control_event_rate is None or finding.experimental_event_rate is None:
+                continue
+            impact = calculate_impact(
+                study_id=study_id,
+                cer=finding.control_event_rate,
+                eer=finding.experimental_event_rate,
+                outcome_is_adverse=finding.outcome_is_adverse,
+                finding=finding,
             )
             if impact:
                 results.append(impact)
@@ -126,10 +180,10 @@ def format_math_report(impacts: list[ClinicalImpact]) -> str:
     ]
     for i in impacts:
         lines.append(
-            f"| {i.study_id} | {i.cer:.3f} | {i.eer:.3f} | {i.arr:+.4f} | "
+            f"| {i.row_label} | {i.cer:.3f} | {i.eer:.3f} | {i.arr:+.4f} | "
             f"{format_rrr(i.rrr)} | {i.nnt:.1f} | {i.direction} |"
         )
     lines.append("")
     for i in impacts:
-        lines.append(f"- **{i.study_id}**: {i.nnt_interpretation}")
+        lines.append(f"- **{i.row_label}**: {i.nnt_interpretation}")
     return "\n".join(lines)

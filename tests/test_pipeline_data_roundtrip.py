@@ -14,6 +14,8 @@ import pytest
 from dr2_podcast.pipeline import _deserialize_pipeline_data, _serialize_dataclass
 from dr2_podcast.research.clinical import (
     DeepExtraction,
+    Finding,
+    FundingBlock,
     PaperMetadata,
     TieredSearchPlan,
     TierKeywords,
@@ -51,6 +53,26 @@ def _extraction():
         control_event_rate=0.2,
         experimental_event_rate=0.1,
         outcome_is_adverse=True,
+        findings=[
+            Finding(
+                population="adults",
+                intervention="drug",
+                comparator="placebo",
+                endpoint="hip fracture",
+                timepoint="12 months",
+                direction="decrease",
+                control_event_rate=0.2,
+                experimental_event_rate=0.1,
+                outcome_is_adverse=True,
+                finding_key="k" * 40,
+            )
+        ],
+        funding=FundingBlock(
+            funding_raw="National Institute on Aging",
+            funding_category="unknown",
+            funding_disclosure="disclosed",
+            funding_source_type="api_metadata",
+        ),
         paper_metadata=PaperMetadata(citation_count=10, fwci=1.5, enrichment_sources=["openalex"]),
     )
 
@@ -129,6 +151,22 @@ class TestRoundTrip:
             assert ext.outcome_is_adverse is True
             assert isinstance(ext.paper_metadata, PaperMetadata)
             assert ext.paper_metadata.citation_count == 10
+            # prepush codex 2026-08-13: _serialize_dataclass flattens the nested records to plain
+            # dicts, and a resumed run handed those dicts to code calling finding.to_dict() and
+            # reading finding.control_event_rate. The clinical math is the consumer that breaks.
+            [finding] = ext.findings
+            assert isinstance(finding, Finding)
+            assert finding.control_event_rate == 0.2
+            assert isinstance(ext.funding, FundingBlock)
+            assert ext.funding.funding_source_type == "api_metadata"
+
+    def test_the_clinical_math_still_runs_on_a_restored_extraction(self, restored):
+        """The point of rehydrating: a resumed run must still compute its own numbers."""
+        from dr2_podcast.research.clinical_math import batch_calculate
+
+        [impact] = batch_calculate(restored["aff_extractions"])
+        assert impact.endpoint == "hip fracture"
+        assert impact.arr == pytest.approx(0.1)
 
     def test_wide_records_become_wide_net_records(self, restored):
         for key in ("aff_top", "fal_top"):

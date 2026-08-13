@@ -536,3 +536,32 @@ def test_run_config_bookkeeping_fields_are_not_part_of_identity() -> None:
     assert config_fingerprint(CONFIG, run_config=run_config) == config_fingerprint(
         CONFIG, run_config={**run_config, "created_at": "2026-08-12T00:00:00+09:00", "notes": "hi"}
     )
+
+
+# prepush codex 2026-08-13: PODCAST_LENGTH picks a mode from a table for the monolithic runner, but
+# a staged run passes target_length_minutes into initialise_run_globals and that argument overrides
+# the lookup. Hashing the env var into staged identity made framing — and the whole research and
+# script chain behind it — non-current whenever an unrelated shell setting moved.
+def test_a_staged_fingerprint_ignores_the_env_var_its_run_config_supersedes() -> None:
+    values = {"env:PODCAST_LENGTH": "long", "env:MODEL_NAME": "m"}
+    run_config = {"topic": "t", "language": "en", "target_length_minutes": 25}
+    before = config_fingerprint(values, run_config, "framing")
+    after = config_fingerprint({**values, "env:PODCAST_LENGTH": "short"}, run_config, "framing")
+    assert before == after, "the staged path never reads it"
+
+
+def test_the_effective_length_still_moves_a_staged_fingerprint() -> None:
+    """The control: what the staged run actually uses must still invalidate."""
+    values = {"env:PODCAST_LENGTH": "long", "env:MODEL_NAME": "m"}
+    base = {"topic": "t", "language": "en", "target_length_minutes": 25}
+    assert config_fingerprint(values, base, "framing") != config_fingerprint(
+        values, {**base, "target_length_minutes": 12}, "framing"
+    )
+
+
+def test_the_legacy_fingerprint_still_hashes_it() -> None:
+    """Without a run config there is nothing to supersede it, and it really does steer the run."""
+    values = {"env:PODCAST_LENGTH": "long", "env:MODEL_NAME": "m"}
+    assert config_fingerprint(values, None, "framing") != config_fingerprint(
+        {**values, "env:PODCAST_LENGTH": "short"}, None, "framing"
+    )

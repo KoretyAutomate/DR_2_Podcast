@@ -2793,11 +2793,14 @@ class ResearchAgent:
                             '  "raw_facts": "3-5 key findings as bullet points",\n'
                             '  "trial_registration": "NCT/UMIN identifier or null",\n'
                             '  "author_group": "first author + institution, e.g. Tanaka H; Osaka University",\n'
-                            '  "funding_raw": "verbatim funding statement as printed, or null"\n'
-                            '                  " if the paper is silent",\n'
-                            '  "funding_category": "industry | government | foundation"\n'
-                            '                       " | institutional | mixed | none_declared"\n'
-                            '                       " | undisclosed | unknown",\n'
+                            # One JSON string per line. Wrapping a description across source lines
+                            # renders as two adjacent quoted fragments in the prompt the model
+                            # actually reads — `"...or null" " if the paper is silent"` — which is
+                            # not valid JSON, and a model copying the template's shape returns
+                            # something the parser rejects (prepush codex 2026-08-13).
+                            '  "funding_raw": "verbatim funding statement as printed, or null if silent",\n'
+                            '  "funding_category": "industry | government | foundation | institutional '
+                            '| mixed | none_declared | undisclosed | unknown",\n'
                             '  "funding_disclosure": "disclosed | undisclosed | unknown",\n'
                             '  "funding_quote": "the exact sentence the funding statement appears in, or null",\n'
                             '  "findings": [\n'
@@ -2812,8 +2815,8 @@ class ResearchAgent:
                             '      "is_primary": true,\n'
                             '      "control_event_rate": 0.15, "experimental_event_rate": 0.10,\n'
                             '      "outcome_is_adverse": true,\n'
-                            '      "identity_quote": "the exact sentence establishing WHO was studied, what\n'
-                            '                          they received and what it was compared against",\n'
+                            '      "identity_quote": "the exact sentence establishing WHO was studied, '
+                            'what they received and what it was compared against",\n'
                             '      "quote": "the exact sentence from the paper that states this result"\n'
                             "    }\n"
                             "  ]\n"

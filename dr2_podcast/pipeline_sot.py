@@ -656,13 +656,17 @@ def _imrad_clinical_impact(c: _ImradCtx) -> list[str]:
     elif c.impacts:
         rows = [tmpl["results"]["impact_table_header"]]
         for i in c.impacts:
+            # row_label, not study_id: one paper can contribute a row per endpoint, and keying the
+            # table by the study alone renders them as duplicate rows nobody can tell apart.
+            # EffectSizeImpact has no such split, so it falls back to its study_id.
+            label = getattr(i, "row_label", None) or i.study_id
             rows.append(
-                f"| {i.study_id} | {i.cer:.3f} | {i.eer:.3f} | "
+                f"| {label} | {i.cer:.3f} | {i.eer:.3f} | "
                 f"{i.arr:+.4f} | {format_rrr(i.rrr)} | {i.nnt:.1f} | {i.direction} |"
             )
         out.append("\n".join(rows) + "\n\n")
         for i in c.impacts:
-            out.append(f"- **{i.study_id}**: {i.nnt_interpretation}\n")
+            out.append(f"- **{getattr(i, 'row_label', None) or i.study_id}**: {i.nnt_interpretation}\n")
     else:
         out.append(t(tmpl, "results", "no_impact_data"))
     return out

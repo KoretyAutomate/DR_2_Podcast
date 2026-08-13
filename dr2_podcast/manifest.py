@@ -222,6 +222,15 @@ def manifest_errors(manifest: dict[str, Any]) -> list[str]:
 
 RUN_CONFIG_IDENTITY_KEYS = ("topic", "language", "target_length_minutes")
 
+#: Environment variables whose EFFECTIVE value a run config supersedes. PODCAST_LENGTH picks a mode
+#: from a table for the monolithic runner, but a staged run passes ``target_length_minutes`` into
+#: ``initialise_run_globals`` and that argument overrides the lookup entirely — so with a run config
+#: present the env var determines nothing, while hashing it would make framing and every stage
+#: downstream of it non-current whenever an unrelated shell or Web-UI setting moved (prepush codex
+#: 2026-08-13). It stays in the identity for the legacy manifest, which has no run config and really
+#: is steered by it.
+RUN_CONFIG_SUPERSEDES = frozenset({"env:PODCAST_LENGTH"})
+
 
 def config_fingerprint(
     values: dict[str, Any] | None = None,
@@ -241,6 +250,8 @@ def config_fingerprint(
     if values is None:
         values = config_identity_values()
     values = {**scoped_identity_values(values, stage), **_data_asset_values(stage)}
+    if run_config is not None:
+        values = {k: v for k, v in values.items() if k not in RUN_CONFIG_SUPERSEDES}
     parts = [f"{key}={_canonical(values[key])}" for key in sorted(values)]
     if run_config is not None:
         parts += [f"run.{key}={run_config.get(key)!r}" for key in RUN_CONFIG_IDENTITY_KEYS]

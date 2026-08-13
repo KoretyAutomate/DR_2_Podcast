@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import logging
+
 import pytest
 
 from dr2_podcast import adapters
@@ -400,6 +402,28 @@ def test_a_healthy_evidence_base_gets_no_notice(run_dir: Path, monkeypatch: pyte
     _stub_research(monkeypatch, aff=50)
     research_stages.research(run_dir, RUN_CONFIG)
     assert (run_dir / "research/source_of_truth.md").read_text().startswith("# Source of Truth")
+
+
+# prepush codex 2026-08-13 read this as a P1 — the adapter passes the RUN ROOT to run_deep_research
+# while _read_candidate_counts appears to look under research/, which would report zero candidates
+# after a successful search and raise InsufficientEvidenceError on every staged run. It is a false
+# positive: both sides apply the same "use research/ when it exists" rule, the producer inline
+# (clinical.py:3810) and the reader through pipeline.output_path. That agreement is load-bearing and
+# was nowhere pinned, so it is pinned here — if either side stops applying the rule, this fails.
+def test_the_screening_files_are_written_where_the_candidate_count_looks_for_them(run_dir: Path) -> None:
+    import json as _json
+
+    from dr2_podcast import pipeline as _pipeline
+    from dr2_podcast.pipeline_flow import _read_candidate_counts
+
+    # Exactly what run_deep_research does with the output_dir the adapter hands it.
+    out = Path(str(run_dir))
+    research_dir = out / "research"
+    written = (research_dir if research_dir.is_dir() else out) / "screening_results_aff.json"
+    written.write_text(_json.dumps({"total_candidates": 7}))
+
+    assert Path(_pipeline.output_path(run_dir, "screening_results_aff.json")) == written
+    assert _read_candidate_counts(run_dir, logging.getLogger(__name__))[0] == 7
 
 
 def test_research_fails_closed_on_an_empty_source_of_truth(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
