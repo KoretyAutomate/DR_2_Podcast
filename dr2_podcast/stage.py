@@ -191,6 +191,10 @@ def _run_stage_locked(run_dir: Path, name: str, *, force: bool) -> str:
     except Exception as exc:
         manifest.record_attempt(name, "failed", str(exc)[:200])
         manifest.fail(name, str(exc)[:200])
+        # A failed rerun may already have rewritten some outputs, so everything behind it has to be
+        # invalidated too — otherwise a descendant whose own inputs happen not to have moved stays
+        # falsely current behind a stage that is known to be broken.
+        manifest.invalidate_downstream(name)
         manifest.save()
         raise
     manifest.save()

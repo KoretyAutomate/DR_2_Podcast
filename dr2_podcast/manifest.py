@@ -233,25 +233,33 @@ class Manifest:
 
         Two ways to be invalidated, and the second is the one a purely hash-based rule misses. A
         stage is stale if an artifact it recorded has drifted — or if a stage it consumes from is
-        itself stale, even though nothing on disk has moved yet. Consistency with an artifact that
+        not current, even though nothing on disk has moved yet. Consistency with an artifact that
         is known to be out of date is not currency: that upstream stage is going to re-run and
-        change the very input this one was built on. ``downstream_of`` returns declaration order,
-        which is run order, so a producer is always visited before its consumers.
+        change the very input this one was built on.
+
+        The producer test is *currency*, not "did this call stale it", so it covers a producer that
+        is stale, failed, or was never run. That distinction is what makes this correct on the
+        failure path: a rerun of ``research`` that fails after rewriting one output leaves ``sot``
+        stale by drift, but ``blueprint`` — whose own input may not have changed — would otherwise
+        stay falsely current behind it.
+
+        ``downstream_of`` returns declaration order, which is run order, so a producer is always
+        marked before its consumers are examined.
         """
         marked: list[str] = []
-        staled: set[str] = set()
         for name in downstream_of(stage):
             record = self.document["stages"].get(name)
             if record is None or record.get("status") not in ("complete", "running"):
-                if record is not None and record.get("status") == "stale":
-                    staled.add(name)
                 continue
             reasons = self.drift(name)
-            reasons += [f"{producer} is stale" for producer in direct_producers(name) if producer in staled]
+            reasons += [
+                f"{producer} is not current"
+                for producer in direct_producers(name)
+                if not self.is_current(producer)
+            ]
             if reasons:
                 record.update(status="stale", stale_reason="; ".join(reasons))
                 marked.append(name)
-                staled.add(name)
         return tuple(marked)
 
     def _ref(self, artifact: str, *, required: bool) -> dict[str, str] | None:

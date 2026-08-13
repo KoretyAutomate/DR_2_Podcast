@@ -310,8 +310,33 @@ def test_staleness_reaches_a_stage_whose_own_inputs_have_not_moved_yet(run_dir: 
     _complete_framing(manifest, run_dir, framing="framing v2")
     assert manifest.status("research") == "stale"
     assert manifest.status("sot") == "stale"
-    assert "research is stale" in manifest.record_for("sot")["stale_reason"]
+    assert "research is not current" in manifest.record_for("sot")["stale_reason"]
     assert manifest.status("blueprint") == "pending", "never-run stages stay pending, not stale"
+
+
+# prepush codex 2026-08-12 [P1]: the failure path marked only the failing stage, so a descendant
+# whose own inputs happened not to move stayed falsely current behind a stage known to be broken.
+def test_a_failed_rerun_invalidates_everything_behind_it(run_dir: Path) -> None:
+    manifest = Manifest.load(run_dir)
+    _complete_framing(manifest, run_dir)
+    _complete_research(manifest, run_dir)
+    _write(run_dir, "research/source_of_truth.md", "sot v1")
+    manifest.start("sot", model="test-model", config_sha256=config_fingerprint(CONFIG))
+    manifest.complete("sot")
+    _write(run_dir, "research/EPISODE_BLUEPRINT.md", "blueprint v1")
+    manifest.start("blueprint", model="test-model", config_sha256=config_fingerprint(CONFIG))
+    manifest.complete("blueprint")
+    assert manifest.status("blueprint") == "complete"
+
+    # research is re-run, rewrites one output, and then fails
+    _write(run_dir, "research/grade_synthesis.md", "half-rewritten")
+    manifest.start("research", model="test-model", config_sha256=config_fingerprint(CONFIG))
+    manifest.fail("research", "vLLM died mid-synthesis")
+    manifest.invalidate_downstream("research")
+
+    assert manifest.status("sot") == "stale"
+    assert manifest.status("blueprint") == "stale", "a descendant cannot stay current behind a failure"
+    assert "is not current" in manifest.record_for("blueprint")["stale_reason"]
 
 
 def test_a_stage_that_did_not_write_what_it_promised_fails_closed(run_dir: Path) -> None:
