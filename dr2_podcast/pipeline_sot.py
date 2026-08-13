@@ -20,16 +20,38 @@ def _smart_model_display() -> str:
     return SMART_MODEL.split("/", 1)[-1] if SMART_MODEL else "Smart LLM"
 
 
-def _extract_conclusion_status(grade_report: str, domain: str = "clinical", language: str = "en") -> tuple:
+#: The record's enum, spelled the way the status map and the prose have always spelled it.
+_GRADE_RECORD_LEVELS = {"high": "High", "moderate": "Moderate", "low": "Low", "very_low": "Very Low"}
+
+
+def _extract_conclusion_status(
+    grade_report: str,
+    domain: str = "clinical",
+    language: str = "en",
+    grade_record: dict | None = None,
+) -> tuple:
     """Extract evidence level, conclusion status, and executive summary.
 
     Supports both GRADE (clinical) and Evidence Quality (social science) levels.
     Uses i18n status_map when language != 'en'.
+
+    ``grade_record`` is the structured record step 7 now produces, and when it is present the level
+    is READ from it rather than scraped out of the prose. The regex below survives for runs that
+    predate the record — but it is why the record exists: a pattern that misses yields
+    "Not Determined", which the status map turns into a mild "Under Evaluation" and the episode goes
+    out speaking a confidence nobody computed. A structured record cannot miss; it either says what
+    the level is or it fails validation upstream where someone can see it.
     """
     from dr2_podcast.sot_i18n import get_templates
 
     tmpl = get_templates(language)
     tmpl_status = tmpl["status_map"]
+
+    if grade_record and domain != "social_science":
+        grade = _GRADE_RECORD_LEVELS.get(str(grade_record.get("level", "")).lower(), "Not Determined")
+        status = tmpl_status.get("clinical", {}).get(grade, tmpl_status.get("default_status", "Under Evaluation"))
+        m2 = re.search(r"Executive\s+Summary[#\s:]*\n+(.+?)(?:\n\n|\n#)", grade_report, re.DOTALL)
+        return grade, status, (m2.group(1).strip() if m2 else "")
 
     if domain == "social_science":
         # Social science evidence quality levels
@@ -855,7 +877,9 @@ def build_imrad_sot(
             )
         )
 
-    grade_level, conclusion_status, exec_summary = _extract_conclusion_status(audit_text, language=language)
+    grade_level, conclusion_status, exec_summary = _extract_conclusion_status(
+        audit_text, language=language, grade_record=pd.get("grade_record")
+    )
 
     ctx = _ImradCtx(
         tmpl=tmpl,

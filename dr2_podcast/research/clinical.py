@@ -1529,8 +1529,14 @@ class ResearchAgent:
                     return text[: i + 1]
         return text  # unclosed — return as-is for downstream repair
 
-    def _parse_json_response(self, raw: str) -> Any:
-        """Parse JSON from smart model output, handling code blocks and LLM noise."""
+    @staticmethod
+    def _parse_json_response(raw: str) -> Any:
+        """Parse JSON from smart model output, handling code blocks and LLM noise.
+
+        Static because the Orchestrator needs the same repair logic for the GRADE record and
+        borrowing a bound method chains into whatever else `self` happens to carry — which it did,
+        and the tests caught it.
+        """
         if not raw or not raw.strip():
             raise ValueError("Empty response from LLM")
         # Strip <think>...</think> blocks (Qwen3 thinking mode safety net)
@@ -1547,7 +1553,7 @@ class ResearchAgent:
         if starts:
             raw = raw[min(starts) :]
         # Truncate trailing text after JSON object closes (handles "extra data" errors)
-        raw = self._truncate_after_json(raw)
+        raw = ResearchAgent._truncate_after_json(raw)
         # Try parsing as-is
         try:
             data = json.loads(raw)
@@ -3162,6 +3168,10 @@ class Orchestrator:
     Step 7: GRADE synthesis (Smart Model)
     """
 
+    #: The structured GRADE record, set at step 7. None until then, and None for social science,
+    #: which has an evidence-quality ladder rather than GRADE's modifiers.
+    grade_record: dict | None = None
+
     def __init__(self, config: "ResearchConfig | None" = None):
         config = config or ResearchConfig()
         smart_base_url = config.smart_base_url
@@ -3511,6 +3521,9 @@ class Orchestrator:
                 "impacts": impacts,
                 "framing_context": framing_context,
                 "search_date": search_date,
+                # The structured record behind grade_synthesis.md. It travels with the prose, so a
+                # consumer never has to scrape the prose to learn what the prose decided.
+                "grade_record": self.grade_record,
                 "aff_highest_tier": aff.highest_tier,
                 "fal_highest_tier": fal.highest_tier,
                 "metrics": {
@@ -3617,7 +3630,16 @@ class Orchestrator:
                 "   Start at HIGH for RCTs, LOW for observational. Then apply modifiers:\n"
                 "   DOWNGRADE for: Risk of bias, Inconsistency, Indirectness, Imprecision, Publication bias\n"
                 "   UPGRADE for: Large effect, Dose-response, Plausible confounders would reduce effect\n"
-                "   FINAL GRADE: HIGH | MODERATE | LOW | VERY LOW\n\n"
+                "   FINAL GRADE: HIGH | MODERATE | LOW | VERY LOW\n"
+                "   Then close the section with this block, exactly in this form, listing every\n"
+                "   modifier you APPLIED and nothing else. A domain you considered and did not apply\n"
+                "   does not belong here. Steps are 1 (serious) or 2 (very serious).\n"
+                "   APPLIED MODIFIERS:\n"
+                "   - DOWNGRADE risk_of_bias 1 — reason\n"
+                "   - UPGRADE large_effect 1 — reason\n"
+                "   Write the single word NONE on its own line under APPLIED MODIFIERS if you applied\n"
+                "   no modifier at all. Domains: risk_of_bias, inconsistency, indirectness,\n"
+                "   imprecision, publication_bias, large_effect, dose_response, plausible_confounding.\n\n"
                 "4. Clinical Impact (from deterministic math)\n"
                 "   - Include the NNT table directly (do NOT recalculate — use the exact numbers provided)\n"
                 "   - Interpret the NNT in clinical context\n\n"
@@ -3680,13 +3702,204 @@ class Orchestrator:
                 extra_body=QWEN3_NO_THINK_EXTRA_BODY,
             )
             audit_text = safe_message_text(resp)
-            log(f"    [Step 7] GRADE synthesis complete ({len(audit_text)} chars)")
-            return audit_text
+            log(f"    [Step 7] {synthesis_label} synthesis complete ({len(audit_text)} chars)")
         except Exception as e:
-            logger.error(f"GRADE synthesis failed: {e}")
+            logger.error(f"{synthesis_label} synthesis failed: {e}")
             return (
                 f"# GRADE Synthesis: {topic}\n\n*GRADE synthesis failed ({e}). Raw inputs below.*\n\n{combined_input}"
             )
+
+        # OUTSIDE the handler above, and that placement is the fail-closed contract (prepush codex
+        # 2026-08-13). Inside it, a GRADE record that could not be grounded became fallback prose,
+        # the adapter saw grade_record=None, treated grade_synthesis.json as an absent optional
+        # output — it is optional for social science — and completed a clinical stage with no
+        # grounded assessment at all. The prose call has a degraded mode; the record does not.
+        self.grade_record = await self._grade_record(
+            audit_text, {"case:affirmative": aff_case, "case:falsification": fal_case}, log
+        )
+        return audit_text
+
+
+    #: How many times the auditor may be asked again for a record that will not validate. Bounded
+    #: because the alternative to a bound is a forty-minute stage looping on a model that has
+    #: decided it cannot ground its own reasoning.
+    GRADE_RECORD_ATTEMPTS = 2
+
+    async def _grade_record(self, prose: str, artifacts: dict[str, str], log=logger.info) -> dict | None:
+        """The GRADE prose, read back as the structured record `grade.schema.json` describes.
+
+        A SECOND pass over what the auditor just wrote, rather than asking for prose and JSON in one
+        response: the prose is the human-readable artifact and the record is a structured reading of
+        it, which is exactly what ``pipeline_sot.py``'s regex was doing — only complete, grounded,
+        and fail-closed instead of defaulting to "Not Determined" when the pattern misses.
+
+        Every modifier must quote the case report it comes from. The model supplies the span, Python
+        finds the offset (asking a model to count characters produces a number that satisfies the
+        contract while pointing nowhere), and a record whose quotes are not in the cases does not
+        validate. Returns None only for the social-science domain, which has no GRADE ladder.
+        """
+        if self.domain == "social_science":
+            return None
+
+        from dr2_podcast.schemas import SCHEMA_VERSION, grade_errors
+
+        instruction = (
+            "/no_think\n"
+            "Read the GRADE synthesis below — which you just wrote — and state its assessment as JSON.\n"
+            "Report ONLY what the synthesis says. You are transcribing a judgement, not making a new one.\n\n"
+            "{\n"
+            '  "level": "high | moderate | low | very_low",\n'
+            '  "downgrades": [{"domain": "risk_of_bias | inconsistency | indirectness | imprecision '
+            '| publication_bias", "steps": 1, "reason": "why it applies", '
+            '"artifact_id": "case:affirmative | case:falsification", "quote": "the exact sentence"}],\n'
+            '  "upgrades": [{"domain": "large_effect | dose_response | plausible_confounding", '
+            '"steps": 1, "reason": "why it applies", "artifact_id": "case:affirmative | '
+            'case:falsification", "quote": "the exact sentence"}]\n'
+            "}\n\n"
+            "AT MOST ONE ENTRY PER DOMAIN. Two imprecision downgrades are one entry of 2 steps, never "
+            "two entries — the steps are summed, and a repeated domain counts its evidence twice.\n"
+            "steps is 1 (serious) or 2 (very serious). Nothing else is a GRADE step.\n"
+            "Every quote MUST be copied VERBATIM from the case named in artifact_id. Each is checked "
+            "against that text, and a record whose quotes cannot be found there is rejected.\n"
+            "A modifier the synthesis does not apply is simply absent. Do not invent one to fill the list."
+        )
+        user = "\n\n".join(
+            [f"=== GRADE SYNTHESIS ===\n{prose}"]
+            + [f"=== {name} ===\n{text}" for name, text in artifacts.items()]
+        )
+
+        problems: list[str] = []
+        for attempt in range(1, self.GRADE_RECORD_ATTEMPTS + 1):
+            retry_note = (
+                ""
+                if not problems
+                else "\n\nYour previous answer was rejected:\n" + "\n".join(f"- {p}" for p in problems[:6])
+            )
+            try:
+                resp = await gated_create(
+                    self.smart_client,
+                    model=self.smart_model,
+                    messages=[
+                        {"role": "system", "content": instruction + retry_note},
+                        {"role": "user", "content": user[:80000]},
+                    ],
+                    max_tokens=2000,
+                    temperature=0.1,
+                    timeout=180,
+                    extra_body=QWEN3_NO_THINK_EXTRA_BODY,
+                )
+                raw = ResearchAgent._parse_json_response(safe_message_text(resp)) or {}
+            except Exception as exc:
+                problems = [f"the call itself failed: {exc}"]
+                logger.warning("GRADE record attempt %d failed: %s", attempt, exc)
+                continue
+
+            record: dict[str, Any] = {
+                "schema_version": SCHEMA_VERSION,
+                "level": safe_str(raw.get("level")) or "",
+                "downgrades": self._grade_modifiers(raw.get("downgrades"), artifacts),
+                "upgrades": self._grade_modifiers(raw.get("upgrades"), artifacts),
+            }
+            problems = grade_errors(record, artifacts)
+            # Grounded is not the same as complete. grade_errors checks the modifiers that are
+            # there; this checks that the ones the synthesis applied are all there, because a
+            # dropped downgrade flips net_direction and moves the confidence the wrong way.
+            problems += self._transcription_errors(record, prose) if not problems else []
+            if not problems:
+                log(
+                    f"    [Step 7] GRADE record: {record['level']} "
+                    f"({len(record['downgrades'])} down, {len(record['upgrades'])} up)"
+                )
+                return record
+            logger.warning("GRADE record attempt %d did not validate: %s", attempt, "; ".join(problems[:3]))
+
+        from dr2_podcast.artifacts import ArtifactError
+
+        raise ArtifactError(
+            "the GRADE assessment could not be stated as a record that validates after "
+            f"{self.GRADE_RECORD_ATTEMPTS} attempts: {'; '.join(problems[:5])}. The regex scrape this "
+            "replaces defaulted to 'Not Determined' and let the episode speak a confidence nobody computed."
+        )
+
+    #: The APPLIED MODIFIERS block the GRADE prompt asks for, one line per applied modifier.
+    _APPLIED_LINE = re.compile(
+        r"^\s*[-*]?\s*(DOWNGRADE|UPGRADE)\s+([a-z_]+)\s+([12])\b", re.IGNORECASE | re.MULTILINE
+    )
+
+    @staticmethod
+    def declared_modifiers(prose: str) -> set[tuple[str, str, int]] | None:
+        """What the synthesis SAYS it applied, as ``{(kind, domain, steps)}``.
+
+        None means the prose never declared a block, which is not the same as declaring none — the
+        first cannot be checked and the second can. The distinction is the whole point: a record
+        that quietly drops a downgrade still validates, because ``grade_errors`` only checks the
+        modifiers that ARE there, and the missing one changes ``net_direction`` and therefore which
+        way the evidence moved the confidence (prepush codex 2026-08-13).
+        """
+        marker = re.search(r"APPLIED\s+MODIFIERS\s*:?", prose, re.IGNORECASE)
+        if not marker:
+            return None
+        block = prose[marker.end() :]
+        # Stop at the next numbered section heading, so a later section's prose cannot add modifiers.
+        end = re.search(r"\n\s*(?:#{1,6}\s|\d+\.\s+[A-Z])", block)
+        if end:
+            block = block[: end.start()]
+        if re.match(r"\s*NONE\b", block, re.IGNORECASE):
+            return set()
+        return {
+            (kind.lower(), domain.lower(), int(steps))
+            for kind, domain, steps in Orchestrator._APPLIED_LINE.findall(block)
+        }
+
+    @staticmethod
+    def _record_modifiers(record: dict) -> set[tuple[str, str, int]]:
+        return {("downgrade", e["domain"], e["steps"]) for e in record["downgrades"]} | {
+            ("upgrade", e["domain"], e["steps"]) for e in record["upgrades"]
+        }
+
+    @classmethod
+    def _transcription_errors(cls, record: dict, prose: str) -> list[str]:
+        """Whether the record is the WHOLE of what the prose said it applied."""
+        declared = cls.declared_modifiers(prose)
+        if declared is None:
+            return [
+                "the synthesis did not close its GRADE Assessment with an APPLIED MODIFIERS block, "
+                "so there is nothing to check the record against"
+            ]
+        transcribed = cls._record_modifiers(record)
+        errors = []
+        for kind, domain, steps in sorted(declared - transcribed):
+            errors.append(f"the synthesis applied {kind} {domain} {steps}, and the record does not")
+        for kind, domain, steps in sorted(transcribed - declared):
+            errors.append(f"the record claims {kind} {domain} {steps}, which the synthesis did not apply")
+        return errors
+
+    @staticmethod
+    def _grade_modifiers(raw_list: Any, artifacts: dict[str, str]) -> list[dict]:
+        """Model-supplied modifiers with Python-found offsets. A quote that is not in its artifact
+        keeps its (unfindable) locator, so validation rejects the record rather than the modifier
+        disappearing — a dropped downgrade silently changes net_direction."""
+        built = []
+        for raw in raw_list or []:
+            if not isinstance(raw, dict):
+                continue
+            artifact_id = safe_str(raw.get("artifact_id")) or ""
+            quote = safe_str(raw.get("quote")) or ""
+            hit = locate_span(artifacts.get(artifact_id, ""), quote)
+            built.append(
+                {
+                    "domain": safe_str(raw.get("domain")) or "",
+                    "steps": safe_int(raw.get("steps")) or 1,
+                    "reason": safe_str(raw.get("reason")) or "",
+                    "locator": {
+                        "fields": ["reason"],
+                        "source_artifact_id": artifact_id,
+                        "char_offset": hit[0] if hit else -1,
+                        "quoted_span": hit[1] if hit else quote,
+                    },
+                }
+            )
+        return built
 
     @staticmethod
     def _extractions_to_sources(extractions: list[DeepExtraction], role: str) -> list[SummarizedSource]:

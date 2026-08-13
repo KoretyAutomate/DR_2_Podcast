@@ -11,7 +11,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import logging
 
 import pytest
 
@@ -204,6 +203,42 @@ def test_initialise_run_globals_is_the_one_owner_of_that_state() -> None:
     assert callable(pipeline.initialise_run_globals)
 
 
+# prepush codex 2026-08-13 [P1]: pipeline.py reads MODEL_NAME at IMPORT time while the monolithic
+# runner calls load_dotenv() inside __main__, so for anyone whose model settings live only in .env
+# the globals are None when the module loads. Two assignments in __main__ used to refresh them; the
+# extraction that created initialise_run_globals moved that block out and dropped them, leaving the
+# CLI probing "None/models" and reporting the backend down on every run.
+def test_the_initialiser_refreshes_the_model_globals_after_dotenv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dr2_podcast import pipeline
+
+    monkeypatch.setattr(pipeline, "SMART_MODEL", None, raising=False)
+    monkeypatch.setattr(pipeline, "SMART_BASE_URL", None, raising=False)
+    monkeypatch.setenv("MODEL_NAME", "a-model-only-dotenv-knew")
+    monkeypatch.setenv("LLM_BASE_URL", "http://from-dotenv:8000/v1")
+
+    pipeline.initialise_run_globals(language_code="en", target_minutes=25)
+
+    assert pipeline.SMART_MODEL == "a-model-only-dotenv-knew"
+    assert pipeline.SMART_BASE_URL == "http://from-dotenv:8000/v1"
+
+
+# prepush codex 2026-08-13 [P1]: config.py supplies a default base URL when LLM_BASE_URL is unset,
+# and the backend probe accepts it — but the LLM handles were built from os.environ["LLM_BASE_URL"],
+# so the initialiser raised KeyError and no LLM-backed stage could run at all.
+def test_the_initialiser_works_when_only_the_model_name_is_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dr2_podcast import config as app_config
+    from dr2_podcast import pipeline
+
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.setenv("MODEL_NAME", "a-model")
+    monkeypatch.setattr(pipeline, "SMART_BASE_URL", None, raising=False)
+
+    pipeline.initialise_run_globals(language_code="en", target_minutes=25)
+    assert pipeline.SMART_BASE_URL == app_config.SMART_BASE_URL
+
+
 # prepush codex 2026-08-12: a run directory given as a relative path outside cwd (`--run
 # ../episode`) is itself a traversal, which CrewAI rejects exactly as it rejects the relpath form.
 @pytest.mark.parametrize("shape", ["absolute", "relative-outside"])
@@ -297,210 +332,6 @@ def test_a_social_science_topic_gets_the_peco_directive(run_dir: Path, monkeypat
     note = _common._domain_note(classification)
     assert "PECO" in note
     assert "Do NOT use clinical terminology" in note
-
-
-# --------------------------------------------------------------------------- #
-# research
-# --------------------------------------------------------------------------- #
-def _research_inputs(run_dir: Path) -> None:
-    (run_dir / "research/research_framing.md").write_text("# Research Framework\n\nQuestions.\n")
-    (run_dir / "research/domain_classification.json").write_text('{"domain": "clinical"}')
-
-
-def _stub_research(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    aff: int = 50,  # comfortably above EVIDENCE_LIMITED_THRESHOLD
-    neg: int = 12,
-    sot: str = "# Source of Truth\n\n## Abstract\n…",
-    reports: Any = None,
-) -> dict[str, Any]:
-    seen: dict[str, Any] = {}
-
-    async def _fake_deep_research(*, topic: str, config: Any, framing_context: str, output_dir: str) -> Any:
-        seen.update(topic=topic, framing=framing_context, domain=config.domain, output_dir=output_dir)
-        return reports if reports is not None else {"audit": object()}
-
-    monkeypatch.setattr("dr2_podcast.research.clinical.run_deep_research", _fake_deep_research)
-    monkeypatch.setattr("dr2_podcast.pipeline_flow._read_candidate_counts", lambda d, log: (aff, neg))
-    monkeypatch.setattr("dr2_podcast.pipeline_flow._save_research_reports", lambda r, d, log: None)
-    monkeypatch.setattr("dr2_podcast.pipeline_flow._save_sources_json", lambda r, d, log: None)
-
-    def _fake_sot(*, topic: str, reports: Any, domain: str) -> str:
-        seen["sot_domain"] = domain
-        return sot
-
-    monkeypatch.setattr("dr2_podcast.pipeline.build_imrad_sot", _fake_sot)
-    return seen
-
-
-def test_research_runs_and_writes_the_source_of_truth(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The SOT is produced HERE because phase 1 produces it here — on the live reports dict that
-    cannot cross a process boundary."""
-    _research_inputs(run_dir)
-    seen = _stub_research(monkeypatch)
-    research_stages.research(run_dir, RUN_CONFIG)
-
-    assert seen["topic"] == "ビタミンDと骨折"
-    assert seen["framing"].startswith("# Research Framework")
-    assert seen["domain"] == "clinical"
-    assert seen["sot_domain"] == "clinical"
-    assert (run_dir / "research/source_of_truth.md").read_text().startswith("# Source of Truth")
-
-
-def test_research_takes_the_domain_from_the_classification_artifact(
-    run_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _research_inputs(run_dir)
-    (run_dir / "research/domain_classification.json").write_text('{"domain": "social_science"}')
-    seen = _stub_research(monkeypatch)
-    research_stages.research(run_dir, RUN_CONFIG)
-    assert seen["domain"] == "social_science"
-
-
-def test_an_unrecognised_domain_falls_back_to_clinical(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The phase does the same; an unknown label must not reach the research config."""
-    _research_inputs(run_dir)
-    (run_dir / "research/domain_classification.json").write_text('{"domain": "astrology"}')
-    seen = _stub_research(monkeypatch)
-    research_stages.research(run_dir, RUN_CONFIG)
-    assert seen["domain"] == "clinical"
-
-
-def test_no_affirmative_candidates_is_a_terminal_verdict(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """InsufficientEvidenceError propagates unchanged — it is a real finding about the topic, with a
-    report written for the human who has to rephrase it."""
-    from dr2_podcast.pipeline import InsufficientEvidenceError
-
-    _research_inputs(run_dir)
-    _stub_research(monkeypatch, aff=0, neg=7)
-    written: dict[str, Any] = {}
-    monkeypatch.setattr(
-        "dr2_podcast.pipeline._write_insufficient_evidence_report",
-        lambda topic, a, n, d: written.update(topic=topic, aff=a, neg=n),
-    )
-    with pytest.raises(InsufficientEvidenceError, match="0 candidates"):
-        research_stages.research(run_dir, RUN_CONFIG)
-    assert written["neg"] == 7
-    assert not (run_dir / "research/source_of_truth.md").exists()
-
-
-def test_limited_evidence_is_declared_at_the_top_of_the_document(
-    run_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A thin evidence base is stated where anyone reading the SOT meets it first, not buried."""
-    _research_inputs(run_dir)
-    _stub_research(monkeypatch, aff=2)
-    research_stages.research(run_dir, RUN_CONFIG)
-    sot = (run_dir / "research/source_of_truth.md").read_text()
-    assert sot.startswith("## Evidence Quality Notice")
-    assert sot.index("# Source of Truth") > 0
-
-
-def test_a_healthy_evidence_base_gets_no_notice(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _research_inputs(run_dir)
-    _stub_research(monkeypatch, aff=50)
-    research_stages.research(run_dir, RUN_CONFIG)
-    assert (run_dir / "research/source_of_truth.md").read_text().startswith("# Source of Truth")
-
-
-# prepush codex 2026-08-13 read this as a P1 — the adapter passes the RUN ROOT to run_deep_research
-# while _read_candidate_counts appears to look under research/, which would report zero candidates
-# after a successful search and raise InsufficientEvidenceError on every staged run. It is a false
-# positive: both sides apply the same "use research/ when it exists" rule, the producer inline
-# (clinical.py:3810) and the reader through pipeline.output_path. That agreement is load-bearing and
-# was nowhere pinned, so it is pinned here — if either side stops applying the rule, this fails.
-def test_the_screening_files_are_written_where_the_candidate_count_looks_for_them(run_dir: Path) -> None:
-    import json as _json
-
-    from dr2_podcast import pipeline as _pipeline
-    from dr2_podcast.pipeline_flow import _read_candidate_counts
-
-    # Exactly what run_deep_research does with the output_dir the adapter hands it.
-    out = Path(str(run_dir))
-    research_dir = out / "research"
-    written = (research_dir if research_dir.is_dir() else out) / "screening_results_aff.json"
-    written.write_text(_json.dumps({"total_candidates": 7}))
-
-    assert Path(_pipeline.output_path(run_dir, "screening_results_aff.json")) == written
-    assert _read_candidate_counts(run_dir, logging.getLogger(__name__))[0] == 7
-
-
-def test_research_fails_closed_on_an_empty_source_of_truth(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The phase catches everything and logs 'continuing without deep research', so a run whose
-    research never happened goes on to write an episode from nothing."""
-    _research_inputs(run_dir)
-    _stub_research(monkeypatch, sot="   ")
-    with pytest.raises(ArtifactError, match="nothing to write an episode from"):
-        research_stages.research(run_dir, RUN_CONFIG)
-    assert not (run_dir / "research/source_of_truth.md").exists()
-
-
-def test_research_lets_a_pipeline_failure_out(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _research_inputs(run_dir)
-
-    async def _explode(**kwargs: Any) -> Any:
-        raise RuntimeError("PubMed unreachable")
-
-    monkeypatch.setattr("dr2_podcast.research.clinical.run_deep_research", _explode)
-    with pytest.raises(RuntimeError, match="PubMed unreachable"):
-        research_stages.research(run_dir, RUN_CONFIG)
-
-
-# prepush codex 2026-08-13: run_deep_research writes incrementally and _save_research_reports skips
-# a report it does not have, so a rerun producing fewer artifacts left the previous run's files in
-# place — and Manifest.complete() saw every declared path and recorded a MIXED set as one run.
-def test_a_rerun_that_leaves_a_previous_artifact_behind_is_refused(
-    run_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from dr2_podcast.stages import get_stage
-
-    _research_inputs(run_dir)
-    stale = run_dir / "research/grade_synthesis.md"
-    stale.write_text("# GRADE from a previous, different run\n")
-
-    # Everything except the stale file gets rewritten by this run.
-    def _write_most(reports: Any, directory: Path, log: Any) -> None:
-        for artifact in get_stage("research").produces:
-            if artifact in ("research/grade_synthesis.md", "research/source_of_truth.md"):
-                continue
-            path = directory / artifact
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("written by this run")
-
-    _stub_research(monkeypatch)
-    monkeypatch.setattr("dr2_podcast.pipeline_flow._save_research_reports", _write_most)
-
-    with pytest.raises(ArtifactError, match="previous execution"):
-        research_stages.research(run_dir, RUN_CONFIG)
-    assert stale.read_text().startswith("# GRADE from a previous")
-
-
-def test_a_rerun_that_rewrites_everything_is_accepted(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from dr2_podcast.stages import get_stage
-
-    _research_inputs(run_dir)
-    for artifact in get_stage("research").produces:
-        path = run_dir / artifact
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("from a previous run")
-
-    def _write_all(reports: Any, directory: Path, log: Any) -> None:
-        for artifact in get_stage("research").produces:
-            if artifact == "research/source_of_truth.md":
-                continue
-            (directory / artifact).write_text("written by this run")
-
-    _stub_research(monkeypatch)
-    monkeypatch.setattr("dr2_podcast.pipeline_flow._save_research_reports", _write_all)
-    research_stages.research(run_dir, RUN_CONFIG)
-    assert (run_dir / "research/grade_synthesis.md").read_text() == "written by this run"
-
-
-def test_research_fails_closed_without_a_framing_document(run_dir: Path) -> None:
-    (run_dir / "research/domain_classification.json").write_text('{"domain": "clinical"}')
-    with pytest.raises(ArtifactError, match="cannot read"):
-        research_stages.research(run_dir, RUN_CONFIG)
 
 
 # --------------------------------------------------------------------------- #

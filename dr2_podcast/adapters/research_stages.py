@@ -150,6 +150,27 @@ def research(run_dir: Path, run_config: dict[str, Any]) -> None:
         log.warning("evidence limited: %d affirmative candidates", aff_candidates)
         sot = _evidence_limited_prefix(aff_candidates) + sot
     write_atomic(run_dir / "research/source_of_truth.md", sot)
+    # The structured GRADE record beside the prose it was read from (sequencing item 3). Written
+    # only when there is one: social science has no GRADE modifiers, and a stale record from a
+    # previous clinical run must not be recorded as this run's output.
+    produced = ["research/source_of_truth.md"]
+    record = (reports.get("pipeline_data") or {}).get("grade_record")
+    if domain != "social_science" and not record:
+        # A clinical run without a record has not assessed its evidence, whatever prose it produced.
+        # _grade_record raises when it cannot ground the assessment, but the synthesis CALL itself
+        # has a degraded mode — a timeout returns "GRADE synthesis failed. Raw inputs below." and
+        # never reaches the record pass (prepush codex 2026-08-13). The artifact is optional in the
+        # graph because social science has no GRADE modifiers, so its absence cannot carry this;
+        # the stage boundary is where "completed" is decided, so it is decided here.
+        raise ArtifactError(
+            "the clinical run produced no structured GRADE record, so nothing assessed the evidence "
+            "this episode is about to speak with confidence. See research/grade_synthesis.md for "
+            "what step 7 did manage to write."
+        )
+    if record:
+        write_json_atomic(run_dir / "research/grade_synthesis.json", record, schema="grade")
+        produced.append("research/grade_synthesis.json")
+    drop_unproduced_optional_outputs(run_dir, "research", produced)
     # Existence is not authorship for a stage that writes in place: a rerun producing fewer
     # artifacts would otherwise complete on a mix of this run's and the previous one's.
     require_outputs_rewritten(run_dir, "research", before)

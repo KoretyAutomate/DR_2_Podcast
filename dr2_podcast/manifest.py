@@ -18,7 +18,9 @@ a loop is bounded at, because conflating them silently shortens the loop.
 
 from __future__ import annotations
 
+import ast
 import hashlib
+from functools import cache
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -168,17 +170,137 @@ STAGE_DATA_ASSETS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _data_asset_values(stage: str | None) -> dict[str, Any]:
-    """Content hashes of the bundled data the named stage's output depends on."""
+#: The ROOTS of the code each stage's output depends on — its adapter and the modules that do the
+#: work. The set actually hashed is the import closure of these (see :func:`implementation_closure`).
+#: The code each stage's output depends on. Configuration is not the only thing that decides what a
+#: stage produces — the implementation does too, and without this a deployed change to an adapter or
+#: to the phase behind it left every existing run's stage "current", so the runner skipped it and
+#: the run kept artifacts the current code would not produce (prepush codex 2026-08-13).
+#:
+#: The roots are per stage, but MEASURE the closures before assuming that buys precision: they come
+#: out at 39-40 files each out of ~45, because `pipeline.py` is in every stage's roots and imports
+#: nearly the whole package. In practice a code change anywhere restales every stage — the same
+#: effect a single build identifier would have, arrived at honestly rather than assumed away.
+#:
+#: That is over-invalidation, which is the direction this module chooses everywhere: over-
+#: invalidating costs a re-run, under-invalidating ships artifacts built by code that no longer
+#: exists. `--force` remains the human's answer to a change they know is inert. If the phase
+#: functions ever move out of `pipeline.py` into per-stage modules, the roots below start meaning
+#: what they say and the closures separate on their own.
+#: Every stage runs through these, so every stage hashes them. `pipeline.py` holds the phase
+#: functions the adapters call — `_run_sectional_draft`, `_run_polish_loop`, `_finalize_script`,
+#: `_run_audio_pipeline` — and `_common.py` rebuilds the module state they run against, so a change
+#: to either changes what any stage produces (prepush codex 2026-08-13).
+_EVERY_STAGE: tuple[str, ...] = (
+    "dr2_podcast/pipeline.py",
+    "dr2_podcast/adapters/_common.py",
+)
+
+_STAGE_SPECIFIC: dict[str, tuple[str, ...]] = {
+    "framing": ("dr2_podcast/adapters/research_stages.py", "dr2_podcast/research/domain_classifier.py"),
+    "research": (
+        "dr2_podcast/adapters/research_stages.py",
+        "dr2_podcast/research/clinical.py",
+        "dr2_podcast/research/clinical_math.py",
+        "dr2_podcast/research/effect_size_math.py",
+        "dr2_podcast/research/confidence.py",
+        "dr2_podcast/pipeline_sot.py",
+    ),
+    "url_validation": ("dr2_podcast/adapters/research_stages.py", "dr2_podcast/tools/link_validator.py"),
+    "translate": ("dr2_podcast/adapters/research_stages.py", "dr2_podcast/pipeline_translation.py"),
+    "blueprint": ("dr2_podcast/adapters/script_stages.py", "dr2_podcast/pipeline_crew.py"),
+    "draft": ("dr2_podcast/adapters/script_stages.py", "dr2_podcast/pipeline_script.py"),
+    "polish": ("dr2_podcast/adapters/script_stages.py", "dr2_podcast/pipeline_script.py"),
+    "audit": (
+        "dr2_podcast/adapters/script_stages.py",
+        "dr2_podcast/pipeline_validators.py",
+        "dr2_podcast/pipeline_flow.py",
+    ),
+    "audio": ("dr2_podcast/adapters/script_stages.py", "dr2_podcast/audio/engine.py"),
+}
+
+STAGE_IMPLEMENTATION: dict[str, tuple[str, ...]] = {
+    stage: _EVERY_STAGE + files for stage, files in _STAGE_SPECIFIC.items()
+}
+
+
+def _source_hashes(stage: str | None, relatives: tuple[str, ...], prefix: str) -> dict[str, Any]:
+    """Content hashes of files under the package root, keyed for the fingerprint."""
     root = Path(__file__).resolve().parent.parent
     values: dict[str, Any] = {}
-    for relative in STAGE_DATA_ASSETS.get(stage or "", ()):
+    for relative in relatives:
         path = root / relative
         try:
-            values[f"data:{relative}"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            values[f"{prefix}:{relative}"] = hashlib.sha256(path.read_bytes()).hexdigest()
         except OSError:
-            values[f"data:{relative}"] = None
+            # None, not a skip: a file that cannot be read is a fingerprint that CHANGED, and
+            # silently omitting it would make a missing implementation look like an unchanged one.
+            values[f"{prefix}:{relative}"] = None
     return values
+
+
+def _data_asset_values(stage: str | None) -> dict[str, Any]:
+    """Content hashes of the bundled data the named stage's output depends on."""
+    return _source_hashes(stage, STAGE_DATA_ASSETS.get(stage or "", ()), "data")
+
+
+@cache
+def implementation_closure(stage: str) -> tuple[str, ...]:
+    """Every ``dr2_podcast`` module reachable from a stage's roots, sorted.
+
+    COMPUTED, not curated. Three rounds of review found three different files missing from the
+    hand-written list — pipeline.py, then pipeline_flow.py, then prompt_strings.py — and the fourth
+    would have been found the same way (prepush codex 2026-08-13). A list nobody can verify by
+    reading it is not a guarantee; the import graph is the thing that actually decides what code
+    runs, so it is what gets walked.
+
+    Static, over the source: an import inside a function body counts, because the adapters import
+    `pipeline_flow` exactly that way. Cached per stage — which files are reachable does not change
+    while the process runs, and their CONTENT is hashed fresh on every call.
+    """
+    root = Path(__file__).resolve().parent.parent
+    seen: set[str] = set()
+    frontier = list(STAGE_IMPLEMENTATION.get(stage, ()))
+    while frontier:
+        relative = frontier.pop()
+        if relative in seen:
+            continue
+        seen.add(relative)
+        try:
+            tree = ast.parse((root / relative).read_bytes())
+        except (OSError, SyntaxError):
+            continue
+        for module in _imported_modules(tree):
+            for candidate in _module_paths(module):
+                if candidate not in seen and (root / candidate).exists():
+                    frontier.append(candidate)
+    return tuple(sorted(seen))
+
+
+def _imported_modules(tree: ast.AST) -> set[str]:
+    """Dotted ``dr2_podcast.*`` module names imported anywhere in a parsed source file."""
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names if alias.name.startswith("dr2_podcast"))
+        elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("dr2_podcast"):
+            found.add(node.module)
+            # `from dr2_podcast.adapters import _common` imports a MODULE, not a name.
+            found.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return found
+
+
+def _module_paths(dotted: str) -> tuple[str, ...]:
+    """The file a dotted module could live in — a module, or a package's __init__."""
+    base = dotted.replace(".", "/")
+    return (f"{base}.py", f"{base}/__init__.py")
+
+
+def _implementation_values(stage: str | None) -> dict[str, Any]:
+    """Content hashes of the code the named stage runs, transitively."""
+    if not stage:
+        return {}
+    return _source_hashes(stage, implementation_closure(stage), "code")
 
 
 def _in_group(name: str, group: str) -> bool:
@@ -249,7 +371,11 @@ def config_fingerprint(
     """
     if values is None:
         values = config_identity_values()
-    values = {**scoped_identity_values(values, stage), **_data_asset_values(stage)}
+    values = {
+        **scoped_identity_values(values, stage),
+        **_data_asset_values(stage),
+        **_implementation_values(stage),
+    }
     if run_config is not None:
         values = {k: v for k, v in values.items() if k not in RUN_CONFIG_SUPERSEDES}
     parts = [f"{key}={_canonical(values[key])}" for key in sorted(values)]

@@ -128,6 +128,12 @@ STAGES: tuple[Stage, ...] = (
             # the `sot` stage below for why it cannot be a stage of its own.
             "research/source_of_truth.md",
         ),
+        # Structured GRADE (sequencing item 3). Optional because the social-science domain has an
+        # evidence-quality ladder rather than GRADE's modifier arithmetic and produces no record —
+        # declaring it required would fail every social-science run on an artifact that correctly
+        # does not exist. drop_unproduced_optional_outputs keeps a clinical run's record from
+        # surviving into a later social-science one.
+        optional_outputs=("research/grade_synthesis.json",),
         engine="smart",
     ),
     Stage(

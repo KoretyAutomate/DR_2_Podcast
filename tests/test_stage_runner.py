@@ -310,3 +310,78 @@ def test_an_english_run_reaches_the_blueprint_without_one(run_dir: Path) -> None
     calls = _stub("blueprint", {a: f"blueprint {a}" for a in stage_mod.get_stage("blueprint").produces})
     run_stage(run_dir, "blueprint")
     assert calls
+
+
+# prepush codex 2026-08-13 [P1]: the producer check looked one hop up. Change a research-scoped
+# setting and `research` goes stale, which makes `blueprint` unusable — but blueprint's own
+# fingerprint and files are untouched, so `draft` asking only about blueprint is told everything is
+# fine. Nobody asks about research unless they invoke blueprint, and a skip means nobody does.
+def _run_through_blueprint(run_dir: Path) -> None:
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
+    run_stage(run_dir, "research")
+    _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
+    run_stage(run_dir, "url_validation")
+    _stub("translate", {"research/source_of_truth_ja.md": "translated"})
+    run_stage(run_dir, "translate")
+    _stub("blueprint", {a: f"blueprint {a}" for a in stage_mod.get_stage("blueprint").produces})
+    run_stage(run_dir, "blueprint")
+
+
+def _stale_only(monkeypatch: pytest.MonkeyPatch, stage_name: str) -> None:
+    """Move one stage's fingerprint and nobody else's — a setting only that stage's group reads."""
+    from dr2_podcast.manifest import config_fingerprint as real
+
+    monkeypatch.setattr(
+        stage_mod, "config_fingerprint",
+        lambda run_config=None, stage=None, values=None: (
+            f"moved-for-{stage_name}" if stage == stage_name else real(values, run_config, stage)
+        ),
+    )
+
+
+def test_a_grandparent_going_stale_stops_the_grandchild(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # url_validation is a genuine TWO hops from draft: draft reads the blueprint inventory, the SOT
+    # and the roles, so its direct producers are blueprint, research and framing. Nothing draft
+    # reads comes from url_validation — only blueprint does. Picking research here would have
+    # proved nothing, because research IS a direct producer of draft.
+    _run_through_blueprint(run_dir)
+    calls = _stub("draft", {a: f"draft {a}" for a in stage_mod.get_stage("draft").produces})
+    run_stage(run_dir, "draft")
+    assert "skipped" in run_stage(run_dir, "draft"), "the control: it really is current"
+    assert "url_validation" not in _direct_producers_of("draft"), (
+        "if this ever becomes a direct producer, this test stops testing transitivity"
+    )
+
+    _stale_only(monkeypatch, "url_validation")
+    with pytest.raises(StageError, match="url_validation"):
+        run_stage(run_dir, "draft")
+    assert len(calls) == 1, "and it did not quietly re-run either"
+
+
+def _direct_producers_of(name: str) -> set[str]:
+    from dr2_podcast.stages import producer_of
+
+    return {p for a in stage_mod.get_stage(name).consumes if (p := producer_of(a))}
+
+
+def test_the_status_view_names_the_stale_ancestor_too(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    from dr2_podcast.stage import main
+
+    _run_through_blueprint(run_dir)
+    _stub("draft", {a: f"draft {a}" for a in stage_mod.get_stage("draft").produces})
+    run_stage(run_dir, "draft")
+
+    _stale_only(monkeypatch, "url_validation")
+    main(["--run", str(run_dir), "--status"])
+    out = capsys.readouterr().out
+
+    # The DRAFT row specifically. Asserting on the whole output would pass on blueprint's row,
+    # which names url_validation as a direct producer and proves nothing about the walk.
+    draft_row = next(line for line in out.splitlines() if line.strip().startswith("draft "))
+    assert "producer: url_validation" in draft_row, out

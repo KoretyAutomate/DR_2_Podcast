@@ -109,6 +109,51 @@ def load_run_config(run_dir: Path) -> dict[str, Any]:
     return read_json_strict(path, schema="run_config")
 
 
+def _direct_producers(run_dir: Path, name: str, substitutions: dict[str, str]) -> set[str]:
+    """The stages that wrote what ``name`` will ACTUALLY read.
+
+    An optional input that is not on disk is not read, so requiring its producer would make an
+    English episode unable to run `blueprint` at all — `translate` produces the translated SOT that
+    no English run has.
+    """
+    from dr2_podcast.stages import producer_of, resolve
+
+    stage = get_stage(name)
+    optional = resolve(stage.optional_consumes, substitutions)
+    reading = list(stage.consumes) + [a for a in optional if (run_dir / a).exists()]
+    return {producer for artifact in reading if (producer := producer_of(artifact))}
+
+
+def _stale_upstream(
+    run_dir: Path, name: str, manifest: Manifest, run_config: dict[str, Any], substitutions: dict[str, str]
+) -> list[str]:
+    """Every stage anywhere upstream of ``name`` that is not current, nearest first.
+
+    TRANSITIVE, and the direct-producers-only version was wrong in a way no direct check can see
+    (prepush codex 2026-08-13): change a research-scoped setting and `research` goes stale, which
+    makes `blueprint` unusable — but blueprint's OWN fingerprint and files are untouched, so `draft`
+    asking only about blueprint is told everything is fine. Nobody ever asks about research unless
+    they invoke blueprint, and the whole point of a skip is that they do not.
+
+    Each stage is judged by ITS OWN fingerprint: identity is scoped per stage, so comparing research
+    against audio's settings would answer a question nobody asked.
+    """
+    stale: list[str] = []
+    seen: set[str] = {name}
+    frontier = sorted(_direct_producers(run_dir, name, substitutions))
+    while frontier:
+        producer = frontier.pop(0)
+        if producer in seen:
+            continue
+        seen.add(producer)
+        if not manifest.is_current(
+            producer, config_sha256=config_fingerprint(run_config=run_config, stage=producer)
+        ):
+            stale.append(producer)
+        frontier.extend(sorted(_direct_producers(run_dir, producer, substitutions) - seen))
+    return stale
+
+
 def _guard_inputs(
     run_dir: Path,
     name: str,
@@ -151,21 +196,7 @@ def _guard_inputs(
         raise StageError(f"stage {name!r} cannot run: missing input(s) {detail}")
     if force:
         return
-    # Currency is demanded of the producers of what this stage will ACTUALLY read. An optional input
-    # that is not on disk is not read, so requiring its producer would make an English episode unable
-    # to run `blueprint` at all — `translate` produces the translated SOT that no English run has.
-    optional = resolve(stage.optional_consumes, substitutions)
-    reading = list(stage.consumes) + [a for a in optional if (run_dir / a).exists()]
-    producers = {producer for artifact in reading if (producer := producer_of(artifact))}
-    # Each producer is judged by ITS OWN fingerprint, not this stage's: the identity is scoped per
-    # stage, so comparing research against audio's settings would answer a question nobody asked.
-    stale = [
-        producer
-        for producer in sorted(producers)
-        if not manifest.is_current(
-            producer, config_sha256=config_fingerprint(run_config=run_config, stage=producer)
-        )
-    ]
+    stale = _stale_upstream(run_dir, name, manifest, run_config, substitutions)
     if stale:
         raise StageError(
             f"stage {name!r} cannot run: producer stage(s) {', '.join(sorted(stale))} are not current, "
@@ -234,8 +265,9 @@ def _run_stage_locked(run_dir: Path, name: str, *, force: bool, new_config: dict
         # leaves blueprint's fingerprint and its recorded input hashes untouched while its producer
         # goes stale — and the skip reported a stage as current on top of a stale producer, which
         # is precisely the incoherent manifest the guard exists to prevent (prepush codex
-        # 2026-08-13). Recursion is not needed: a stale producer's OWN consumers are guarded the
-        # same way when they are asked for.
+        # 2026-08-13). The guard walks the whole chain, not just the direct producers: an earlier
+        # version of this comment claimed a stale producer's own consumers would be guarded when
+        # they were asked for, which is exactly what a skip means nobody does.
         _guard_inputs(run_dir, name, manifest, prospective, force=force, substitutions=substitutions)
         return f"{name}: already current, skipped (use --force to re-run)"
 
@@ -339,22 +371,9 @@ def _merged_run_config(run_dir: Path, args: argparse.Namespace) -> dict[str, Any
 
 
 def _stale_producers(run_dir: Path, name: str, manifest: Manifest, run_config: dict[str, Any] | None) -> list[str]:
-    """Producers of what this stage reads that are not themselves current."""
-    from dr2_podcast.stages import producer_of, resolve
-
-    stage = get_stage(name)
+    """What the runner would refuse this stage for — the same transitive walk, for the status view."""
     substitutions = {"language": str((run_config or {}).get("language", ""))}
-    reading = list(stage.consumes) + [
-        a for a in resolve(stage.optional_consumes, substitutions) if (run_dir / a).exists()
-    ]
-    producers = {producer for artifact in reading if (producer := producer_of(artifact))}
-    return sorted(
-        producer
-        for producer in producers
-        if not manifest.is_current(
-            producer, config_sha256=config_fingerprint(run_config=run_config, stage=producer)
-        )
-    )
+    return sorted(_stale_upstream(run_dir, name, manifest, run_config or {}, substitutions))
 
 
 def _print_status(run_dir: Path) -> int:

@@ -1699,6 +1699,18 @@ def initialise_run_globals(
     global channel_intro, core_target, channel_mission, _target_min
     global ACCESSIBILITY_LEVEL, accessibility_instruction
     global dgx_llm_strict, dgx_llm_creative
+    global SMART_MODEL, SMART_BASE_URL
+
+    # Refreshed HERE, and this is not cosmetic (prepush codex 2026-08-13). Line 1086 reads
+    # MODEL_NAME at IMPORT time, while the monolithic runner calls load_dotenv() inside __main__ —
+    # so for anyone whose model settings live only in .env, the module globals are None when the
+    # module loads and nothing set them afterwards. The extraction that created this function moved
+    # the two assignments that used to do it out of __main__ and dropped them, which left the CLI
+    # probing "None/models" and reporting the backend down on every run.
+    from dr2_podcast import config as _config
+
+    SMART_MODEL = os.environ.get("MODEL_NAME") or SMART_MODEL or _config.SMART_MODEL or None
+    SMART_BASE_URL = os.environ.get("LLM_BASE_URL") or SMART_BASE_URL or _config.SMART_BASE_URL or None
 
     language = language_code
     language_config = SUPPORTED_LANGUAGES[language]
@@ -1729,7 +1741,11 @@ def initialise_run_globals(
     logger.info(f"Accessibility level: {ACCESSIBILITY_LEVEL}")
     accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL][language]
 
-    smart_base_url = os.environ["LLM_BASE_URL"]
+    # The RESOLVED value, not a raw environment lookup. config.py supplies
+    # "http://localhost:8000/v1" when LLM_BASE_URL is unset, and get_final_model_string() probes
+    # that endpoint happily — then this line raised KeyError and no LLM-backed stage could run
+    # under a configuration the central config explicitly supports (prepush codex 2026-08-13).
+    smart_base_url = SMART_BASE_URL
     final_model_string = get_final_model_string()
     dgx_llm_strict = LLM(
         model=final_model_string,
