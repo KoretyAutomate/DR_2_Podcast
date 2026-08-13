@@ -497,6 +497,39 @@ def test_dict_ordering_cannot_move_the_fingerprint() -> None:
     )
 
 
+# prepush codex 2026-08-12: initialise_run_globals reads several settings straight from the
+# environment, and none of them live in dr2_podcast.config — so a scan of that module missed them
+# and a changed channel brief left every completed stage "current". This test derives the list from
+# the initialiser's own source, so the next one cannot be forgotten either.
+def test_every_environment_variable_the_initialiser_reads_is_in_the_fingerprint() -> None:
+    import inspect
+    import re
+
+    from dr2_podcast import config, pipeline
+    from dr2_podcast.manifest import config_identity_values
+
+    source = inspect.getsource(pipeline.initialise_run_globals)
+    read = set(re.findall(r"os\.getenv\(\s*[\"']([A-Z_]+)[\"']", source))
+    read |= set(re.findall(r"os\.environ\[[\"']([A-Z_]+)[\"']\]", source))
+    assert read, "the regex found nothing — it has stopped matching how the initialiser reads env"
+
+    covered = config_identity_values()
+    for name in sorted(read):
+        in_fingerprint = f"env:{name}" in covered or any(
+            getattr(config, key, None) is not None and key == name for key in covered
+        )
+        # LLM_BASE_URL is surfaced by config as SMART_BASE_URL, which IS in the fingerprint.
+        assert in_fingerprint or name == "LLM_BASE_URL", f"{name} changes output but invalidates nothing"
+
+
+def test_a_changed_channel_brief_invalidates_a_stage() -> None:
+    from dr2_podcast.manifest import config_identity_values
+
+    base = config_identity_values()
+    altered = {**base, "env:PODCAST_CHANNEL_INTRO": "a completely different show"}
+    assert config_fingerprint(base) != config_fingerprint(altered)
+
+
 def test_the_run_config_is_part_of_identity() -> None:
     run_config = {"topic": "A", "language": "ja", "target_length_minutes": 25}
     assert config_fingerprint(CONFIG, run_config=run_config) != config_fingerprint(CONFIG)

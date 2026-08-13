@@ -240,11 +240,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--run", required=True, type=Path, help="run directory")
     parser.add_argument("--force", action="store_true", help="re-run even if the stage is current")
-    parser.add_argument("--topic", help="create meta/run_config.json with this topic")
-    parser.add_argument("--language", default="ja", help="episode language (default: ja)")
-    parser.add_argument("--target-length", type=int, default=25, help="target minutes (default: 25)")
+    parser.add_argument("--topic", help="create or update meta/run_config.json with this topic")
+    parser.add_argument("--language", help="episode language (default: ja, for a NEW run config)")
+    parser.add_argument("--target-length", type=int, help="target minutes (default: 25, for a NEW run config)")
     parser.add_argument("--status", action="store_true", help="print every stage's status and exit")
     return parser
+
+
+def _merged_run_config(run_dir: Path, args: argparse.Namespace) -> dict[str, Any] | None:
+    """The run config to write, or None to leave the existing one alone.
+
+    Omitted options keep whatever the run already has. Copying the parser defaults in unconditionally
+    meant that changing the topic of an English 60-minute run silently turned it into a Japanese
+    25-minute one — and since those fields are part of stage identity, it would also invalidate every
+    completed stage on the way past. Defaults apply only when there is no run config yet.
+    """
+    if args.topic is None:
+        return None
+    path = run_dir / RUN_CONFIG_ARTIFACT
+    existing = read_json_strict(path, schema="run_config") if path.exists() else {}
+    return {
+        "topic": args.topic,
+        "language": args.language or existing.get("language") or "ja",
+        "target_length_minutes": args.target_length or existing.get("target_length_minutes") or 25,
+    }
 
 
 def _print_status(run_dir: Path) -> int:
@@ -272,11 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     # `is not None`, not truthiness: `--topic ""` is an invalid request, not an omitted option, and
     # silently falling back to the previous topic would run the stage against parameters nobody asked
     # for. An empty topic reaches the schema and is rejected there.
-    new_config = (
-        None
-        if args.topic is None
-        else {"topic": args.topic, "language": args.language, "target_length_minutes": args.target_length}
-    )
+    new_config = _merged_run_config(run_dir, args)
     try:
         # --status shares this handler: it reads the manifest and the run config, so it has exactly
         # the same failure modes as running a stage and owes the same ERROR line and exit code.

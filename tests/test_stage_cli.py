@@ -311,6 +311,36 @@ def test_an_empty_topic_is_rejected_rather_than_ignored(run_dir: Path, capsys: p
     assert load_run_config(run_dir)["topic"] == "ビタミンDと骨折"
 
 
+# prepush codex 2026-08-12: the parser defaults were copied into the new config unconditionally, so
+# changing the topic of an English 60-minute run silently made it a Japanese 25-minute one — and
+# those fields are part of stage identity, so it invalidated every completed stage on the way past.
+def test_changing_only_the_topic_keeps_the_other_settings(tmp_path: Path) -> None:
+    (tmp_path / "meta").mkdir()
+    write_run_config(tmp_path, topic="original", language="en", target_length_minutes=60)
+    _stub("framing", FRAMING_OUTPUTS)
+    assert main(["framing", "--run", str(tmp_path), "--topic", "a new topic"]) == 0
+
+    config = load_run_config(tmp_path)
+    assert config == {**config, "topic": "a new topic", "language": "en", "target_length_minutes": 60}
+
+
+def test_a_first_run_config_still_gets_the_defaults(tmp_path: Path) -> None:
+    (tmp_path / "meta").mkdir()
+    _stub("framing", FRAMING_OUTPUTS)
+    assert main(["framing", "--run", str(tmp_path), "--topic", "brand new"]) == 0
+    config = load_run_config(tmp_path)
+    assert config["language"] == "ja"
+    assert config["target_length_minutes"] == 25
+
+
+def test_an_explicit_option_still_overrides(tmp_path: Path) -> None:
+    (tmp_path / "meta").mkdir()
+    write_run_config(tmp_path, topic="original", language="en", target_length_minutes=60)
+    _stub("framing", FRAMING_OUTPUTS)
+    assert main(["framing", "--run", str(tmp_path), "--topic", "t", "--language", "ja"]) == 0
+    assert load_run_config(tmp_path)["language"] == "ja"
+
+
 def test_cli_runs_a_stage_and_exits_zero(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     assert main(["framing", "--run", str(run_dir)]) == 0

@@ -19,6 +19,7 @@ a loop is bounded at, because conflating them silently shortens the loop.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +49,19 @@ CONFIG_IDENTITY_EXCLUDE = frozenset(
     }
 )
 
+#: Environment variables that change generated content but live nowhere in ``dr2_podcast.config``:
+#: ``initialise_run_globals`` reads them straight from the environment, so a scan of the config
+#: module alone misses them entirely and a changed channel brief would leave every stage "current".
+#: ``test_every_environment_variable_the_initialiser_reads_is_in_the_fingerprint`` derives this list
+#: from that function's source, so a new one cannot be forgotten.
+PROMPT_ENV_KEYS = (
+    "PODCAST_CHANNEL_INTRO",
+    "PODCAST_CORE_TARGET",
+    "PODCAST_CHANNEL_MISSION",
+    "ACCESSIBILITY_LEVEL",
+    "PODCAST_LENGTH",
+)
+
 #: Types safe to render into a stable fingerprint. Anything else on the module (a callable, a
 #: module, an object) is not configuration and is skipped.
 _IDENTITY_TYPES = (str, int, float, bool, tuple, list, dict, type(None))
@@ -66,7 +80,7 @@ def config_identity_values() -> dict[str, Any]:
     """Every config attribute that participates in stage identity, read from the live module."""
     from dr2_podcast import config
 
-    return {
+    values = {
         name: getattr(config, name)
         for name in dir(config)
         if name.isupper()
@@ -74,6 +88,8 @@ def config_identity_values() -> dict[str, Any]:
         and name not in CONFIG_IDENTITY_EXCLUDE
         and isinstance(getattr(config, name), _IDENTITY_TYPES)
     }
+    values.update({f"env:{key}": os.environ.get(key) for key in PROMPT_ENV_KEYS})
+    return values
 
 
 def manifest_errors(manifest: dict[str, Any]) -> list[str]:
