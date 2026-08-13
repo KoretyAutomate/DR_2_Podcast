@@ -38,7 +38,19 @@ RUN_CONFIG_ARTIFACT = "meta/run_config.json"
 
 #: stage name -> callable(run_dir, run_config) -> None. A stage writes its own artifacts; the
 #: runner hashes and records them afterwards from the graph's declaration.
+#:
+#: **Empty in production today**, and the CLI says so rather than advertising stages it cannot run.
+#: Two different facts are kept apart on purpose: a stage is *unavailable* when the pipeline cannot
+#: separate it at all (the six phase-1 sub-stages, blocked on Step 10), and *not runnable* when it
+#: is separable but its disk-driven adapter has not been written. Collapsing them into one flag
+#: would make `unavailable_reason` mean two things and lose the distinction that says which of the
+#: two pieces of work is outstanding.
 ADAPTERS: dict[str, Callable[[Path, dict[str, Any]], None]] = {}
+
+
+def runnable_stage_names() -> tuple[str, ...]:
+    """Stages that are both separable and have an adapter — i.e. that would actually run."""
+    return tuple(name for name in AVAILABLE_STAGE_NAMES if name in ADAPTERS)
 
 
 class StageError(RuntimeError):
@@ -223,7 +235,19 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m dr2_podcast.stage",
         description="Run one pipeline stage against a run directory.",
     )
-    parser.add_argument("stage", help=f"stage to run; available: {', '.join(AVAILABLE_STAGE_NAMES)}")
+    runnable = runnable_stage_names()
+    parser.add_argument(
+        "stage",
+        help=(
+            f"stage to run. Separable: {', '.join(AVAILABLE_STAGE_NAMES)}. "
+            + (
+                f"Runnable now: {', '.join(runnable)}."
+                if runnable
+                else "Runnable now: NONE — no stage adapter is registered yet, so every stage refuses; "
+                "see the module docstring in dr2_podcast/stage.py."
+            )
+        ),
+    )
     parser.add_argument("--run", required=True, type=Path, help="run directory")
     parser.add_argument("--force", action="store_true", help="re-run even if the stage is current")
     parser.add_argument("--topic", help="create meta/run_config.json with this topic")
@@ -241,7 +265,10 @@ def _print_status(run_dir: Path) -> int:
     for name in AVAILABLE_STAGE_NAMES:
         current = "current" if manifest.is_current(name, config_sha256=fingerprint) else "not current"
         reason = manifest.record_for(name).get("stale_reason") or ""
-        print(f"  {name:<14} {manifest.status(name):<9} {current}{'  — ' + reason if reason else ''}")
+        adapter = "" if name in ADAPTERS else "  [no adapter]"
+        print(f"  {name:<14} {manifest.status(name):<9} {current}{adapter}{'  — ' + reason if reason else ''}")
+    if not runnable_stage_names():
+        print("\nNo stage adapter is registered, so no stage can run yet. See dr2_podcast/stage.py.")
     return 0
 
 

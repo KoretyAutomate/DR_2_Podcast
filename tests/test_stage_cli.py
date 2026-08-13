@@ -347,6 +347,31 @@ def test_cli_status_reports_a_corrupt_artifact_as_an_error(
     assert "ERROR" in capsys.readouterr().err
 
 
+# prepush codex 2026-08-12 [P1]: the CLI advertised every separable stage as though it could run,
+# while ADAPTERS is empty in production — so every one of them refused. The two facts are kept
+# apart (unavailable = the pipeline cannot separate it; not runnable = no adapter written yet) and
+# the CLI now reports which is which instead of promising something it cannot do.
+def test_nothing_is_advertised_as_runnable_without_an_adapter() -> None:
+    stage_mod.ADAPTERS.clear()
+    assert stage_mod.runnable_stage_names() == ()
+    assert "Runnable now: NONE" in stage_mod.build_parser().format_help()
+
+
+def test_a_registered_adapter_is_advertised_as_runnable() -> None:
+    stage_mod.ADAPTERS.clear()
+    _stub("framing", FRAMING_OUTPUTS)
+    assert stage_mod.runnable_stage_names() == ("framing",)
+    assert "Runnable now: framing" in stage_mod.build_parser().format_help()
+
+
+def test_status_marks_stages_that_have_no_adapter(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
+    stage_mod.ADAPTERS.clear()
+    assert main(["framing", "--run", str(run_dir), "--status"]) == 0
+    out = capsys.readouterr().out
+    assert "[no adapter]" in out
+    assert "No stage adapter is registered" in out
+
+
 def test_cli_status_lists_every_available_stage(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
