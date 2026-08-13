@@ -35,7 +35,13 @@ def run_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _clean_adapters():
-    """Adapters are module-global; no test may leak one into another."""
+    """Adapters are module-global; no test may leak one into another.
+
+    The real ones are imported FIRST. `load_adapters()` runs inside `_resolve`, so without this the
+    first `run_stage` of a test module would import the adapter module and register the real
+    adapters over any stub set before it — silently swapping a stub for a live LLM call.
+    """
+    stage_mod.load_adapters()
     original = dict(stage_mod.ADAPTERS)
     yield
     stage_mod.ADAPTERS.clear()
@@ -195,6 +201,36 @@ def test_a_stage_refuses_to_consume_outputs_of_a_stage_that_is_not_current(run_d
     with pytest.raises(StageError, match="are not current"):
         run_stage(run_dir, "research")
     assert research_calls == []
+
+
+# prepush codex 2026-08-12: an optional input that is absent is not read, so demanding its producer
+# be current made an English episode unable to run `blueprint` at all — `translate` produces the
+# translated SOT that no English run has, and it does not even have an adapter.
+def test_an_absent_optional_input_does_not_demand_its_producer(run_dir: Path) -> None:
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
+    run_stage(run_dir, "research")
+    _stub("sot", {"research/source_of_truth.md": "# sot"})
+    run_stage(run_dir, "sot")
+
+    calls = _stub("blueprint", {a: f"blueprint {a}" for a in stage_mod.get_stage("blueprint").produces})
+    run_stage(run_dir, "blueprint")
+    assert calls, "no translated SOT on disk, so translate is not a producer of anything read here"
+
+
+def test_a_present_optional_input_does_demand_its_producer(run_dir: Path) -> None:
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
+    run_stage(run_dir, "research")
+    _stub("sot", {"research/source_of_truth.md": "# sot"})
+    run_stage(run_dir, "sot")
+    (run_dir / "research/source_of_truth_ja.md").write_text("translated, by nobody the manifest knows")
+
+    _stub("blueprint", {a: f"blueprint {a}" for a in stage_mod.get_stage("blueprint").produces})
+    with pytest.raises(StageError, match="translate"):
+        run_stage(run_dir, "blueprint")
 
 
 def test_force_consumes_the_artifacts_as_they_stand(run_dir: Path) -> None:

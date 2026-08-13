@@ -120,17 +120,23 @@ def _guard_inputs(run_dir: Path, name: str, manifest: Manifest, fingerprint: str
     ``--force`` bypasses the currency half, because the honest reading of "these inputs are what I
     want" is a decision a human can make; it does not bypass existence.
     """
-    from dr2_podcast.stages import direct_producers, producer_of
+    from dr2_podcast.stages import producer_of
 
-    missing = [a for a in get_stage(name).consumes if not (run_dir / a).exists()]
+    stage = get_stage(name)
+    missing = [a for a in stage.consumes if not (run_dir / a).exists()]
     if missing:
         detail = ", ".join(f"{a} (run stage {producer_of(a)!r})" for a in missing)
         raise StageError(f"stage {name!r} cannot run: missing input(s) {detail}")
     if force:
         return
+    # Currency is demanded of the producers of what this stage will ACTUALLY read. An optional input
+    # that is not on disk is not read, so requiring its producer would make an English episode unable
+    # to run `blueprint` at all — `translate` produces the translated SOT that no English run has.
+    reading = list(stage.consumes) + [a for a in stage.optional_consumes if (run_dir / a).exists()]
+    producers = {producer for artifact in reading if (producer := producer_of(artifact))}
     stale = [
         producer
-        for producer in direct_producers(name)
+        for producer in sorted(producers)
         if not manifest.is_current(producer, config_sha256=fingerprint)
     ]
     if stale:
