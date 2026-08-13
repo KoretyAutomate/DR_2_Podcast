@@ -238,7 +238,9 @@ def test_a_broken_output_contract_is_persisted_as_a_failure_not_left_running(run
     persisted = Manifest.load(run_dir)
     assert persisted.status("framing") == "failed"
     assert "declared it produces" in persisted.record_for("framing")["stale_reason"]
-    assert persisted.record_for("framing")["attempts"][-1]["outcome"] == "failed"
+    # prepush codex 2026-08-12: one execution must not leave both a complete and a failed attempt.
+    outcomes = [a["outcome"] for a in persisted.record_for("framing")["attempts"]]
+    assert outcomes == ["failed"], outcomes
 
 
 def test_leftover_candidates_are_cleared_before_a_stage_runs(run_dir: Path) -> None:

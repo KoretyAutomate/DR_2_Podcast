@@ -200,11 +200,13 @@ def _run_stage_locked(run_dir: Path, name: str, *, force: bool, new_config: dict
     manifest.save()
     try:
         ADAPTERS[name](run_dir, run_config)
-        manifest.record_attempt(name, "complete")
         # Output hashing is inside the try on purpose: an adapter that returns normally without
         # writing what it declared raises here, and if that escaped the handler the manifest left
         # on disk would still say "running" — a stage reported as live after the process exited.
+        # The attempt is recorded only once that succeeds, so one execution never leaves both a
+        # "complete" and a "failed" attempt in the history.
         staled = manifest.complete(name)
+        manifest.record_attempt(name, "complete")
     except Exception as exc:
         manifest.record_attempt(name, "failed", str(exc)[:200])
         manifest.fail(name, str(exc)[:200])
