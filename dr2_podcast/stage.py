@@ -182,17 +182,26 @@ def _run_stage_locked(run_dir: Path, name: str, *, force: bool, new_config: dict
     # corrupt manifest left the run described by parameters its artifacts were not generated from —
     # the command reported failure having already changed the run's source of truth.
     manifest = Manifest.load(run_dir)
-    if new_config is not None:
-        write_run_config(run_dir, **new_config)
-    # The run config is read BEFORE the currency check because it is part of currency: a stage
-    # completed for a different topic is not current for this one.
-    run_config = load_run_config(run_dir)
-    fingerprint = config_fingerprint(run_config=run_config)
+
+    # And the config is not COMMITTED until every guard has passed. Committing it first meant that
+    # `--topic X` on a stage whose producers are stale rewrote meta/run_config.json, then refused —
+    # leaving the run renamed, every completed stage non-current, and nothing actually run. The
+    # prospective config drives the checks; only a stage that is really going to run writes it.
+    config_path = run_dir / RUN_CONFIG_ARTIFACT
+    existing = read_json_strict(config_path, schema="run_config") if config_path.exists() else None
+    if existing is None and new_config is None:
+        load_run_config(run_dir)  # raises with the message that says how to create one
+    prospective = {**(existing or {}), **(new_config or {})}
+    fingerprint = config_fingerprint(run_config=prospective)
 
     if manifest.is_current(name, config_sha256=fingerprint) and not force:
         return f"{name}: already current, skipped (use --force to re-run)"
 
     _guard_inputs(run_dir, name, manifest, fingerprint, force=force)
+
+    if new_config is not None:
+        write_run_config(run_dir, **new_config)
+    run_config = load_run_config(run_dir)
 
     from dr2_podcast import config as app_config
 

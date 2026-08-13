@@ -455,6 +455,29 @@ def test_an_interrupted_stage_is_recorded_as_failed_before_the_interrupt_propaga
     assert persisted.record_for("framing")["stale_reason"] == "KeyboardInterrupt"
 
 
+# prepush codex 2026-08-12: the config was committed before the input guards ran, so `--topic X` on
+# a stage whose producers are stale renamed the run, refused, and left every completed stage
+# non-current with nothing actually executed.
+def test_a_rejected_stage_does_not_get_to_rename_the_run(run_dir: Path) -> None:
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
+    run_stage(run_dir, "research")
+    _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
+    before = load_run_config(run_dir)
+
+    # A new topic makes framing and research non-current, so url_validation's producers are stale.
+    assert main(["url_validation", "--run", str(run_dir), "--topic", "an entirely new question"]) == 1
+    assert load_run_config(run_dir) == before, "the run keeps its identity when nothing ran"
+    assert Manifest.load(run_dir).status("framing") == "complete"
+
+
+def test_a_run_config_change_that_is_accepted_still_commits(run_dir: Path) -> None:
+    _stub("framing", FRAMING_OUTPUTS)
+    assert main(["framing", "--run", str(run_dir), "--topic", "a new question"]) == 0
+    assert load_run_config(run_dir)["topic"] == "a new question"
+
+
 def test_cli_runs_a_stage_and_exits_zero(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     assert main(["framing", "--run", str(run_dir)]) == 0
