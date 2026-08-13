@@ -334,6 +334,19 @@ def test_cli_rejects_a_missing_run_directory(tmp_path: Path, capsys: pytest.Capt
     assert "not a directory" in capsys.readouterr().err
 
 
+# prepush codex 2026-08-12 [P2]: --status returned outside the exception handler, so a corrupt
+# manifest or run config produced a traceback instead of the documented ERROR line and exit code.
+@pytest.mark.parametrize("artifact", ["meta/manifest.json", "meta/run_config.json"])
+def test_cli_status_reports_a_corrupt_artifact_as_an_error(
+    run_dir: Path, capsys: pytest.CaptureFixture, artifact: str
+) -> None:
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    (run_dir / artifact).write_text("{ not json")
+    assert main(["framing", "--run", str(run_dir), "--status"]) == 1
+    assert "ERROR" in capsys.readouterr().err
+
+
 def test_cli_status_lists_every_available_stage(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")

@@ -251,8 +251,6 @@ def main(argv: list[str] | None = None) -> int:
     if not run_dir.is_dir():
         print(f"ERROR: {run_dir} is not a directory", file=sys.stderr)
         return 2
-    if args.status:
-        return _print_status(run_dir)
     # `is not None`, not truthiness: `--topic ""` is an invalid request, not an omitted option, and
     # silently falling back to the previous topic would run the stage against parameters nobody asked
     # for. An empty topic reaches the schema and is rejected there.
@@ -262,6 +260,10 @@ def main(argv: list[str] | None = None) -> int:
         else {"topic": args.topic, "language": args.language, "target_length_minutes": args.target_length}
     )
     try:
+        # --status shares this handler: it reads the manifest and the run config, so it has exactly
+        # the same failure modes as running a stage and owes the same ERROR line and exit code.
+        if args.status:
+            return _print_status(run_dir)
         print(run_stage(run_dir, args.stage, force=args.force, new_config=new_config))
     except (StageError, ArtifactError, SchemaValidationError, KeyError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
