@@ -1387,6 +1387,20 @@ def run_pipeline_flow(
 # ---------------------------------------------------------------------------
 
 
+def flow_or_module_logger():
+    """Prefect's run logger inside a flow, the module logger outside one.
+
+    ``get_run_logger()`` raises ``MissingContextError`` when there is no flow context, and the
+    staged runner calls these helpers from a plain process. Reaching for the run logger
+    unconditionally would make correction unreachable outside Prefect for no reason connected to
+    what it does.
+    """
+    try:
+        return get_run_logger()
+    except Exception:
+        return logger
+
+
 def _run_inline_correction(
     audit_output: str,
     polished_text: str,
@@ -1399,7 +1413,7 @@ def _run_inline_correction(
     from dr2_podcast import pipeline as _pipeline
     from crewai import Crew, Task
 
-    flow_logger = get_run_logger()
+    flow_logger = flow_or_module_logger()
     orig_transitions = polished_text.count("[TRANSITION]") + polished_text.count("[INTRO_END]")
     corrected_script_text = None
     last_rejection_reason = ""

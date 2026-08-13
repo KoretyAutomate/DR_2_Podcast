@@ -1,0 +1,152 @@
+"""Adapters for phases 0-3: framing, URL validation, translation.
+
+See dr2_podcast.adapters for the shared state reconstruction and why it exists.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+from dr2_podcast.adapters._common import _classify_domain, _domain_note, _prepare_run
+from dr2_podcast.artifacts import ArtifactError, write_atomic, write_json_atomic
+from dr2_podcast.stages import register
+
+logger = logging.getLogger(__name__)
+
+
+@register("framing")
+def framing(run_dir: Path, run_config: dict[str, Any]) -> None:
+    """Phase 0 — domain classification + the research framing crew.
+
+    Differences from ``phase_0_framing``, both deliberate:
+
+    * It writes both artifacts itself, atomically. The framing task carries an ``output_file`` so
+      CrewAI writes ``research_framing.md`` directly, unatomically, mid-run; that is cleared here so
+      the only write is the validated one.
+    * An empty framing output raises. The phase logs "continuing" and returns ``""``, which sends a
+      run into the search stage with no framework at all.
+    """
+    from crewai import Crew
+
+    from dr2_podcast.pipeline_flow import _append_to_description_once
+
+    # framing is the stage that declares meta/session_roles.json as an output, so it is the one that
+    # writes it — otherwise a changed PODCAST_HOSTS would rerun framing and keep the old assignment.
+    pipeline = _prepare_run(run_dir, run_config, reassign_roles=True)
+    classification = _classify_domain(run_config["topic"])
+
+    write_json_atomic(
+        run_dir / "research/domain_classification.json",
+        {
+            "domain": classification.domain.value,
+            "confidence": classification.confidence,
+            "reasoning": classification.reasoning,
+            "framework": classification.suggested_framework,
+            "databases": classification.primary_databases,
+        },
+    )
+
+    task = pipeline.framing_task
+    _append_to_description_once(task, _domain_note(classification))
+    task.output_file = None  # this module owns the write; see the docstring
+    Crew(agents=[pipeline.framing_agent], tasks=[task], verbose=True, process="sequential").kickoff()
+
+    output = task.output.raw if getattr(task, "output", None) else ""
+    if not output.strip():
+        raise ArtifactError(
+            "the framing crew returned nothing. The monolithic phase logs this and continues, which "
+            "sends the run into search with no framework; a stage that produced nothing has failed."
+        )
+    write_atomic(run_dir / "research/research_framing.md", output)
+
+
+@register("url_validation")
+def url_validation(run_dir: Path, run_config: dict[str, Any]) -> None:
+    """Phase 2 — batch HEAD validation of every cited URL. Python only, no LLM.
+
+    Reads ``research_sources.json`` from disk rather than taking the previous phase's return value,
+    which is the whole point of the stage contract.
+
+    It writes the filtered library to a SEPARATE artifact rather than editing ``research_sources.json``
+    the way ``phase_2_url_validation`` does. Under a manifest that is not a style preference: a stage
+    that rewrites another stage's output makes the producer permanently stale — ``research`` would
+    record a hash that ``url_validation`` immediately invalidates, on every single run. Downstream
+    stages consume ``research_sources_validated.json``; the raw library stays as ``research`` left it.
+    """
+    from dr2_podcast.artifacts import read_json_strict
+    from dr2_podcast.tools.link_validator import validate_multiple_urls_parallel
+
+    sources = read_json_strict(run_dir / "research/research_sources.json")
+    urls = sorted({url for url in _iter_urls(sources) if url})
+    results = validate_multiple_urls_parallel(urls, max_workers=15) if urls else {}
+    write_json_atomic(run_dir / "research/url_validation_results.json", results)
+    write_json_atomic(
+        run_dir / "research/research_sources_validated.json", _without_broken(sources, results)
+    )
+
+
+def _without_broken(sources: Any, results: dict[str, str]) -> Any:
+    """The sources library with every URL the validator rejected removed.
+
+    Broken, Invalid, or an ERROR status. The phase (``pipeline_flow.py:450``) tests
+    ``status.startswith("ERROR")``, which **misses the single-URL path**: ``LinkValidatorTool._run``
+    returns ``"✗ ERROR: …"`` with a leading marker (``link_validator.py:66``), while only the batch
+    path returns a bare ``"ERROR: …"`` (``link_validator.py:110``). A substring test covers both,
+    and matches how the same predicate already treats Broken and Invalid.
+    """
+    rejected = ("Broken", "Invalid", "ERROR")
+    broken = {url for url, status in results.items() if any(bad in str(status) for bad in rejected)}
+    if not broken or not isinstance(sources, dict):
+        return sources
+    filtered = dict(sources)
+    for role, entries in sources.items():
+        if isinstance(entries, list):
+            filtered[role] = [e for e in entries if not (isinstance(e, dict) and e.get("url") in broken)]
+    return filtered
+
+
+def _iter_urls(node: Any) -> list[str]:
+    """Every ``url`` value anywhere in the sources document, whatever shape it has."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "url" and isinstance(value, str):
+                found.append(value)
+            else:
+                found.extend(_iter_urls(value))
+    elif isinstance(node, list):
+        for value in node:
+            found.extend(_iter_urls(value))
+    return found
+
+
+@register("translate")
+def translate(run_dir: Path, run_config: dict[str, Any]) -> None:
+    """Phase 3 — translate the source of truth, for a non-English episode.
+
+    Calls ``_translate_sot_pipelined`` directly rather than ``_translate_and_inject_sot``: the
+    latter also injects the summary into Crew 3 task descriptions, which is meaningless across a
+    process boundary because every stage rebuilds its own tasks. What survives the boundary is the
+    file.
+
+    An English run writes nothing and completes; the output is optional for exactly that reason. A
+    translation that comes back empty RAISES, though — the phase returns None and carries on, which
+    leaves a Japanese episode built from an English source of truth.
+    """
+    from dr2_podcast.artifacts import read_text_strict
+
+    language = run_config["language"]
+    if language == "en":
+        return
+
+    pipeline = _prepare_run(run_dir, run_config)
+    sot = read_text_strict(run_dir / "research/source_of_truth.md")
+    translated = pipeline._translate_sot_pipelined(sot, language, pipeline.language_config)
+    if not translated or not translated.strip():
+        raise ArtifactError(
+            f"translation to {language!r} produced nothing. The monolithic phase returns None and "
+            f"continues, which builds the episode from a source of truth in the wrong language."
+        )
+    write_atomic(run_dir / f"research/source_of_truth_{language}.md", translated)

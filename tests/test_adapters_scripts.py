@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from dr2_podcast import adapters
+from dr2_podcast.adapters import _common, research_stages
 from dr2_podcast.artifacts import ArtifactError
 from dr2_podcast.stage import write_run_config
 from dr2_podcast.stages import ADAPTERS
@@ -146,7 +147,7 @@ def test_url_validation_filters_the_broken_sources(run_dir: Path, monkeypatch: p
 def test_every_rejected_status_shape_is_filtered(status: str) -> None:
     sources = {"affirmative": [{"url": "https://bad.example/x"}, {"url": "https://good.example/y"}]}
     results = {"https://bad.example/x": status, "https://good.example/y": "✓ Valid (200)"}
-    filtered = adapters._without_broken(sources, results)
+    filtered = research_stages._without_broken(sources, results)
     assert [e["url"] for e in filtered["affirmative"]] == ["https://good.example/y"], status
 
 
@@ -198,7 +199,7 @@ def test_url_validation_fails_closed_on_a_missing_sources_file(run_dir: Path) ->
 
 def test_urls_are_found_at_any_nesting_depth() -> None:
     """The sources document's shape has changed before; a shape-specific reader would miss URLs."""
-    found = adapters._iter_urls(
+    found = research_stages._iter_urls(
         {"a": [{"url": "u1"}], "b": {"c": {"d": [{"url": "u2"}]}}, "url": "u3", "n": None}
     )
     assert sorted(found) == ["u1", "u2", "u3"]
@@ -442,6 +443,32 @@ def test_a_failed_render_leaves_the_previous_audio_intact(run_dir: Path, monkeyp
     assert not (run_dir / "meta/.audio_staging").exists()
 
 
+# prepush codex 2026-08-13: a rerender whose BGM pass fails left the previous audio_mixed.wav beside
+# the new raw audio, both looking current — someone publishes mixed audio of a script that no longer
+# exists. An optional output means "this run may not produce one", not "keep whatever was there".
+def test_a_rerender_that_produces_no_mix_removes_the_old_one(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (run_dir / "scripts/script_final.md").write_text("Host 1: hello\n")
+    stale_mix = run_dir / "audio/audio_mixed.wav"
+    stale_mix.write_bytes(b"THE PREVIOUS EPISODE'S MIX")
+    monkeypatch.setattr("dr2_podcast.pipeline._run_audio_pipeline", _render_into_staging("audio.wav"))
+
+    adapters.audio(run_dir, RUN_CONFIG)
+
+    assert (run_dir / "audio/audio.wav").exists()
+    assert not stale_mix.exists(), "the old mix must not survive a render that produced none"
+
+
+def test_a_rerender_that_produces_a_mix_keeps_it(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (run_dir / "scripts/script_final.md").write_text("Host 1: hello\n")
+    monkeypatch.setattr(
+        "dr2_podcast.pipeline._run_audio_pipeline", _render_into_staging("audio.wav", "audio_mixed.wav")
+    )
+    adapters.audio(run_dir, RUN_CONFIG)
+    assert (run_dir / "audio/audio_mixed.wav").read_bytes() == b"RIFF"
+
+
 def test_a_zero_duration_render_is_not_promoted(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (run_dir / "scripts/script_final.md").write_text("Host 1: hello\n")
     good = run_dir / "audio/audio.wav"
@@ -488,7 +515,7 @@ def test_sot_has_no_adapter_and_the_reason_is_recorded() -> None:
     repr-stringifies the report objects, so `audit` round-trips as the literal text
     "namespace(report='…')" and no rehydration can recover the structure the builder needs."""
     assert "sot" not in ADAPTERS
-    source = Path(adapters.__file__).read_text()
+    source = Path(_common.__file__).read_text()
     assert "repr-stringifies" in source, "the reason has to travel with the code"
 
 

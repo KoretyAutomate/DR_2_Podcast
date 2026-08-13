@@ -62,7 +62,7 @@ def test_a_stage_that_is_not_separable_yet_says_so(run_dir: Path) -> None:
 
 def test_a_stage_with_no_adapter_says_what_is_missing(run_dir: Path) -> None:
     with pytest.raises(StageError, match="no adapter yet"):
-        run_stage(run_dir, "audit")
+        run_stage(run_dir, "research")
 
 
 def test_an_unknown_stage_raises(run_dir: Path) -> None:

@@ -200,8 +200,17 @@ STAGES: tuple[Stage, ...] = (
     ),
     Stage(
         name="audit",
-        consumes=("scripts/script_polished.md", "research/source_of_truth.md"),
+        consumes=(
+            "scripts/script_polished.md",
+            "research/source_of_truth.md",
+            "meta/session_roles.json",
+        ),
+        # The translated SOT joins the audit task's context for a non-English episode, so a
+        # regenerated translation has to make the audit stale.
+        optional_consumes=("research/source_of_truth_{language}.md",),
         produces=("research/accuracy_audit.md", "scripts/script_final.md"),
+        # Written only when the accuracy gate fires, which is most runs' quiet path.
+        optional_outputs=("research/ACCURACY_CORRECTIONS.md",),
         engine="codex",
     ),
     Stage(

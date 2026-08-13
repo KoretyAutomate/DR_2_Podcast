@@ -64,7 +64,7 @@ def test_downstream_is_transitive_and_ordered() -> None:
     # renders under, so framing feeds it directly as well as through research.
     # framing feeds research directly, sot and blueprint through domain_classification.json, and
     # draft and polish through meta/session_roles.json.
-    assert direct_consumers("framing") == ("research", "sot", "blueprint", "draft", "polish")
+    assert direct_consumers("framing") == ("research", "sot", "blueprint", "draft", "polish", "audit")
     chain = downstream_of("framing")
     assert {"research", "sot", "blueprint", "draft", "polish", "audit", "audio"} <= set(chain)
     assert chain.index("draft") < chain.index("polish") < chain.index("audit")

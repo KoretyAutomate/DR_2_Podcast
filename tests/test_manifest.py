@@ -387,7 +387,13 @@ def test_every_environment_read_in_the_package_is_classified() -> None:
 
     from dr2_podcast.manifest import CONTENT_ENV_KEYS, ENV_IDENTITY_EXCLUDE
 
-    pattern = re.compile(r"os\.(?:getenv|environ\.get)\(\s*[\"']([A-Z_]+)[\"']|os\.environ\[\s*[\"']([A-Z_]+)[\"']")
+    # [A-Z][A-Z0-9_]* — the first version was [A-Z_]+, which silently skipped every variable with a
+    # DIGIT in it: TTS_HOST1_ID, TTS_HOST2_ID, S2_API_KEY. The guard passed by not looking, which is
+    # the failure mode it exists to prevent.
+    name = r"[A-Z][A-Z0-9_]*"
+    pattern = re.compile(
+        rf"os\.(?:getenv|environ\.get)\(\s*[\"']({name})[\"']|os\.environ\[\s*[\"']({name})[\"']"
+    )
     package = Path(__file__).resolve().parent.parent / "dr2_podcast"
     found: set[str] = set()
     for source in package.rglob("*.py"):

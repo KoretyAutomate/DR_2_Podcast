@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from dr2_podcast import adapters
+from dr2_podcast.adapters import _common, research_stages
 from dr2_podcast.artifacts import ArtifactError
 from dr2_podcast.stage import write_run_config
 from dr2_podcast.stages import ADAPTERS
@@ -68,7 +69,7 @@ def test_prepare_run_rebuilds_the_state_the_crews_read(run_dir: Path, monkeypatc
     """The globals the Crew builders read are set from the run config, in a process that never saw
     the monolithic runner's argv."""
     monkeypatch.setenv("LLM_BASE_URL", "http://localhost:8000/v1")
-    pipeline = adapters._prepare_run(run_dir, RUN_CONFIG)
+    pipeline = _common._prepare_run(run_dir, RUN_CONFIG)
 
     assert pipeline.output_dir == run_dir
     assert pipeline.topic_name == "ビタミンDと骨折"
@@ -83,7 +84,7 @@ def test_the_target_length_comes_from_the_run_config_not_the_environment(
     """PODCAST_LENGTH drives the monolithic runner; a staged run's minutes are part of its identity,
     so they have to be what actually applies."""
     monkeypatch.setenv("PODCAST_LENGTH", "short")
-    pipeline = adapters._prepare_run(run_dir, {**RUN_CONFIG, "target_length_minutes": 40})
+    pipeline = _common._prepare_run(run_dir, {**RUN_CONFIG, "target_length_minutes": 40})
     expected = 40 * pipeline.language_config["speech_rate"]
     assert pipeline.target_length_int == expected
 
@@ -94,7 +95,7 @@ def test_the_target_length_comes_from_the_run_config_not_the_environment(
 def test_the_target_minutes_global_is_set_not_left_at_its_sentinel(
     run_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pipeline = adapters._prepare_run(run_dir, {**RUN_CONFIG, "target_length_minutes": 33})
+    pipeline = _common._prepare_run(run_dir, {**RUN_CONFIG, "target_length_minutes": 33})
     assert pipeline._target_min == 33
     assert pipeline.target_length_int == 33 * pipeline.language_config["speech_rate"]
 
@@ -104,7 +105,7 @@ def test_the_target_minutes_global_is_set_not_left_at_its_sentinel(
 # prompts with DIFFERENT host roles, with no manifest identity change to show for it.
 def test_the_host_roles_are_assigned_once_and_then_reused(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PODCAST_HOSTS", "random")
-    first = adapters._session_roles(run_dir)
+    first = _common._session_roles(run_dir)
     assert (run_dir / "meta/session_roles.json").exists()
 
     seen: list[int] = []
@@ -115,7 +116,7 @@ def test_the_host_roles_are_assigned_once_and_then_reused(run_dir: Path, monkeyp
 
     monkeypatch.setattr("dr2_podcast.pipeline.assign_roles", _reassign)
     for _ in range(5):
-        assert adapters._session_roles(run_dir) == first
+        assert _common._session_roles(run_dir) == first
     assert seen == [], "a second process must read the roles, never reassign them"
 
 
@@ -140,12 +141,12 @@ def test_a_stage_that_only_reads_the_roles_leaves_them_alone(run_dir: Path, monk
     other = {role: {**spec, "personality": "reassigned"} for role, spec in chosen.items()}
     (run_dir / "meta/session_roles.json").write_text(json.dumps(chosen, ensure_ascii=False))
     monkeypatch.setattr("dr2_podcast.pipeline.assign_roles", lambda: other)
-    adapters._prepare_run(run_dir, RUN_CONFIG)
+    _common._prepare_run(run_dir, RUN_CONFIG)
     assert json.loads((run_dir / "meta/session_roles.json").read_text()) == chosen
 
 
 def test_prepare_run_uses_the_persisted_roles(run_dir: Path) -> None:
-    pipeline = adapters._prepare_run(run_dir, RUN_CONFIG)
+    pipeline = _common._prepare_run(run_dir, RUN_CONFIG)
     assert json.loads((run_dir / "meta/session_roles.json").read_text()) == pipeline.SESSION_ROLES
 
 
@@ -156,7 +157,7 @@ def test_initialise_run_globals_is_the_one_owner_of_that_state() -> None:
 
     from dr2_podcast import pipeline
 
-    assert "initialise_run_globals" in inspect.getsource(adapters._prepare_run)
+    assert "initialise_run_globals" in inspect.getsource(_common._prepare_run)
     assert callable(pipeline.initialise_run_globals)
 
 
@@ -195,7 +196,9 @@ class _FakeClassification:
 def _stub_framing(monkeypatch: pytest.MonkeyPatch, produced: str) -> dict[str, Any]:
     """Stub the classifier and the Crew, recording what the crew was handed."""
     seen: dict[str, Any] = {}
-    monkeypatch.setattr(adapters, "_classify_domain", lambda topic: _FakeClassification())
+    # The adapter resolves this in ITS module namespace, so the patch has to land there — patching
+    # dr2_podcast.adapters would leave the real classifier running against a live backend.
+    monkeypatch.setattr(research_stages, "_classify_domain", lambda topic: _FakeClassification())
 
     class _FakeCrew:
         def __init__(self, agents: list, tasks: list, **kwargs: Any) -> None:
@@ -248,7 +251,7 @@ def test_a_social_science_topic_gets_the_peco_directive(run_dir: Path, monkeypat
 
     classification = _FakeClassification()
     classification.domain = ResearchDomain.SOCIAL_SCIENCE
-    note = adapters._domain_note(classification)
+    note = _common._domain_note(classification)
     assert "PECO" in note
     assert "Do NOT use clinical terminology" in note
 
