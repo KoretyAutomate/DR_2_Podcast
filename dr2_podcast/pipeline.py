@@ -1681,7 +1681,7 @@ def initialise_run_globals(
     """
     global language, language_config, english_instruction, target_instruction
     global target_length_int, target_script, target_unit_singular, target_unit_plural
-    global channel_intro, core_target, channel_mission
+    global channel_intro, core_target, channel_mission, _target_min
     global ACCESSIBILITY_LEVEL, accessibility_instruction
     global dgx_llm_strict, dgx_llm_creative
 
@@ -1694,6 +1694,10 @@ def initialise_run_globals(
     speech_rate = cast(int, language_config["speech_rate"])
     if target_minutes is None:
         target_minutes = TARGET_MINUTES.get(length_mode) or TARGET_MINUTES["long"]
+    # _target_min is read directly by _create_agents_and_tasks and three more CrewBuildConfig sites.
+    # Left at its sentinel 0, every staged draft and polish prompt would ask for a 0-minute episode
+    # while target_script carried the right character count — the two disagreeing silently.
+    _target_min = target_minutes
     target_length_int = target_minutes * speech_rate
     target_script = f"{target_length_int:,}"
     target_unit_singular = language_config["prompt_unit"]

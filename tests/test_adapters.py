@@ -86,6 +86,17 @@ def test_the_target_length_comes_from_the_run_config_not_the_environment(
     assert pipeline.target_length_int == expected
 
 
+# prepush codex 2026-08-12: _target_min is read directly by _create_agents_and_tasks and three more
+# CrewBuildConfig sites. Left at its sentinel 0 by the extracted initialiser, every staged draft and
+# polish prompt would have asked for a 0-minute episode while target_script carried the right count.
+def test_the_target_minutes_global_is_set_not_left_at_its_sentinel(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = adapters._prepare_run(run_dir, {**RUN_CONFIG, "target_length_minutes": 33})
+    assert pipeline._target_min == 33
+    assert pipeline.target_length_int == 33 * pipeline.language_config["speech_rate"]
+
+
 def test_initialise_run_globals_is_the_one_owner_of_that_state() -> None:
     """It was extracted from pipeline.py's __main__ so both runners share it. If an adapter
     reimplemented it, the two would drift and produce different episodes from the same inputs."""
