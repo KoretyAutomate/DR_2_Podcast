@@ -153,42 +153,20 @@ def _iter_urls(node: Any) -> list[str]:
     return found
 
 
-@register("sot")
-def sot(run_dir: Path, run_config: dict[str, Any]) -> None:
-    """Phase 2b — assemble the IMRaD source of truth. Python only, no LLM.
-
-    ``build_imrad_sot`` consumes the ``deep_reports`` dict the research phase holds in memory, so the
-    research adapter has to persist it as ``meta/deep_reports.json``. That artifact IS the process
-    boundary the monolithic flow never needed — the SOT cannot be rebuilt from the Markdown alone.
-    The domain comes from the classification artifact rather than from a phase return value.
-
-    It deliberately does NOT call :func:`_prepare_run`. That would build the LLM handles and every
-    Crew task, and probe the backend ten times before failing — for a stage that is declared
-    ``engine="python"`` and needs neither. A deterministic stage that cannot run while vLLM is down
-    is not deterministic in any useful sense.
-    """
-    from dr2_podcast.artifacts import read_json_strict
-    from dr2_podcast.pipeline import output_path
-    from dr2_podcast.pipeline_sot import build_imrad_sot
-
-    data_path = run_dir / "meta/deep_reports.json"
-    if not data_path.exists():
-        raise ArtifactError(
-            f"{data_path} is missing. The research stage writes it; build_imrad_sot needs the "
-            f"structured reports and cannot reconstruct them from the rendered Markdown."
-        )
-    classification = read_json_strict(run_dir / "research/domain_classification.json")
-    content = build_imrad_sot(
-        topic=run_config["topic"],
-        reports=read_json_strict(data_path),
-        domain=classification["domain"],
-        output_dir=run_dir,
-        output_path_fn=output_path,
-        language=run_config["language"],
-    )
-    if not content.strip():
-        raise ArtifactError("build_imrad_sot produced an empty source of truth")
-    write_atomic(run_dir / "research/source_of_truth.md", content)
+# NOT HERE: an adapter for the `sot` stage. It was written, and then removed, because writing it
+# proved its input artifact cannot exist in the form assumed.
+#
+# `build_imrad_sot` reads `reports["audit"].report` (pipeline_sot.py:809) and then walks the
+# extractions and impacts as objects. The obvious way to persist that across a process boundary is
+# `_serialize_deep_reports`, which delegates to `_serialize_dataclass` — and that function
+# **repr-stringifies** the report objects: `audit` comes back as the literal text
+# "namespace(report='### Overall Certainty…')". The structure is not merely flattened, it is gone,
+# so no rehydration can recover it and the round trip cannot be made to work from that artifact.
+#
+# The `research` adapter therefore has to define and write a purpose-built artifact — the report
+# bodies as explicit fields — rather than reuse the existing serialiser. Guessing that artifact's
+# shape before its producer exists is what a test with the REAL builder caught here, and shipping
+# an adapter that fails on its own intended input would have been worse than shipping none.
 
 
 def registered() -> tuple[str, ...]:
@@ -198,4 +176,4 @@ def registered() -> tuple[str, ...]:
     return tuple(sorted(ADAPTERS))
 
 
-__all__ = ["framing", "registered", "sot", "url_validation"]
+__all__ = ["framing", "registered", "url_validation"]

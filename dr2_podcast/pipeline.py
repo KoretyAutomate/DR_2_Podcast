@@ -24,7 +24,7 @@ import wave
 from dr2_podcast.audio.engine import generate_audio_from_script, clean_script_for_tts, post_process_audio
 from dr2_podcast.utils import strip_think_blocks, QWEN3_NO_THINK_EXTRA_BODY
 from dataclasses import dataclass, fields as dc_fields
-from typing import Any
+from typing import Any, cast
 
 from dr2_podcast.config import EVIDENCE_LIMITED_THRESHOLD, OUTPUT_DIR_OVERRIDE
 
@@ -1690,10 +1690,10 @@ def initialise_run_globals(
     english_instruction = "Write all content in English."
     target_instruction = language_config["instruction"]
 
-    speech_rate = int(language_config["speech_rate"])
-    target_minutes = int(
-        target_minutes if target_minutes is not None else TARGET_MINUTES.get(length_mode, TARGET_MINUTES["long"])
-    )
+    # SUPPORTED_LANGUAGES is a dict of mixed value types, so this reads as `object`.
+    speech_rate = cast(int, language_config["speech_rate"])
+    if target_minutes is None:
+        target_minutes = TARGET_MINUTES.get(length_mode) or TARGET_MINUTES["long"]
     target_length_int = target_minutes * speech_rate
     target_script = f"{target_length_int:,}"
     target_unit_singular = language_config["prompt_unit"]
