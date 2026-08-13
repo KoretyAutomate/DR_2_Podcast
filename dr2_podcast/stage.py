@@ -255,14 +255,22 @@ def _merged_run_config(run_dir: Path, args: argparse.Namespace) -> dict[str, Any
     25-minute one — and since those fields are part of stage identity, it would also invalidate every
     completed stage on the way past. Defaults apply only when there is no run config yet.
     """
-    if args.topic is None:
+    supplied = (args.topic, args.language, args.target_length)
+    if all(value is None for value in supplied):
         return None
     path = run_dir / RUN_CONFIG_ARTIFACT
     existing = read_json_strict(path, schema="run_config") if path.exists() else {}
+    topic = args.topic if args.topic is not None else existing.get("topic")
+    if topic is None:
+        raise StageError("--language/--target-length update an existing run config; this run has none. Pass --topic.")
+    # `is not None`, never truthiness: `--target-length 0` is an invalid request, not an absent one,
+    # and it has to reach the schema that rejects it rather than being replaced by a default.
     return {
-        "topic": args.topic,
-        "language": args.language or existing.get("language") or "ja",
-        "target_length_minutes": args.target_length or existing.get("target_length_minutes") or 25,
+        "topic": topic,
+        "language": args.language if args.language is not None else existing.get("language", "ja"),
+        "target_length_minutes": (
+            args.target_length if args.target_length is not None else existing.get("target_length_minutes", 25)
+        ),
     }
 
 
@@ -291,8 +299,10 @@ def main(argv: list[str] | None = None) -> int:
     # `is not None`, not truthiness: `--topic ""` is an invalid request, not an omitted option, and
     # silently falling back to the previous topic would run the stage against parameters nobody asked
     # for. An empty topic reaches the schema and is rejected there.
-    new_config = _merged_run_config(run_dir, args)
     try:
+        # Inside the handler: it reads and schema-checks the existing run config, so a corrupt one
+        # owes the same ERROR line and exit code as any other artifact failure.
+        new_config = _merged_run_config(run_dir, args)
         # --status shares this handler: it reads the manifest and the run config, so it has exactly
         # the same failure modes as running a stage and owes the same ERROR line and exit code.
         if args.status:

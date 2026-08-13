@@ -341,6 +341,44 @@ def test_an_explicit_option_still_overrides(tmp_path: Path) -> None:
     assert load_run_config(tmp_path)["language"] == "ja"
 
 
+# prepush codex 2026-08-12, round 2 on the same fix — three edge cases it introduced.
+def test_language_alone_updates_an_existing_run(tmp_path: Path) -> None:
+    (tmp_path / "meta").mkdir()
+    write_run_config(tmp_path, topic="original", language="en", target_length_minutes=60)
+    _stub("framing", FRAMING_OUTPUTS)
+    assert main(["framing", "--run", str(tmp_path), "--language", "ja"]) == 0
+    config = load_run_config(tmp_path)
+    assert config["language"] == "ja"
+    assert config["topic"] == "original", "the topic it did not mention is preserved"
+    assert config["target_length_minutes"] == 60
+
+
+def test_a_zero_target_length_is_rejected_not_defaulted(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    (tmp_path / "meta").mkdir()
+    write_run_config(tmp_path, topic="original", language="en", target_length_minutes=60)
+    _stub("framing", FRAMING_OUTPUTS)
+    assert main(["framing", "--run", str(tmp_path), "--target-length", "0"]) == 1
+    assert "ERROR" in capsys.readouterr().err
+    assert load_run_config(tmp_path)["target_length_minutes"] == 60
+
+
+def test_settings_without_a_topic_on_a_fresh_run_says_so(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    (tmp_path / "meta").mkdir()
+    _stub("framing", FRAMING_OUTPUTS)
+    assert main(["framing", "--run", str(tmp_path), "--language", "ja"]) == 1
+    assert "Pass --topic" in capsys.readouterr().err
+
+
+def test_a_corrupt_run_config_during_a_topic_update_is_an_error_not_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    (tmp_path / "meta").mkdir()
+    (tmp_path / "meta/run_config.json").write_text("{ not json")
+    _stub("framing", FRAMING_OUTPUTS)
+    assert main(["framing", "--run", str(tmp_path), "--topic", "t"]) == 1
+    assert "ERROR" in capsys.readouterr().err
+
+
 def test_cli_runs_a_stage_and_exits_zero(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     assert main(["framing", "--run", str(run_dir)]) == 0
