@@ -170,10 +170,40 @@ def research(run_dir: Path, run_config: dict[str, Any]) -> None:
     if record:
         write_json_atomic(run_dir / "research/grade_synthesis.json", record, schema="grade")
         produced.append("research/grade_synthesis.json")
+    if _write_step_pack(run_dir, reports, sot, domain):
+        produced.append("research/step_pack.json")
     drop_unproduced_optional_outputs(run_dir, "research", produced)
     # Existence is not authorship for a stage that writes in place: a rerun producing fewer
     # artifacts would otherwise complete on a mix of this run's and the previous one's.
     require_outputs_rewritten(run_dir, "research", before)
+
+
+def _write_step_pack(run_dir: Path, reports: Any, sot: str, domain: str) -> bool:
+    """The nine-step projection of the SOT this stage just wrote (PLAN.md Step 9b).
+
+    Validated against the SOT it projects BEFORE it is written: every non-absent answer has to name
+    a section that is actually in that document. The pack is derived with no LLM anywhere, so a
+    validation failure here means the projection and the document disagree — which is the one thing
+    a projection must never do, and writing it anyway would create the second source of truth the
+    design exists to prevent.
+    """
+    from dr2_podcast.research.step_pack import build_step_pack
+    from dr2_podcast.schemas import validate_step_pack
+
+    pipeline_data = (reports.get("pipeline_data") or {}) if isinstance(reports, dict) else {}
+    extractions = list(pipeline_data.get("aff_extractions") or []) + list(
+        pipeline_data.get("fal_extractions") or []
+    )
+    if not extractions:
+        logger.warning("no extractions, so there is nothing to project into a step pack")
+        return False
+
+    pack = build_step_pack(pipeline_data=pipeline_data, extractions=extractions, sot=sot, domain=domain)
+    validate_step_pack(pack, {"research/source_of_truth.md": sot})
+    write_json_atomic(run_dir / "research/step_pack.json", pack, schema="step_pack")
+    answered = sum(1 for step in pack["steps"].values() if step["sufficiency"] != "absent")
+    logger.info("step pack: %d of %d steps answered from this run's evidence", answered, len(pack["steps"]))
+    return True
 
 
 @register("url_validation")

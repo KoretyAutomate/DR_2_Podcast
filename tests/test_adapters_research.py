@@ -9,6 +9,7 @@ a test that needs vLLM up is a test that does not run.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import logging
@@ -131,6 +132,77 @@ def test_a_social_science_run_needs_no_record(run_dir: Path, monkeypatch: pytest
     _stub_research(monkeypatch, reports={"audit": object(), "pipeline_data": {"grade_record": None}})
     research_stages.research(run_dir, RUN_CONFIG)
     assert not (run_dir / "research/grade_synthesis.json").exists()
+
+
+# PLAN.md Step 9b: the pack is a projection of the SOT the stage just wrote, so it is generated
+# here — where both the SOT and the pipeline_data that produced it are in hand.
+def test_the_research_stage_writes_the_step_pack(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json as _json
+
+    from dr2_podcast.research.clinical import Finding, FundingBlock
+    from dr2_podcast.schemas import validate_step_pack
+
+    sot = (
+        "# Source of Truth\n\n## 1. Abstract\na\n\n## 2. Methods\nm\n\n"
+        "### 3.3 Clinical Impact\ni\n\n### 4.1 Study Characteristics\nc\n\n## 5. Discussion\nd\n"
+    )
+    extraction = SimpleNamespace(
+        pmid="1", title="t", study_design="parallel RCT", author_group="Tanaka H; Osaka",
+        trial_registration="NCT01", risk_of_bias="low",
+        funding=FundingBlock(funding_raw="NIA", funding_category="government",
+                             funding_disclosure="disclosed", funding_source_type="api_metadata"),
+        findings=[Finding(population="p", intervention="i", comparator="c", endpoint="hip fracture",
+                          direction="decrease", finding_key="k" * 40)],
+    )
+    _research_inputs(run_dir)
+    _stub_research(
+        monkeypatch,
+        sot=sot,
+        reports={
+            "audit": object(),
+            "pipeline_data": {
+                "grade_record": GRADE_RECORD,
+                "aff_extractions": [extraction],
+                "fal_extractions": [],
+                "metrics": {"aff_wide_net_total": 30, "aff_screened_in": 5},
+                "impacts": [],
+            },
+        },
+    )
+    research_stages.research(run_dir, RUN_CONFIG)
+
+    pack = _json.loads((run_dir / "research/step_pack.json").read_text())
+    validate_step_pack(pack, {"research/source_of_truth.md": sot})
+    assert pack["steps"]["2"]["answer"]["records_identified"] == 30
+    assert pack["steps"]["3"]["answer"]["rct"] == 1
+
+
+def test_a_run_with_no_extractions_writes_no_pack(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """There is nothing to project. An empty pack would be a document asserting that nine questions
+    were asked of no evidence."""
+    _research_inputs(run_dir)
+    _stub_research(
+        monkeypatch,
+        reports={"audit": object(), "pipeline_data": {"grade_record": GRADE_RECORD,
+                                                      "aff_extractions": [], "fal_extractions": []}},
+    )
+    research_stages.research(run_dir, RUN_CONFIG)
+    assert not (run_dir / "research/step_pack.json").exists()
+
+
+def test_a_stale_pack_does_not_survive_a_run_that_produces_none(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale = run_dir / "research/step_pack.json"
+    stale.write_text('{"schema_version": 1, "sot_domain": "clinical", "steps": {}}')
+    _research_inputs(run_dir)
+    _stub_research(
+        monkeypatch,
+        reports={"audit": object(), "pipeline_data": {"grade_record": GRADE_RECORD,
+                                                      "aff_extractions": [], "fal_extractions": []}},
+    )
+    research_stages.research(run_dir, RUN_CONFIG)
+    assert not stale.exists(), "it describes a different run's evidence"
 
 
 def test_research_takes_the_domain_from_the_classification_artifact(

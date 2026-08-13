@@ -133,7 +133,9 @@ STAGES: tuple[Stage, ...] = (
         # declaring it required would fail every social-science run on an artifact that correctly
         # does not exist. drop_unproduced_optional_outputs keeps a clinical run's record from
         # surviving into a later social-science one.
-        optional_outputs=("research/grade_synthesis.json",),
+        # step_pack.json is optional for the same reason grade_synthesis.json is: it projects the
+        # GRADE verdict, which the social-science domain does not produce in that shape.
+        optional_outputs=("research/grade_synthesis.json", "research/step_pack.json"),
         engine="smart",
     ),
     Stage(

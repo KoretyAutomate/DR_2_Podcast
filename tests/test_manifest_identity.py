@@ -391,9 +391,14 @@ def test_the_closures_are_near_identical_and_that_is_the_honest_outcome() -> Non
     research = set(implementation_closure("research"))
     audio = set(implementation_closure("audio"))
     assert "dr2_podcast/audio/engine.py" in research, "reachable through pipeline.py, today"
-    # Measured 2026-08-13: they differ by three files — each stage's own adapter module, and
-    # confidence.py, which only the research side reaches. Everything else is shared.
-    assert len(research ^ audio) <= 4, "if these ever diverge, the roots have started meaning what they say"
+    # A RATIO, not a count: adding a research-only module widens the difference, which is the
+    # healthy direction and must not fail this test. What is being asserted is that the shared core
+    # still dominates — i.e. that per-stage roots are not yet buying per-stage precision. When that
+    # stops being true, this fails and the comment above needs rewriting rather than the number.
+    shared, differing = research & audio, research ^ audio
+    assert len(shared) > 3 * len(differing), (
+        f"{len(shared)} shared vs {len(differing)} differing — the closures have started to separate"
+    )
 
 
 def test_every_stage_hashes_the_adapter_module_that_registers_it() -> None:
