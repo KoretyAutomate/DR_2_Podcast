@@ -478,6 +478,17 @@ def test_a_run_config_change_that_is_accepted_still_commits(run_dir: Path) -> No
     assert load_run_config(run_dir)["topic"] == "a new question"
 
 
+# prepush codex 2026-08-12: config.py defines SMART_MODEL as "" when MODEL_NAME is unset, so the
+# attribute exists and is empty — the getattr default never fired and the manifest schema rejected
+# the empty model at minLength 1, aborting before the adapter ran.
+def test_an_unset_model_name_does_not_abort_the_stage(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("dr2_podcast.config.SMART_MODEL", "")
+    calls = _stub("framing", FRAMING_OUTPUTS)
+    assert "complete" in run_stage(run_dir, "framing")
+    assert calls, "the adapter ran"
+    assert Manifest.load(run_dir).record_for("framing")["identity"]["model"] == "unknown"
+
+
 def test_cli_runs_a_stage_and_exits_zero(run_dir: Path, capsys: pytest.CaptureFixture) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     assert main(["framing", "--run", str(run_dir)]) == 0

@@ -205,7 +205,10 @@ def _run_stage_locked(run_dir: Path, name: str, *, force: bool, new_config: dict
 
     from dr2_podcast import config as app_config
 
-    manifest.start(name, model=getattr(app_config, "SMART_MODEL", "unknown"), config_sha256=fingerprint)
+    # `or`, not a getattr default: config.py defines SMART_MODEL as "" when MODEL_NAME is unset
+    # (config.py:9), so the attribute exists and is empty — which the manifest schema rejects at
+    # minLength 1, aborting the save before the adapter ever runs.
+    manifest.start(name, model=getattr(app_config, "SMART_MODEL", "") or "unknown", config_sha256=fingerprint)
     manifest.save()
     try:
         ADAPTERS[name](run_dir, run_config)
