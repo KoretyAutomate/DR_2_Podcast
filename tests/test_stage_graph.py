@@ -54,10 +54,27 @@ def test_every_available_stage_declares_at_least_one_output() -> None:
 
 
 def test_every_consumed_artifact_has_a_declared_producer() -> None:
-    """An input nothing writes is a graph that cannot be resolved from disk."""
+    """An input nothing writes is a graph that cannot be resolved from disk.
+
+    Except the ones a person writes. Step 10 puts a reviewer between the plan and the search, so
+    the strategy approval is deliberately not produced by any stage — a pipeline that could produce
+    its own approval would be approving itself.
+    """
+    from dr2_podcast.stages import REVIEWER_WRITTEN
+
     for stage in STAGES:
         for artifact in stage.consumes:
+            if artifact in REVIEWER_WRITTEN:
+                continue
             assert producer_of(artifact) is not None, f"{stage.name} consumes unproduced {artifact}"
+
+
+def test_the_only_unproduced_input_is_the_one_a_reviewer_writes() -> None:
+    """The exemption above has to stay narrow: every other unproduced input is a graph defect."""
+    from dr2_podcast.stages import REVIEWER_WRITTEN
+
+    unproduced = {a for stage in STAGES for a in stage.consumes if producer_of(a) is None}
+    assert unproduced == set(REVIEWER_WRITTEN)
 
 
 def test_no_two_stages_claim_the_same_output() -> None:
@@ -73,7 +90,8 @@ def test_downstream_is_transitive_and_ordered() -> None:
     # renders under, so framing feeds it directly as well as through research.
     # framing feeds research directly, sot and blueprint through domain_classification.json, and
     # draft and polish through meta/session_roles.json.
-    assert direct_consumers("framing") == ("research", "blueprint", "draft", "polish", "audit")
+    # plan_search leads, because Step 10 put it between framing and the search.
+    assert direct_consumers("framing") == ("plan_search", "research", "blueprint", "draft", "polish", "audit")
     chain = downstream_of("framing")
     assert {"research", "blueprint", "draft", "polish", "audit", "audio"} <= set(chain)
     assert chain.index("draft") < chain.index("polish") < chain.index("audit")

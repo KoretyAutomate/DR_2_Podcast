@@ -17,6 +17,7 @@ from dr2_podcast.adapters._common import (
     require_outputs_rewritten,
     snapshot_outputs,
 )
+from dr2_podcast.approval import require_approval
 from dr2_podcast.artifacts import ArtifactError, write_atomic, write_json_atomic
 from dr2_podcast.stages import register
 
@@ -69,6 +70,54 @@ def framing(run_dir: Path, run_config: dict[str, Any]) -> None:
     write_atomic(run_dir / "research/research_framing.md", output)
 
 
+@register("plan_search")
+def plan_search(run_dir: Path, run_config: dict[str, Any]) -> None:
+    """Stage 1b — both tracks' search strategies, and NOT the search (PLAN.md Step 10).
+
+    The stage exists so there is a point where a strategy is on disk and no search has run. Before
+    the split there was none: planning, searching, screening and extracting happened in one call,
+    both tracks fired together, and the strategy JSON was not written until after GRADE finished —
+    so reading a strategy "before the search" was not something anyone could do.
+
+    What happens next is not this stage's business: somebody reads the two files against the framing
+    and writes ``meta/strategy_approval.json``. The `research` stage will not search without one.
+    """
+    import asyncio
+    import dataclasses
+    import os
+
+    from dr2_podcast.artifacts import read_json_strict, read_text_strict
+    from dr2_podcast.pipeline_flow import flow_or_module_logger
+    from dr2_podcast.research.clinical import ResearchConfig
+    from dr2_podcast.research.clinical import plan_search as plan_both
+
+    pipeline = _prepare_run(run_dir, run_config)
+    framing = read_text_strict(run_dir / "research/research_framing.md")
+    declared = read_json_strict(run_dir / "research/domain_classification.json")["domain"]
+    domain = declared if declared in ("clinical", "social_science") else "clinical"
+    log = flow_or_module_logger()
+
+    plans = asyncio.run(
+        plan_both(
+            topic=run_config["topic"],
+            config=ResearchConfig(
+                brave_api_key=os.getenv("BRAVE_API_KEY", ""), results_per_query=15, domain=domain
+            ),
+            framing_context=framing,
+            log=log.info,
+        )
+    )
+    for key, artifact in (("aff_plan", "search_strategy_aff.json"), ("fal_plan", "search_strategy_neg.json")):
+        plan = plans.get(key)
+        if plan is None:
+            raise ArtifactError(f"the {key} track produced no search strategy; there is nothing to approve")
+        write_json_atomic(run_dir / f"research/{artifact}", dataclasses.asdict(plan))
+    # The decomposition travels in neither file, so the search stage rebuilds the plans from the
+    # artifacts a reviewer actually read — not from anything held over in memory.
+    logger.info("search strategies written; nothing has been searched. Approve them before running 'research'")
+    del pipeline
+
+
 @register("research")
 def research(run_dir: Path, run_config: dict[str, Any]) -> None:
     """Phase 1 — the deep research pipeline, and the source of truth it builds.
@@ -117,6 +166,13 @@ def research(run_dir: Path, run_config: dict[str, Any]) -> None:
     domain = declared if declared in ("clinical", "social_science") else "clinical"
     log = flow_or_module_logger()
 
+    # BEFORE anything is searched. The approval covers the framing and the prior as well as the two
+    # strategy files, so a strategy edited after approval, a framing edited after approval, or a
+    # prior appearing after approval all stop the run here — with zero search calls issued, which is
+    # what Step 10's exit criterion asserts.
+    require_approval(run_dir)
+    plans = _approved_plans(run_dir)
+
     # Held as Any, as the flow holds it: DeepResearchResult is a TypedDict whose values are typed
     # `object`, so narrowing it here only moves the complaint from the call to the attribute access.
     reports: Any = asyncio.run(
@@ -129,6 +185,7 @@ def research(run_dir: Path, run_config: dict[str, Any]) -> None:
             ),
             framing_context=framing,
             output_dir=str(run_dir),
+            plans=plans,
         )
     )
 
@@ -176,6 +233,24 @@ def research(run_dir: Path, run_config: dict[str, Any]) -> None:
     # Existence is not authorship for a stage that writes in place: a rerun producing fewer
     # artifacts would otherwise complete on a mix of this run's and the previous one's.
     require_outputs_rewritten(run_dir, "research", before)
+
+
+def _approved_plans(run_dir: Path) -> dict[str, Any]:
+    """The two strategies as the approver read them, rebuilt from the artifacts on disk.
+
+    From the FILES, never from anything held in memory: the approval is a statement about those
+    bytes, so the search has to run against those bytes or the approval covers something else.
+    """
+    from dr2_podcast.artifacts import read_json_strict
+    from dr2_podcast.pipeline import _restore_tiered_search_plan
+
+    plans: dict[str, Any] = {"decomposition": {}}
+    for key, artifact in (("aff_plan", "search_strategy_aff.json"), ("fal_plan", "search_strategy_neg.json")):
+        plan = _restore_tiered_search_plan(read_json_strict(run_dir / f"research/{artifact}"))
+        if plan is None or not getattr(plan, "tier1", None):
+            raise ArtifactError(f"research/{artifact} is not a usable search strategy")
+        plans[key] = plan
+    return plans
 
 
 def _write_step_pack(run_dir: Path, reports: Any, sot: str, domain: str) -> bool:

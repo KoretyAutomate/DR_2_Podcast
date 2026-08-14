@@ -108,20 +108,38 @@ STAGES: tuple[Stage, ...] = (
     Stage("synthesize", (), (), "smart", available=False, unavailable_reason=_NOT_YET_SPLIT),
     Stage("grade", (), (), "claude", available=False, unavailable_reason=_NOT_YET_SPLIT),
     Stage(
+        name="plan_search",
+        # The same inputs framing hands the search: what question, and in which domain.
+        consumes=("research/research_framing.md", "research/domain_classification.json"),
+        # It writes the strategies and STOPS. Nothing downstream runs, which is the whole point:
+        # the post-search yield gate catches a strategy that is wrong in QUANTITY, and cannot catch
+        # one that searches the wrong population or whose falsification track is not adversarial.
+        produces=("research/search_strategy_aff.json", "research/search_strategy_neg.json"),
+        engine="smart",
+    ),
+    Stage(
         name="research",
         # domain_classification.json is a real input, not metadata: the phase passes
         # p0_result["domain"] into phase_1_research, where it selects the research domain and
         # framework. Unhashed, research could run against a changed classification and still be
         # recorded as current.
-        consumes=("research/research_framing.md", "research/domain_classification.json"),
+        consumes=(
+            "research/research_framing.md",
+            "research/domain_classification.json",
+            # Step 10: this stage IS the `search` half of the split. It consumes the strategies
+            # rather than making them, so it cannot search against a plan nobody read, and it
+            # consumes the approval so a strategy — or a framing — edited after approval fails
+            # closed. dr2_podcast/approval.py holds the bundle rule.
+            "research/search_strategy_aff.json",
+            "research/search_strategy_neg.json",
+            "meta/strategy_approval.json",
+        ),
         produces=(
             "research/affirmative_case.md",
             "research/falsification_case.md",
             "research/grade_synthesis.md",
             "research/clinical_math.md",
             "research/research_sources.json",
-            "research/search_strategy_aff.json",
-            "research/search_strategy_neg.json",
             "research/screening_results_aff.json",
             "research/screening_results_neg.json",
             # The SOT is built HERE because phase 1 builds it here, on the live reports dict. See
@@ -263,6 +281,12 @@ def resolve(artifacts: tuple[str, ...], substitutions: dict[str, str] | None = N
     if not substitutions:
         return tuple(a for a in artifacts if "{" not in a)
     return tuple(a.format(**substitutions) for a in artifacts)
+
+
+#: Inputs a PERSON writes, not a stage. The strategy approval is the only one: Step 10's whole point
+#: is that a reviewer stands between the plan and the search, so an approval a stage could produce
+#: would be an approval the pipeline grants itself.
+REVIEWER_WRITTEN: frozenset[str] = frozenset({"meta/strategy_approval.json"})
 
 
 def _pattern_matches(artifact: str, pattern: str) -> bool:

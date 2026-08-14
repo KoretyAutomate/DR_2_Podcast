@@ -17,9 +17,9 @@ from dr2_podcast.manifest import config_fingerprint as _real_fingerprint
 from dr2_podcast.schemas import SchemaValidationError
 from dr2_podcast.stage import StageError, load_run_config, run_stage, write_run_config
 
-from tests._stage_fixtures import FRAMING_OUTPUTS, _clean_adapters, _stub, run_dir
+from tests._stage_fixtures import FRAMING_OUTPUTS, _clean_adapters, _stub, run_dir, run_plan_search
 
-__all__ = ["FRAMING_OUTPUTS", "_clean_adapters", "_stub", "run_dir"]
+__all__ = ["FRAMING_OUTPUTS", "_clean_adapters", "_stub", "run_dir", "run_plan_search"]
 
 
 # --------------------------------------------------------------------------- #
@@ -114,12 +114,14 @@ def test_rerunning_a_stage_reports_what_it_made_stale(run_dir: Path) -> None:
     and the runner has to say what that invalidated rather than leaving it to be discovered."""
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
+    run_plan_search(run_dir)
     _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
     run_stage(run_dir, "research")
 
     _stub("framing", {**FRAMING_OUTPUTS, "research/research_framing.md": "# a different framing\n"})
     outcome = run_stage(run_dir, "framing", force=True)
-    assert "now stale: research" in outcome
+    # plan_search is stale too now, and naming both is right: framing feeds the strategies as well.
+    assert "research" in outcome.split("now stale:")[1]
     assert Manifest.load(run_dir).status("research") == "stale"
 
 
@@ -151,6 +153,7 @@ def test_rewriting_the_run_config_unchanged_does_not_invalidate(run_dir: Path) -
 def test_a_stage_refuses_to_consume_outputs_of_a_stage_that_is_not_current(run_dir: Path) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
+    run_plan_search(run_dir)
     research_calls = _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
 
     write_run_config(run_dir, topic="別の話題", language="ja", target_length_minutes=25)
@@ -168,6 +171,7 @@ def test_a_stage_is_not_skipped_as_current_on_top_of_a_stale_producer(
 ) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
+    run_plan_search(run_dir)
     _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
     run_stage(run_dir, "research")
     _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
@@ -201,6 +205,7 @@ def test_an_absent_optional_input_does_not_demand_its_producer(run_dir: Path) ->
     write_run_config(run_dir, topic="vitamin D and fractures", language="en", target_length_minutes=25)
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
+    run_plan_search(run_dir)
     _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
     run_stage(run_dir, "research")
     _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
@@ -214,6 +219,7 @@ def test_an_absent_optional_input_does_not_demand_its_producer(run_dir: Path) ->
 def test_a_present_optional_input_does_demand_its_producer(run_dir: Path) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
+    run_plan_search(run_dir)
     _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
     run_stage(run_dir, "research")
     _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
@@ -229,6 +235,7 @@ def test_force_consumes_the_artifacts_as_they_stand(run_dir: Path) -> None:
     """The escape hatch is explicit and named, not a silent default."""
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
+    run_plan_search(run_dir)
     research_calls = _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
     write_run_config(run_dir, topic="別の話題", language="ja", target_length_minutes=25)
     run_stage(run_dir, "research", force=True)
@@ -286,6 +293,7 @@ def test_leftover_candidates_are_cleared_before_a_stage_runs(run_dir: Path) -> N
 def test_a_japanese_run_cannot_reach_the_blueprint_without_its_translation(run_dir: Path) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
+    run_plan_search(run_dir)
     _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
     run_stage(run_dir, "research")
     _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
@@ -302,6 +310,7 @@ def test_an_english_run_reaches_the_blueprint_without_one(run_dir: Path) -> None
     write_run_config(run_dir, topic="vitamin D and fractures", language="en", target_length_minutes=25)
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
+    run_plan_search(run_dir)
     _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
     run_stage(run_dir, "research")
     _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
@@ -319,6 +328,7 @@ def test_an_english_run_reaches_the_blueprint_without_one(run_dir: Path) -> None
 def _run_through_blueprint(run_dir: Path) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
+    run_plan_search(run_dir)
     _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
     run_stage(run_dir, "research")
     _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})

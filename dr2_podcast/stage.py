@@ -154,6 +154,13 @@ def _stale_upstream(
     return stale
 
 
+def _missing_input_hint(artifact: str) -> str:
+    from dr2_podcast.stages import producer_of
+
+    producer = producer_of(artifact)
+    return f"{artifact} (run stage {producer!r})" if producer else f"{artifact} (written by review, not by a stage)"
+
+
 def _guard_inputs(
     run_dir: Path,
     name: str,
@@ -173,7 +180,7 @@ def _guard_inputs(
     ``--force`` bypasses the currency half, because the honest reading of "these inputs are what I
     want" is a decision a human can make; it does not bypass existence.
     """
-    from dr2_podcast.stages import producer_of, resolve
+    from dr2_podcast.stages import resolve
 
     stage = get_stage(name)
     # A `{language}` input is optional only because an ENGLISH run has no translated SOT. For any
@@ -192,7 +199,10 @@ def _guard_inputs(
         ]
     missing = [a for a in required if not (run_dir / a).exists()]
     if missing:
-        detail = ", ".join(f"{a} (run stage {producer_of(a)!r})" for a in missing)
+        # An artifact with no producing stage is one a PERSON writes — the strategy approval is the
+        # only one today — so "run stage None" would send them looking for a stage that will never
+        # exist. Say what actually has to happen instead.
+        detail = ", ".join(_missing_input_hint(a) for a in missing)
         raise StageError(f"stage {name!r} cannot run: missing input(s) {detail}")
     if force:
         return

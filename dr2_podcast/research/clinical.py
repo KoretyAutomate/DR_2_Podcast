@@ -3332,10 +3332,46 @@ class Orchestrator:
             ),
         )
 
+    async def _plan_track(self, spec: _TrackSpec, topic: str, framing_context: str, decomposition, log):
+        """Step 1 alone: the tiered keyword strategy, and nothing that spends a search.
+
+        Separated so there is a point in the pipeline where a strategy exists and no search has run
+        (PLAN.md Step 10). There was no such point: `_run_research_track` did plan → search → screen
+        → extract in one call, both tracks fired together under `asyncio.gather`, and the strategy
+        JSON was not written until after GRADE had finished — so "read the strategy before the
+        search" was not a thing anyone could do, however much they wanted to.
+        """
+        log(f"\n{'=' * 70}")
+        log(f"STEP 1{spec.step_suffix}: TIERED KEYWORD GENERATION + AUDITOR GATE ({spec.label})")
+        log("=" * 70)
+        researcher = getattr(self, spec.researcher_attr)
+        return await researcher._formulate_tiered_strategy(
+            topic, spec.strategy_role, framing_context, decomposition, log=log
+        )
+
+    async def plan_both_tracks(self, topic: str, framing_context: str = "", log=logger.info) -> dict[str, Any]:
+        """Both tracks' strategies, and NO search. The stopping point Step 10 needs.
+
+        Returns the two plans and the decomposition they were built from. Whoever calls this writes
+        the strategy files and stops; the search is a separate invocation that will not proceed
+        without an approval covering these exact artifacts.
+        """
+        decomposition = await self.lead_researcher._decompose_topic(topic, framing_context)
+        aff_plan, fal_plan = await asyncio.gather(
+            self._plan_track(_AFFIRMATIVE_TRACK, topic, framing_context, decomposition, log),
+            self._plan_track(_FALSIFICATION_TRACK, topic, framing_context, decomposition, log),
+        )
+        return {"decomposition": decomposition, "aff_plan": aff_plan, "fal_plan": fal_plan}
+
     async def _run_research_track(
-        self, spec: _TrackSpec, topic: str, framing_context: str, decomposition, output_dir, log
+        self, spec: _TrackSpec, topic: str, plan, output_dir, log
     ) -> _TrackResult:
-        """Steps 1-5 for one track.
+        """Steps 2-5 for one track, against a plan made earlier.
+
+        The plan is an ARGUMENT rather than something this method makes, so that every caller has to
+        have one in hand before a search runs — which is the boundary Step 10 is about. A method
+        that could plan for itself would leave "search without an approved strategy" one default
+        argument away.
 
         The affirmative and falsification tracks are the same five steps; only
         the researcher, the two role strings and the log labels differ, which is
@@ -3344,13 +3380,6 @@ class Orchestrator:
         researcher = getattr(self, spec.researcher_attr)
         n, label = spec.step_suffix, spec.label
         rule = "=" * 70
-
-        log(f"\n{rule}")
-        log(f"STEP 1{n}: TIERED KEYWORD GENERATION + AUDITOR GATE ({label})")
-        log(rule)
-        plan = await researcher._formulate_tiered_strategy(
-            topic, spec.strategy_role, framing_context, decomposition, log=log
-        )
 
         log(f"\n{rule}")
         log(f"STEP 2{n}: TIERED CASCADE SEARCH ({label})")
@@ -3402,9 +3431,18 @@ class Orchestrator:
         )
 
     async def run(
-        self, topic: str, framing_context: str = "", progress_callback=None, output_dir: str = None
+        self,
+        topic: str,
+        framing_context: str = "",
+        progress_callback=None,
+        output_dir: str = None,
+        plans: dict[str, Any] | None = None,
     ) -> dict[str, ResearchReport]:
         """Run the full 7-step clinical research pipeline.
+
+        ``plans`` are strategies made earlier by :meth:`plan_both_tracks` and approved since. Passing
+        them skips step 1, so the search runs against exactly the strategies somebody signed off —
+        replanning here would search against a strategy nobody read (PLAN.md Step 10).
 
         Args:
             topic: Research topic
@@ -3439,7 +3477,9 @@ class Orchestrator:
         log(f"\n{'=' * 70}")
         log("PHASE 0: CONCEPT DECOMPOSITION")
         log(f"{'=' * 70}")
-        decomposition = await self.lead_researcher._decompose_topic(topic, framing_context)
+        if plans is None:
+            plans = await self.plan_both_tracks(topic, framing_context=framing_context, log=log)
+        decomposition = plans.get("decomposition") or {}
         if decomposition.get("canonical_terms"):
             log(f"  Canonical terms: {', '.join(decomposition['canonical_terms'])}")
         if decomposition.get("related_concepts"):
@@ -3451,8 +3491,8 @@ class Orchestrator:
         log(f"{'=' * 70}")
 
         aff, fal = await asyncio.gather(
-            self._run_research_track(_AFFIRMATIVE_TRACK, topic, framing_context, decomposition, output_dir, log),
-            self._run_research_track(_FALSIFICATION_TRACK, topic, framing_context, decomposition, output_dir, log),
+            self._run_research_track(_AFFIRMATIVE_TRACK, topic, plans["aff_plan"], output_dir, log),
+            self._run_research_track(_FALSIFICATION_TRACK, topic, plans["fal_plan"], output_dir, log),
         )
 
         aff_strategy, fal_strategy = aff.plan, fal.plan
@@ -4132,11 +4172,23 @@ class Orchestrator:
 # --- Convenience functions ---
 
 
+async def plan_search(
+    topic: str,
+    config: "ResearchConfig | None" = None,
+    framing_context: str = "",
+    log=logger.info,
+) -> dict[str, Any]:
+    """Both tracks' search strategies, and nothing that spends a search (PLAN.md Step 10)."""
+    orchestrator = Orchestrator(config or ResearchConfig())
+    return await orchestrator.plan_both_tracks(topic, framing_context=framing_context, log=log)
+
+
 async def run_deep_research(
     topic: str,
     config: "ResearchConfig | None" = None,
     framing_context: str = "",
     output_dir: str = None,
+    plans: dict[str, Any] | None = None,
 ) -> "DeepResearchResult":
     """Entry point for the 7-step pipeline.
 
@@ -4144,7 +4196,7 @@ async def run_deep_research(
     module's configured smart model with a clinical domain.
     """
     orchestrator = Orchestrator(config or ResearchConfig())
-    return await orchestrator.run(topic, framing_context=framing_context, output_dir=output_dir)
+    return await orchestrator.run(topic, framing_context=framing_context, output_dir=output_dir, plans=plans)
 
 
 async def main():

@@ -47,8 +47,13 @@ RUN_CONFIG = {"topic": "ビタミンDと骨折", "language": "ja", "target_lengt
 # research
 # --------------------------------------------------------------------------- #
 def _research_inputs(run_dir: Path, domain: str = "clinical") -> None:
+    from tests._stage_fixtures import plan_and_approve
+
     (run_dir / "research/research_framing.md").write_text("# Research Framework\n\nQuestions.\n")
     (run_dir / "research/domain_classification.json").write_text(f'{{"domain": "{domain}"}}')
+    # Step 10: the stage will not search without approved strategies, so a fixture that writes only
+    # a framing no longer describes a runnable run.
+    plan_and_approve(run_dir)
 
 
 #: A validated structured GRADE record, as step 7 now produces. Modifier-free on purpose: the
@@ -66,8 +71,11 @@ def _stub_research(
 ) -> dict[str, Any]:
     seen: dict[str, Any] = {}
 
-    async def _fake_deep_research(*, topic: str, config: Any, framing_context: str, output_dir: str) -> Any:
-        seen.update(topic=topic, framing=framing_context, domain=config.domain, output_dir=output_dir)
+    async def _fake_deep_research(
+        *, topic: str, config: Any, framing_context: str, output_dir: str, plans: Any = None
+    ) -> Any:
+        seen.update(topic=topic, framing=framing_context, domain=config.domain, output_dir=output_dir,
+                    plans=plans)
         if reports is not None:
             return reports
         return {"audit": object(), "pipeline_data": {"grade_record": GRADE_RECORD}}
@@ -358,3 +366,103 @@ def test_research_fails_closed_without_a_framing_document(run_dir: Path) -> None
     (run_dir / "research/domain_classification.json").write_text('{"domain": "clinical"}')
     with pytest.raises(ArtifactError, match="cannot read"):
         research_stages.research(run_dir, RUN_CONFIG)
+
+
+# --------------------------------------------------------------------------- #
+# Step 10 — the boundary between planning and searching
+# --------------------------------------------------------------------------- #
+# PLAN.md's exit criterion is specific: assert the CALL COUNT, not just the verdict. A gate that
+# refuses after the search has already run has cost the four minutes and the PubMed rate limit it
+# exists to protect.
+def _searching_is_forbidden(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+
+    async def _must_not_search(**kwargs):
+        calls.append(kwargs.get("topic", "?"))
+        raise AssertionError("a search ran on an unapproved strategy")
+
+    monkeypatch.setattr("dr2_podcast.research.clinical.run_deep_research", _must_not_search)
+    return calls
+
+
+def test_an_unapproved_strategy_issues_no_search_at_all(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _research_inputs(run_dir)
+    (run_dir / "meta/strategy_approval.json").unlink()
+    calls = _searching_is_forbidden(monkeypatch)
+
+    with pytest.raises(ArtifactError, match="not approved"):
+        research_stages.research(run_dir, RUN_CONFIG)
+    assert calls == [], "the refusal has to come before the search, not after it"
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    ["research/search_strategy_aff.json", "research/research_framing.md"],
+)
+def test_an_artifact_edited_after_approval_issues_no_search(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch, artifact: str
+) -> None:
+    """The framing case is the one a strategy-only hash would have let through: the strategies are
+    approved BY COMPARISON with the framing, so a changed framing invalidates the comparison."""
+    _research_inputs(run_dir)
+    (run_dir / artifact).write_text("something the approver never read\n")
+    calls = _searching_is_forbidden(monkeypatch)
+
+    with pytest.raises(ArtifactError, match="not approved"):
+        research_stages.research(run_dir, RUN_CONFIG)
+    assert calls == []
+
+
+def test_the_search_runs_against_the_strategies_that_were_approved(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rebuilt from the FILES, never from anything held in memory: the approval is a statement about
+    those bytes, so a search against anything else is covered by no approval at all."""
+    _research_inputs(run_dir)
+    seen = _stub_research(monkeypatch)
+    research_stages.research(run_dir, RUN_CONFIG)
+
+    plans = seen["plans"]
+    assert plans["aff_plan"].role == "affirmative"
+    assert plans["fal_plan"].role == "adversarial"
+    assert plans["aff_plan"].tier1.intervention == ["vitamin D"]
+
+
+def test_plan_search_stops_before_the_search(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stage exists so a strategy is on disk with nothing searched. Before the split there was
+    no such point in the pipeline at all."""
+    import dataclasses
+
+    from dr2_podcast.research.clinical import TieredSearchPlan, TierKeywords
+
+    (run_dir / "research/research_framing.md").write_text("# Research Framework\n\nQuestions.\n")
+    (run_dir / "research/domain_classification.json").write_text('{"domain": "clinical"}')
+    calls = _searching_is_forbidden(monkeypatch)
+
+    def _tier(word):
+        return TierKeywords(intervention=[word], outcome=["fracture"], population=["adults"], rationale="r")
+
+    async def _plan(*, topic, config, framing_context, log):
+        return {
+            "decomposition": {"canonical_terms": ["vitamin D"]},
+            "aff_plan": TieredSearchPlan(pico={"population": "adults"}, tier1=_tier("vitamin D"),
+                                         tier2=_tier("cholecalciferol"), tier3=_tier("secosteroid"),
+                                         role="affirmative"),
+            "fal_plan": TieredSearchPlan(pico={"population": "adults"}, tier1=_tier("vitamin D harm"),
+                                         tier2=_tier("hypercalcaemia"), tier3=_tier("secosteroid"),
+                                         role="adversarial"),
+        }
+
+    monkeypatch.setattr("dr2_podcast.research.clinical.plan_search", _plan)
+    research_stages.plan_search(run_dir, RUN_CONFIG)
+
+    assert calls == []
+    assert not (run_dir / "meta/strategy_approval.json").exists(), "approving is not this stage's job"
+    import json as _json
+
+    aff = _json.loads((run_dir / "research/search_strategy_aff.json").read_text())
+    assert aff["role"] == "affirmative"
+    assert aff["tier1"]["intervention"] == ["vitamin D"]
+    assert dataclasses.is_dataclass(TieredSearchPlan)

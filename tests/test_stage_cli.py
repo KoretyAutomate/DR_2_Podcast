@@ -12,9 +12,9 @@ from dr2_podcast import stage as stage_mod
 from dr2_podcast.manifest import Manifest
 from dr2_podcast.stage import StageError, load_run_config, main, run_stage, write_run_config
 
-from tests._stage_fixtures import FRAMING_OUTPUTS, _clean_adapters, _stub, run_dir
+from tests._stage_fixtures import FRAMING_OUTPUTS, _clean_adapters, _stub, run_dir, run_plan_search
 
-__all__ = ["FRAMING_OUTPUTS", "_clean_adapters", "_stub", "run_dir"]
+__all__ = ["FRAMING_OUTPUTS", "_clean_adapters", "_stub", "run_dir", "run_plan_search"]
 
 
 # --------------------------------------------------------------------------- #
@@ -227,6 +227,7 @@ def test_an_interrupted_stage_is_recorded_as_failed_before_the_interrupt_propaga
 def test_a_rejected_stage_does_not_get_to_rename_the_run(run_dir: Path) -> None:
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
+    run_plan_search(run_dir)
     _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
     run_stage(run_dir, "research")
     _stub("url_validation", {a: "{}" for a in stage_mod.get_stage("url_validation").produces})
@@ -348,6 +349,7 @@ def test_status_reports_a_consumer_stale_when_its_producer_is(
 
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
+    run_plan_search(run_dir)
     _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
     run_stage(run_dir, "research")
 

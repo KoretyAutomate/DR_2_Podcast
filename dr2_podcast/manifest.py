@@ -149,6 +149,9 @@ CONFIG_GROUPS: dict[str, tuple[str, ...]] = {
 
 STAGE_CONFIG_GROUPS: dict[str, tuple[str, ...]] = {
     "framing": ("llm", "prompt"),
+    # The strategy comes from the model and the framing prompt, and from the research settings that
+    # decide what a tier is — not from anything TTS or audio touches.
+    "plan_search": ("llm", "research", "prompt"),
     "research": ("llm", "research", "prompt"),
     "url_validation": ("research",),
     "translate": ("llm", "prompt"),
@@ -198,6 +201,7 @@ _EVERY_STAGE: tuple[str, ...] = (
 
 _STAGE_SPECIFIC: dict[str, tuple[str, ...]] = {
     "framing": ("dr2_podcast/adapters/research_stages.py", "dr2_podcast/research/domain_classifier.py"),
+    "plan_search": ("dr2_podcast/adapters/research_stages.py", "dr2_podcast/research/clinical.py"),
     "research": (
         "dr2_podcast/adapters/research_stages.py",
         "dr2_podcast/research/clinical.py",
