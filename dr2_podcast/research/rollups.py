@@ -30,6 +30,33 @@ FUNDING_CATEGORIES: tuple[str, ...] = (
 )
 
 
+def unique_studies(extractions) -> list:
+    """One entry per paper, by stable identity.
+
+    The affirmative and falsification tracks search separately and routinely land on the SAME paper,
+    so `all_extractions` carries it twice. §4.1's study table already deduplicates by PMID/DOI/title,
+    so counting both copies here made the aggregates contradict the table printed directly above
+    them and overstated every category the duplicate belonged to (prepush codex 2026-08-13).
+
+    Identity is the first of PMID, DOI or title that the record actually has — the same ladder the
+    table uses, so the two cannot disagree about what counts as one study.
+    """
+    seen: set[str] = set()
+    unique = []
+    for extraction in extractions or []:
+        identity = (
+            (getattr(extraction, "pmid", None) or "").strip()
+            or (getattr(extraction, "doi", None) or "").strip()
+            or (getattr(extraction, "title", None) or "").strip()
+        )
+        if identity and identity in seen:
+            continue
+        if identity:
+            seen.add(identity)
+        unique.append(extraction)
+    return unique
+
+
 @dataclass
 class ReplicationGroup:
     """One finding, and who has reported it."""
@@ -107,7 +134,7 @@ def replication_groups(extractions) -> list[ReplicationGroup]:
     they are the disagreement the falsification track exists to surface.
     """
     groups: dict[tuple[str, str], ReplicationGroup] = {}
-    for extraction in extractions or []:
+    for extraction in unique_studies(extractions):
         author_group = (getattr(extraction, "author_group", None) or "").strip()
         registration = (getattr(extraction, "trial_registration", None) or "").strip()
         for finding in getattr(extraction, "findings", None) or []:
@@ -158,7 +185,7 @@ def funding_rollup(extractions) -> dict[str, Any]:
     counts: Counter[str] = Counter()
     api_only = 0
     total = 0
-    for extraction in extractions or []:
+    for extraction in unique_studies(extractions):
         total += 1
         block = getattr(extraction, "funding", None)
         if block is None:
@@ -186,7 +213,7 @@ def bias_rollup(extractions, grade_record: dict[str, Any] | None) -> dict[str, A
     the record existed.
     """
     ratings: Counter[str] = Counter()
-    for extraction in extractions or []:
+    for extraction in unique_studies(extractions):
         rating = (getattr(extraction, "risk_of_bias", None) or "").strip().lower()
         ratings[rating if rating in ("low", "some concerns", "high") else "unclear"] += 1
     downgrades = (grade_record or {}).get("downgrades") or []
@@ -202,10 +229,11 @@ def design_rollup(extractions) -> dict[str, Any]:
     """The step-3 answer: what the evidence base is made of, by study design."""
     from dr2_podcast.research.confidence import design_rung, staircase_position
 
+    studies = unique_studies(extractions)
     counts: Counter[str] = Counter()
-    for extraction in extractions or []:
+    for extraction in studies:
         counts[design_rung(getattr(extraction, "study_design", None)) or "unreadable"] += 1
     answer: dict[str, Any] = {name: count for name, count in sorted(counts.items())}
     answer["studies_total"] = sum(counts.values())
-    answer["highest_rung"] = staircase_position(extractions) or "none_readable"
+    answer["highest_rung"] = staircase_position(studies) or "none_readable"
     return answer

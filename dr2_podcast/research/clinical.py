@@ -1901,15 +1901,19 @@ class ResearchAgent:
                 plan.auditor_notes = feedback
                 return plan
 
-        # Max revisions exhausted — warn and proceed
-        logger.warning(
-            f"Tier plan not approved after {MAX_REVISIONS} revisions "
-            f"({role}) — proceeding with last draft. Notes: {feedback[:200]}"
-        )
-        log(f"    [Auditor] WARNING: proceeding with unapproved plan after {MAX_REVISIONS} revisions")
+        # STOPS. It used to warn and search on the unapproved plan, which made the auditor gate a
+        # log line: the whole point of the tier plan is that a wrong strategy produces a healthy hit
+        # count and a useless corpus, and that is precisely what the auditor was asked to catch
+        # (PLAN.md sequencing item 11). Failing here costs one run; proceeding costs an episode
+        # built on the wrong literature, and nobody downstream can tell.
+        from dr2_podcast.artifacts import ArtifactError
+
         plan.auditor_approved = False
         plan.auditor_notes = f"Not approved after {MAX_REVISIONS} revisions: {feedback}"
-        return plan
+        raise ArtifactError(
+            f"the {role} search strategy was not approved after {MAX_REVISIONS} revisions, so there "
+            f"is no strategy to search with. The auditor's last notes: {feedback[:300]}"
+        )
 
     def _build_tier_query(self, tier: TierKeywords, extra_filters: str = "") -> str:
         """Deterministic PubMed Boolean builder — no LLM. AND between groups, OR within groups."""

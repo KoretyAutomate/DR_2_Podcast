@@ -218,6 +218,10 @@ _REPORT_FILENAMES = {
 }
 
 
+class AccuracyGateFailure(RuntimeError):
+    """The accuracy gate rejected the script and the correction pass could not repair it."""
+
+
 def _save_research_reports(deep_reports: dict, output_dir_path: Path, run_logger) -> None:
     from dr2_podcast import pipeline as _pipeline
     from dr2_podcast.artifacts import write_atomic
@@ -799,7 +803,11 @@ def phase_7_audit(
     auditor_agent_ref,
     translation_task_ref,
 ):
-    """Phase 7: Accuracy audit (advisory)."""
+    """Phase 7: Accuracy audit. BLOCKING — see the correction path below.
+
+    It was docstring'd "advisory" while being the only thing standing between a drifted script and
+    the audio render (PLAN.md Step 5). A gate whose failure path continues is decorative.
+    """
     from dr2_podcast import pipeline as _pipeline
 
     run_logger = get_run_logger()
@@ -1337,9 +1345,15 @@ def run_pipeline_flow(
             flow_logger,
         )
         if corrected_script_text is None:
-            flow_logger.warning(
-                "Correction pass produced no valid script — finalizing the "
-                "UNCORRECTED script; MANUAL REVIEW NEEDED (see accuracy_audit.md)"
+            # STOPS. It used to log "MANUAL REVIEW NEEDED" and finalise the uncorrected script
+            # anyway, which meant the accuracy gate's failure path was to ship what it rejected —
+            # to audio, unattended, at 3am (PLAN.md Step 5: "or the gate is decorative"). "Manual
+            # review needed" means a human has to look, and a run that continues has ensured
+            # nobody will. The staged audit adapter already refused this; now both paths agree.
+            raise AccuracyGateFailure(
+                "the accuracy gate fired and the correction pass produced no valid script. See "
+                "research/accuracy_audit.md and ACCURACY_CORRECTIONS.md; the script this run "
+                "produced is not one this pipeline is willing to render."
             )
 
     # -------------------------------------------------------------------

@@ -246,3 +246,60 @@ def test_events_accumulate_rather_than_replace(tmp_path) -> None:
 
     events = json.loads((tmp_path / "meta/loop_events.json").read_text())["events"]
     assert [e["section"] for e in events] == ["step-4", "step-8"]
+
+
+# --------------------------------------------------------------------------- #
+# The fail-open paths PLAN.md names — closed, and asserted closed
+# --------------------------------------------------------------------------- #
+def test_the_flow_refuses_to_finalise_a_script_the_gate_rejected() -> None:
+    """PLAN.md Step 5: "Two fail-open paths must be removed in this step, or the gate is
+    decorative." This one logged MANUAL REVIEW NEEDED and rendered the uncorrected script anyway —
+    unattended, so nobody was going to review anything."""
+    import inspect
+
+    from dr2_podcast import pipeline_flow
+
+    source = inspect.getsource(pipeline_flow)
+    assert "MANUAL REVIEW NEEDED (see accuracy_audit.md)" not in source
+    assert "raise AccuracyGateFailure(" in source
+
+
+def test_the_audit_phase_no_longer_calls_itself_advisory() -> None:
+    import inspect
+
+    from dr2_podcast import pipeline_flow
+
+    assert '"""Phase 7: Accuracy audit (advisory)."""' not in inspect.getsource(pipeline_flow)
+
+
+def test_an_unapproved_keyword_plan_stops_the_search() -> None:
+    """PLAN.md item 11. It used to warn and search anyway, which made the auditor gate a log line —
+    and a wrong strategy is exactly the failure that produces a healthy hit count and a useless
+    corpus, which is what the auditor was asked to catch."""
+    import inspect
+
+    from dr2_podcast.research.clinical import ResearchAgent
+
+    source = inspect.getsource(ResearchAgent._formulate_tiered_strategy)
+    assert "proceeding with last draft" not in source
+    assert "was not approved after" in source
+
+
+# prepush codex 2026-08-13: --changed-vs compared only the text, so moving a line from speaker 1 to
+# speaker 2 read as unchanged — and with two configured voices that edit changes the voice, and with
+# it the reading the engine produces. The tool checked zero lines on exactly the edit that needed it.
+def test_reassigning_a_line_to_the_other_speaker_counts_as_changed() -> None:
+    from dr2_podcast.tools.tts_reading_check import changed_turns
+
+    previous = "Host 1: 表が出ました。\nHost 2: なるほど。\n"
+    current = "Host 2: 表が出ました。\nHost 2: なるほど。\n"
+    changed = changed_turns(previous, current)
+    assert changed, "a line that changes voice is a line that needs reading back"
+    assert changed[0][1].speaker == 2
+
+
+def test_an_untouched_script_still_has_nothing_to_read_back() -> None:
+    from dr2_podcast.tools.tts_reading_check import changed_turns
+
+    script = "Host 1: 表が出ました。\nHost 2: なるほど。\n"
+    assert changed_turns(script, script) == []

@@ -8,6 +8,7 @@ the fixture, and the pack is regenerated from the same inputs and compared.
 
 from __future__ import annotations
 
+import itertools
 from types import SimpleNamespace
 
 import pytest
@@ -26,6 +27,15 @@ SOT = (
 )
 
 
+_PMID_COUNTER = itertools.count(10000001)
+
+
+def _next_pmid() -> str:
+    """Distinct by default. The fixtures are DIFFERENT studies, and giving them one PMID made them
+    one study the moment the rollups started deduplicating — which they must."""
+    return str(next(_PMID_COUNTER))
+
+
 def _finding(endpoint="hip fracture", direction="decrease", **kw):
     return Finding(
         population="adults",
@@ -38,10 +48,13 @@ def _finding(endpoint="hip fracture", direction="decrease", **kw):
     )
 
 
-def _study(*, group="Tanaka H; Osaka", registration="NCT01", category="government",
-           design="parallel RCT", bias="low", findings=None):
+def _study(*, group="Tanaka H; Osaka", registration="NCT01", category="government", **rest):
+    design, bias = rest.pop("design", "parallel RCT"), rest.pop("bias", "low")
+    findings, pmid = rest.pop("findings", None), rest.pop("pmid", None)
+    assert not rest, f"unknown fixture keys: {sorted(rest)}"
     return SimpleNamespace(
-        pmid="1",
+        pmid=pmid if pmid is not None else _next_pmid(),
+        doi=None,
         title="a study",
         study_design=design,
         author_group=group,

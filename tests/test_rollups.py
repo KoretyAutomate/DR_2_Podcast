@@ -6,6 +6,7 @@ presence check. So every case here is one whose right answer is countable by han
 
 from __future__ import annotations
 
+import itertools
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,15 @@ from dr2_podcast.research.rollups import (
 )
 
 
+_PMID_COUNTER = itertools.count(10000001)
+
+
+def _next_pmid() -> str:
+    """Distinct by default. The fixtures are DIFFERENT studies, and giving them one PMID made them
+    one study the moment the rollups started deduplicating — which they must."""
+    return str(next(_PMID_COUNTER))
+
+
 def _finding(endpoint="hip fracture", direction="decrease", **kw):
     return Finding(
         population="adults",
@@ -32,10 +42,13 @@ def _finding(endpoint="hip fracture", direction="decrease", **kw):
     )
 
 
-def _study(*, group=None, registration=None, category="government", design="parallel RCT",
-           bias="low", findings=None):
+def _study(*, group=None, registration=None, category="government", **rest):
+    design, bias = rest.pop("design", "parallel RCT"), rest.pop("bias", "low")
+    findings, pmid = rest.pop("findings", None), rest.pop("pmid", None)
+    assert not rest, f"unknown fixture keys: {sorted(rest)}"
     return SimpleNamespace(
-        pmid="1",
+        pmid=pmid if pmid is not None else _next_pmid(),
+        doi=None,
         title="a study",
         study_design=design,
         author_group=group,
@@ -323,3 +336,38 @@ def test_no_studies_means_no_rollup_block_at_all() -> None:
     from dr2_podcast.pipeline_sot import _format_rollups
 
     assert _format_rollups([], None) == ""
+
+
+# prepush codex 2026-08-13: the two tracks search separately and routinely land on the SAME paper,
+# so all_extractions carries it twice. §4.1's table deduplicates by PMID/DOI/title, so counting both
+# copies made the aggregate contradict the table printed directly above it.
+def test_a_paper_found_by_both_tracks_counts_once() -> None:
+    from dr2_podcast.research.rollups import unique_studies
+
+    both = [_study(pmid="12345678", category="industry"), _study(pmid="12345678", category="industry")]
+    assert len(unique_studies(both)) == 1
+    assert funding_rollup(both)["studies_total"] == 1
+    assert funding_rollup(both)["by_category"]["industry"] == 1
+    assert bias_rollup(both, None)["studies_total"] == 1
+    assert design_rollup(both)["studies_total"] == 1
+
+
+def test_a_duplicate_does_not_look_like_a_replication() -> None:
+    """Two copies of one paper are one group reporting once, not two groups agreeing."""
+    both = [
+        _study(pmid="12345678", group="Tanaka H; Osaka", registration="NCT01"),
+        _study(pmid="12345678", group="Tanaka H; Osaka", registration="NCT01"),
+    ]
+    [group] = replication_groups(both)
+    assert group.reports == 1
+    assert group.status == "not_replicated"
+
+
+def test_papers_without_an_identity_are_not_collapsed_together() -> None:
+    """Two different studies that both lack a PMID, DOI and title are still two studies."""
+    from dr2_podcast.research.rollups import unique_studies
+
+    anonymous = [_study(pmid=None), _study(pmid=None)]
+    for study in anonymous:
+        study.title = ""
+    assert len(unique_studies(anonymous)) == 2
