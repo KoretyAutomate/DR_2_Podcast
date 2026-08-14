@@ -466,3 +466,50 @@ def test_plan_search_stops_before_the_search(run_dir: Path, monkeypatch: pytest.
     assert aff["role"] == "affirmative"
     assert aff["tier1"]["intervention"] == ["vitamin D"]
     assert dataclasses.is_dataclass(TieredSearchPlan)
+
+
+# prepush codex 2026-08-13 [P1]: _save_artifacts rewrote the two strategy files on every successful
+# run. Under the staged runner those are plan_search's outputs and the artifacts the approval was
+# made against — so their bytes changed, plan_search went non-current, and the transitive guard then
+# refused blueprint. A healthy pipeline stopped itself, and the approval it had just satisfied no
+# longer verified.
+def test_a_successful_run_leaves_the_approved_strategies_byte_identical(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dr2_podcast.approval import approval_errors
+
+    _research_inputs(run_dir)
+    before = {
+        name: (run_dir / f"research/{name}").read_bytes()
+        for name in ("search_strategy_aff.json", "search_strategy_neg.json")
+    }
+
+    async def _writes_strategies_too(**kwargs):
+        """A stand-in for the real _save_artifacts, which used to rewrite them."""
+        if kwargs.get("plans"):
+            return {"audit": object(), "pipeline_data": {"grade_record": GRADE_RECORD,
+                                                         "aff_extractions": [], "fal_extractions": []}}
+        raise AssertionError("the staged path always supplies plans")
+
+    monkeypatch.setattr("dr2_podcast.research.clinical.run_deep_research", _writes_strategies_too)
+    monkeypatch.setattr("dr2_podcast.pipeline_flow._read_candidate_counts", lambda d, log: (50, 12))
+    monkeypatch.setattr("dr2_podcast.pipeline_flow._save_research_reports", lambda r, d, log: None)
+    monkeypatch.setattr("dr2_podcast.pipeline_flow._save_sources_json", lambda r, d, log: None)
+    monkeypatch.setattr("dr2_podcast.pipeline.build_imrad_sot", lambda **kw: "# Source of Truth\n\nx\n")
+
+    research_stages.research(run_dir, RUN_CONFIG)
+
+    for name, content in before.items():
+        assert (run_dir / f"research/{name}").read_bytes() == content, name
+    assert approval_errors(run_dir) == [], "and the approval it ran under still verifies"
+
+
+def test_the_orchestrator_does_not_write_strategies_it_was_handed() -> None:
+    """The property at its source, so it holds for any caller — not only the adapter above."""
+    import inspect
+
+    from dr2_podcast.research.clinical import Orchestrator
+
+    source = inspect.getsource(Orchestrator._save_artifacts)
+    assert "if write_strategies:" in source
+    assert "write_strategies=not supplied_plans" in inspect.getsource(Orchestrator.run)

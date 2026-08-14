@@ -18,6 +18,7 @@ from dr2_podcast.adapters._common import (
     snapshot_outputs,
 )
 from dr2_podcast.approval import require_approval
+from dr2_podcast.translation_audit import audit_translation
 from dr2_podcast.artifacts import ArtifactError, write_atomic, write_json_atomic
 from dr2_podcast.stages import register
 
@@ -395,6 +396,22 @@ def translate(run_dir: Path, run_config: dict[str, Any]) -> None:
             f"translation to {language!r} produced nothing. The monolithic phase returns None and "
             f"continues, which builds the episode from a source of truth in the wrong language."
         )
+    # PLAN.md Step 11. Nothing checked the translation, and the translated SOT is the basis for
+    # every claim in a Japanese episode — a moved number or a reassigned PMID poisons everything
+    # downstream, silently. What Python can prove it checks here, before the file is written.
+    audit = audit_translation(sot, translated)
+    if not audit["ok"]:
+        raise ArtifactError(
+            f"the {language!r} translation does not carry the same claims as the source of truth: "
+            + "; ".join(audit["errors"][:3])
+            + ". The episode would state numbers the research does not support."
+        )
+    logger.info(
+        "translation audit: %d claim(s) checked, %d token(s) matched. NOT checked: %s",
+        audit["checked_claims"],
+        audit["checked_tokens"],
+        audit["not_checked"],
+    )
     produced = f"research/source_of_truth_{language}.md"
     write_atomic(run_dir / produced, translated)
     drop_unproduced_optional_outputs(run_dir, "translate", [produced], substitutions)

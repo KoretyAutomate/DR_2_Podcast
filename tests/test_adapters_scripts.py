@@ -61,6 +61,39 @@ def test_translate_writes_the_translated_source_of_truth(run_dir: Path, monkeypa
     assert (run_dir / "research/source_of_truth_ja.md").read_text().startswith("# 真実の源")
 
 
+# PLAN.md Step 11: nothing checked the translation, and the translated SOT is the basis for every
+# claim in a Japanese episode. A moved number reaches the script, the audio and the listener.
+def test_a_translation_that_moves_a_number_is_refused(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (run_dir / "research/source_of_truth.md").write_text(
+        "# Source of Truth\n\nARR was 5.0% for hip fracture.\nNNT is 20.\n"
+    )
+    monkeypatch.setattr(
+        "dr2_podcast.pipeline._translate_sot_pipelined",
+        lambda text, language, config: "# 真実の源\n\n大腿骨骨折のARRは0.5%でした。\nNNTは20です。\n",
+    )
+    with pytest.raises(ArtifactError, match="same claims"):
+        adapters.translate(run_dir, RUN_CONFIG)
+    assert not (run_dir / "research/source_of_truth_ja.md").exists(), (
+        "refusing after writing it would leave the episode a file it was told not to trust"
+    )
+
+
+def test_a_translation_that_reorders_within_a_sentence_is_accepted(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Japanese puts the timepoint before the value. A check that called that a moved number would
+    fail every real translation, and a check that cries wolf gets removed rather than satisfied."""
+    (run_dir / "research/source_of_truth.md").write_text(
+        "# Source of Truth\n\nARR was 5.0% for hip fracture at 12 months.\n"
+    )
+    monkeypatch.setattr(
+        "dr2_podcast.pipeline._translate_sot_pipelined",
+        lambda text, language, config: "# 真実の源\n\n12か月時点の大腿骨骨折のARRは5.0%でした。\n",
+    )
+    adapters.translate(run_dir, RUN_CONFIG)
+    assert (run_dir / "research/source_of_truth_ja.md").exists()
+
+
 def test_translate_does_nothing_for_an_english_episode(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The output is optional for exactly this reason."""
 

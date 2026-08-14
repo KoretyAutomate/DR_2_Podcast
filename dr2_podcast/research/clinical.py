@@ -3477,6 +3477,7 @@ class Orchestrator:
         log(f"\n{'=' * 70}")
         log("PHASE 0: CONCEPT DECOMPOSITION")
         log(f"{'=' * 70}")
+        supplied_plans = plans is not None
         if plans is None:
             plans = await self.plan_both_tracks(topic, framing_context=framing_context, log=log)
         decomposition = plans.get("decomposition") or {}
@@ -3508,7 +3509,9 @@ class Orchestrator:
         audit_text = await self._run_step7_grade(topic, aff, fal, math_report, search_date, log)
 
         if output_dir:
-            self._save_artifacts(output_dir, aff, fal, math_report)
+            # The strategies belong to whoever made them. When they were handed in, they are on
+            # disk already and an approval covers those exact bytes.
+            self._save_artifacts(output_dir, aff, fal, math_report, write_strategies=not supplied_plans)
 
         # --- Build backward-compatible return ---
         # Convert extractions to SummarizedSource for compatibility
@@ -4086,7 +4089,9 @@ class Orchestrator:
         return "\n".join(lines) if lines else ""
 
     @staticmethod
-    def _save_artifacts(output_dir: str, aff: _TrackResult, fal: _TrackResult, math_report: str):
+    def _save_artifacts(
+        output_dir: str, aff: _TrackResult, fal: _TrackResult, math_report: str, write_strategies: bool = True
+    ):
         """Save intermediate pipeline artifacts to output directory.
 
         Writes into research/ subdirectory if it exists (M9 layout).
@@ -4115,9 +4120,15 @@ class Orchestrator:
         # make every rerun re-extract every paper.
         from dr2_podcast.artifacts import write_atomic
 
-        # Strategy files — TieredSearchPlan serialized via dataclasses.asdict
-        write_atomic(_out / "search_strategy_aff.json", json.dumps(dataclasses.asdict(aff_strategy), indent=2))
-        write_atomic(_out / "search_strategy_neg.json", json.dumps(dataclasses.asdict(fal_strategy), indent=2))
+        # Strategy files — TieredSearchPlan serialized via dataclasses.asdict. Written only when
+        # THIS run produced them. Under the staged runner they are `plan_search`'s outputs and the
+        # artifacts an approval was made against, so rewriting them here changed their bytes on
+        # every successful run: plan_search went non-current, the transitive guard then refused
+        # blueprint, and a healthy pipeline stopped itself (prepush codex 2026-08-13). It is also
+        # the rule this branch already had — a stage must not rewrite another stage's output.
+        if write_strategies:
+            write_atomic(_out / "search_strategy_aff.json", json.dumps(dataclasses.asdict(aff_strategy), indent=2))
+            write_atomic(_out / "search_strategy_neg.json", json.dumps(dataclasses.asdict(fal_strategy), indent=2))
 
         # Screening decisions (one file per track) — full candidate list for debugging
         def _record_to_dict(r, selected: bool) -> dict:
