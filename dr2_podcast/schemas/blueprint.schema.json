@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dr2-podcast.local/schemas/blueprint.schema.json",
+  "title": "Blueprint",
+  "description": "The episode as a conclusion followed by an interrogation. Speaker 1 states the verdict at a calibrated confidence in the opening; speaker 2 drives Ep14's ten steps (minus 7, which has no subject here because this pipeline reads primary literature rather than press coverage of it); speaker 1 answers with the evidence. Conclusion-first because the channel's product is the METHOD, not the verdict: withhold the verdict and the listener listens for it, which makes the method an obstacle to endure. It also removes the incentive to oversell, which is upstream of the 2026-07-05 fabrication class.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "authored",
+    "confidence_ja",
+    "opening",
+    "steps",
+    "skipped"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "authored": {
+      "description": "False while the derived scaffold is waiting for its prose. A skeleton is a legal blueprint — the steps, their sources and the confidence are DERIVED and belong to Python — but it is not one anybody can record a script against, so it says so.",
+      "type": "boolean"
+    },
+    "confidence_ja": {
+      "description": "The GRADE-derived 確信度. Never picked by a model; both hedge labels equal it.",
+      "enum": [
+        "まだ分からない",
+        "低い",
+        "中程度",
+        "高い",
+        "ほぼ確実"
+      ]
+    },
+    "opening": {
+      "$ref": "#/$defs/opening"
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/step"
+      }
+    },
+    "skipped": {
+      "description": "Steps the evidence has nothing to say about. Skipped ALOUD with the reason — a named skip keeps the framework visible, a silent one makes the method look arbitrary.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/skip"
+      }
+    }
+  },
+  "$defs": {
+    "hedge": {
+      "enum": [
+        "まだ分からない",
+        "低い",
+        "中程度",
+        "高い",
+        "ほぼ確実"
+      ]
+    },
+    "opening": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step",
+        "arc_role",
+        "speaker",
+        "hedge_level",
+        "claim_ja",
+        "target_chars"
+      ],
+      "properties": {
+        "step": {
+          "const": 0
+        },
+        "arc_role": {
+          "const": "conclusion_first"
+        },
+        "speaker": {
+          "const": 1
+        },
+        "hedge_level": {
+          "$ref": "#/$defs/hedge"
+        },
+        "claim_ja": {
+          "type": "string"
+        },
+        "target_chars": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step",
+        "name",
+        "driver",
+        "answerer",
+        "question_ja",
+        "source_artifact",
+        "verdict_contribution",
+        "target_chars",
+        "beats",
+        "claims"
+      ],
+      "properties": {
+        "step": {
+          "enum": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            8,
+            9,
+            10
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "driver": {
+          "description": "Speaker 2 owns the questions, which is what resolves the 20-30% substantive-balance requirement by construction rather than by instruction.",
+          "const": 2
+        },
+        "answerer": {
+          "const": 1
+        },
+        "question_ja": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_artifact": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verdict_contribution": {
+          "enum": [
+            "support",
+            "downgrade",
+            "neutral"
+          ]
+        },
+        "target_chars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "beats": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/claim"
+          }
+        },
+        "handoff_in": {
+          "type": "string"
+        },
+        "handoff_out": {
+          "type": "string"
+        }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "claim_ja",
+        "allowed_numbers",
+        "hedge_level",
+        "must_not_say",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claim_ja": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowed_numbers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hedge_level": {
+          "$ref": "#/$defs/hedge"
+        },
+        "must_not_say": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "quoted_span"
+          ],
+          "properties": {
+            "pmid": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "quoted_span": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "skip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step",
+        "skip_reason"
+      ],
+      "properties": {
+        "step": {
+          "enum": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            8,
+            9,
+            10
+          ]
+        },
+        "skip_reason": {
+          "description": "Said aloud in the episode. 「資金提供者は全部公的資金だったので、今日はここは飛ばします」 is informative; silence is not.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

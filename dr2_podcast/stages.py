@@ -206,10 +206,16 @@ STAGES: tuple[Stage, ...] = (
             # blueprint, which is the safe direction.
             "research/research_sources_validated.json",
         ),
-        optional_consumes=("research/source_of_truth_{language}.md",),
+        # step_pack.json is optional for the same reason it is optional upstream: a social-science
+        # run produces none, and the derived blueprint shape is projected from it.
+        optional_consumes=("research/source_of_truth_{language}.md", "research/step_pack.json"),
         # blueprint_inventory.json is what phases 5 and 6 take as the bp_inventory argument. In the
         # monolithic flow it is a return value; across a process boundary it has to be a file.
         produces=("research/EPISODE_BLUEPRINT.md", "meta/blueprint_inventory.json"),
+        # The conclusion-first nine-step shape (PLAN.md Step 2). Optional because it is derived from
+        # the step pack, and a run whose pack cannot answer a mandatory step has no episode of this
+        # shape to describe — which is today's state until the frozen prior exists.
+        optional_outputs=("research/blueprint.json",),
         engine="claude",
     ),
     Stage(

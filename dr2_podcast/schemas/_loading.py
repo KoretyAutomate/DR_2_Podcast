@@ -31,6 +31,7 @@ SCHEMA_NAMES: tuple[str, ...] = (
     "extraction",
     "grade",
     "step_pack",
+    "blueprint",
     "manifest",
     "run_config",
 )

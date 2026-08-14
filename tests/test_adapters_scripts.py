@@ -526,3 +526,64 @@ def test_the_source_library_indices_are_contiguous_as_saved(run_dir: Path) -> No
     saved = _json.loads((run_dir / "research/research_sources.json").read_text())["lead"]
     assert [e["url"] for e in saved] == ["https://a", "https://c"]
     assert [e["index"] for e in saved] == [0, 1], "the index shown must be the index that resolves"
+
+
+# --------------------------------------------------------------------------- #
+# The derived blueprint shape — PLAN.md Step 2
+# --------------------------------------------------------------------------- #
+def _pack_with(steps_absent=()) -> dict:
+    def entry(n):
+        absent = n in steps_absent
+        return {
+            "step": n, "question_ja": f"質問{n}",
+            "answer": {"unavailable": "no frozen prior"} if absent else {"count": 1},
+            "sot_sections": [] if absent else ["4.1"], "locators": [],
+            "verdict_contribution": "neutral",
+            "sufficiency": "absent" if absent else "complete",
+        }
+
+    steps = {str(n): entry(n) for n in (1, 2, 3, 4, 5, 6, 8, 9, 10)}
+    steps["10"]["answer"] = {"confidence_ja": "高い", "grade_level": "moderate"}
+    return {"schema_version": 1, "sot_domain": "clinical", "steps": steps}
+
+
+def test_the_blueprint_stage_derives_the_episode_shape(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json as _json
+
+    from dr2_podcast.adapters.script_stages import _write_blueprint_scaffold
+
+    (run_dir / "research/source_of_truth.md").write_text("# Source of Truth\n\nBody.\n")
+    (run_dir / "research/step_pack.json").write_text(_json.dumps(_pack_with()))
+
+    assert _write_blueprint_scaffold(run_dir) is True
+    scaffold = _json.loads((run_dir / "research/blueprint.json").read_text())
+    assert scaffold["authored"] is False, "the shape is derived; the words are Claude's"
+    assert scaffold["opening"]["hedge_level"] == "高い"
+    assert [s["step"] for s in scaffold["steps"]] == [1, 2, 3, 4, 5, 6, 8, 9, 10]
+
+
+def test_no_step_pack_means_no_derived_shape(run_dir: Path) -> None:
+    from dr2_podcast.adapters.script_stages import _write_blueprint_scaffold
+
+    (run_dir / "research/source_of_truth.md").write_text("# Source of Truth\n")
+    assert _write_blueprint_scaffold(run_dir) is False
+    assert not (run_dir / "research/blueprint.json").exists()
+
+
+def test_a_pack_missing_a_mandatory_step_declines_rather_than_inventing_one(
+    run_dir: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Today's real state: nothing writes the frozen prior, so steps 1 and 9 are absent. A scaffold
+    whose opening stated a prior nobody set would be worse than no scaffold."""
+    import json as _json
+    import logging
+
+    from dr2_podcast.adapters.script_stages import _write_blueprint_scaffold
+
+    (run_dir / "research/source_of_truth.md").write_text("# Source of Truth\n")
+    (run_dir / "research/step_pack.json").write_text(_json.dumps(_pack_with(steps_absent=(1, 9))))
+
+    with caplog.at_level(logging.WARNING):
+        assert _write_blueprint_scaffold(run_dir) is False
+    assert not (run_dir / "research/blueprint.json").exists()
+    assert any("事前確率" in record.message for record in caplog.records), "and it says which step"

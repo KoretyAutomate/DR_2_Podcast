@@ -88,6 +88,50 @@ def blueprint(run_dir: Path, run_config: dict[str, Any]) -> None:
         raise ArtifactError("the blueprint crew returned nothing; a stage that produced nothing has failed")
     write_atomic(run_dir / "research/EPISODE_BLUEPRINT.md", raw)
     write_json_atomic(run_dir / "meta/blueprint_inventory.json", _parse_blueprint_inventory(raw))
+    produced = ["research/EPISODE_BLUEPRINT.md", "meta/blueprint_inventory.json"]
+    if _write_blueprint_scaffold(run_dir):
+        produced.append("research/blueprint.json")
+    drop_unproduced_optional_outputs(run_dir, "blueprint", produced)
+
+
+def _write_blueprint_scaffold(run_dir: Path) -> bool:
+    """The conclusion-first, nine-step shape of the episode, derived from the step pack.
+
+    PLAN.md Step 2. Which steps run, what each asks, what it contributes and the confidence the
+    opening states are all computed — the model picks none of them. What a claim SAYS is authored,
+    and under the allocation table that author is Claude, so the scaffold ships with empty claim
+    lists and ``authored: false`` rather than looking finished.
+
+    It declines, loudly, when the pack cannot answer a mandatory step. That is today's real state:
+    nothing writes the frozen prior, so steps 1 and 9 are absent and the episode cannot be built to
+    this shape yet. A scaffold whose opening stated a prior nobody set would be worse than none.
+    """
+    from dr2_podcast.artifacts import read_json_strict, read_text_strict
+    from dr2_podcast.blueprint import BlueprintUnavailable, blueprint_errors, build_skeleton
+    from dr2_podcast.research.confidence import confidence_level
+
+    pack_path = run_dir / "research/step_pack.json"
+    if not pack_path.exists():
+        logger.info("no step pack, so there is no interrogation to give the episode its shape")
+        return False
+
+    pack = read_json_strict(pack_path, schema="step_pack")
+    verdict = pack["steps"].get("10", {}).get("answer", {})
+    confidence = verdict.get("confidence_ja") or confidence_level(None, [])
+    try:
+        scaffold = build_skeleton(pack, confidence)
+    except BlueprintUnavailable as exc:
+        logger.warning("no blueprint scaffold: %s", exc)
+        return False
+
+    sot = read_text_strict(run_dir / "research/source_of_truth.md")
+    problems = blueprint_errors(scaffold, {"research/source_of_truth.md": sot})
+    if problems:
+        raise ArtifactError(
+            "the derived blueprint does not satisfy its own write-time rules: " + "; ".join(problems[:3])
+        )
+    write_json_atomic(run_dir / "research/blueprint.json", scaffold, schema="blueprint")
+    return True
 
 
 @register("draft")
