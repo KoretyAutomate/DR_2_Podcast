@@ -2186,29 +2186,23 @@ def _stream_process_output(proc, task_id: str) -> list:
     output_lines = []
     start_time = tasks_db[task_id]["start_time"]
     output_dir_discovered = False  # True only once the authoritative marker is seen
-    mtime_fallback_tried = False
 
     for line in proc.stdout:
         output_lines.append(line)
 
-        # 0. Discover output_dir. The [OUTPUT_DIR] marker printed by the
-        # subprocess is authoritative; the mtime scan is a display-only
-        # fallback (it can pick a concurrent run's dir) and must never
-        # block a later marker from overriding it.
-        if not output_dir_discovered:
-            if "[OUTPUT_DIR]" in line:
-                try:
-                    discovered = line.split("[OUTPUT_DIR]")[1].strip()
-                    if discovered:
-                        tasks_db[task_id]["output_dir"] = discovered
-                        output_dir_discovered = True
-                except Exception as exc:
-                    logger.debug("could not parse [OUTPUT_DIR] marker: %s", exc)
-            elif not mtime_fallback_tried:
-                mtime_fallback_tried = True
-                found_dir = _find_latest_output_dir()
-                if found_dir:
-                    tasks_db[task_id]["output_dir"] = str(found_dir)
+        # 0. Discover output_dir. The [OUTPUT_DIR] marker printed by the subprocess is the ONLY
+        # thing that names this run's directory. The mtime scan that used to stand in for it is
+        # gone: guessing from whichever directory is newest is how a run that produced nothing ends
+        # up displaying a previous episode's artifacts — during streaming that merely misleads, and
+        # at completion it reported the whole thing as a success (PLAN.md Step 7).
+        if not output_dir_discovered and "[OUTPUT_DIR]" in line:
+            try:
+                discovered = line.split("[OUTPUT_DIR]")[1].strip()
+                if discovered:
+                    tasks_db[task_id]["output_dir"] = discovered
+                    output_dir_discovered = True
+            except Exception as exc:
+                logger.debug("could not parse [OUTPUT_DIR] marker: %s", exc)
 
         # 1. Parse Phase Markers
         for marker, phase_name, progress_pct, is_phase in PHASE_MARKERS:
@@ -2334,6 +2328,39 @@ def _clean_error_output(output_lines: list) -> str:
     return "\n".join(clean_lines[-50:])
 
 
+#: What a finished run must actually have on disk. Success is read from the artifacts, not from an
+#: exit code — a subprocess that exits 0 having done nothing is the failure mode this list exists
+#: for (PLAN.md Step 7).
+REQUIRED_DELIVERABLES = (
+    "scripts/script_final.md",
+    "research/source_of_truth.md",
+    "audio/audio.wav",
+)
+
+
+def _incomplete_deliverables(output_dir) -> list[str]:
+    """Every required artifact that is missing or empty, as a reason a person can read."""
+    from dr2_podcast import pipeline as _pipeline
+
+    problems = []
+    for relative in REQUIRED_DELIVERABLES:
+        path = Path(_pipeline.output_path(output_dir, relative.split("/", 1)[1]))
+        if not path.exists():
+            problems.append(f"{relative} was never written")
+        elif path.stat().st_size == 0:
+            problems.append(f"{relative} is empty")
+    return problems
+
+
+def _fail_task(task_id: str, reason: str) -> None:
+    """Mark a task failed with the reason, and persist it."""
+    _close_phase(task_id)
+    tasks_db[task_id]["status"] = "failed"
+    tasks_db[task_id]["error"] = reason
+    tasks_db[task_id]["completed_at"] = datetime.now().isoformat()
+    save_tasks()
+
+
 def _run_uploads(task_id: str, req: GenerationRequest, title: str) -> None:
     """Upload the finished audio. `title` is explicit: the full-run path strips
     the topic, the reuse path does not, and that difference is preserved."""
@@ -2408,12 +2435,24 @@ def run_podcast_generation(task_id: str, req: GenerationRequest):
             save_tasks()
             return
 
-        # Output dir normally comes from the [OUTPUT_DIR] marker during
-        # streaming; fall back to the mtime scan only if it never appeared.
+        # The output dir comes from the [OUTPUT_DIR] marker during streaming. The mtime-scan
+        # fallback is GONE (PLAN.md Step 7): a run that exits 0 without ever emitting the marker
+        # produced nothing, and attaching it to whatever directory happens to be newest reported a
+        # previous episode's artifacts as this run's success. That is worse than a failure, because
+        # a failure is visible.
         if not tasks_db[task_id].get("output_dir"):
-            output_dir = _find_latest_output_dir()
-            if output_dir:
-                tasks_db[task_id]["output_dir"] = str(output_dir)
+            _fail_task(
+                task_id,
+                "the run exited without naming an output directory, so it produced nothing. It has "
+                "NOT been attached to the most recent run's output — that would report someone "
+                "else's episode as this one's result.",
+            )
+            return
+
+        problems = _incomplete_deliverables(Path(tasks_db[task_id]["output_dir"]))
+        if problems:
+            _fail_task(task_id, "the run finished but its deliverables are not complete: " + "; ".join(problems))
+            return
         save_tasks()
 
         # Generation succeeded — run uploads if requested

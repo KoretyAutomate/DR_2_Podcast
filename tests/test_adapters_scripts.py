@@ -587,3 +587,81 @@ def test_a_pack_missing_a_mandatory_step_declines_rather_than_inventing_one(
         assert _write_blueprint_scaffold(run_dir) is False
     assert not (run_dir / "research/blueprint.json").exists()
     assert any("事前確率" in record.message for record in caplog.records), "and it says which step"
+
+
+# prepush codex 2026-08-13: promote() replaced targets one at a time, so an interruption partway
+# through left a NEW script.txt beside an OLD wav — a mixed set, both files looking current, which
+# is the exact state staging exists to prevent.
+def test_a_promotion_that_fails_partway_puts_everything_back(run_dir: Path, monkeypatch) -> None:
+    import os as _os
+
+    from dr2_podcast.adapters._common import promote, staging_dir
+
+    (run_dir / "scripts/script.txt").write_text("the previously accepted plain text")
+    (run_dir / "audio/audio.wav").write_bytes(b"the previously accepted audio")
+
+    real_replace = _os.replace
+    calls = {"n": 0}
+
+    def _dies_on_the_second_promotion(src, dst):
+        # Every replace of a STAGED file is a promotion; the rollback set-asides are not counted.
+        if str(src).startswith(str(run_dir / "meta")) and not str(src).endswith(".promote_rollback"):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("the disk went away mid-promotion")
+        return real_replace(src, dst)
+
+    with pytest.raises(OSError, match="mid-promotion"), staging_dir(run_dir) as staging:
+        (staging / "scripts").mkdir(parents=True, exist_ok=True)
+        (staging / "audio").mkdir(parents=True, exist_ok=True)
+        (staging / "scripts/script.txt").write_text("the new plain text")
+        (staging / "audio/audio.wav").write_bytes(b"the new audio")
+        monkeypatch.setattr(_os, "replace", _dies_on_the_second_promotion)
+        promote(staging, run_dir)
+
+    monkeypatch.undo()
+    assert (run_dir / "scripts/script.txt").read_text() == "the previously accepted plain text"
+    assert (run_dir / "audio/audio.wav").read_bytes() == b"the previously accepted audio"
+    assert not list(run_dir.rglob("*.promote_rollback")), "and it leaves no sidecars behind"
+
+
+def test_a_complete_promotion_leaves_no_sidecars(run_dir: Path) -> None:
+    from dr2_podcast.adapters._common import promote, staging_dir
+
+    (run_dir / "scripts/script.txt").write_text("old")
+    with staging_dir(run_dir) as staging:
+        (staging / "scripts").mkdir(parents=True, exist_ok=True)
+        (staging / "scripts/script.txt").write_text("new")
+        assert promote(staging, run_dir) == ["scripts/script.txt"]
+
+    assert (run_dir / "scripts/script.txt").read_text() == "new"
+    assert not list(run_dir.rglob("*.promote_rollback"))
+
+
+def test_a_first_promotion_that_fails_leaves_no_new_files_behind(run_dir: Path, monkeypatch) -> None:
+    """Restoring the REPLACED files is not enough when the targets are new: an interrupted first
+    render would otherwise leave a new audio.wav with no script.txt — a partial set either way."""
+    import os as _os
+
+    from dr2_podcast.adapters._common import promote, staging_dir
+
+    real_replace = _os.replace
+    calls = {"n": 0}
+
+    def _dies_on_the_second_promotion(src, dst):
+        if str(src).startswith(str(run_dir / "meta")):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("the disk went away mid-promotion")
+        return real_replace(src, dst)
+
+    with pytest.raises(OSError, match="mid-promotion"), staging_dir(run_dir) as staging:
+        (staging / "audio").mkdir(parents=True, exist_ok=True)
+        (staging / "audio/audio.wav").write_bytes(b"new audio")
+        (staging / "audio/audio_mixed.wav").write_bytes(b"new mix")
+        monkeypatch.setattr(_os, "replace", _dies_on_the_second_promotion)
+        promote(staging, run_dir)
+
+    monkeypatch.undo()
+    assert not (run_dir / "audio/audio.wav").exists(), "a half-promoted render leaves nothing behind"
+    assert not (run_dir / "audio/audio_mixed.wav").exists()

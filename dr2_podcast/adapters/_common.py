@@ -31,6 +31,7 @@ nothing is a failed stage.
 from __future__ import annotations
 
 import logging
+import contextlib
 import os
 import shutil
 from collections.abc import Iterator
@@ -201,15 +202,52 @@ def staging_dir(run_dir: Path) -> Iterator[Path]:
         shutil.rmtree(staging, ignore_errors=True)
 
 
+#: Suffix for the copy of a target kept while a promotion is in flight.
+_ROLLBACK_SUFFIX = ".promote_rollback"
+
+
 def promote(staging: Path, run_dir: Path) -> list[str]:
-    """Move everything a staged helper produced into the run, and return what was promoted."""
+    """Move everything a staged helper produced into the run, all of it or none of it.
+
+    Each replaced target is set aside first, so a failure partway through puts back what was
+    already replaced. Without that, an interruption mid-promotion left a NEW script.txt beside an
+    OLD wav — a mixed set, both files looking current, which is exactly the state staging exists to
+    prevent (prepush codex 2026-08-13). Same-filesystem renames throughout, so the rollback is as
+    atomic as the promotion.
+    """
     promoted: list[str] = []
-    for produced in sorted(path for path in staging.rglob("*") if path.is_file()):
-        relative = produced.relative_to(staging)
-        target = run_dir / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(produced, target)
-        promoted.append(str(relative))
+    replaced: list[tuple[Path, Path]] = []
+    created: list[Path] = []
+    try:
+        for produced in sorted(path for path in staging.rglob("*") if path.is_file()):
+            relative = produced.relative_to(staging)
+            target = run_dir / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                kept = target.with_name(target.name + _ROLLBACK_SUFFIX)
+                os.replace(target, kept)
+                replaced.append((kept, target))
+            else:
+                # Tracked separately: restoring the replaced files is not enough when a target is
+                # NEW. A first render interrupted partway would otherwise leave a new audio.wav
+                # with no script.txt beside it — still a partial set, just a different one
+                # (prepush codex 2026-08-13).
+                created.append(target)
+            os.replace(produced, target)
+            promoted.append(str(relative))
+    except BaseException:
+        # BaseException: a Ctrl-C during promotion is exactly when a half-replaced set is most
+        # likely, and it is the case where nobody is watching to notice.
+        for target in reversed(created):
+            with contextlib.suppress(OSError):
+                target.unlink()
+        for kept, target in reversed(replaced):
+            with contextlib.suppress(OSError):
+                os.replace(kept, target)
+        raise
+    for kept, _target in replaced:
+        with contextlib.suppress(OSError):
+            kept.unlink()
     return promoted
 
 

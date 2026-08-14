@@ -277,6 +277,19 @@ def audit(run_dir: Path, run_config: dict[str, Any]) -> None:
         _write_accuracy_corrections_md(
             run_dir, audit_output, citation_issues, grade_issues, corrected, flow_logger
         )
+        if corrected is not None:
+            # The correction RE-ENTERS the gates (PLAN.md Step 5). They were run against `polished`
+            # only, so a correction that introduced a new unsupported citation or a fresh GRADE
+            # contradiction was finalised and rendered having never passed anything — the fix is
+            # exactly where a new defect is most likely, because it is the part nobody read.
+            citations_after, grade_after = _deterministic_gate_issues(corrected, sot, flow_logger)
+            still_wrong = list(citations_after) + list(grade_after)
+            if still_wrong:
+                raise ArtifactError(
+                    "the correction pass produced a script that still fails the deterministic gates: "
+                    + "; ".join(str(issue) for issue in still_wrong[:3])
+                    + ". A correction is not exempt from the checks that asked for it."
+                )
         if corrected is None:
             raise ArtifactError(
                 "the accuracy gate fired and the correction pass produced no valid script. The "

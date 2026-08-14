@@ -102,9 +102,12 @@ def _stub_audit(
             seen["task"].output = _FakeOutput(verdict)
 
     monkeypatch.setattr("crewai.Crew", _FakeCrew)
+    # Keyed on the text: the polished script has the issues, the corrected one does not. A stub
+    # that returned the same issues for every input would make every correction fail the re-check.
     monkeypatch.setattr(
         "dr2_podcast.pipeline_flow._deterministic_gate_issues",
-        lambda polished, sot, log: (citation_issues or [], grade_issues or []),
+        lambda polished, sot, log: ([], []) if polished.startswith("Host 1: the corrected")
+        else (citation_issues or [], grade_issues or []),
     )
 
     def _correct(**kwargs: Any) -> str | None:
@@ -250,3 +253,37 @@ def test_audit_fails_closed_without_a_polished_script(run_dir: Path) -> None:
     (run_dir / "research/source_of_truth.md").write_text("# Source of Truth\n")
     with pytest.raises(ArtifactError, match="cannot read"):
         adapters.audit(run_dir, RUN_CONFIG)
+
+
+# prepush codex 2026-08-13: the deterministic gates ran against the POLISHED script only, so a
+# correction that introduced a new unsupported citation or GRADE contradiction was finalised and
+# rendered having never passed anything. PLAN.md Step 5 requires every correction to re-enter them.
+def test_a_correction_that_still_fails_the_gates_is_refused(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _audit_inputs(run_dir)
+    seen = _stub_audit(monkeypatch, citation_issues=["fabricated PMID 99999999"])
+
+    def _still_broken(polished, sot, log):
+        # The polished script has one issue; the corrected one still does.
+        return (["fabricated PMID 99999999"], [])
+
+    monkeypatch.setattr("dr2_podcast.pipeline_flow._deterministic_gate_issues", _still_broken)
+    with pytest.raises(ArtifactError, match="still fails the deterministic gates"):
+        adapters.audit(run_dir, RUN_CONFIG)
+    assert seen["correction_ran"] is True, "it ran, and then its output was checked"
+
+
+def test_a_correction_that_fixes_the_problem_is_accepted(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control: re-checking must not reject a correction that worked."""
+    _audit_inputs(run_dir)
+    seen = _stub_audit(monkeypatch, citation_issues=["fabricated PMID 99999999"])
+
+    def _fixed_by_the_correction(polished, sot, log):
+        return ([], []) if polished.startswith("Host 1: the corrected") else (["fabricated PMID"], [])
+
+    monkeypatch.setattr("dr2_podcast.pipeline_flow._deterministic_gate_issues", _fixed_by_the_correction)
+    adapters.audit(run_dir, RUN_CONFIG)
+    assert seen["finalized_from"].startswith("Host 1: the corrected")
