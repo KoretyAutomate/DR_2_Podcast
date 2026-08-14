@@ -290,3 +290,65 @@ def write_loop_events(run_dir, events: list[dict[str, Any]]) -> None:
     path = run_dir / "meta/loop_events.json"
     existing = read_json_strict(path).get("events", []) if path.exists() else []
     write_json_atomic(path, {"schema_version": 1, "events": existing + events})
+
+
+# --------------------------------------------------------------------------- #
+# Banned phrases — PLAN.md Step 12
+# --------------------------------------------------------------------------- #
+#: Where the ban list lives. It is enforced today only by
+#: `regen_edu_aivis_from_scripttxt.py`, which is the educational-series render path — so the MAIN
+#: pipeline can ship a banned phrase to audio, which is the hole Step 12 names.
+BANNED_PHRASES_FILE = "educational_series/banned_phrases.json"
+
+
+def load_banned_phrases(root=None) -> list[dict[str, Any]]:
+    """The ban list, or a failure. Never an empty list standing in for one.
+
+    A gate that degrades to "no phrases are banned" when its list will not load is a gate that
+    passes everything on the day it breaks — and the reason this file exists is that a prose rule
+    was not enough: 「今日の核心」 was abolished series-wide and shipped to audio twice anyway,
+    caught by ear three days later.
+    """
+    import json
+    from pathlib import Path as _Path
+
+    from dr2_podcast.artifacts import ArtifactError
+
+    base = _Path(root) if root else _Path(__file__).resolve().parent.parent
+    path = base / BANNED_PHRASES_FILE
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ArtifactError(
+            f"the banned-phrase list at {path} could not be read ({exc}), so nothing can say whether "
+            f"this script is publishable. Refusing rather than treating an unreadable ban list as an "
+            f"empty one."
+        ) from exc
+    entries = document.get("banned")
+    if not isinstance(entries, list) or not entries:
+        raise ArtifactError(f"{path} carries no banned phrases; an empty gate is not a gate")
+    return entries
+
+
+def banned_phrase_findings(script: str, root=None) -> list[Finding]:
+    """Every banned phrase the script says, with the reason it was banned.
+
+    Substring matching, deliberately: 「核心」 was banned as the literal 「今日の核心」 first, and
+    「ベイズ思考の核心」 sailed through for months because it was a different compound. The ban is on
+    the word wherever it appears.
+    """
+    findings = []
+    for line_no, line in enumerate(script.splitlines(), start=1):
+        for entry in load_banned_phrases(root):
+            pattern = entry.get("pattern", "")
+            if pattern and pattern in line:
+                findings.append(
+                    Finding(
+                        "banned_phrase",
+                        None,
+                        f"line {line_no}",
+                        f"{pattern!r} is banned ({entry.get('since', 'date unrecorded')}). "
+                        f"Use instead: {entry.get('use_instead', '(no alternative recorded)')}",
+                    )
+                )
+    return findings

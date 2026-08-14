@@ -21,6 +21,7 @@ from dr2_podcast.adapters._common import (
     staging_dir,
 )
 from dr2_podcast.artifacts import ArtifactError, write_atomic, write_json_atomic
+from dr2_podcast.script_gates import banned_phrase_findings
 from dr2_podcast.stages import get_stage, register
 
 logger = logging.getLogger(__name__)
@@ -325,6 +326,19 @@ def audio(run_dir: Path, run_config: dict[str, Any]) -> None:
     from dr2_podcast.artifacts import read_text_strict
 
     script = read_text_strict(run_dir / "scripts/script_final.md")
+
+    # PLAN.md Step 12: the ban list hard-fails only in regen_edu_aivis_from_scripttxt.py, which is
+    # the educational-series render path — so the MAIN pipeline could ship a banned phrase to audio.
+    # It is checked here because this is the last place before the engine speaks, and the reason the
+    # list exists is that a prose rule was not enough: 「今日の核心」 was abolished series-wide and
+    # shipped twice anyway, caught by ear three days later.
+    banned = banned_phrase_findings(script)
+    if banned:
+        raise ArtifactError(
+            "the final script says phrases this series has banned: "
+            + "; ".join(f"{f.location} — {f.message}" for f in banned[:3])
+        )
+
     language_config = pipeline.SUPPORTED_LANGUAGES[run_config["language"]]
 
     previous_output_dir = pipeline.output_dir

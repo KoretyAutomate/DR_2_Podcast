@@ -303,3 +303,52 @@ def test_an_untouched_script_still_has_nothing_to_read_back() -> None:
 
     script = "Host 1: 表が出ました。\nHost 2: なるほど。\n"
     assert changed_turns(script, script) == []
+
+
+# --------------------------------------------------------------------------- #
+# Banned phrases — PLAN.md Step 12
+# --------------------------------------------------------------------------- #
+def test_a_banned_phrase_is_found_wherever_it_appears() -> None:
+    """「核心」 was banned as the literal 「今日の核心」 first, and 「ベイズ思考の核心」 sailed through
+    for months because it was a different compound. The ban is on the word."""
+    from dr2_podcast.script_gates import banned_phrase_findings
+
+    assert banned_phrase_findings("Host 1: ベイズ思考の核心はここです。\n")
+    assert banned_phrase_findings("Host 1: 今日の核心です。\n")
+
+
+def test_an_acceptable_script_says_nothing_banned() -> None:
+    from dr2_podcast.script_gates import banned_phrase_findings
+
+    assert banned_phrase_findings("Host 1: ここまでを一度まとめます。\n") == []
+
+
+def test_the_finding_carries_the_replacement_to_use() -> None:
+    """A gate that says "no" without saying "say this instead" gets argued with rather than obeyed."""
+    from dr2_podcast.script_gates import banned_phrase_findings
+
+    [finding] = banned_phrase_findings("Host 1: 今日の核心です。\n")
+    assert "Use instead" in finding.message
+
+
+def test_an_unreadable_ban_list_refuses_rather_than_passing_everything(tmp_path) -> None:
+    """A gate that degrades to "nothing is banned" when its list breaks passes everything on the day
+    it breaks — and this list exists because a prose rule was not enough."""
+    from dr2_podcast.artifacts import ArtifactError
+    from dr2_podcast.script_gates import load_banned_phrases
+
+    with pytest.raises(ArtifactError, match="could not be read"):
+        load_banned_phrases(root=tmp_path)
+
+
+def test_an_empty_ban_list_is_not_a_gate(tmp_path) -> None:
+    import json
+
+    from dr2_podcast.artifacts import ArtifactError
+    from dr2_podcast.script_gates import BANNED_PHRASES_FILE, load_banned_phrases
+
+    path = tmp_path / BANNED_PHRASES_FILE
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"banned": []}))
+    with pytest.raises(ArtifactError, match="not a gate"):
+        load_banned_phrases(root=tmp_path)
