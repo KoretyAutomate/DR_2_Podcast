@@ -30,6 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from dr2_podcast.approval import APPROVAL_ARTIFACT, require_approval
 from dr2_podcast.artifacts import clear_candidates, read_json_strict, write_json_atomic
 from dr2_podcast.manifest import Manifest, config_fingerprint
 from dr2_podcast.stages import ADAPTERS, AVAILABLE_STAGE_NAMES, get_stage
@@ -206,6 +207,17 @@ def _guard_inputs(
         raise StageError(f"stage {name!r} cannot run: missing input(s) {detail}")
     if force:
         return
+
+    # A stage that consumes the approval is checked against it HERE, where the skip path can see it.
+    # The adapter checks too, but the adapter only runs when the stage runs — and a complete stage
+    # is skipped before that, so a prior appearing after approval left `research` current against a
+    # bundle the reviewer never saw (prepush codex 2026-08-14). The manifest cannot catch it on its
+    # own: `research/framing_prior.json` is not a declared input, and an input that did not exist
+    # when the stage completed is in no recorded hash to compare against. The bundle already knows
+    # absent-from-present; it simply was not being consulted.
+    if APPROVAL_ARTIFACT in get_stage(name).consumes:
+        require_approval(run_dir)
+
     stale = _stale_upstream(run_dir, name, manifest, run_config, substitutions)
     if stale:
         raise StageError(

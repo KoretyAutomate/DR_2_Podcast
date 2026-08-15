@@ -395,3 +395,51 @@ def test_the_status_view_names_the_stale_ancestor_too(
     # which names url_validation as a direct producer and proves nothing about the walk.
     draft_row = next(line for line in out.splitlines() if line.strip().startswith("draft "))
     assert "producer: url_validation" in draft_row, out
+
+
+# prepush codex 2026-08-14: research/framing_prior.json is not a declared input, so an already
+# COMPLETE research stage was skipped before anything looked at the approval — and the bundle's
+# absent-to-present check, which exists precisely for the prior, never ran. The manifest cannot
+# catch this alone: an input that did not exist when the stage completed is in no recorded hash.
+def test_a_prior_appearing_after_approval_stops_a_stage_that_would_have_been_skipped(
+    run_dir: Path,
+) -> None:
+    from dr2_podcast.artifacts import ArtifactError
+
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    run_plan_search(run_dir)
+    _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
+    run_stage(run_dir, "research")
+    assert "skipped" in run_stage(run_dir, "research"), "the control: it really is current"
+
+    (run_dir / "research/framing_prior.json").write_text('{"prior_level": "低い"}')
+    with pytest.raises(ArtifactError, match="did not exist when the strategies were approved"):
+        run_stage(run_dir, "research")
+
+
+def test_re_approving_lets_the_run_continue(run_dir: Path) -> None:
+    """The gate has to be passable, or it gets bypassed rather than satisfied.
+
+    It re-RUNS rather than skipping, and that is right: the approval is itself a declared input, so
+    a new approval is new input, and research should search against the state the reviewer just
+    signed off — not skip on the strength of a run made before the prior existed."""
+    from tests._stage_fixtures import approve
+
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    run_plan_search(run_dir)
+    calls = _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
+    run_stage(run_dir, "research")
+
+    (run_dir / "research/framing_prior.json").write_text('{"prior_level": "低い"}')
+    approve(run_dir)
+    assert "complete" in run_stage(run_dir, "research")
+    assert len(calls) == 2
+
+
+def test_a_stage_that_consumes_no_approval_is_unaffected(run_dir: Path) -> None:
+    """Only the stages that actually consume it are checked against it."""
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    assert "skipped" in run_stage(run_dir, "framing")
