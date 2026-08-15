@@ -9,6 +9,16 @@ PLAN*.md
 CLAUDE.md
 .claude/
 AUDIT_FINDINGS.md
+# ...and their timestamped backups. `PLAN*.md` does not match `PLAN.md.bak_…`
+# because the pattern has to end in .md, so every rewrite left another file
+# showing as untracked.
+PLAN*.bak*
+# Design proposals of the same class as the docs above (both marked 提案（未実装）).
+TTS_MISREADING_CHECK_*.md
+
+# Timestamped snapshots taken before editing a tracked data file. The tracked
+# file is the record; these are undo buffers.
+*.archive_*
 
 # Python & Environment
 __pycache__/
