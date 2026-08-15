@@ -192,7 +192,7 @@ def staging_dir(run_dir: Path) -> Iterator[Path]:
     its target subdirectory is absent (``pipeline.py:322``, for legacy runs) — an empty staging tree
     would scatter everything into its root and be promoted to the wrong places.
     """
-    staging = run_dir / "meta/.stage_staging"
+    staging = run_dir / "meta" / STAGING_DIRNAME
     shutil.rmtree(staging, ignore_errors=True)
     for subdir in ("scripts", "audio", "research", "meta"):
         (staging / subdir).mkdir(parents=True)
@@ -201,6 +201,10 @@ def staging_dir(run_dir: Path) -> Iterator[Path]:
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
+
+#: The scratch tree a staged helper writes into. Named once because pipeline.py has to recognise it
+#: — a helper that writes absolute paths into a report must not do so while it is in here.
+STAGING_DIRNAME = ".stage_staging"
 
 #: Suffix for the copy of a target kept while a promotion is in flight.
 _ROLLBACK_SUFFIX = ".promote_rollback"

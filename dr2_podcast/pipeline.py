@@ -21,6 +21,7 @@ from crewai.tools import tool
 from markdown_it import MarkdownIt
 import weasyprint
 from dr2_podcast.tools.link_validator import LinkValidatorTool
+from dr2_podcast.tools.publish_sheet import PublishSheetError, write_publish_sheet
 import wave
 from dr2_podcast.audio.engine import generate_audio_from_script, clean_script_for_tts, post_process_audio
 from dr2_podcast.utils import strip_think_blocks, QWEN3_NO_THINK_EXTRA_BODY
@@ -2415,7 +2416,30 @@ def _run_audio_pipeline(script_text, output_dir, language_config):
         except Exception as exc:
             logger.debug("audio duration probe failed: %s", exc)
 
+        # Publishing is manual through RedCircle (no public API), so the run's
+        # last deliverable is the sheet that upload is filled from. Never fatal:
+        # the episode is finished either way.
+        #
+        # NOT under the staged runner. The audio adapter renders into meta/.stage_staging and
+        # promotes afterwards, so a sheet written here would record an absolute audio path inside a
+        # directory that is about to be deleted — a sheet whose one job is to point at the file to
+        # upload, pointing at nothing (prepush codex 2026-08-14). The adapter writes it after the
+        # promotion, against the real run directory.
+        if not _is_staging_dir(output_dir):
+            try:
+                sheet = write_publish_sheet(Path(output_dir))
+                logger.info(f"✓ Publish sheet: {sheet}")
+            except (PublishSheetError, OSError) as exc:
+                logger.warning(f"⚠ Publish sheet not written: {exc}")
+
     return audio_file, duration_minutes
+
+
+def _is_staging_dir(output_dir) -> bool:
+    """Whether this path is a stage's scratch tree rather than the run itself."""
+    from dr2_podcast.adapters._common import STAGING_DIRNAME
+
+    return Path(output_dir).name == STAGING_DIRNAME
 
 
 def _translate_and_inject_sot(ctx: ScriptRunContext, sot_path, sot_summary, grade_injection, refs: Crew3Refs):

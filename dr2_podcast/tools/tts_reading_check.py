@@ -235,9 +235,11 @@ def spoken_turns(cleaned: str) -> list[Turn]:
     current: int | None = None
 
     def flush() -> None:
-        # engine.py:_AivisTimeline.flush_turn — `if not (text and speaker): return`
+        # engine.py:_AivisTimeline.flush_turn — `if not (text and speaker): return`, and
+        # that truthiness test is why `Speaker 0:` is never spoken: 0 is falsy there. A
+        # `current is not None` test here would report a line the render silently drops.
         nonlocal buffer
-        if buffer and current is not None:
+        if buffer and current:
             out.append(Turn(current, buffer))
         buffer = ""
 

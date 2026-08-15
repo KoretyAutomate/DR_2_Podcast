@@ -128,11 +128,6 @@ max-nested-blocks = 4
 # scheme is a literal in the f-string, so no file:/custom scheme is reachable.
 "dr2_podcast/evaluation/telegram_report.py" = ["S310"]
 
-# S301 — a one-time migration that unpickles the user's OWN youtube_token.pickle
-# from disk and immediately deletes it, replacing it with JSON. Not untrusted
-# input; the pickle path is a module constant, not caller-supplied.
-"dr2_podcast/tools/upload_utils.py" = ["S301"]
-
 # S608 — lookup_study builds `WHERE ...` by joining code-owned predicate
 # fragments ("study_citation LIKE ? COLLATE NOCASE"). Every user value is bound
 # through a `?` placeholder in `params`; nothing user-supplied is interpolated

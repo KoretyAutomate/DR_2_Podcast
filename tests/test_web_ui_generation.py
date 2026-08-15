@@ -1,7 +1,7 @@
 """Tests for the helpers extracted out of web_ui's generation workers.
 
 run_podcast_generation took 14 parameters and ran 77 statements;
-run_podcast_reuse ran 65 and duplicated its upload, mark-running and
+run_podcast_reuse ran 65 and duplicated its mark-running and
 topic-registration blocks. Both now share GenerationRequest and a handful of
 helpers. These tests cover the extracted units — the request mapping, the
 subprocess environment, and the error-output cleaner — none of which had any
@@ -11,9 +11,6 @@ coverage before.
 import pytest
 
 from dr2_podcast.web import web_ui
-
-# A filesystem path, not a credential — named so S105 does not read it as one.
-_FAKE_CLIENT_JSON = "/tmp/client.json"
 
 
 class TestGenerationRequestFromTaskData:
@@ -26,13 +23,8 @@ class TestGenerationRequestFromTaskData:
                 "podcast_length": "short",
                 "podcast_hosts": "fixed",
                 "channel_intro": "intro text",
-                "upload_buzzsprout": True,
-                "upload_youtube": True,
                 "core_target": "target",
                 "channel_mission": "mission",
-                "buzzsprout_api_key": "k",
-                "buzzsprout_account_id": "a",
-                "youtube_secret_path": _FAKE_CLIENT_JSON,
             }
         )
         assert req.topic == "Coffee"
@@ -41,13 +33,8 @@ class TestGenerationRequestFromTaskData:
         assert req.podcast_length == "short"
         assert req.podcast_hosts == "fixed"
         assert req.channel_intro == "intro text"
-        assert req.upload_buzzsprout is True
-        assert req.upload_youtube is True
         assert req.core_target == "target"
         assert req.channel_mission == "mission"
-        assert req.buzzsprout_api_key == "k"
-        assert req.buzzsprout_account_id == "a"
-        assert req.youtube_secret_path == _FAKE_CLIENT_JSON
 
     def test_optional_fields_default_when_absent(self):
         req = web_ui.GenerationRequest.from_task_data(
@@ -57,15 +44,11 @@ class TestGenerationRequestFromTaskData:
                 "accessibility_level": "simple",
                 "podcast_length": "long",
                 "podcast_hosts": "random",
-                "upload_buzzsprout": False,
-                "upload_youtube": False,
             }
         )
         assert req.channel_intro == ""
         assert req.core_target == ""
         assert req.channel_mission == ""
-        assert req.buzzsprout_api_key is None
-        assert req.youtube_secret_path is None
 
     def test_a_missing_required_key_is_an_error_not_a_silent_default(self):
         with pytest.raises(KeyError):

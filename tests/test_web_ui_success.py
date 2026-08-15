@@ -50,3 +50,35 @@ def test_a_complete_run_reports_no_problems(tmp_path) -> None:
     (tmp_path / "research/source_of_truth.md").write_text("# SOT\n")
     (tmp_path / "audio/audio.wav").write_bytes(b"RIFF")
     assert web_ui._incomplete_deliverables(tmp_path) == []
+
+
+# prepush codex 2026-08-13: removing upload support took the credential filter with it, while
+# podcast_tasks.json is persistent — records written by the previous version can still carry
+# buzzsprout_api_key and youtube_secret_path, and the status API returned whatever the record held.
+def test_a_legacy_task_never_returns_its_stored_credentials() -> None:
+    legacy = {
+        "id": "old",
+        "status": "completed",
+        "buzzsprout_api_key": "bz_live_should_never_be_returned",
+        "buzzsprout_account_id": "12345",
+        "youtube_secret_path": "/home/korety/client_secret.json",
+    }
+    sanitised = web_ui._without_credentials(legacy)
+    assert sanitised == {"id": "old", "status": "completed"}
+
+
+def test_the_filter_names_every_field_the_retired_feature_stored() -> None:
+    assert {
+        "buzzsprout_api_key",
+        "buzzsprout_account_id",
+        "youtube_secret_path",
+    } == web_ui._CREDENTIAL_FIELDS
+
+
+def test_both_task_endpoints_go_through_the_filter() -> None:
+    """One sanitised endpoint and one raw one is the same leak with extra steps."""
+    import inspect
+
+    source = inspect.getsource(web_ui)
+    assert "response = dict(task)" not in source
+    assert "return [dict(t) for t in sorted_tasks" not in source

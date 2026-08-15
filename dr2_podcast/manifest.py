@@ -91,14 +91,11 @@ CONTENT_ENV_KEYS = (
 ENV_IDENTITY_EXCLUDE = {
     # Credentials. Rotating one does not change what was produced.
     "BRAVE_API_KEY",
-    "BUZZSPROUT_ACCOUNT_ID",
-    "BUZZSPROUT_API_KEY",
     "LLM_API_KEY",
     "PUBMED_API_KEY",
     "S2_API_KEY",
     "PODCAST_WEB_PASSWORD",
     "PODCAST_WEB_USER",
-    "YOUTUBE_CLIENT_SECRET_PATH",
     # Contact addresses sent to APIs as politeness headers. They identify us, not the content.
     "CROSSREF_MAILTO",
     "OPENALEX_EMAIL",

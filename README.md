@@ -74,7 +74,7 @@ A FastAPI-based web interface (`web_ui.py`) for managing podcast production:
 - **Live progress tracking**: phase name, progress bar, ETA, artifact count, studies scanned
 - **Task queue**: submit multiple requests — confirmation dialog shows queue position, running task progress stays visible
 - **Production History**: collapsible list of past runs with download links
-- **Upload integration**: optional Buzzsprout (draft) and YouTube (private) publishing
+- **Publish sheet**: each finished run writes `publish_sheet.md` beside its metadata — the fields the RedCircle form asks for, in form order, ready to copy across
 - **Research reuse**: reuse previous research artifacts with optional LLM-assessed supplemental research
 - **Stop button**: cancel a running task mid-pipeline
 - **System status**: checks vLLM availability before submission
@@ -360,11 +360,6 @@ export VOICE_DUCKING_DB="-20"         # BGM ducking in dB during speech
 # Web UI authentication (auto-generated if not set)
 export PODCAST_WEB_USER="admin"
 export PODCAST_WEB_PASSWORD="your_password"
-
-# Upload integration (optional)
-export BUZZSPROUT_API_KEY="your_buzzsprout_api_key"
-export BUZZSPROUT_ACCOUNT_ID="your_account_id"
-export YOUTUBE_CLIENT_SECRET_PATH="/path/to/client_secret.json"
 ```
 
 ## Usage
@@ -457,12 +452,30 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
     ├── research_framing.pdf          PDF export of research framing
     ├── source_of_truth.pdf           PDF export of IMRaD SOT
     ├── source_of_truth_ja.pdf        PDF export of translated SOT (Japanese only)
-    └── accuracy_audit.pdf            PDF export of accuracy audit
+    ├── accuracy_audit.pdf            PDF export of accuracy audit
+    └── publish_sheet.md              Fields for the manual RedCircle upload, in form order
 
 research_outputs/
 ├── run_scorecard.json                Run quality scorecard (evaluation module)
 ├── topic_index.json                  Cross-run topic index (used by reuse workflow)
 └── extraction_cache.json             Step 4 — persistent PMID-keyed extraction cache (shared across all runs)
+```
+
+## Publishing
+
+**Publishing is manual, through the RedCircle web UI.** RedCircle hosts the show and has no public API, so nothing here uploads anything — RedCircle handles distribution to YouTube and the other directories itself.
+
+To make each manual upload a copy-and-paste, every finished run writes a **publish sheet** next to its metadata (`meta/publish_sheet.md`, or the folder root for the flat educational layout). It lists the fields the RedCircle form asks for, in the order it asks for them: the absolute path of `audio_mixed.wav` and its duration, then title, description/show notes (with the run's sources), tags, publish date and episode number.
+
+Anything the run does not actually record is written as `(要記入)` for a human to fill in — never guessed. Titles, descriptions, tags and publish dates do not exist as data anywhere in a run, so those are blanks by design.
+
+```bash
+# Write sheets for existing episode folders without re-running anything
+python -m dr2_podcast.tools.publish_sheet research_outputs/Ep001_*
+
+# An existing sheet is kept, so hand-filled fields survive a re-render.
+# Pass --force to regenerate it.
+python -m dr2_podcast.tools.publish_sheet --force research_outputs/2026-08-14_09-00-00
 ```
 
 ## Source of Truth (IMRaD Format)
@@ -512,10 +525,10 @@ dr2_podcast/                          # Main package
 │   ├── lesson_reviewer.py            # Lesson review and validation
 │   └── telegram_report.py           # Telegram delivery of evaluation reports
 ├── web/
-│   └── web_ui.py                     # FastAPI web UI (progress tracking, queue, uploads)
+│   └── web_ui.py                     # FastAPI web UI (progress tracking, queue)
 └── tools/
     ├── link_validator.py              # URL validation via HEAD requests
-    └── upload_utils.py                # Buzzsprout and YouTube upload utilities
+    └── publish_sheet.py               # Per-episode RedCircle publish sheet
 tests/                                # Test suite (25 files, 455 tests)
 ```
 

@@ -665,3 +665,36 @@ def test_a_first_promotion_that_fails_leaves_no_new_files_behind(run_dir: Path, 
     monkeypatch.undo()
     assert not (run_dir / "audio/audio.wav").exists(), "a half-promoted render leaves nothing behind"
     assert not (run_dir / "audio/audio_mixed.wav").exists()
+
+
+# prepush codex 2026-08-14, and it only appeared once both change-sets were committed together: the
+# publish sheet records an ABSOLUTE audio path, and the staged audio adapter renders into
+# meta/.stage_staging — so a sheet written during the render pointed into a directory that promote()
+# was about to delete. A sheet whose one job is to name the file to upload, naming nothing.
+def test_the_publish_sheet_is_written_after_promotion_not_during_the_render(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Path] = {}
+
+    def _record(output_dir):
+        seen["dir"] = Path(output_dir)
+        return Path(output_dir) / "meta/publish_sheet.md"
+
+    (run_dir / "scripts/script_final.md").write_text("Host 1: hello\n")
+    monkeypatch.setattr("dr2_podcast.tools.publish_sheet.write_publish_sheet", _record)
+    monkeypatch.setattr(
+        "dr2_podcast.pipeline._run_audio_pipeline",
+        _render_into_staging("audio.wav", "script.txt"),
+    )
+    adapters.audio(run_dir, RUN_CONFIG)
+
+    assert seen["dir"] == run_dir, "the sheet must name the run, not the scratch tree"
+    assert ".stage_staging" not in str(seen["dir"])
+
+
+def test_the_monolithic_path_still_writes_its_own_sheet() -> None:
+    """The suppression is scoped to staging, not to the feature."""
+    from dr2_podcast.pipeline import _is_staging_dir
+
+    assert _is_staging_dir(Path("/runs/ep1/meta/.stage_staging")) is True
+    assert _is_staging_dir(Path("/runs/ep1")) is False

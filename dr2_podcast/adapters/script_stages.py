@@ -384,4 +384,19 @@ def audio(run_dir: Path, run_config: dict[str, Any]) -> None:
     dropped = drop_unproduced_optional_outputs(run_dir, "audio", promoted)
     if dropped:
         logger.info("audio: removed stale %s left by a previous render", ", ".join(dropped))
+
+    # AFTER the promotion and AFTER the stale drop. After promotion so the sheet's absolute audio
+    # path names the file that now exists; after the drop because a rerender that produced no mix
+    # would otherwise have its sheet built around the PREVIOUS render's audio_mixed.wav, which the
+    # next line then deletes — a sheet pointing at last week's audio (prepush codex 2026-08-14).
+    try:
+        from dr2_podcast.tools.publish_sheet import write_publish_sheet
+
+        logger.info("publish sheet: %s", write_publish_sheet(run_dir))
+    except Exception as exc:
+        # Never fatal, as the monolithic path has it: the sheet is what a human copies from when
+        # uploading, and the episode is finished either way. It probes the rendered WAV, so a file
+        # the wave module cannot parse raises something other than OSError — and a finished render
+        # must not be thrown away over its cover sheet.
+        logger.warning("publish sheet not written: %s", exc)
     logger.info("audio: %.2f min", duration_minutes)

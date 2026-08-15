@@ -25,7 +25,7 @@ import shutil
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel
 import uvicorn
 import httpx
 from dotenv import load_dotenv
@@ -34,7 +34,7 @@ from dr2_podcast.config import SMART_BASE_URL, OUTPUT_DIR_OVERRIDE
 
 # Expected artifacts — derived from pipeline's _FILE_SUBDIR_MAP (auto-updates)
 from dr2_podcast.pipeline import _FILE_SUBDIR_MAP
-from dr2_podcast.tools.upload_utils import upload_to_buzzsprout, upload_to_youtube
+from dr2_podcast.tools.publish_sheet import SHEET_FILENAME, PublishSheetError, write_publish_sheet
 
 load_dotenv()
 
@@ -90,8 +90,6 @@ async def lifespan(app):
 
 app = FastAPI(title="DR_2_Podcast Generator", lifespan=lifespan)
 security = HTTPBasic()
-# Credential fields stripped from API responses (SEC-04)
-_CREDENTIAL_FIELDS = {"buzzsprout_api_key", "buzzsprout_account_id", "youtube_secret_path"}
 
 # Task storage
 tasks_db: dict[str, dict] = {}
@@ -151,7 +149,7 @@ def load_tasks():
                 # CLEANUP: Mark any interrupted "running" tasks as "cancelled" on startup
                 dirty = False
                 for _tid, task in tasks_db.items():
-                    if task["status"] in ["running", "uploading", "queued"]:
+                    if task["status"] in ["running", "queued"]:
                         task["status"] = "cancelled"
                         task["error"] = "Server restarted during execution"
                         dirty = True
@@ -163,17 +161,25 @@ def load_tasks():
                 tasks_db = {}
 
 
+#: Fields the retired upload feature used to store on a task. Nothing writes them any more, but
+#: podcast_tasks.json is persistent: records created by the previous version can still carry them,
+#: and removing upload support does not migrate the data already on disk (prepush codex 2026-08-13).
+#: The filter that used to strip these went out with the feature; it is defence-in-depth for legacy
+#: records and it outlives the code that created them.
+_CREDENTIAL_FIELDS = frozenset({"buzzsprout_api_key", "buzzsprout_account_id", "youtube_secret_path"})
+
+
+def _without_credentials(task: dict) -> dict:
+    """A task record as the API may return it."""
+    return {key: value for key, value in task.items() if key not in _CREDENTIAL_FIELDS}
+
+
 def save_tasks():
     with tasks_lock:
         tmp = TASKS_FILE.with_suffix(".tmp")
         try:
-            # Never persist upload credentials to disk — they stay in-memory
-            # only; uploads fall back to env vars after a restart.
-            serializable = {
-                tid: {k: v for k, v in t.items() if k not in _CREDENTIAL_FIELDS} for tid, t in tasks_db.items()
-            }
             with open(tmp, "w") as f:
-                json.dump(serializable, f, indent=2, default=str)
+                json.dump(tasks_db, f, indent=2, default=str)
             os.replace(tmp, TASKS_FILE)
         except Exception:
             logger.exception("Failed to save tasks to %s", TASKS_FILE)
@@ -391,11 +397,6 @@ class PodcastRequest(BaseModel):
     channel_intro: str = ""
     core_target: str = ""
     channel_mission: str = ""
-    upload_to_buzzsprout: bool = False
-    upload_to_youtube: bool = False
-    buzzsprout_api_key: SecretStr = SecretStr("")
-    buzzsprout_account_id: SecretStr = SecretStr("")
-    youtube_secret_path: SecretStr = SecretStr("")
 
 
 class GenerateIntroRequest(BaseModel):
@@ -420,11 +421,6 @@ class ReuseGenerateRequest(BaseModel):
     channel_intro: str = ""
     core_target: str = ""
     channel_mission: str = ""
-    upload_to_buzzsprout: bool = False
-    upload_to_youtube: bool = False
-    buzzsprout_api_key: SecretStr = SecretStr("")
-    buzzsprout_account_id: SecretStr = SecretStr("")
-    youtube_secret_path: SecretStr = SecretStr("")
 
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
@@ -766,26 +762,6 @@ def home(username: str = Depends(verify_credentials)):
                 background: rgba(99, 102, 241, 0.2);
             }
 
-            /* Buttons inside sections */
-            .auth-btn {
-                background: transparent;
-                border: 1px solid var(--accent-primary);
-                color: var(--accent-primary);
-                padding: 8px 16px;
-                border-radius: 6px;
-                font-size: 0.9rem;
-                font-weight: 500;
-                margin-top: 10px;
-                width: auto;
-                box-shadow: none;
-            }
-
-            .auth-btn:hover {
-                background: rgba(139, 92, 246, 0.1);
-                transform: none;
-                box-shadow: none;
-            }
-
             /* Status Colors */
             .status-pending { color: var(--warning-color); }
             .status-running { color: var(--accent-secondary); }
@@ -986,35 +962,6 @@ def home(username: str = Depends(verify_credentials)):
                         </div>
                     </div>
 
-                    <div style="margin-top: 30px;">
-                        <label style="margin-bottom: 12px;">Publishing Options</label>
-
-                        <div style="display: flex; gap: 24px; margin-bottom: 15px;">
-                            <label class="checkbox-wrapper" id="buzzsproutLabel">
-                                <input type="checkbox" id="uploadBuzzsprout" />
-                                Buzzsprout (Draft)
-                            </label>
-                            <label class="checkbox-wrapper" id="youtubeLabel">
-                                <input type="checkbox" id="uploadYoutube" />
-                                YouTube (Private)
-                            </label>
-                        </div>
-
-                        <div id="buzzsproutFields" class="config-section" style="display: none;">
-                            <label style="margin-top: 0;">API Key</label>
-                            <input type="text" id="buzzsproutApiKey" placeholder="Your Buzzsprout API key" style="margin-bottom: 10px;" />
-                            <label>Account ID</label>
-                            <input type="text" id="buzzsproutAccountId" placeholder="Your Buzzsprout account ID" />
-                        </div>
-
-                        <div id="youtubeFields" class="config-section" style="display: none;">
-                            <label style="margin-top: 0;">Client Secret JSON Path</label>
-                            <input type="text" id="youtubeSecretPath" placeholder="./client_secret.json" value="./client_secret.json" />
-                            <button type="button" id="ytAuthBtn" class="auth-btn">Authorize YouTube</button>
-                            <span id="ytAuthStatus" style="font-size: 12px; margin-left: 8px; color: var(--text-secondary);"></span>
-                        </div>
-                    </div>
-
                     <button type="submit" id="generateBtn">Initiate Production Sequence</button>
                 </form>
 
@@ -1130,31 +1077,6 @@ def home(username: str = Depends(verify_credentials)):
                 } catch(e) { console.warn('Git status check failed'); }
             })();
 
-            // Pre-fill fields if server already has config
-            (async () => {
-                try {
-                    const cfg = await (await fetch('/api/upload_config')).json();
-                    if (cfg.buzzsprout_configured) {
-                        document.getElementById('buzzsproutApiKey').placeholder = '(already configured on server)';
-                        document.getElementById('buzzsproutAccountId').placeholder = '(already configured on server)';
-                    }
-                    if (cfg.youtube_configured) {
-                        document.getElementById('ytAuthStatus').textContent = 'Client secret found on server';
-                        document.getElementById('ytAuthStatus').style.color = '#10b981';
-                    }
-                } catch(e) { console.warn('upload_config check failed', e); }
-            })();
-
-            // Toggle Buzzsprout fields
-            document.getElementById('uploadBuzzsprout').addEventListener('change', function() {
-                document.getElementById('buzzsproutFields').style.display = this.checked ? 'block' : 'none';
-            });
-
-            // Toggle YouTube fields
-            document.getElementById('uploadYoutube').addEventListener('change', function() {
-                document.getElementById('youtubeFields').style.display = this.checked ? 'block' : 'none';
-            });
-
             // --- Channel Intro — LLM-powered Auto Generate ---
             document.getElementById('regenIntroBtn').addEventListener('click', async function() {
                 const btn     = this;
@@ -1191,38 +1113,6 @@ def home(username: str = Depends(verify_credentials)):
                     btn.disabled = false;
                     btn.textContent = '✨ Auto Generate';
                 }
-            });
-
-            // YouTube OAuth preflight
-            document.getElementById('ytAuthBtn').addEventListener('click', async function() {
-                this.textContent = 'Authorizing...';
-                this.disabled = true;
-                const secretPath = document.getElementById('youtubeSecretPath').value;
-                try {
-                    const res = await fetch('/api/youtube/preflight', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ secret_path: secretPath })
-                    });
-                    const data = await res.json();
-                    const status = document.getElementById('ytAuthStatus');
-                    if (data.ready) {
-                        this.textContent = 'Authorized';
-                        this.style.background = 'rgba(16, 185, 129, 0.1)';
-                        this.style.color = '#10b981';
-                        this.style.borderColor = '#10b981';
-                        status.textContent = 'Authorized';
-                        status.style.color = '#10b981';
-                    } else {
-                        this.textContent = 'Retry';
-                        status.textContent = 'Failed: ' + data.error;
-                        status.style.color = '#ef4444';
-                    }
-                } catch(e) {
-                    this.textContent = 'Error';
-                    document.getElementById('ytAuthStatus').textContent = 'Network error';
-                }
-                this.disabled = false;
             });
 
             // Show reuse modal and return user decision as a Promise
@@ -1323,12 +1213,7 @@ def home(username: str = Depends(verify_credentials)):
                     channel_intro: document.getElementById('channelIntro').value || '',
                     core_target: document.getElementById('coreTarget').value || '',
                     channel_mission: document.getElementById('channelMission').value || '',
-                    leverage_past: document.getElementById('leveragePast').checked,
-                    upload_to_buzzsprout: document.getElementById('uploadBuzzsprout').checked,
-                    upload_to_youtube: document.getElementById('uploadYoutube').checked,
-                    buzzsprout_api_key: document.getElementById('buzzsproutApiKey').value || '',
-                    buzzsprout_account_id: document.getElementById('buzzsproutAccountId').value || '',
-                    youtube_secret_path: document.getElementById('youtubeSecretPath').value || ''
+                    leverage_past: document.getElementById('leveragePast').checked
                 };
             }
 
@@ -1600,10 +1485,6 @@ def home(username: str = Depends(verify_credentials)):
                         }).join('');
                     }
 
-                } else if (data.status === 'uploading') {
-                    progressBar.style.width = '75%';
-                    statusDetails.textContent = 'Uploading to external platforms...';
-                    statusIcon.textContent = '☁️';
                 } else if (data.status === 'completed') {
                     stopBtn.style.display = 'none';
                     progressBar.style.width = '100%';
@@ -1611,22 +1492,6 @@ def home(username: str = Depends(verify_credentials)):
                     statusIcon.textContent = '✅';
 
                     // Show download links
-                    let uploadsHtml = '';
-                    if (data.upload_results) {
-                        if (data.upload_results.buzzsprout) {
-                            const bs = data.upload_results.buzzsprout;
-                            uploadsHtml += bs.success
-                                ? `<a href="${bs.url}" target="_blank" class="download-link" style="border-color:#f59e0b; color:#f59e0b; background:rgba(245, 158, 11, 0.1);">🎙️ Buzzsprout Draft (ep #${bs.episode_id})</a>`
-                                : `<span style="color:#ef4444; font-size:0.9rem;">Buzzsprout upload failed: ${bs.error}</span>`;
-                        }
-                        if (data.upload_results.youtube) {
-                            const yt = data.upload_results.youtube;
-                            uploadsHtml += yt.success
-                                ? `<a href="${yt.url}" target="_blank" class="download-link" style="border-color:#ef4444; color:#ef4444; background:rgba(239, 68, 68, 0.1);">▶️ YouTube (private)</a>`
-                                : `<span style="color:#ef4444; font-size:0.9rem;">YouTube upload failed: ${yt.error}</span>`;
-                        }
-                    }
-
                     downloads.innerHTML = `
                         <h3 style="margin-top:20px; font-size:1.1rem; color:var(--text-primary);">Artifacts Generated:</h3>
                         <div style="display:flex; flex-wrap:wrap; gap:10px;">
@@ -1637,7 +1502,6 @@ def home(username: str = Depends(verify_credentials)):
                         <a href="/api/download/${data.task_id}/affirmative_case.md" class="download-link">📄 Affirmative Case</a>
                         <a href="/api/download/${data.task_id}/grade_synthesis.md" class="download-link">📄 GRADE Synthesis</a>
                         <a href="/api/download/${data.task_id}/source_of_truth.pdf" class="download-link">📄 Source of Truth PDF</a>
-                        ${uploadsHtml}
                         </div>
                     `;
                 } else if (data.status === 'stopped') {
@@ -1944,9 +1808,6 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
         "created_at": datetime.now().isoformat(),
         "error": None,
         "output_dir": None,
-        "upload_buzzsprout": request.upload_to_buzzsprout,
-        "upload_youtube": request.upload_to_youtube,
-        "upload_results": {},
         "sources": [],
         "start_time": time.time(),
         "estimated_remaining": None,
@@ -1961,11 +1822,6 @@ async def generate_reuse(request: ReuseGenerateRequest, username: str = Depends(
     with tasks_lock:
         tasks_db[task_id] = task
         save_tasks()
-
-    # Store upload credentials in task data for explicit passing (not os.environ)
-    task["buzzsprout_api_key"] = request.buzzsprout_api_key.get_secret_value() or None
-    task["buzzsprout_account_id"] = request.buzzsprout_account_id.get_secret_value() or None
-    task["youtube_secret_path"] = request.youtube_secret_path.get_secret_value() or None
 
     task_queue.put(task)
     return {"task_id": task_id, "status": "queued", "reuse_mode": reuse_mode}
@@ -2077,9 +1933,6 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
         "created_at": datetime.now().isoformat(),
         "error": None,
         "output_dir": None,
-        "upload_buzzsprout": request.upload_to_buzzsprout,
-        "upload_youtube": request.upload_to_youtube,
-        "upload_results": {},
         "sources": [],
         "start_time": time.time(),
         "estimated_remaining": None,
@@ -2088,11 +1941,6 @@ async def generate_podcast(request: PodcastRequest, username: str = Depends(veri
     with tasks_lock:
         tasks_db[task_id] = task
         save_tasks()
-
-    # Store upload credentials in task data for explicit passing (not os.environ)
-    task["buzzsprout_api_key"] = request.buzzsprout_api_key.get_secret_value() or None
-    task["buzzsprout_account_id"] = request.buzzsprout_account_id.get_secret_value() or None
-    task["youtube_secret_path"] = request.youtube_secret_path.get_secret_value() or None
 
     # Add to queue instead of starting thread immediately
     task_queue.put(task)
@@ -2238,18 +2086,6 @@ def _stream_process_output(proc, task_id: str) -> list:
     return output_lines
 
 
-def _resolve_upload_audio(resolved_dir: Path) -> str:
-    """Locate a run's final audio for upload.
-
-    Current runs nest audio under audio/ (prefer the BGM-mixed master);
-    top-level names are kept as fallback for pre-subdir legacy runs."""
-    for rel in ("audio/audio_mixed.wav", "audio/audio.wav", "audio_mixed.wav", "audio.wav"):
-        candidate = resolved_dir / rel
-        if candidate.exists():
-            return str(candidate)
-    return str(resolved_dir / "audio" / "audio_mixed.wav")
-
-
 @dataclass
 class GenerationRequest:
     """One podcast generation run, as requested from the web UI.
@@ -2265,13 +2101,8 @@ class GenerationRequest:
     podcast_length: str = "long"
     podcast_hosts: str = "random"
     channel_intro: str = ""
-    upload_buzzsprout: bool = False
-    upload_youtube: bool = False
     core_target: str = ""
     channel_mission: str = ""
-    buzzsprout_api_key: str = None
-    buzzsprout_account_id: str = None
-    youtube_secret_path: str = None
 
     @classmethod
     def from_task_data(cls, task_data: dict) -> "GenerationRequest":
@@ -2282,13 +2113,8 @@ class GenerationRequest:
             podcast_length=task_data["podcast_length"],
             podcast_hosts=task_data["podcast_hosts"],
             channel_intro=task_data.get("channel_intro", ""),
-            upload_buzzsprout=task_data["upload_buzzsprout"],
-            upload_youtube=task_data["upload_youtube"],
             core_target=task_data.get("core_target", ""),
             channel_mission=task_data.get("channel_mission", ""),
-            buzzsprout_api_key=task_data.get("buzzsprout_api_key"),
-            buzzsprout_account_id=task_data.get("buzzsprout_account_id"),
-            youtube_secret_path=task_data.get("youtube_secret_path"),
         )
 
 
@@ -2361,30 +2187,25 @@ def _fail_task(task_id: str, reason: str) -> None:
     save_tasks()
 
 
-def _run_uploads(task_id: str, req: GenerationRequest, title: str) -> None:
-    """Upload the finished audio. `title` is explicit: the full-run path strips
-    the topic, the reuse path does not, and that difference is preserved."""
-    if not (req.upload_buzzsprout or req.upload_youtube):
+def _write_publish_sheet(task_id: str) -> None:
+    """Write the RedCircle publish sheet for a finished run.
+
+    Publishing is manual through RedCircle's web UI, so the deliverable is a
+    sheet to copy from, not an upload. A run that produced audio but no sheet is
+    still a usable run — the failure is recorded on the task and logged, never
+    raised, because it must not turn a completed episode into a failed one.
+    """
+    output_dir = tasks_db[task_id].get("output_dir")
+    if not output_dir:
         return
-    tasks_db[task_id]["status"] = "uploading"
-    tasks_db[task_id]["phase"] = "Uploading"
-    tasks_db[task_id]["progress"] = 95
+    try:
+        sheet = write_publish_sheet(Path(output_dir))
+    except (PublishSheetError, OSError) as exc:
+        logger.warning("publish sheet not written for %s: %s", output_dir, exc)
+        tasks_db[task_id]["publish_sheet_error"] = str(exc)
+    else:
+        tasks_db[task_id]["publish_sheet"] = str(sheet)
     save_tasks()
-
-    resolved_dir = Path(tasks_db[task_id].get("output_dir") or str(OUTPUT_DIR))
-    audio_path = _resolve_upload_audio(resolved_dir)
-
-    if req.upload_buzzsprout:
-        tasks_db[task_id]["upload_results"]["buzzsprout"] = upload_to_buzzsprout(
-            audio_path, title, api_key=req.buzzsprout_api_key, account_id=req.buzzsprout_account_id
-        )
-        save_tasks()
-
-    if req.upload_youtube:
-        tasks_db[task_id]["upload_results"]["youtube"] = upload_to_youtube(
-            audio_path, title, youtube_secret_path=req.youtube_secret_path
-        )
-        save_tasks()
 
 
 def _register_run_topic(output_dir, req: GenerationRequest) -> None:
@@ -2455,8 +2276,8 @@ def run_podcast_generation(task_id: str, req: GenerationRequest):
             return
         save_tasks()
 
-        # Generation succeeded — run uploads if requested
-        _run_uploads(task_id, req, req.topic.strip())
+        # Generation succeeded — write the sheet the manual RedCircle upload is filled from
+        _write_publish_sheet(task_id)
 
         # Record the final phase's duration before marking complete
         _close_phase(task_id)
@@ -2502,19 +2323,12 @@ def run_podcast_reuse(task_data: dict):
     topic = task_data["topic"]
     language = task_data.get("language", "en")
     podcast_hosts = task_data.get("podcast_hosts", "random")
-    upload_buzzsprout = task_data.get("upload_buzzsprout", False)
-    upload_youtube = task_data.get("upload_youtube", False)
     req = GenerationRequest(
         topic=topic,
         language=language,
         accessibility_level=task_data.get("accessibility_level", "simple"),
         podcast_length=task_data.get("podcast_length", "long"),
         podcast_hosts=podcast_hosts,
-        upload_buzzsprout=upload_buzzsprout,
-        upload_youtube=upload_youtube,
-        buzzsprout_api_key=task_data.get("buzzsprout_api_key"),
-        buzzsprout_account_id=task_data.get("buzzsprout_account_id"),
-        youtube_secret_path=task_data.get("youtube_secret_path"),
     )
 
     try:
@@ -2538,8 +2352,16 @@ def run_podcast_reuse(task_data: dict):
         if tasks_db[task_id].get("status") == "stopped":
             return
 
-        # Handle uploads
-        _run_uploads(task_id, req, topic)
+        # Every completion path validates, including tts_only. Three paths reach "completed" here —
+        # full generation, subprocess reuse and TTS-only reuse — and fixing them one at a time left
+        # the same hole with a different entry point each round (prepush codex 2026-08-14).
+        reused_dir = tasks_db[task_id].get("output_dir")
+        problems = _incomplete_deliverables(Path(reused_dir)) if reused_dir else ["no output directory was named"]
+        if problems:
+            _fail_task(task_id, "the reuse run finished but its deliverables are not complete: " + "; ".join(problems))
+            return
+
+        _write_publish_sheet(task_id)
 
         _close_phase(task_id)
         tasks_db[task_id]["status"] = "completed"
@@ -2588,13 +2410,21 @@ def _run_tts_only_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     # Copy all artifacts from previous run. Runs nest artifacts in
     # research/ scripts/ meta/ audio/ subdirs (audio/ is skipped — we
     # regenerate it); top-level files are copied for legacy runs.
+    #
+    # The publish sheet is deliberately NOT copied. It names an absolute audio
+    # path and that audio's duration, both of which belong to the run being
+    # reused, not this one. Carrying it over would leave the new run holding a
+    # sheet pointing at the previous episode's wav — and because a sheet that
+    # already exists is never overwritten, the wrong one would be the one that
+    # survived.
+    _sheet_only = shutil.ignore_patterns(SHEET_FILENAME)
     for item in reuse_dir.iterdir():
         if item.is_file():
-            if item.suffix in (".wav", ".mp3"):
+            if item.suffix in (".wav", ".mp3") or item.name == SHEET_FILENAME:
                 continue
             shutil.copy2(item, new_output_dir / item.name)
         elif item.is_dir() and item.name in ("research", "scripts", "meta"):
-            shutil.copytree(item, new_output_dir / item.name, dirs_exist_ok=True)
+            shutil.copytree(item, new_output_dir / item.name, dirs_exist_ok=True, ignore=_sheet_only)
 
     # Load the polished script (new layout: scripts/; legacy: top level)
     script_path = new_output_dir / "scripts" / "script_final.md"
@@ -2709,12 +2539,18 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
         error_text = "\n".join(clean_lines[-50:])
         raise RuntimeError(error_text or f"Process exited with code {proc.returncode}")
 
-    # Output dir normally comes from the [OUTPUT_DIR] marker during streaming;
-    # fall back to the mtime scan only if it never appeared.
+    # The same rule as the full-generation path, because it is the same failure: a reuse that exits
+    # 0 without emitting [OUTPUT_DIR] produced nothing, and attaching it to whichever directory is
+    # newest presents a PREVIOUS episode as this run's result (prepush codex 2026-08-14). Fixing one
+    # of the two paths and leaving the other is the same hole with a different entry point.
     if not tasks_db[task_id].get("output_dir"):
-        output_dir = _find_latest_output_dir()
-        if output_dir:
-            tasks_db[task_id]["output_dir"] = str(output_dir)
+        raise RuntimeError(
+            "the reuse run exited without naming an output directory, so it produced nothing. It "
+            "has NOT been attached to the most recent run's output."
+        )
+    problems = _incomplete_deliverables(Path(tasks_db[task_id]["output_dir"]))
+    if problems:
+        raise RuntimeError("the reuse run finished but its deliverables are not complete: " + "; ".join(problems))
     save_tasks()
 
 
@@ -2743,7 +2579,7 @@ async def get_status(task_id: str, username: str = Depends(verify_credentials)):
         if task["status"] == "running" and task.get("phase_start_time"):
             current_step_duration = time.time() - task["phase_start_time"]
 
-        response = {k: v for k, v in task.items() if k not in _CREDENTIAL_FIELDS}
+        response = _without_credentials(task)
         response["current_step_duration"] = f"{int(current_step_duration // 60)}m {int(current_step_duration % 60)}s"
         response["current_step_duration_seconds"] = current_step_duration
 
@@ -2795,8 +2631,8 @@ async def get_history(username: str = Depends(verify_credentials)):
                     EXPECTED_ARTIFACTS + EXPECTED_ARTIFACTS_EXTRA.get(task.get("language", "en"), [])
                 )
 
-    # Return last 20 tasks, newest first — strip credential fields
-    return [{k: v for k, v in t.items() if k not in _CREDENTIAL_FIELDS} for t in sorted_tasks[:20]]
+    # Return last 20 tasks, newest first
+    return [_without_credentials(t) for t in sorted_tasks[:20]]
 
 
 @app.get("/api/download/{task_id}/{filename}")
@@ -2815,41 +2651,6 @@ def download_file(task_id: str, filename: str, username: str = Depends(verify_cr
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
 
     return FileResponse(path=file_path, filename=filename, media_type="application/octet-stream")
-
-
-class YoutubePreflightRequest(BaseModel):
-    secret_path: str = "./client_secret.json"
-
-
-@app.post("/api/youtube/preflight")
-async def youtube_preflight(
-    request: YoutubePreflightRequest = YoutubePreflightRequest(), username: str = Depends(verify_credentials)
-):
-    """Run YouTube OAuth consent flow (may open browser). Must be called before generation."""
-    from dr2_podcast.tools.upload_utils import get_youtube_credentials
-
-    try:
-        secret_path = request.secret_path or None
-        if secret_path:
-            p = Path(secret_path)
-            if p.is_absolute() or ".." in p.parts:
-                return {"ready": False, "error": "secret_path must be a relative path inside the project (no '..')"}
-        # Pass explicitly — mutating os.environ would leak into every later task
-        get_youtube_credentials(youtube_secret_path=secret_path)
-        return {"ready": True}
-    except Exception as e:
-        return {"ready": False, "error": str(e)}
-
-
-@app.get("/api/upload_config")
-async def upload_config(username: str = Depends(verify_credentials)):
-    """Report which upload platforms have valid credentials configured."""
-    buzzsprout_ok = bool(os.getenv("BUZZSPROUT_API_KEY")) and bool(os.getenv("BUZZSPROUT_ACCOUNT_ID"))
-
-    secret_path = os.getenv("YOUTUBE_CLIENT_SECRET_PATH", "./client_secret.json")
-    youtube_ok = (SCRIPT_DIR / secret_path).exists()
-
-    return {"buzzsprout_configured": buzzsprout_ok, "youtube_configured": youtube_ok}
 
 
 if __name__ == "__main__":
