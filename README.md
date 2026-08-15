@@ -463,11 +463,31 @@ research_outputs/
 
 ## Publishing
 
-**Publishing is manual, through the RedCircle web UI.** RedCircle hosts the show and has no public API, so nothing here uploads anything — RedCircle handles distribution to YouTube and the other directories itself.
+The show is moving off RedCircle onto a **self-hosted RSS feed** served from one Cloudflare R2 bucket. `dr2_podcast/publish/` is that publisher; it is built and tested, and waiting on a domain and R2 credentials before it can upload anything.
 
-To make each manual upload a copy-and-paste, every finished run writes a **publish sheet** next to its metadata (`meta/publish_sheet.md`, or the folder root for the flat educational layout). It lists the fields the RedCircle form asks for, in the order it asks for them: the absolute path of `audio_mixed.wav` and its duration, then title, description/show notes (with the run's sources), tags, publish date and episode number.
+```bash
+python -m dr2_podcast.publish add <run_dir> [--season N] [--episode N]  # register; mints the GUID, once
+python -m dr2_podcast.publish stage --all-draft [--no-upload]           # encode → tag → upload
+python -m dr2_podcast.publish release <guid>                            # mark published
+python -m dr2_podcast.publish sync [--dry-run]                          # rebuild and upload both feeds
+python -m dr2_podcast.publish ship <run_dir>                            # the four above, in order
+```
+
+`podcast/episodes.json` is the source of truth for the feed — committed to git, because it holds the GUIDs. **A GUID is minted once and never changes:** change one and every subscribed app treats the episode as new and re-downloads it, so `add` refuses to re-register a run and `save_manifest` refuses any write that would lose or rewrite one.
+
+Audio is 128 kbps mono MP3 encoded with PyAV (there is no `ffmpeg` on this machine), tagged with mutagen, and uploaded with boto3. The feed is built by hand with `xml.etree.ElementTree`.
+
+**The preview feed.** `stage` uploads before `release` publishes, so a finished episode sits at a public URL while it is still a draft. Every `sync` therefore writes two documents: `feed.xml`, carrying only what is published and due, and `preview-<token>.xml` at an unguessable URL, carrying everything staged — drafts included. Subscribing to the second in a podcast app is how an episode gets listened to on a phone before anyone else can see it. The preview is marked `<itunes:block>Yes</itunes:block>` and both its channel and item titles are visibly flagged, so there is never a question about which feed is playing.
+
+Set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` in `.env` (see `.env.example`) to enable the uploads. Everything before the upload — `add`, `artwork`, `stage --no-upload`, `sync --dry-run` — runs without them.
+
+### The publish sheet
+
+Independently of the feed, every finished run writes a **publish sheet** next to its metadata (`meta/publish_sheet.md`, or the folder root for the flat educational layout). It lists the fields the RedCircle form asks for, in the order it asks for them: the absolute path of `audio_mixed.wav` and its duration, then title, description/show notes (with the run's sources), tags, publish date and episode number.
 
 Anything the run does not actually record is written as `(要記入)` for a human to fill in — never guessed. Titles, descriptions, tags and publish dates do not exist as data anywhere in a run, so those are blanks by design.
+
+`publish add` seeds the manifest from this same module, and treats either sentinel as "not set" rather than copying it across. `release` then refuses an episode whose title or description is still empty — a placeholder that reached the feed would be the episode's name in every podcast app.
 
 ```bash
 # Write sheets for existing episode folders without re-running anything
@@ -524,12 +544,19 @@ dr2_podcast/                          # Main package
 │   ├── lesson_generator.py           # LLM-assisted observation extraction from scorecards
 │   ├── lesson_reviewer.py            # Lesson review and validation
 │   └── telegram_report.py           # Telegram delivery of evaluation reports
+├── publish/                          # Self-hosted RSS publishing (Cloudflare R2)
+│   ├── manifest.py                   # podcast/episodes.json — the feed's source of truth; GUIDs
+│   ├── encode.py                     # WAV → 128kbps mono MP3 via PyAV; ID3 tags via mutagen
+│   ├── artwork.py                    # Show cover, sized and compressed to Apple's spec
+│   ├── storage.py                    # R2 uploads over boto3; byte-range check
+│   ├── feed.py                       # manifest → RSS XML, public and private preview
+│   └── cli.py                        # add / artwork / stage / release / sync / ship
 ├── web/
 │   └── web_ui.py                     # FastAPI web UI (progress tracking, queue)
 └── tools/
     ├── link_validator.py              # URL validation via HEAD requests
-    └── publish_sheet.py               # Per-episode RedCircle publish sheet
-tests/                                # Test suite (25 files, 455 tests)
+    └── publish_sheet.py               # Per-episode publish sheet (human-facing crib)
+tests/                                # Test suite (1749 tests)
 ```
 
 | Support Files | Purpose |

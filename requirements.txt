@@ -42,6 +42,20 @@ numpy==2.2.6
 torch==2.5.1
 pydub==0.25.1
 
+# --- Self-hosted publishing (dr2_podcast/publish) ---
+# av: WAV -> MP3. There is no ffmpeg binary on this machine and no sudo to
+#     install one; PyAV bundles its own libraries and has libmp3lame. pydub is
+#     present but shells out to ffmpeg, so it cannot encode here.
+# boto3: uploads to Cloudflare R2 over its S3-compatible API. No wrangler, no rclone.
+# mutagen: ID3 tags on the encoded MP3s. Pure Python, no compiler.
+# pillow: the show cover, resized and compressed to Apple's specification.
+# All four were already installed transitively; pinned here because the publish
+# package imports them directly.
+av==16.1.0
+boto3==1.36.0
+mutagen==1.48.1
+pillow==12.0.0
+
 # --- Japanese NLP ---
 jaconv==0.5.0
 misaki[ja]==0.9.4

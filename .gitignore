@@ -84,3 +84,8 @@ Thumbs.db
 # Local logo assets / working files (not tracked)
 Logo.png
 Logo_original_backup.png
+
+# Self-hosted publishing: the local mirror of the R2 bucket (encoded MP3s and
+# the generated cover). Rebuildable from the WAV masters via `publish stage`.
+# podcast/episodes.json is NOT ignored — it holds the GUIDs and must be committed.
+podcast/build/
