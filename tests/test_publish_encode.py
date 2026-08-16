@@ -163,3 +163,28 @@ def _write_jpeg(path, edge: int = 200):
 
     Image.new("RGB", (edge, edge), (30, 60, 90)).save(path, format="JPEG", quality=80)
     return path
+
+
+def test_a_file_chopped_after_encoding_is_refused_despite_its_header(tmp_path):
+    """Codex review 2026-08-16, verified. The test above encodes a SHORTER
+    source, so the MP3's header honestly describes it — which is not the
+    dangerous case. This is: encode the full episode, then lose the tail. The
+    Xing/container duration was written before the truncation, so the header
+    still claims the whole episode while the packets no longer carry it.
+
+    media_duration_seconds used to return that declared duration without
+    decoding, so verify_encode compared the stale header against the WAV, found
+    them equal, and passed a file that stops early — the exact failure its
+    docstring promises to catch.
+    """
+    wav = _write_tone(tmp_path / "full.wav", seconds=6.0)
+    mp3 = encode_mp3(wav, tmp_path / "out.mp3")
+    assert verify_encode(wav, mp3) == pytest.approx(6.0, abs=0.2)  # intact: accepted
+
+    whole = mp3.read_bytes()
+    mp3.write_bytes(whole[: len(whole) // 3])  # header intact, audio tail gone
+
+    decoded = media_duration_seconds(mp3)
+    assert decoded < 5.0, f"duration must come from the packets, got {decoded:.2f}s"
+    with pytest.raises(EncodeError, match="truncated"):
+        verify_encode(wav, mp3)

@@ -541,14 +541,16 @@ def test_ship_no_upload_needs_no_credentials(workspace, monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "_storage_for", no_credentials)
 
-    # first pass registers the run and stops at release for want of a title
-    assert _run(workspace, "ship", str(workspace["run_dir"]), "--episode", "1", "--no-upload") == 1
-    capsys.readouterr()
-    _fill_notes(workspace)
-
     assert _run(workspace, "ship", str(workspace["run_dir"]), "--episode", "1", "--no-upload") == 0
-    assert "nothing is uploaded" in capsys.readouterr().err
+    assert "Nothing was uploaded" in capsys.readouterr().err
     assert workspace["client"].objects == {}
+
+    # and the episode stays a DRAFT: an episode nobody can download is not
+    # released, and claiming otherwise would make a later ordinary sync publish
+    # a feed pointing at an enclosure that was never uploaded
+    episode = _manifest(workspace).episodes[0]
+    assert episode.state == "draft"
+    assert episode.is_staged
 
 
 def test_ship_without_no_upload_still_uploads(workspace):

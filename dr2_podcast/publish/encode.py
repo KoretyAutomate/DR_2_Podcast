@@ -69,20 +69,25 @@ def wav_duration_seconds(wav_path: Path | str) -> float:
 
 
 def media_duration_seconds(path: Path | str) -> float:
-    """Decoded duration of any media file PyAV can open.
+    """Duration of any media file PyAV can open, measured by DECODING it.
 
-    Prefers the container's declared duration and falls back to decoding to the
-    last frame, because a container written by a crashed encoder can carry a
-    duration that its packets do not back up.
+    Always decodes to the last frame. It used to prefer the container's declared
+    duration and decode only when that was absent — which defeated the single
+    check this exists for. An MP3 whose tail is lost keeps the Xing/container
+    duration written before the truncation, so the header still describes an
+    episode the packets no longer contain; `verify_encode` compared that stale
+    number against the WAV, found them equal, and passed a file that stops early.
+
+    A container header is a claim about the file. Truncation is exactly the case
+    where the claim outlives the evidence, so the evidence is what gets counted.
+    Decoding a 20-minute episode costs a couple of seconds, once per encode.
     """
+    last = 0.0
     with av.open(str(path)) as container:
-        if container.duration:
-            return container.duration / av.time_base
-        last = 0.0
         for frame in container.decode(audio=0):
             if frame.time is not None:
                 last = frame.time + (frame.samples / float(frame.sample_rate or SAMPLE_RATE))
-        return last
+    return last
 
 
 def encode_mp3(wav_path: Path | str, mp3_path: Path | str, *, bitrate: int = DEFAULT_BITRATE) -> Path:

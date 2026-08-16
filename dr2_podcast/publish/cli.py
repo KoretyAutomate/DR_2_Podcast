@@ -439,15 +439,28 @@ def cmd_ship(args: argparse.Namespace) -> int:
     args.guid = episode.guid
     args.all_draft = False
     cmd_stage(args)
-    cmd_release(args)
+
     # --no-upload advertises "encode locally only; needs no credentials", and
-    # cmd_stage honours it — but cmd_sync then reaches for R2 unconditionally,
-    # so `ship --no-upload` failed on the very credentials it had promised not
-    # to need. Sync's credential-free path is its dry run, so that is what the
-    # flag means here: build and validate both feeds, upload neither.
-    if args.no_upload and not args.dry_run:
-        args.dry_run = True
-        print("--no-upload: syncing as a dry run, so nothing is uploaded", file=sys.stderr)
+    # cmd_stage honours it — but the rest of ship did not. cmd_sync reached for
+    # R2 unconditionally, so the flag failed on the very credentials it had
+    # promised not to need; and cmd_release marked the episode PUBLISHED even
+    # though no enclosure had been uploaded, leaving the manifest asserting a
+    # release that never happened and a later ordinary sync failing its
+    # enclosure guard on a file listeners cannot fetch.
+    #
+    # So ship stops here. An episode nobody can download is not released, and
+    # the remaining two commands are exactly the ones that need credentials.
+    # They are separate commands precisely so this is re-runnable: once R2 is
+    # configured, `release` then `sync` finish the job without re-encoding.
+    if args.no_upload:
+        print(
+            f"--no-upload: encoded locally and left {episode.guid} a draft. "
+            "Nothing was uploaded, so nothing was released; run `release` then `sync` to publish.",
+            file=sys.stderr,
+        )
+        return 0
+
+    cmd_release(args)
     return cmd_sync(args)
 
 
