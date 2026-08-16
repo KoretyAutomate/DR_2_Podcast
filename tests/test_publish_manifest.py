@@ -15,6 +15,7 @@ import pytest
 
 from dr2_podcast.publish.manifest import (
     PLACEHOLDER_BASE_URL,
+    PROJECT_ROOT,
     STATE_PUBLISHED,
     Episode,
     Manifest,
@@ -75,6 +76,26 @@ def test_adding_the_same_run_dir_twice_is_refused():
     duplicate = _episode(2, run_dir=manifest.episodes[0].run_dir)
     with pytest.raises(ManifestError, match="already in the manifest"):
         manifest.add_episode(duplicate)
+
+
+def test_a_relative_run_dir_is_read_against_the_repository_root(tmp_path, monkeypatch):
+    """The committed manifest holds relative run_dirs from before `add` resolved.
+
+    They were typed at the repository root, which is the only place those
+    commands were ever run, so that is where they still point — a later command
+    run from anywhere else must find the same folder, not one under its cwd.
+    """
+    monkeypatch.chdir(tmp_path)
+    episode = _episode(1, run_dir="research_outputs/Ep001_topic")
+    assert episode.run_path == PROJECT_ROOT / "research_outputs" / "Ep001_topic"
+
+
+def test_the_same_run_is_found_however_the_path_is_spelled():
+    """Otherwise `add` mints a second GUID for a run already in the manifest."""
+    manifest = _manifest(1)
+    absolute = PROJECT_ROOT / "research_outputs" / "Ep001_topic"
+    assert manifest.by_run_dir(absolute) is manifest.episodes[0]
+    assert manifest.by_run_dir("research_outputs/Ep001_topic/") is manifest.episodes[0]
 
 
 def test_duplicate_guid_is_refused():

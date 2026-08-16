@@ -26,6 +26,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from dr2_podcast.publish import artwork as artwork_mod
 from dr2_podcast.publish import encode as encode_mod
 from dr2_podcast.publish import feed as feed_mod
@@ -58,6 +60,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 #: Encoded MP3s and artwork land here, laid out exactly like the bucket, so
 #: `stage` is a straight upload and the local tree can be inspected first.
 BUILD_DIR = PROJECT_ROOT / "podcast" / "build"
+#: Where the R2 credentials live, per README and `.env.example`. Loaded at the
+#: CLI boundary rather than on import, so importing this module has no effect on
+#: the environment of anything that only wants to call one of its functions.
+ENV_FILE = PROJECT_ROOT / ".env"
 
 FEED_KEY = "feed.xml"
 FEED_PREV_KEY = "feed.xml.prev"
@@ -95,6 +101,17 @@ def _local_mp3(episode: Episode) -> Path:
     return BUILD_DIR / episode.audio_key
 
 
+def _run_dir_arg(raw: str) -> Path:
+    """A run directory as typed on the command line.
+
+    Relative to the current directory, the way every other CLI treats a path —
+    which is *not* how a relative string already sitting in the manifest is read
+    (`manifest.resolve_run_dir` explains that one). Both agree from the repository
+    root, and this is the only place a human types the path.
+    """
+    return Path(raw).expanduser().resolve()
+
+
 # ---------------------------------------------------------------------------
 # add
 # ---------------------------------------------------------------------------
@@ -102,7 +119,9 @@ def _local_mp3(episode: Episode) -> Path:
 
 def cmd_add(args: argparse.Namespace) -> int:
     manifest = load_manifest(args.manifest)
-    run_dir = Path(args.run_dir)
+    # Absolute, because the manifest outlives the shell that wrote it: `stage`
+    # resolves this string later, from wherever it happens to be run.
+    run_dir = _run_dir_arg(args.run_dir)
 
     try:
         sheet = build_publish_sheet(run_dir)
@@ -127,7 +146,7 @@ def cmd_add(args: argparse.Namespace) -> int:
         episode=episode_number,
         title=_clean(sheet.title),
         audio_key=f"audio/s{season}e{episode_number:03d}.mp3",
-        run_dir=str(run_dir).rstrip("/"),
+        run_dir=str(run_dir),
         publish_at=publish_at,
         description=_clean(sheet.description),
         state=STATE_DRAFT,
@@ -160,7 +179,7 @@ def _episodes_for(manifest: Manifest, args: argparse.Namespace) -> list[Episode]
 
 def _encode_one(episode: Episode, show_title: str, *, cover: Path | None, force: bool) -> tuple[int, int]:
     """Encode this episode's mixed master to the build tree. Idempotent."""
-    sheet = build_publish_sheet(Path(episode.run_dir))
+    sheet = build_publish_sheet(episode.run_path)
     mp3_path = _local_mp3(episode)
     if mp3_path.is_file() and not force:
         duration = encode_mod.verify_encode(sheet.audio_path, mp3_path)
@@ -385,7 +404,7 @@ def cmd_ship(args: argparse.Namespace) -> int:
     """add → stage → release → sync for one run directory."""
     cmd_add(args)
     manifest = load_manifest(args.manifest)
-    episode = manifest.by_run_dir(str(Path(args.run_dir)).rstrip("/"))
+    episode = manifest.by_run_dir(_run_dir_arg(args.run_dir))
     if episode is None:  # pragma: no cover — add() would have raised
         raise CliError(f"{args.run_dir} is not in the manifest after add")
 
@@ -458,6 +477,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    # The README says the R2 credentials go in `.env`; nothing else in this
+    # package reads that file, so without this every upload reports all four
+    # variables missing unless the caller exported them by hand. `override` is
+    # left at its default, so an explicitly exported value still wins.
+    load_dotenv(ENV_FILE)
     args = build_parser().parse_args(argv)
     try:
         return int(args.func(args))

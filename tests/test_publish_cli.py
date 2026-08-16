@@ -14,13 +14,14 @@ import json
 import math
 import struct
 import wave
+from pathlib import Path
 
 import pytest
 from PIL import Image
 
 from dr2_podcast.publish import cli
 from dr2_podcast.publish.manifest import Manifest, Show, load_manifest, save_manifest
-from dr2_podcast.publish.storage import R2Config, R2Storage
+from dr2_podcast.publish.storage import R2Config, R2Storage, StorageError
 from tests.test_publish_storage import ENV, FakeClient
 
 
@@ -128,6 +129,35 @@ def test_add_refuses_a_directory_with_no_mixed_master(workspace, capsys):
     (bare / "meta").mkdir(parents=True)
     assert _run(workspace, "add", str(bare), "--episode", "1") == 1
     assert "audio_mixed.wav" in capsys.readouterr().err
+
+
+def test_a_run_added_by_relative_path_still_stages_from_another_directory(workspace, monkeypatch):
+    """The manifest outlives the shell that registered the run.
+
+    `add` today, `stage` next week from wherever the terminal happens to be:
+    storing the relative string as typed makes the second command look for the
+    run under the wrong parent and fail on a run that registered fine.
+    """
+    monkeypatch.chdir(workspace["root"])
+    assert _run(workspace, "add", workspace["run_dir"].name, "--episode", "1") == 0
+
+    stored = _manifest(workspace).episodes[0].run_dir
+    assert Path(stored).is_absolute()
+
+    elsewhere = workspace["root"] / "somewhere_else"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert _run(workspace, "stage", "--all-draft") == 0
+    assert _manifest(workspace).episodes[0].is_staged
+
+
+def test_add_refuses_the_same_run_spelled_a_different_way(workspace, monkeypatch, capsys):
+    """One run, one GUID — including when the second `add` types a relative path."""
+    _run(workspace, "add", str(workspace["run_dir"]), "--episode", "1")
+    monkeypatch.chdir(workspace["root"])
+    assert _run(workspace, "add", workspace["run_dir"].name, "--episode", "2") == 1
+    assert "already in the manifest" in capsys.readouterr().err
+    assert len(_manifest(workspace).episodes) == 1
 
 
 # --- stage --------------------------------------------------------------------
@@ -370,6 +400,34 @@ def test_check_has_nothing_to_say_about_an_unstaged_episode(workspace, capsys):
     _run(workspace, "add", str(workspace["run_dir"]), "--episode", "1")
     assert _run(workspace, "check") == 1
     assert "nothing staged" in capsys.readouterr().err
+
+
+# --- credentials ----------------------------------------------------------------
+
+
+def test_the_cli_loads_the_r2_credentials_from_the_project_env_file(workspace, monkeypatch):
+    """`.env` is where the README puts the four R2 variables.
+
+    Nothing else in `dr2_podcast.publish` reads that file, so without a load at
+    the CLI boundary every upload reports all four missing on a machine that is
+    configured exactly as documented.
+    """
+    for name in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"):
+        monkeypatch.setenv(name, "recorded-so-monkeypatch-restores-it")
+        monkeypatch.delenv(name)
+
+    env_file = workspace["root"] / ".env"
+    env_file.write_text(
+        "R2_ACCOUNT_ID=from-dotenv\nR2_ACCESS_KEY_ID=key\nR2_SECRET_ACCESS_KEY=secret\nR2_BUCKET=bucket\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "ENV_FILE", env_file)
+
+    with pytest.raises(StorageError):
+        R2Config.from_env()
+
+    assert _run(workspace, "sync", "--dry-run") == 0
+    assert R2Config.from_env().account_id == "from-dotenv"
 
 
 def _fill_notes(workspace):

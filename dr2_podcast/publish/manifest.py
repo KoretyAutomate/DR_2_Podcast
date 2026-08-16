@@ -55,7 +55,25 @@ PODCAST_NAMESPACE_UUID = uuid.UUID("ead4c236-bf58-58c6-a2c6-a6b28d128cb6")
 #: never from a folder name. This is the check that keeps that true.
 _ASCII_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9/_.-]*$")
 
-DEFAULT_MANIFEST_PATH = Path(__file__).resolve().parent.parent.parent / "podcast" / "episodes.json"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+DEFAULT_MANIFEST_PATH = PROJECT_ROOT / "podcast" / "episodes.json"
+
+
+def resolve_run_dir(run_dir: str | Path) -> Path:
+    """The absolute directory a manifest `run_dir` names, from any cwd.
+
+    The manifest is committed to git and read by commands run days apart, so a
+    `run_dir` that only means something from one working directory is a `stage`
+    that fails on a run `add` accepted. `add` therefore stores absolute paths —
+    and the entries written before it did are relative to the repository root,
+    the only directory those commands were ever run from, so that is what a
+    relative entry is resolved against here rather than the caller's cwd.
+    """
+    path = Path(str(run_dir).rstrip("/")).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path.resolve()
 
 
 class ManifestError(Exception):
@@ -218,6 +236,11 @@ class Episode:
         return self.bytes > 0 and self.duration_seconds > 0
 
     @property
+    def run_path(self) -> Path:
+        """The run directory as an absolute path — see :func:`resolve_run_dir`."""
+        return resolve_run_dir(self.run_dir)
+
+    @property
     def publish_at_dt(self) -> datetime:
         return parse_publish_at(self.publish_at)
 
@@ -267,10 +290,16 @@ class Manifest:
                 return ep
         raise ManifestError(f"no episode with guid {guid}")
 
-    def by_run_dir(self, run_dir: str) -> Episode | None:
-        normalised = str(run_dir).rstrip("/")
+    def by_run_dir(self, run_dir: str | Path) -> Episode | None:
+        """Find a run however it is spelled — the GUID-once promise depends on it.
+
+        A run registered as an absolute path and re-registered as the relative
+        path that names the same folder must be recognised as the same run, or
+        `add` mints a second GUID for one episode.
+        """
+        target = resolve_run_dir(run_dir)
         for ep in self.episodes:
-            if ep.run_dir.rstrip("/") == normalised:
+            if ep.run_path == target:
                 return ep
         return None
 
