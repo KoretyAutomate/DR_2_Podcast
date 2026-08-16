@@ -104,6 +104,11 @@ ENV_IDENTITY_EXCLUDE = {
     "OUTPUT_DIR",
     "PODCAST_WEB_BIND",
     "PODCAST_WEB_PORT",
+    # Where the searxng-deep-research checkout lives (tools/evidence_search.py).
+    # A path to the library, not an input to it: the same claim searched on two
+    # machines that keep that checkout in different places must produce the same
+    # evidence bundle, or the bundle was never about the claim.
+    "SEARXNG_DEEP_RESEARCH_DIR",
     # The run's own inputs, which a staged run carries in meta/run_config.json instead. They are
     # already part of identity through the run config; taking them from the environment as well
     # would invalidate stages over a variable the staged path never reads.
