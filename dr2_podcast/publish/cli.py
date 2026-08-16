@@ -178,12 +178,19 @@ def _episodes_for(manifest: Manifest, args: argparse.Namespace) -> list[Episode]
 
 
 def _encode_one(episode: Episode, show_title: str, *, cover: Path | None, force: bool) -> tuple[int, int]:
-    """Encode this episode's mixed master to the build tree. Idempotent."""
+    """Encode this episode's mixed master to the build tree. Idempotent.
+
+    An MP3 already in the build tree is reused rather than re-encoded, but it is
+    still re-tagged from the current manifest. The usual reason to re-run `stage`
+    is that the title was empty when the episode was added, or the show metadata
+    or cover art has since changed — and reusing the file untouched would upload
+    an enclosure whose embedded tags still say `s2e001` with last month's cover,
+    with nothing to indicate it. Tagging is a few hundred milliseconds against a
+    re-encode's minutes, so the caller never has to reach for `--force-encode`
+    just to correct a title.
+    """
     sheet = build_publish_sheet(episode.run_path)
     mp3_path = _local_mp3(episode)
-    if mp3_path.is_file() and not force:
-        duration = encode_mod.verify_encode(sheet.audio_path, mp3_path)
-        return mp3_path.stat().st_size, int(round(duration))
     tags = encode_mod.Id3Tags(
         title=episode.title or f"s{episode.season}e{episode.episode:03d}",
         artist=show_title,
@@ -192,6 +199,14 @@ def _encode_one(episode: Episode, show_title: str, *, cover: Path | None, force:
         year=str(episode.publish_at_dt.year),
         cover_jpeg=cover,
     )
+    if mp3_path.is_file() and not force:
+        encode_mod.verify_encode(sheet.audio_path, mp3_path)
+        encode_mod.tag_mp3(mp3_path, tags)
+        # Re-verified after tagging, and the size read last, for the same reason
+        # `encode_and_tag` does both: an APIC frame changes the byte count that
+        # `<enclosure length>` has to state exactly.
+        duration = encode_mod.verify_encode(sheet.audio_path, mp3_path)
+        return mp3_path.stat().st_size, int(round(duration))
     return encode_mod.encode_and_tag(sheet.audio_path, mp3_path, tags)
 
 
@@ -401,12 +416,25 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def cmd_ship(args: argparse.Namespace) -> int:
-    """add → stage → release → sync for one run directory."""
-    cmd_add(args)
-    manifest = load_manifest(args.manifest)
-    episode = manifest.by_run_dir(_run_dir_arg(args.run_dir))
-    if episode is None:  # pragma: no cover — add() would have raised
-        raise CliError(f"{args.run_dir} is not in the manifest after add")
+    """add → stage → release → sync for one run directory.
+
+    `add` runs only for a run that is not registered yet. The four commands
+    exist separately so that a half-finished publish can be re-run, and `ship`
+    keeps that property only if it tolerates the work its own previous attempt
+    completed: an encode, an upload or a feed sync that fails leaves the episode
+    in the manifest, and a second `ship` that called `add` again would be
+    refused there — correctly, since a second GUID for one run publishes the
+    episode twice — without ever reaching the step that actually failed.
+    """
+    run_dir = _run_dir_arg(args.run_dir)
+    episode = load_manifest(args.manifest).by_run_dir(run_dir)
+    if episode is None:
+        cmd_add(args)
+        episode = load_manifest(args.manifest).by_run_dir(run_dir)
+        if episode is None:  # pragma: no cover — add() would have raised
+            raise CliError(f"{args.run_dir} is not in the manifest after add")
+    else:
+        print(f"already registered {episode.guid}  s{episode.season}e{episode.episode:03d} — reusing its GUID")
 
     args.guid = episode.guid
     args.all_draft = False

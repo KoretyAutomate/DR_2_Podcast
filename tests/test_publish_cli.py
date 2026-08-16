@@ -182,15 +182,45 @@ def test_stage_leaves_the_episode_a_draft(workspace):
     assert _manifest(workspace).episodes[0].state == "draft"
 
 
-def test_stage_is_idempotent_and_does_not_re_encode(workspace):
+def test_stage_is_idempotent_and_does_not_re_encode(workspace, monkeypatch):
     _run(workspace, "add", str(workspace["run_dir"]), "--episode", "1")
     _run(workspace, "stage", "--all-draft")
     first = _manifest(workspace).episodes[0]
-    mtime = (workspace["build"] / first.audio_key).stat().st_mtime_ns
+    monkeypatch.setattr(cli.encode_mod, "encode_mp3", _refuse_to_encode)
 
-    _run(workspace, "stage", first.guid)
-    assert (workspace["build"] / first.audio_key).stat().st_mtime_ns == mtime
+    assert _run(workspace, "stage", first.guid) == 0
     assert _manifest(workspace).episodes[0].bytes == first.bytes
+    assert _manifest(workspace).episodes[0].duration_seconds == first.duration_seconds
+
+
+def test_restaging_refreshes_the_tags_of_an_mp3_it_reuses(workspace, monkeypatch):
+    """The title is usually empty at `add` — a pipeline run carries none on disk.
+
+    So the normal sequence is stage, write the title into the manifest, stage
+    again. If the second stage returned the existing file untouched, the
+    enclosure every listener downloads would still be tagged `s2e001`, with no
+    error and nothing on screen to say so — and correcting it would mean knowing
+    to pass `--force-encode` and waiting out a full re-encode.
+    """
+    from mutagen.id3 import ID3
+
+    _run(workspace, "add", str(workspace["run_dir"]), "--episode", "1")
+    _run(workspace, "stage", "--all-draft")
+    mp3 = workspace["build"] / "audio/s2e001.mp3"
+    assert str(ID3(str(mp3))["TIT2"].text[0]) == "s2e001"
+
+    _fill_notes(workspace)
+    monkeypatch.setattr(cli.encode_mod, "encode_mp3", _refuse_to_encode)
+    assert _run(workspace, "stage", "--all-draft") == 0
+
+    assert str(ID3(str(mp3))["TIT2"].text[0]) == "第1回 テスト"
+    episode = _manifest(workspace).episodes[0]
+    assert episode.bytes == mp3.stat().st_size, "<enclosure length> must be the retagged size"
+    assert workspace["client"].objects[episode.audio_key] == mp3.read_bytes()
+
+
+def _refuse_to_encode(*args, **kwargs):
+    raise AssertionError("re-encoded an MP3 that was already in the build tree")
 
 
 def test_stage_can_run_without_credentials(workspace):
@@ -400,6 +430,64 @@ def test_check_has_nothing_to_say_about_an_unstaged_episode(workspace, capsys):
     _run(workspace, "add", str(workspace["run_dir"]), "--episode", "1")
     assert _run(workspace, "check") == 1
     assert "nothing staged" in capsys.readouterr().err
+
+
+# --- ship -----------------------------------------------------------------------
+
+
+def test_ship_finishes_on_the_second_pass_once_the_title_is_written(workspace, capsys):
+    """The ordinary path, not an edge case: a pipeline run carries no title on
+    disk, so the first `ship` gets as far as `release` and stops there. The human
+    then writes the title into the manifest and runs the same command again —
+    which is the whole point of `ship` being four re-runnable commands.
+    """
+    assert _run(workspace, "ship", str(workspace["run_dir"]), "--episode", "1") == 1
+    assert "title" in capsys.readouterr().err
+    staged = _manifest(workspace).episodes[0]
+    assert staged.is_staged and staged.state == "draft"
+
+    _fill_notes(workspace)
+    assert _run(workspace, "ship", str(workspace["run_dir"]), "--episode", "1") == 0
+
+    episodes = _manifest(workspace).episodes
+    assert len(episodes) == 1
+    assert episodes[0].guid == staged.guid
+    assert episodes[0].state == "published"
+
+
+def test_ship_resumes_a_run_it_already_registered(workspace, monkeypatch, capsys):
+    """`ship` is the four commands in sequence, and each of the four exists to be
+    re-runnable. If the encode, the upload or the feed sync fails, the episode is
+    already in the manifest — and a second `ship` that called `add` again would
+    be refused there, for minting a second GUID, before it ever reached the step
+    that actually failed. Nothing else re-runs the remaining three for you.
+    """
+    real_encode_and_tag = cli.encode_mod.encode_and_tag
+    attempts = {"n": 0}
+
+    def fails_the_first_time(*args, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise cli.encode_mod.EncodeError("interrupted part-way through the encode")
+        return real_encode_and_tag(*args, **kwargs)
+
+    monkeypatch.setattr(cli.encode_mod, "encode_and_tag", fails_the_first_time)
+
+    assert _run(workspace, "ship", str(workspace["run_dir"]), "--episode", "1") == 1
+    assert "interrupted part-way" in capsys.readouterr().err
+    first_guid = _manifest(workspace).episodes[0].guid
+    assert workspace["client"].objects == {}
+
+    _fill_notes(workspace)  # what a human does once the episode exists in the manifest
+    assert _run(workspace, "ship", str(workspace["run_dir"]), "--episode", "1") == 0
+    assert "already in the manifest" not in capsys.readouterr().err
+
+    episodes = _manifest(workspace).episodes
+    assert len(episodes) == 1
+    assert episodes[0].guid == first_guid, "a resumed ship must not mint a second GUID"
+    assert episodes[0].state == "published"
+    assert episodes[0].audio_key in workspace["client"].objects
+    assert cli.FEED_KEY in workspace["client"].objects
 
 
 # --- credentials ----------------------------------------------------------------
