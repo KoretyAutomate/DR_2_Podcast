@@ -524,3 +524,36 @@ def _fill_notes(workspace):
     manifest.episodes[0].title = "第1回 テスト"
     manifest.episodes[0].description = "<p>ショーノート</p>"
     save_manifest(manifest, workspace["manifest"])
+
+
+def test_ship_no_upload_needs_no_credentials(workspace, monkeypatch, capsys):
+    """Codex review 2026-08-16, verified: `--no-upload` advertises "encode
+    locally only; needs no credentials" and `stage` honoured it, but `ship` then
+    called `sync`, which reached for R2 unconditionally. The flag failed on
+    exactly the credentials it had promised not to need.
+
+    `_storage_for` raises here, which is what a machine without R2 configured
+    actually does — so this fails if anything on the path asks for storage.
+    """
+
+    def no_credentials(manifest):
+        raise StorageError("R2 credentials are not configured on this machine")
+
+    monkeypatch.setattr(cli, "_storage_for", no_credentials)
+
+    # first pass registers the run and stops at release for want of a title
+    assert _run(workspace, "ship", str(workspace["run_dir"]), "--episode", "1", "--no-upload") == 1
+    capsys.readouterr()
+    _fill_notes(workspace)
+
+    assert _run(workspace, "ship", str(workspace["run_dir"]), "--episode", "1", "--no-upload") == 0
+    assert "nothing is uploaded" in capsys.readouterr().err
+    assert workspace["client"].objects == {}
+
+
+def test_ship_without_no_upload_still_uploads(workspace):
+    """The guard above must not have quietly turned every ship into a dry run."""
+    assert _run(workspace, "ship", str(workspace["run_dir"]), "--episode", "1") == 1
+    _fill_notes(workspace)
+    assert _run(workspace, "ship", str(workspace["run_dir"]), "--episode", "1") == 0
+    assert workspace["client"].objects, "ship should have uploaded the audio and the feeds"
