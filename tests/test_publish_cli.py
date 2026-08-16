@@ -559,3 +559,42 @@ def test_ship_without_no_upload_still_uploads(workspace):
     _fill_notes(workspace)
     assert _run(workspace, "ship", str(workspace["run_dir"]), "--episode", "1") == 0
     assert workspace["client"].objects, "ship should have uploaded the audio and the feeds"
+
+
+def test_sync_records_minted_identities_before_it_uploads(workspace, monkeypatch, capsys):
+    """Codex review 2026-08-16, verified. podcast:guid and the preview token are
+    minted in memory at the top of sync, and the manifest used to be saved only
+    after BOTH feeds had uploaded. A public upload that succeeded followed by any
+    later failure lost them; the retry minted different ones and overwrote the
+    live public feed with a different podcast:guid — to a subscribed client, a
+    different show — while orphaning the first preview URL in the bucket.
+
+    Both values are permanent by design, which is precisely why they must not
+    live only inside a process that might not finish.
+    """
+    assert _run(workspace, "ship", str(workspace["run_dir"]), "--episode", "1") == 1
+    _fill_notes(workspace)
+
+    real_put = workspace["client"].put_object
+    calls = {"n": 0}
+
+    def fail_after_the_public_feed(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] > 2:  # audio, public feed, then die on the preview feed
+            raise RuntimeError("network died mid-sync")
+        return real_put(*a, **kw)
+
+    monkeypatch.setattr(workspace["client"], "put_object", fail_after_the_public_feed)
+    try:
+        assert _run(workspace, "ship", str(workspace["run_dir"]), "--episode", "1") != 0
+    except RuntimeError as exc:  # the CLI may let it through rather than translate it
+        assert "network died" in str(exc)
+
+    show = _manifest(workspace).show
+    assert show.podcast_guid or show.preview_token, "identities must survive the failure"
+    first = (show.preview_token, show.podcast_guid)
+
+    monkeypatch.setattr(workspace["client"], "put_object", real_put)
+    assert _run(workspace, "sync") == 0
+    after = _manifest(workspace).show
+    assert (after.preview_token, after.podcast_guid) == first, "a retry must not re-mint identity"

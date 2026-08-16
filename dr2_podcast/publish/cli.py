@@ -334,8 +334,10 @@ def _guard_enclosures(manifest: Manifest, storage: R2Storage, items: list[dict[s
 
 def cmd_sync(args: argparse.Namespace) -> int:
     manifest = load_manifest(args.manifest)
+    before = (manifest.show.preview_token, manifest.show.podcast_guid)
     manifest.ensure_preview_token()
     manifest.ensure_podcast_guid()
+    minted_identities = (manifest.show.preview_token, manifest.show.podcast_guid) != before
     now = _now()
 
     public = feed_mod.build_feed(manifest, preview=False, now=now)
@@ -357,6 +359,17 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
     storage = _storage_for(manifest)
     _guard_enclosures(manifest, storage, public_items + preview_items)
+
+    # Write the freshly minted identities down BEFORE the first upload. They
+    # were minted in memory above, and the manifest was not saved until after
+    # both feeds had gone up — so a public upload that succeeded followed by any
+    # later failure lost them. The retry would mint DIFFERENT ones and overwrite
+    # the live public feed with a different podcast:guid, which to a subscribed
+    # client is a different show, while orphaning the first preview URL in the
+    # bucket. These two values are permanent by design; that is exactly why they
+    # cannot be allowed to exist only in a process that might not finish.
+    if minted_identities:
+        save_manifest(manifest, args.manifest)
 
     live = storage.get_bytes(FEED_KEY)
     if live is not None and not args.allow_removal:
