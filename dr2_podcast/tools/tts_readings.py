@@ -22,7 +22,15 @@ import re
 
 import requests
 
-AIVISSPEECH_URL = "http://localhost:10101"
+from dr2_podcast.config import TTS_API_URL
+
+# Aliased to keep the existing call-site names; the single source of truth is
+# config.TTS_API_URL, exactly as audio/engine.py says of itself. This was a
+# second hardcoded "http://localhost:10101", so whenever TTS_API_URL pointed
+# anywhere else the reading check quietly interrogated a different engine than
+# the one that will speak the episode — and a check that reads the wrong engine
+# is worse than no check, because it reports clean.
+AIVISSPEECH_URL = TTS_API_URL
 
 # A line whose reading proves the engine is answering with real content. Used by
 # tts_reading_check.preflight() — a reachable engine that returns empty accent_phrases
