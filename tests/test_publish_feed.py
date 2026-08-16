@@ -222,9 +222,14 @@ def test_preview_and_public_share_guids():
 
     def guids(preview: bool) -> set[str]:
         channel = _channel(build_feed(manifest, preview=preview, now=NOW))
-        return {item.findtext("guid") for item in channel.findall("item")}
+        return {item.findtext("guid", "") for item in channel.findall("item")}
 
-    assert guids(preview=True) == guids(preview=False)
+    preview_guids = guids(preview=True)
+    # The empty-string default is what `findtext` returns for a missing <guid>.
+    # Asserting it away first stops "both feeds are equally broken" reading as a pass.
+    assert "" not in preview_guids
+    assert len(preview_guids) == 2
+    assert preview_guids == guids(preview=False)
 
 
 # --- the checks that run before an upload -------------------------------------

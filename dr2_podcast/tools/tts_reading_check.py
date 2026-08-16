@@ -4,12 +4,8 @@ Extracts what AivisSpeech will ACTUALLY say for each line, without synthesizing 
 and flags lines where an independent G2P disagrees. Replaces "render 20 minutes and
 listen to find one misreading".
 
-Layer 0  engine reading   — POST /audio_query, read accent_phrases[].moras[].text.
-                            This is the synthesis design, not an ASR guess: what the
-                            engine returns here IS what it will pronounce.
-Layer 1  pyopenjtalk      — independent G2P over the same line. Shared OpenJTalk lineage
-                            means AGREEMENT proves nothing, but DISAGREEMENT is a strong
-                            signal, so it is used only to rank candidates for Layer 2.
+Layer 0 (the engine's own reading) and Layer 1 (pyopenjtalk's independent G2P) are
+obtained in `tts_readings`; this module decides what a disagreement between them means.
 
 Runs on the post-glossary text (clean_script_for_tts output) because that is what is
 actually sent to the engine, AT THE VOICE THAT WILL SPEAK EACH LINE (see resolve_voices).
@@ -46,21 +42,19 @@ from dr2_podcast.audio.engine import (
     clean_script_for_tts,
 )
 from dr2_podcast.config import TTS_RANDOM_VOICE
-
-AIVISSPEECH_URL = "http://localhost:10101"
-
-# Fallback voice only. NOT the voice a check runs at: resolve_voices() derives that from
-# the same config + seed the renderer uses. Kept because `--speaker` (force one voice) and
-# older callers still name it.
-DEFAULT_SPEAKER = 1937616896
+from dr2_podcast.tools.tts_readings import (
+    AIVISSPEECH_URL,
+    PROBE_LINE,
+    EngineUnavailable,
+    _norm,
+    boundary_conflicts,
+    engine_phrases,
+    openjtalk_phrases,
+    openjtalk_reading,
+)
 
 # engine.py:_generate_audio_aivisspeech routes unlabelled leading prose to Speaker 2.
 CHANNEL_INTRO_SPEAKER = 2
-
-# A line whose reading proves the engine is answering with real content. Used by
-# preflight() — a reachable engine that returns empty accent_phrases would otherwise
-# make every line look clean.
-PROBE_LINE = "読み上げの確認です。"
 
 # Confirmed misreading families (memory 64e977ae + listening rounds).
 #
@@ -104,67 +98,14 @@ SPEAKER_RE = re.compile(r"^(Speaker\s*(\d+))\s*[:：]\s*(.*)", re.IGNORECASE)
 # line is not a marker there — it is appended to the open turn and spoken.
 MARKER_RE = re.compile(r"^\[[A-Z_]+\]$")
 
-_KATA = re.compile(r"[^゠-ヿ]")
-
-# vowel each katakana mora ends on, for expanding the ー long-vowel mark
-_VOWEL = {}
-for _row, _v in (
-    ("アカサタナハマヤラワガザダバパャァ", "ア"),
-    ("イキシチニヒミリギジヂビピィ", "イ"),
-    ("ウクスツヌフムユルグズヅブプュゥヴ", "ウ"),
-    ("エケセテネヘメレゲゼデベペェ", "エ"),
-    ("オコソトノホモヨロヲゴゾドボポョォ", "オ"),
-):
-    for _c in _row:
-        _VOWEL[_c] = _v
-
-
-class EngineUnavailable(RuntimeError):
-    """The engine could not be reached, or answered with nothing.
-
-    Raised rather than returned so a check CANNOT report "clean" when it never read
-    anything: an unreachable engine used to produce zero HIGH findings and exit 0.
-    """
-
-
-class VoiceResolutionError(RuntimeError):
-    """The configured voice IDs are not usable for this engine."""
-
-
-def _norm(kana: str) -> str:
-    """Normalise a katakana reading so the two G2P sources are comparable.
-
-    They disagree on spelling, not pronunciation: pyopenjtalk writes ヨーコソ where
-    the engine writes ヨオコソ, and uses ヲ where the engine uses オ. Without this,
-    every single line reads as a disagreement and Layer 1 is useless as a ranker.
-    """
-    s = _KATA.sub("", kana or "")
-    out: list[str] = []
-    for ch in s:
-        prev_vowel = _VOWEL.get(out[-1]) if out else None
-        if ch == "ー" and out:
-            # long-vowel mark -> repeat the preceding vowel
-            out.append(prev_vowel or "")
-        elif ch == "ウ" and prev_vowel == "オ":
-            # o-row + ウ IS a long o in Japanese: ホウホウ ≡ ホオホオ, ヨウ ≡ ヨオ, コウ ≡ コオ.
-            # Handling this as the literal pair "オウ" (as this function first did) misses
-            # every case where the o-vowel comes from a consonant mora, which is most of them
-            # and was the single largest source of false MISREADs on 2026-07-28.
-            out.append("オ")
-        elif ch == "イ" and prev_vowel == "エ":
-            # likewise e-row + イ is a long e: エイヨウ ≡ エエヨオ, ケイケン ≡ ケエケン
-            out.append("エ")
-        else:
-            out.append(ch)
-    s = "".join(out)
-    for a, b in (("ヲ", "オ"), ("ヅ", "ズ"), ("ヂ", "ジ"), ("ヱ", "エ"), ("ヰ", "イ"), ("・", ""), ("゠", "")):
-        s = s.replace(a, b)
-    return s
-
 
 # ---------------------------------------------------------------------------
 # Which voice actually speaks a line
 # ---------------------------------------------------------------------------
+
+
+class VoiceResolutionError(RuntimeError):
+    """The configured voice IDs are not usable for this engine."""
 
 
 @dataclass(frozen=True)
@@ -175,10 +116,34 @@ class VoiceAssignment:
     speaker2: int
     swapped: bool
     random_voice: bool
+    #: Set only by `--speaker`, which overrides both. Kept so the report can say the
+    #: check ran at a forced voice rather than at the one the renderer would use.
+    forced: int | None = None
 
     def for_speaker(self, speaker: int) -> int:
         """engine.py:_AivisTimeline.flush_turn — host1 for Speaker 1, host2 otherwise."""
         return self.speaker1 if speaker == 1 else self.speaker2
+
+    @classmethod
+    def forced_to(cls, voice: int) -> VoiceAssignment:
+        """`--speaker N`: every line is checked at N, nothing is resolved.
+
+        A forced voice is still an assignment, so it is one — the alternative,
+        carrying `VoiceAssignment | None` and reading the forced voice out of a
+        second variable, is two representations of one decision and made
+        `voice_of` unable to state that it returns an int.
+        """
+        return cls(speaker1=voice, speaker2=voice, swapped=False, random_voice=False, forced=voice)
+
+    def as_report(self) -> dict:
+        if self.forced is not None:
+            return {"forced": self.forced}
+        return {
+            "speaker1": self.speaker1,
+            "speaker2": self.speaker2,
+            "swapped": self.swapped,
+            "random_voice": self.random_voice,
+        }
 
 
 def resolve_voices(cleaned_script: str) -> VoiceAssignment:
@@ -302,91 +267,6 @@ def changed_turns(previous: str, current: str) -> list[tuple[int, Turn]]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Layer 0 / Layer 1 readings
-# ---------------------------------------------------------------------------
-
-
-def engine_phrases(text: str, speaker: int, session: requests.Session) -> list[str]:
-    """The engine's reading, split at the accent-phrase boundaries it will speak.
-
-    The boundaries are the point: 「その大きさ自体が」 comes back as オオキ / サジタイガ,
-    which is inaudible in the concatenated string and obvious here.
-    """
-    r = session.post(
-        f"{AIVISSPEECH_URL}/audio_query",
-        params={"text": text, "speaker": speaker},
-        timeout=30,
-    )
-    r.raise_for_status()
-    data = r.json()
-    return ["".join(m["text"] for m in ap["moras"]) for ap in data["accent_phrases"]]
-
-
-def engine_reading(text: str, speaker: int, session: requests.Session) -> str:
-    return "".join(engine_phrases(text, speaker, session))
-
-
-def openjtalk_reading(text: str) -> str | None:
-    try:
-        import pyopenjtalk
-
-        return pyopenjtalk.g2p(text, kana=True)
-    except Exception:
-        return None
-
-
-def openjtalk_phrases(text: str) -> list[str] | None:
-    """pyopenjtalk's own accent-phrase segmentation of the same line.
-
-    NJD's chain_flag is what VOICEVOX-lineage engines build accent phrases from: 0 (or -1
-    at the start) opens a phrase, 1 attaches the word to the one before. `pron` rather than
-    `read` because pron carries the particle readings (は→ワ, を→オ) the engine also speaks.
-    """
-    try:
-        import pyopenjtalk
-
-        out: list[str] = []
-        for w in pyopenjtalk.run_frontend(text):
-            if not isinstance(w, dict) or not w.get("mora_size"):
-                continue
-            if w.get("chain_flag", 0) == 1 and out:
-                out[-1] += w["pron"]
-            else:
-                out.append(w["pron"])
-        return out or None
-    except Exception:
-        return None
-
-
-def boundary_conflicts(eng: list[str], ojt: list[str] | None) -> list[str]:
-    """Accent-phrase boundaries the ENGINE places that pyopenjtalk does not.
-
-    One-directional on purpose. Measured over the 95 comparable lines of Ep014's script:
-    a plain "do the segmentations differ" test fires on 83 of them, because pyopenjtalk
-    habitually splits finer than the engine (ドンナ|ケンキューガ|コノ|ブンヤニワ vs the
-    engine's ...|コノブンヤニワ) — that is granularity, not a misreading. The engine
-    OPENING a phrase inside a word pyopenjtalk keeps whole is the rare case, 13 of 95, and
-    it is exactly what 大きさ自体 -> オオキ / サジタイガ looks like.
-
-    Comparable only when the two flat readings already agree; otherwise the mora offsets
-    address different strings. Returns one "…before/after…" context string per conflict.
-    """
-    if not ojt:
-        return []
-    flat_e, flat_o = _norm("".join(eng)), _norm("".join(ojt))
-    if flat_e != flat_o:
-        return []
-
-    def interior_offsets(phrases: list[str]) -> set[int]:
-        # Normalise the PREFIX rather than summing per-phrase lengths: _norm is left-to-
-        # right and context-dependent (a phrase opening on ー has no preceding mora of its
-        # own), so per-phrase lengths need not add up to the length of the normalised whole.
-        return {len(_norm("".join(phrases[: k + 1]))) for k in range(len(phrases) - 1)}
-
-    extra = sorted(interior_offsets(eng) - interior_offsets(ojt))
-    return [f"…{flat_e[max(0, x - 6):x]}/{flat_e[x:x + 6]}…" for x in extra]
-
 
 # ---------------------------------------------------------------------------
 # Checking
@@ -412,11 +292,14 @@ def check_line(
                    the reading of everything that changed — that is how the 2026-08-13
                    misreadings were caught, none of which any rule in this module predicts.
     """
+    # One /audio_query per line either way — the flat reading is the phrases joined,
+    # so `segmentation` only decides whether the boundaries are USED, never whether
+    # they are fetched.
     try:
-        phrases = engine_phrases(text, speaker, session) if segmentation else None
-        eng = "".join(phrases) if phrases is not None else engine_reading(text, speaker, session)
+        phrases = engine_phrases(text, speaker, session)
     except Exception as exc:  # engine down / bad line — surface, do not swallow
         return {"line": text, "reason": "engine_error", "priority": "ERROR", "detail": str(exc)[:120]}
+    eng = "".join(phrases)
 
     # a line with visible content but no reading is SILENT in the audio (the △△ bug)
     if text.strip() and not eng.strip():
@@ -440,7 +323,7 @@ def check_line(
     # and a human reading the kana is not blinded by them.)
     ojt = None if re.search(r"[A-Za-z]", text) else openjtalk_reading(text)
     disagree = bool(ojt) and _norm(ojt) != _norm(eng)
-    conflicts = boundary_conflicts(phrases, openjtalk_phrases(text)) if (phrases and ojt is not None) else []
+    conflicts = boundary_conflicts(phrases, openjtalk_phrases(text)) if (segmentation and ojt is not None) else []
 
     if not (hazards or disagree or conflicts or always_report):
         return None
@@ -461,7 +344,7 @@ def check_line(
         "hazards": hazards,
         "priority": priority,
     }
-    if phrases is not None:
+    if segmentation:
         finding["engine_reading_segmented"] = " | ".join(phrases)
     if conflicts:
         finding["boundary_conflicts"] = conflicts
@@ -507,10 +390,10 @@ def check_script(
     cleaned = clean_script_for_tts(raw)  # exactly what gets sent to the engine
     turns = spoken_turns(cleaned)
 
-    voices = None if speaker is not None else resolve_voices(cleaned)
+    voices = VoiceAssignment.forced_to(speaker) if speaker is not None else resolve_voices(cleaned)
 
     def voice_of(turn: Turn) -> int:
-        return speaker if voices is None else voices.for_speaker(turn.speaker)
+        return voices.for_speaker(turn.speaker)
 
     if baseline is not None:
         selected = changed_turns(clean_script_for_tts(baseline.read_text(encoding="utf-8")), cleaned)
@@ -522,7 +405,7 @@ def check_script(
         elevate = baseline is not None
 
     session = session or requests.Session()
-    preflight(session, voice_of(turns[0]) if turns else (speaker or DEFAULT_SPEAKER))
+    preflight(session, voice_of(turns[0]) if turns else voices.for_speaker(1))
 
     findings = []
     for idx, turn in selected:
@@ -547,16 +430,7 @@ def check_script(
         "script": str(path),
         "baseline": str(baseline) if baseline else None,
         "mode": "changed" if baseline else "full",
-        "voices": (
-            {"forced": speaker}
-            if voices is None
-            else {
-                "speaker1": voices.speaker1,
-                "speaker2": voices.speaker2,
-                "swapped": voices.swapped,
-                "random_voice": voices.random_voice,
-            }
-        ),
+        "voices": voices.as_report(),
         "lines_total": len(turns),
         "lines_checked": len(selected),
         "findings": findings,

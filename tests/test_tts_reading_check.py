@@ -106,7 +106,7 @@ class TestHazardGating:
         """怖さ/壊さ legitimately read コワサ — flagging on the reading alone is the bug."""
         import dr2_podcast.tools.tts_reading_check as mod
 
-        monkeypatch.setattr(mod, "engine_reading", lambda t, s, sess: "コワサ")
+        monkeypatch.setattr(mod, "engine_phrases", lambda t, s, sess: ["コワサ"])
         monkeypatch.setattr(mod, "openjtalk_reading", lambda t: "コワサ")
         # source has no 強さ -> not a hazard
         assert check_line("怖さ", 1, None) is None
@@ -118,7 +118,7 @@ class TestHazardGating:
         """A line that produces no audio is silent content loss — worse than a misreading."""
         import dr2_podcast.tools.tts_reading_check as mod
 
-        monkeypatch.setattr(mod, "engine_reading", lambda t, s, sess: "")
+        monkeypatch.setattr(mod, "engine_phrases", lambda t, s, sess: [])
         f = check_line("△△", 1, None)
         assert f and f["reason"] == "empty_reading"
 

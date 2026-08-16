@@ -28,8 +28,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -194,12 +194,19 @@ def check_byte_range(url: str, *, timeout: float = 20.0) -> tuple[int, str]:
     Apple's validation checks byte-range support and every podcast app uses it to
     seek, so a 200 here — the whole file, range ignored — means scrubbing is
     broken for every listener even though playback from the start works.
+
+    httpx rather than `urllib.request.urlopen`, for two reasons that both bite
+    here. The URL is assembled from `show.base_url`, which is configuration, and
+    urlopen serves whatever scheme it is handed — a `file:` base_url would read
+    the local disk and report a healthy 200. httpx speaks HTTP and HTTPS only,
+    so a wrong scheme is a transport error instead. And the response is streamed
+    rather than read, so a server that IGNORES the range — the exact failure
+    this function exists to catch — does not drag the whole MP3 down to say so.
     """
-    request = Request(url, method="GET", headers={"Range": "bytes=0-1023"})
     try:
-        with urlopen(request, timeout=timeout) as response:
-            return response.status, response.headers.get("Content-Range", "")
-    except HTTPError as exc:
-        return exc.code, exc.headers.get("Content-Range", "") if exc.headers else ""
-    except URLError as exc:
+        with httpx.stream(
+            "GET", url, headers={"Range": "bytes=0-1023"}, timeout=timeout, follow_redirects=True
+        ) as response:
+            return response.status_code, response.headers.get("Content-Range", "")
+    except httpx.HTTPError as exc:
         raise StorageError(f"could not fetch {url}: {exc}") from exc

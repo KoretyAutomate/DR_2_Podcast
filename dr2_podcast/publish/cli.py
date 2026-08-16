@@ -11,6 +11,7 @@ pieces are known to work, and is nothing more than the four in sequence.
                         encode → tag → upload; write back real bytes/duration
     release <guid>      flip state to published
     sync                rebuild feed.xml + the preview feed and upload both
+    check [guid]        ask the live URLs whether they serve byte ranges
     ship <run_dir>      the four above, in order
 
 Everything up to `stage` runs without credentials, so the whole thing can be
@@ -45,6 +46,7 @@ from dr2_podcast.publish.storage import (
     CONTENT_TYPE_RSS,
     R2Storage,
     StorageError,
+    check_byte_range,
 )
 from dr2_podcast.tools.publish_sheet import BLANK, UNREADABLE, PublishSheetError, build_publish_sheet
 
@@ -265,9 +267,23 @@ def _storage_for(manifest: Manifest) -> R2Storage:
 
 
 def _guard_enclosures(manifest: Manifest, storage: R2Storage, items: list[dict[str, str]]) -> None:
-    """Every enclosure must already exist in the bucket, at the stated size."""
+    """Every enclosure must already exist in the bucket, at the stated size.
+
+    Called with the items of BOTH feeds, not just the public one. `stage
+    --no-upload` writes real bytes and duration back into the manifest without
+    uploading anything, and that alone is enough to put an episode in the
+    preview feed — so guarding only the public feed ships a private feed whose
+    entire promise, that a draft is listenable before release, is a 404.
+
+    The two feeds share GUIDs and share each episode's recorded `bytes`, so a
+    GUID seen twice is one object and is checked once.
+    """
     by_guid = {ep.guid: ep for ep in manifest.episodes}
+    seen: set[str] = set()
     for item in items:
+        if item["guid"] in seen:
+            continue
+        seen.add(item["guid"])
         episode = by_guid[item["guid"]]
         actual = storage.object_size(episode.audio_key)
         if actual is None:
@@ -306,7 +322,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         return 0
 
     storage = _storage_for(manifest)
-    _guard_enclosures(manifest, storage, public_items)
+    _guard_enclosures(manifest, storage, public_items + preview_items)
 
     live = storage.get_bytes(FEED_KEY)
     if live is not None and not args.allow_removal:
@@ -322,6 +338,41 @@ def cmd_sync(args: argparse.Namespace) -> int:
     print(f"synced: {len(public_items)} public, {len(preview_items)} preview")
     print(f"  public  {manifest.show.feed_url}")
     print(f"  preview {manifest.show.preview_url}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# check
+# ---------------------------------------------------------------------------
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    """Ask the live URLs for their first kilobyte and report what came back.
+
+    Byte-range support is a property of the deployment — the custom domain in
+    front of the bucket — not of anything in this repository, so it can only be
+    established by asking. A 200 means the range was ignored: playback from the
+    start works, nobody can scrub, and Apple's validation fails at submission.
+    """
+    manifest = load_manifest(args.manifest)
+    targets = [manifest.by_guid(args.guid)] if args.guid else manifest.staged()
+    if not targets:
+        raise CliError("nothing staged to check — run `stage` first")
+
+    failed = []
+    for episode in targets:
+        url = episode.enclosure_url(manifest.show)
+        status, content_range = check_byte_range(url, timeout=args.timeout)
+        ok = status == 206 and content_range.startswith("bytes ")
+        if not ok:
+            failed.append(episode.audio_key)
+        print(f"{'ok  ' if ok else 'FAIL'} {status} {content_range or '(no Content-Range)'}  {url}")
+
+    if failed:
+        raise CliError(
+            f"{len(failed)} enclosure(s) answered a range request without a 206: {', '.join(failed)}. "
+            "Seeking is broken for every listener and Apple's validation will refuse the feed."
+        )
     return 0
 
 
@@ -384,6 +435,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--dry-run", action="store_true", help="print the public feed; upload nothing")
     sync.add_argument("--allow-removal", action="store_true", help="permit dropping an episode already in the feed")
     sync.set_defaults(func=cmd_sync)
+
+    check = subparsers.add_parser("check", help="prove the live URLs answer byte-range requests")
+    check.add_argument("guid", nargs="?", default=None, help="one episode; default every staged one")
+    check.add_argument("--timeout", type=float, default=20.0)
+    check.set_defaults(func=cmd_check)
 
     ship = subparsers.add_parser("ship", help="add + stage + release + sync for one run")
     ship.add_argument("run_dir")

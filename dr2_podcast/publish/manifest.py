@@ -293,11 +293,11 @@ class Manifest:
         under a second GUID would put the same audio in the feed twice, and a
         re-render that re-ran `add` would do exactly that.
         """
-        if self.by_run_dir(episode.run_dir) is not None:
+        already = self.by_run_dir(episode.run_dir)
+        if already is not None:
             raise ManifestError(
-                f"{episode.run_dir} is already in the manifest (guid "
-                f"{self.by_run_dir(episode.run_dir).guid}). Refusing to mint a second GUID for it — "  # type: ignore[union-attr]
-                "that would publish the same episode twice."
+                f"{episode.run_dir} is already in the manifest (guid {already.guid}). "
+                "Refusing to mint a second GUID for it — that would publish the same episode twice."
             )
         for existing in self.episodes:
             if existing.guid == episode.guid:

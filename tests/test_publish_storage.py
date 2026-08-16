@@ -13,6 +13,7 @@ import io
 
 import pytest
 
+from dr2_podcast.publish import storage as storage_mod
 from dr2_podcast.publish.storage import (
     CONTENT_TYPE_JPEG,
     CONTENT_TYPE_MP3,
@@ -20,6 +21,7 @@ from dr2_podcast.publish.storage import (
     R2Config,
     R2Storage,
     StorageError,
+    check_byte_range,
 )
 
 ENV = {
@@ -36,6 +38,7 @@ class FakeClient:
     def __init__(self, objects: dict[str, bytes] | None = None):
         self.objects = dict(objects or {})
         self.puts: list[dict] = []
+        self.heads: list[str] = []
 
     def head_bucket(self, Bucket):
         return {}
@@ -46,6 +49,7 @@ class FakeClient:
         self.puts.append({"key": Key, "content_type": ContentType, "size": len(payload)})
 
     def head_object(self, Bucket, Key):
+        self.heads.append(Key)
         if Key not in self.objects:
             raise _not_found()
         return {"ContentLength": len(self.objects[Key])}
@@ -152,3 +156,62 @@ def test_the_first_publish_has_nothing_to_keep_and_that_is_not_an_error():
     storage, client = _storage()
     storage.copy("feed.xml", "feed.xml.prev")
     assert "feed.xml.prev" not in client.objects
+
+
+# --- byte-range probe ---------------------------------------------------------
+
+
+class _FakeStream:
+    """What `httpx.stream(...)` yields: a response whose body is never read."""
+
+    def __init__(self, status_code: int, headers: dict[str, str]):
+        self.status_code = status_code
+        self.headers = headers
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_a_206_with_a_content_range_is_what_a_seekable_enclosure_looks_like(monkeypatch):
+    monkeypatch.setattr(
+        storage_mod.httpx,
+        "stream",
+        lambda *a, **k: _FakeStream(206, {"Content-Range": "bytes 0-1023/5000000"}),
+    )
+    assert check_byte_range("https://media.example/audio/a.mp3") == (206, "bytes 0-1023/5000000")
+
+
+def test_a_200_reports_itself_rather_than_raising():
+    """A server that ignores the range answers 200 with the whole file. That is a
+    finding to report, not a transport failure — the caller decides what it means."""
+    seen = {}
+
+    def fake_stream(method, url, **kwargs):
+        seen.update(kwargs)
+        return _FakeStream(200, {})
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(storage_mod.httpx, "stream", fake_stream)
+        assert check_byte_range("https://media.example/audio/a.mp3") == (200, "")
+    assert seen["headers"] == {"Range": "bytes=0-1023"}
+
+
+def test_a_non_http_url_cannot_read_the_local_disk(tmp_path):
+    """`show.base_url` is configuration. urlopen would serve a `file:` one and
+    report a healthy read of the local filesystem; httpx refuses the scheme."""
+    local = tmp_path / "secret.mp3"
+    local.write_bytes(b"not an enclosure")
+    with pytest.raises(StorageError, match="could not fetch"):
+        check_byte_range(local.as_uri())
+
+
+def test_an_unreachable_host_surfaces_as_a_storage_error(monkeypatch):
+    def boom(*a, **k):
+        raise storage_mod.httpx.ConnectError("no route to host")
+
+    monkeypatch.setattr(storage_mod.httpx, "stream", boom)
+    with pytest.raises(StorageError, match="could not fetch"):
+        check_byte_range("https://media.example/audio/a.mp3")

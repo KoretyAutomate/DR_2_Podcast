@@ -255,6 +255,34 @@ def test_sync_refuses_when_the_enclosure_is_not_in_the_bucket(workspace, capsys)
     assert "not in the bucket" in capsys.readouterr().err
 
 
+def test_sync_refuses_a_preview_enclosure_that_was_never_uploaded(workspace, capsys):
+    """`stage --no-upload` is a local-only operation, but it still writes real
+    bytes and duration back into the manifest — which is all it takes for the
+    draft to appear in the preview feed. Uploading that feed would hand out a
+    private URL whose one episode 404s, and the public feed is empty here, so
+    guarding only the public items catches nothing.
+    """
+    _run(workspace, "add", str(workspace["run_dir"]), "--episode", "1")
+    _run(workspace, "stage", "--all-draft", "--no-upload")
+
+    assert _run(workspace, "sync") == 1
+    assert "not in the bucket" in capsys.readouterr().err
+    assert workspace["client"].objects == {}, "no feed may be uploaded once a guard has failed"
+
+
+def test_sync_checks_an_episode_in_both_feeds_only_once(workspace):
+    """A released episode is in the public feed AND the preview feed, at the same
+    size. Guarding both must not double the HEAD requests against the bucket."""
+    _run(workspace, "add", str(workspace["run_dir"]), "--episode", "1")
+    _run(workspace, "stage", "--all-draft")
+    _fill_notes(workspace)
+    _run(workspace, "release", _manifest(workspace).episodes[0].guid)
+    workspace["client"].heads.clear()
+
+    assert _run(workspace, "sync") == 0
+    assert workspace["client"].heads.count("audio/s2e001.mp3") == 1
+
+
 def test_sync_refuses_when_the_bucket_object_is_a_different_size(workspace, capsys):
     _run(workspace, "add", str(workspace["run_dir"]), "--episode", "1")
     _run(workspace, "stage", "--all-draft")
@@ -306,6 +334,42 @@ def test_sync_mints_the_preview_token_and_show_guid_exactly_once(workspace):
     second = _manifest(workspace).show
     assert (second.preview_token, second.podcast_guid) == (first.preview_token, first.podcast_guid)
     assert second.podcast_guid, "a real base_url should have produced a show guid"
+
+
+# --- check --------------------------------------------------------------------
+
+
+def test_check_passes_when_the_live_url_answers_a_range_request(workspace, monkeypatch, capsys):
+    _run(workspace, "add", str(workspace["run_dir"]), "--episode", "1")
+    _run(workspace, "stage", "--all-draft")
+    asked = []
+
+    def fake_probe(url, *, timeout):
+        asked.append(url)
+        return 206, "bytes 0-1023/900000"
+
+    monkeypatch.setattr(cli, "check_byte_range", fake_probe)
+    capsys.readouterr()
+    assert _run(workspace, "check") == 0
+    assert asked == ["https://media.test.example/audio/s2e001.mp3"]
+    assert "ok" in capsys.readouterr().out
+
+
+def test_check_fails_when_the_range_is_ignored(workspace, monkeypatch, capsys):
+    """A 200 means the whole file came back: playback works, seeking does not,
+    and Apple's validation refuses the feed. Silence here would hide all three."""
+    _run(workspace, "add", str(workspace["run_dir"]), "--episode", "1")
+    _run(workspace, "stage", "--all-draft")
+    monkeypatch.setattr(cli, "check_byte_range", lambda url, *, timeout: (200, ""))
+
+    assert _run(workspace, "check") == 1
+    assert "Seeking is broken" in capsys.readouterr().err
+
+
+def test_check_has_nothing_to_say_about_an_unstaged_episode(workspace, capsys):
+    _run(workspace, "add", str(workspace["run_dir"]), "--episode", "1")
+    assert _run(workspace, "check") == 1
+    assert "nothing staged" in capsys.readouterr().err
 
 
 def _fill_notes(workspace):

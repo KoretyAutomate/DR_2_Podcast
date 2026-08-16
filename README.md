@@ -470,6 +470,7 @@ python -m dr2_podcast.publish add <run_dir> [--season N] [--episode N]  # regist
 python -m dr2_podcast.publish stage --all-draft [--no-upload]           # encode → tag → upload
 python -m dr2_podcast.publish release <guid>                            # mark published
 python -m dr2_podcast.publish sync [--dry-run]                          # rebuild and upload both feeds
+python -m dr2_podcast.publish check [guid]                              # do the live URLs serve byte ranges?
 python -m dr2_podcast.publish ship <run_dir>                            # the four above, in order
 ```
 
@@ -478,6 +479,10 @@ python -m dr2_podcast.publish ship <run_dir>                            # the fo
 Audio is 128 kbps mono MP3 encoded with PyAV (there is no `ffmpeg` on this machine), tagged with mutagen, and uploaded with boto3. The feed is built by hand with `xml.etree.ElementTree`.
 
 **The preview feed.** `stage` uploads before `release` publishes, so a finished episode sits at a public URL while it is still a draft. Every `sync` therefore writes two documents: `feed.xml`, carrying only what is published and due, and `preview-<token>.xml` at an unguessable URL, carrying everything staged — drafts included. Subscribing to the second in a podcast app is how an episode gets listened to on a phone before anyone else can see it. The preview is marked `<itunes:block>Yes</itunes:block>` and both its channel and item titles are visibly flagged, so there is never a question about which feed is playing.
+
+Both feeds' enclosures are checked against the bucket before either is uploaded, not just the public one: `stage --no-upload` writes real bytes and duration into the manifest without uploading anything, which is enough to list the draft in the preview feed, and a preview feed whose one episode 404s is a preview feed that has lost its only purpose.
+
+`check` is separate from that because byte-range support is a property of the deployment — the custom domain in front of the bucket — rather than of anything in this repository, so it can only be established by asking the live URL. A 200 instead of a 206 means playback from the start works, nobody can scrub, and Apple's validation refuses the feed at submission.
 
 Set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` in `.env` (see `.env.example`) to enable the uploads. Everything before the upload — `add`, `artwork`, `stage --no-upload`, `sync --dry-run` — runs without them.
 
@@ -550,13 +555,15 @@ dr2_podcast/                          # Main package
 │   ├── artwork.py                    # Show cover, sized and compressed to Apple's spec
 │   ├── storage.py                    # R2 uploads over boto3; byte-range check
 │   ├── feed.py                       # manifest → RSS XML, public and private preview
-│   └── cli.py                        # add / artwork / stage / release / sync / ship
+│   └── cli.py                        # add / artwork / stage / release / sync / check / ship
 ├── web/
 │   └── web_ui.py                     # FastAPI web UI (progress tracking, queue)
 └── tools/
     ├── link_validator.py              # URL validation via HEAD requests
+    ├── tts_readings.py                # What each G2P source says a line is pronounced as
+    ├── tts_reading_check.py           # TTS misreading detector over those readings
     └── publish_sheet.py               # Per-episode publish sheet (human-facing crib)
-tests/                                # Test suite (1749 tests)
+tests/                                # Test suite (1766 tests)
 ```
 
 | Support Files | Purpose |
