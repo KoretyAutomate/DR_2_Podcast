@@ -195,7 +195,8 @@ def _load_search_agent():
     if str(SEARCH_AGENT_DIR) not in sys.path:
         sys.path.insert(0, str(SEARCH_AGENT_DIR))
     try:
-        import search_agent  # noqa: PLC0415 — deliberately late, path set above
+        # imported late on purpose: sys.path is only correct from here on
+        import search_agent
     except ImportError as exc:  # pragma: no cover — env problem, not logic
         raise EvidenceSearchError(f"could not import search_agent: {exc}") from exc
     return search_agent
@@ -222,7 +223,8 @@ async def _gather(
                     query=query, num_results=opts.num_results,
                     language=opts.language, engines=engines,
                 )
-            except Exception as exc:  # noqa: BLE001 — one bad query must not lose the others
+            # broad on purpose: one engine refusing must not lose the other queries
+            except Exception as exc:
                 errors.append(f"search failed for {query!r}: {exc}")
                 continue
             for hit in hits:

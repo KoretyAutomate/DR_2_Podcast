@@ -30,6 +30,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 from dr2_podcast.approval import APPROVAL_ARTIFACT, require_approval
 from dr2_podcast.artifacts import clear_candidates, read_json_strict, write_json_atomic
 from dr2_podcast.manifest import Manifest, config_fingerprint
@@ -424,6 +426,15 @@ def _print_status(run_dir: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The repository .env is this project's configuration source of truth, and an
+    # entry point has to establish it rather than inherit it. Today it arrives
+    # only as a side effect of the first `dr2_podcast.config` import, which the
+    # adapters do lazily — so what is loaded, and whether anything read the
+    # environment before it was, depends on import order. `python -m
+    # dr2_podcast.stage` alone leaves MODEL_NAME unset (verified 2026-08-16);
+    # pipeline.py calls this explicitly in __main__ for the same reason.
+    load_dotenv()
+
     args = build_parser().parse_args(argv)
     run_dir: Path = args.run
     if not run_dir.is_dir():
