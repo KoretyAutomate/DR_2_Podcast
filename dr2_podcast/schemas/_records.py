@@ -180,3 +180,34 @@ def step_pack_errors(pack: dict[str, Any], artifacts: dict[str, str]) -> list[st
 def validate_step_pack(pack: dict[str, Any], artifacts: dict[str, str]) -> None:
     """Fail closed on a step pack."""
     _raise("step_pack", step_pack_errors(pack, artifacts))
+
+
+def _freeze_time_errors(record: dict[str, Any]) -> list[str]:
+    """`frozen_at` must name a real instant, not merely digits in the right places.
+
+    The pattern accepts 2026-99-99 and 2026-02-31 — layout is not a date (prepush codex 2026-08-17).
+    Parsed here instead, because "written before the search" is the one property this artifact has
+    and a value nothing can order against the run is no evidence of it.
+    """
+    from datetime import datetime
+
+    stamp = record.get("frozen_at", "")
+    try:
+        datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return [f"/frozen_at: {stamp!r} is not a real date or time"]
+    return []
+
+
+def framing_prior_errors(record: dict[str, Any]) -> list[str]:
+    """Shape only. The prior is a JUDGEMENT — nothing can check it against the literature, and
+    checking it against THIS run's literature would defeat the point of freezing it beforehand.
+    What is checkable is that every component states its basis."""
+    errors = structural_errors("framing_prior", record)
+    return errors or _freeze_time_errors(record)
+
+
+def validate_framing_prior(record: dict[str, Any]) -> None:
+    """Fail closed on a prior. Step 9 does ordinal arithmetic over prior_level and the episode
+    states the result, so a prior that will not parse is worse than no prior at all."""
+    _raise("framing_prior", framing_prior_errors(record))

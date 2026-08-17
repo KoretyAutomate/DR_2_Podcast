@@ -108,9 +108,24 @@ STAGES: tuple[Stage, ...] = (
     Stage("synthesize", (), (), "smart", available=False, unavailable_reason=_NOT_YET_SPLIT),
     Stage("grade", (), (), "claude", available=False, unavailable_reason=_NOT_YET_SPLIT),
     Stage(
+        name="framing_prior",
+        # Before plan_search, and that ordering is the whole point: a prior written after the search
+        # is hindsight in costume, and the approval bundle freezes it against the strategies.
+        consumes=("research/research_framing.md",),
+        produces=("research/framing_prior.json",),
+        engine="claude",
+    ),
+    Stage(
         name="plan_search",
-        # The same inputs framing hands the search: what question, and in which domain.
-        consumes=("research/research_framing.md", "research/domain_classification.json"),
+        # The prior is a real INPUT, not merely an earlier entry in this tuple. Declaration order is
+        # not execution order — dependencies come from `consumes` — and without this a run could
+        # plan, approve a bundle recording the prior as absent, and finish research before anything
+        # authored it, defeating the one guarantee the artifact has (prepush codex 2026-08-17).
+        consumes=(
+            "research/research_framing.md",
+            "research/domain_classification.json",
+            "research/framing_prior.json",
+        ),
         # It writes the strategies and STOPS. Nothing downstream runs, which is the whole point:
         # the post-search yield gate catches a strategy that is wrong in QUANTITY, and cannot catch
         # one that searches the wrong population or whose falsification track is not adversarial.

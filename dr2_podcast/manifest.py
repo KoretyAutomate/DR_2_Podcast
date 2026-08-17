@@ -58,6 +58,9 @@ CONFIG_IDENTITY_EXCLUDE = frozenset(
 #: completed stages "current" while the prompts moved underneath.
 CONTENT_ENV_KEYS = (
     "ACCESSIBILITY_LEVEL",
+    # The model a Claude-authored stage runs on. Its output is a judgement, so the model that made
+    # it is part of what the artifact IS — not a detail of how it was produced.
+    "DR2_CLAUDE_MODEL",
     "PODCAST_CHANNEL_INTRO",
     "PODCAST_CHANNEL_MISSION",
     "PODCAST_CORE_TARGET",
@@ -89,6 +92,9 @@ CONTENT_ENV_KEYS = (
 #: and fails on anything absent from both tuples, so a new read has to be classified rather than
 #: silently ignored — which is how PODCAST_HOSTS and TTS_GLOSSARY_ENABLED were missed the first time.
 ENV_IDENTITY_EXCLUDE = {
+    # Where the Claude CLI lives, not what it writes. Hashing it would make every Claude-authored
+    # stage stale on a machine that installed the binary somewhere else.
+    "DR2_CLAUDE_BINARY",
     # Credentials. Rotating one does not change what was produced.
     "BRAVE_API_KEY",
     "LLM_API_KEY",
@@ -144,13 +150,17 @@ CONFIG_GROUPS: dict[str, tuple[str, ...]] = {
     "research": ("SCREENING_TOP_N", "TIER_CASCADE_THRESHOLD", "MIN_TIER3_STUDIES", "MAX_TIER3_RATIO",
                  "EVIDENCE_LIMITED_THRESHOLD", "SEARXNG_URL", "PUBMED_TIMEOUT", "SCRAPING_TIMEOUT",
                  "VALIDATION_TIMEOUT", "USER_AGENT", "env:SEARXNG_URL"),
-    "prompt": ("env:PODCAST_CHANNEL_INTRO", "env:PODCAST_CHANNEL_MISSION", "env:PODCAST_CORE_TARGET",
+    "prompt": ("env:DR2_CLAUDE_MODEL", "env:PODCAST_CHANNEL_INTRO", "env:PODCAST_CHANNEL_MISSION",
+               "env:PODCAST_CORE_TARGET",
                "env:ACCESSIBILITY_LEVEL", "env:PODCAST_HOSTS", "env:PODCAST_LENGTH"),
     "tts": (),  # every TTS_* setting plus the ducking level; matched by prefix below
 }
 
 STAGE_CONFIG_GROUPS: dict[str, tuple[str, ...]] = {
     "framing": ("llm", "prompt"),
+    # The prior is Claude's judgement from background knowledge; the research settings that decide
+    # what gets searched have no bearing on what we believed before searching.
+    "framing_prior": ("llm", "prompt"),
     # The strategy comes from the model and the framing prompt, and from the research settings that
     # decide what a tier is — not from anything TTS or audio touches.
     "plan_search": ("llm", "research", "prompt"),
@@ -203,6 +213,7 @@ _EVERY_STAGE: tuple[str, ...] = (
 
 _STAGE_SPECIFIC: dict[str, tuple[str, ...]] = {
     "framing": ("dr2_podcast/adapters/research_stages.py", "dr2_podcast/research/domain_classifier.py"),
+    "framing_prior": ("dr2_podcast/adapters/research_stages.py", "dr2_podcast/claude_runner.py"),
     "plan_search": ("dr2_podcast/adapters/research_stages.py", "dr2_podcast/research/clinical.py"),
     "research": (
         "dr2_podcast/adapters/research_stages.py",

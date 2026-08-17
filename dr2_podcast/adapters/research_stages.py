@@ -71,6 +71,75 @@ def framing(run_dir: Path, run_config: dict[str, Any]) -> None:
     write_atomic(run_dir / "research/research_framing.md", output)
 
 
+@register("framing_prior")
+def framing_prior(run_dir: Path, run_config: dict[str, Any]) -> None:
+    """Stage 1b — what we believed before searching, authored by Claude and frozen here.
+
+    The one stage in this pipeline whose output is a JUDGEMENT rather than a derivation, which is
+    why it is Claude's under the allocation table and why it runs before anything is searched. A
+    prior computed after the evidence is in is hindsight in costume — and it would break the
+    confirmation-bias argument the episodes themselves teach.
+
+    It does NOT call _prepare_run: this stage needs no Crew and no vLLM handle, and building them
+    would make the prior unwritable whenever the Smart backend happens to be down.
+    """
+    from dr2_podcast.artifacts import read_json_strict, read_text_strict
+    from dr2_podcast.claude_runner import author_artifacts
+    from dr2_podcast.schemas import validate_framing_prior
+
+    framing = read_text_strict(run_dir / "research/research_framing.md")
+    artifact = "research/framing_prior.json"
+    topic = run_config["topic"]
+
+    author_artifacts(
+        # The WHOLE framing. A prefix silently drops the questions and scope constraints that come
+        # after it, and the prior would still be recorded as applying to the full topic — the same
+        # silent-truncation class Step 0 made loud everywhere else in this pipeline.
+        _PRIOR_PROMPT.format(topic=topic, artifact=artifact, framing=framing),
+        run_dir=run_dir,
+        expected=(artifact,),
+    )
+
+    # Fail closed on the shape. A prior that will not validate is worse than none: step 9 would do
+    # ordinal arithmetic over it and the episode would state the result.
+    record = read_json_strict(run_dir / artifact)
+    validate_framing_prior(record)
+    if record["topic"].strip() != topic.strip():
+        # A prior about a different question is worse than none: step 9 would update it against
+        # this run's evidence and the episode would state the result (prepush codex 2026-08-17).
+        raise ArtifactError(
+            f"the prior says it judged {record['topic']!r}, but this run is about {topic!r}"
+        )
+    logger.info("frozen prior: %s (authored before any search ran)", record["prior_level"])
+
+
+#: Prose, not a slash command — `claude -p` passes the message as literal text, so a slash command
+#: never reaches the skill resolver. Every component asks for its BASIS, because a prior without one
+#: is a number somebody made up and step 9 would be arithmetic over an invention.
+_PRIOR_PROMPT = """You are setting the FROZEN PRIOR for a research podcast episode, before any \
+literature search has run. Nothing has been searched yet, and that is deliberate: a prior written \
+after the evidence is hindsight in costume.
+
+Topic: {topic}
+
+The research framing for this episode:
+{framing}
+
+Write {artifact} as JSON with exactly these keys:
+  schema_version: 1
+  authored_by: "claude"
+  prior_level: one of まだ分からない / 低い / 中程度 / 高い / ほぼ確実
+  plausibility, known_mechanism, class_effect, base_rate: each an object
+      {{"stated": "<what you believe, or null if nothing is known>",
+        "basis": "<WHY you believe it, from background knowledge only>"}}
+  topic: the topic above
+  frozen_at: today's date in ISO 8601
+
+Rules. Use background knowledge only — do NOT search, and do not read anything in this run \
+directory other than the framing above. "Nothing is known" is a real answer: write null for \
+`stated` and say so in `basis`. Every `basis` must be non-empty. Write the file and nothing else."""
+
+
 @register("plan_search")
 def plan_search(run_dir: Path, run_config: dict[str, Any]) -> None:
     """Stage 1b — both tracks' search strategies, and NOT the search (PLAN.md Step 10).

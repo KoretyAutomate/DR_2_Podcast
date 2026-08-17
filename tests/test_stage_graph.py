@@ -91,7 +91,10 @@ def test_downstream_is_transitive_and_ordered() -> None:
     # framing feeds research directly, sot and blueprint through domain_classification.json, and
     # draft and polish through meta/session_roles.json.
     # plan_search leads, because Step 10 put it between framing and the search.
-    assert direct_consumers("framing") == ("plan_search", "research", "blueprint", "draft", "polish", "audit")
+    # framing_prior leads now: the prior is written before anything is searched.
+    assert direct_consumers("framing") == (
+        "framing_prior", "plan_search", "research", "blueprint", "draft", "polish", "audit"
+    )
     chain = downstream_of("framing")
     assert {"research", "blueprint", "draft", "polish", "audit", "audio"} <= set(chain)
     assert chain.index("draft") < chain.index("polish") < chain.index("audit")

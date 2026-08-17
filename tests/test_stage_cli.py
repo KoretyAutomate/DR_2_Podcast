@@ -296,17 +296,28 @@ def test_cli_status_reports_a_corrupt_artifact_as_an_error(
 # while ADAPTERS is empty in production — so every one of them refused. The two facts are kept
 # apart (unavailable = the pipeline cannot separate it; not runnable = no adapter written yet) and
 # the CLI now reports which is which instead of promising something it cannot do.
+def _help_text() -> str:
+    """The help with its wrapping collapsed.
+
+    argparse rewraps this string, so asserting on the literal broke the day a stage name was added
+    and moved the wrap point — a test failing on the width of a help message, not on its meaning.
+    """
+    import re
+
+    return re.sub(r"\s+", " ", stage_mod.build_parser().format_help())
+
+
 def test_nothing_is_advertised_as_runnable_without_an_adapter() -> None:
     stage_mod.ADAPTERS.clear()
     assert stage_mod.runnable_stage_names() == ()
-    assert "Runnable now: NONE" in stage_mod.build_parser().format_help()
+    assert "Runnable now: NONE" in _help_text()
 
 
 def test_a_registered_adapter_is_advertised_as_runnable() -> None:
     stage_mod.ADAPTERS.clear()
     _stub("framing", FRAMING_OUTPUTS)
     assert stage_mod.runnable_stage_names() == ("framing",)
-    assert "Runnable now: framing" in stage_mod.build_parser().format_help()
+    assert "Runnable now: framing" in _help_text()
 
 
 def test_status_marks_stages_that_have_no_adapter(run_dir: Path, capsys: pytest.CaptureFixture) -> None:

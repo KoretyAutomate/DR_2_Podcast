@@ -44,6 +44,14 @@ def _complete_framing(manifest: Manifest, run_dir: Path, framing: str = "framing
     manifest.complete("framing")
 
 
+def _complete_framing_prior(manifest: Manifest, run_dir: Path) -> None:
+    """plan_search consumes the prior, so the prior has to exist and have a producer of record."""
+    for artifact in get_stage("framing_prior").produces:
+        _write(run_dir, artifact, f"contents of {artifact}")
+    manifest.start("framing_prior", model="test-model", config_sha256=config_fingerprint(CONFIG))
+    manifest.complete("framing_prior")
+
+
 def _complete_plan_search(manifest: Manifest, run_dir: Path) -> None:
     """Step 10 put a stage between framing and the search, so research has a producer to be current
     against — without this, research is stale for a reason that has nothing to do with the test."""
@@ -122,6 +130,7 @@ def test_rerunning_an_upstream_stage_marks_downstream_stale(run_dir: Path) -> No
     confirm every downstream stage is marked stale rather than reused."""
     manifest = Manifest.load(run_dir)
     _complete_framing(manifest, run_dir)
+    _complete_framing_prior(manifest, run_dir)
     _complete_plan_search(manifest, run_dir)
     _complete_research(manifest, run_dir)
     assert manifest.status("research") == "complete"
@@ -138,6 +147,7 @@ def test_an_unchanged_rerun_does_not_stale_downstream(run_dir: Path) -> None:
     """Staleness follows the hash, not the fact of a re-run — re-deriving the same bytes is a no-op."""
     manifest = Manifest.load(run_dir)
     _complete_framing(manifest, run_dir)
+    _complete_framing_prior(manifest, run_dir)
     _complete_plan_search(manifest, run_dir)
     _complete_research(manifest, run_dir)
     _complete_framing(manifest, run_dir)  # identical contents
@@ -151,6 +161,7 @@ def test_staleness_reaches_a_stage_whose_own_inputs_have_not_moved_yet(run_dir: 
     about to re-run and change them."""
     manifest = Manifest.load(run_dir)
     _complete_framing(manifest, run_dir)
+    _complete_framing_prior(manifest, run_dir)
     _complete_plan_search(manifest, run_dir)
     _complete_research(manifest, run_dir)
     _write(run_dir, "research/research_sources_validated.json", "{}")
@@ -172,6 +183,7 @@ def test_staleness_reaches_a_stage_whose_own_inputs_have_not_moved_yet(run_dir: 
 def test_a_failed_rerun_invalidates_everything_behind_it(run_dir: Path) -> None:
     manifest = Manifest.load(run_dir)
     _complete_framing(manifest, run_dir)
+    _complete_framing_prior(manifest, run_dir)
     _complete_plan_search(manifest, run_dir)
     _complete_research(manifest, run_dir)
     _write(run_dir, "research/research_sources_validated.json", "{}")
@@ -215,6 +227,7 @@ def test_an_unresolved_placeholder_is_never_hashed_as_a_literal_path() -> None:
 def test_an_optional_input_is_hashed_when_present(run_dir: Path) -> None:
     manifest = Manifest.load(run_dir)
     _complete_framing(manifest, run_dir)
+    _complete_framing_prior(manifest, run_dir)
     _complete_plan_search(manifest, run_dir)
     _complete_research(manifest, run_dir)
     _write(run_dir, "research/research_sources_validated.json", "{}")
@@ -238,6 +251,7 @@ def test_an_optional_input_is_hashed_when_present(run_dir: Path) -> None:
 def test_a_producer_of_an_input_the_stage_never_read_does_not_stale_it(run_dir: Path) -> None:
     manifest = Manifest.load(run_dir)
     _complete_framing(manifest, run_dir)
+    _complete_framing_prior(manifest, run_dir)
     _complete_plan_search(manifest, run_dir)
     _complete_research(manifest, run_dir)
     _write(run_dir, "research/research_sources_validated.json", "{}")
@@ -263,6 +277,7 @@ def test_an_absent_optional_input_is_not_a_failure(run_dir: Path) -> None:
     """An English episode has no translated SOT."""
     manifest = Manifest.load(run_dir)
     _complete_framing(manifest, run_dir)
+    _complete_framing_prior(manifest, run_dir)
     _complete_plan_search(manifest, run_dir)
     _complete_research(manifest, run_dir)
     _write(run_dir, "research/research_sources_validated.json", "{}")
@@ -277,6 +292,7 @@ def test_optional_outputs_may_be_absent(run_dir: Path) -> None:
     """A translated SOT only exists for a non-English episode; its absence is not a failure."""
     manifest = Manifest.load(run_dir)
     _complete_framing(manifest, run_dir)
+    _complete_framing_prior(manifest, run_dir)
     _complete_plan_search(manifest, run_dir)
     _complete_research(manifest, run_dir)
     _write(run_dir, "research/source_of_truth.md", "sot")

@@ -74,16 +74,34 @@ STRATEGY = {
 }
 
 
-def run_plan_search(run_dir: Path) -> None:
-    """Run the plan_search STAGE (stubbed) and approve what it wrote.
+#: A minimal frozen prior, in the shape framing_prior.schema.json requires.
+PRIOR = {
+    "schema_version": 1,
+    "authored_by": "claude",
+    "prior_level": "低い",
+    "plausibility": {"stated": "small at best", "basis": "no mechanism links the two"},
+    "known_mechanism": {"stated": None, "basis": "none described in reviews"},
+    "class_effect": {"stated": None, "basis": "the class is heterogeneous"},
+    "base_rate": {"stated": "~10% replicate", "basis": "Ioannidis 2005"},
+    "topic": "ビタミンDと骨折",
+    "frozen_at": "2026-08-17",
+}
 
-    Writing the strategy files directly is not enough for anything that goes through the runner:
-    the artifacts would exist while their producer had no manifest record, so `research` would
-    refuse them as not current — correctly, since nothing recorded who made them.
+
+def run_plan_search(run_dir: Path) -> None:
+    """Author the prior, plan the search, approve what was planned — in that order.
+
+    The order is the fixture's whole content. `plan_search` consumes the prior, so a run that has
+    not frozen one cannot plan; and the approval is taken last so it covers the prior as it stands.
+    Writing the artifacts directly is not enough for anything going through the runner: they would
+    exist while their producer had no manifest record, and `research` would refuse them as not
+    current — correctly, since nothing recorded who made them.
     """
     from dr2_podcast.stage import run_stage
     from dr2_podcast.stages import get_stage
 
+    _stub("framing_prior", {"research/framing_prior.json": json.dumps(PRIOR)})
+    run_stage(run_dir, "framing_prior")
     _stub("plan_search", {a: json.dumps(STRATEGY) for a in get_stage("plan_search").produces})
     run_stage(run_dir, "plan_search")
     approve(run_dir)

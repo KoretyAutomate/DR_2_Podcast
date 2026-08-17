@@ -401,9 +401,28 @@ def test_the_status_view_names_the_stale_ancestor_too(
 # COMPLETE research stage was skipped before anything looked at the approval — and the bundle's
 # absent-to-present check, which exists precisely for the prior, never ran. The manifest cannot
 # catch this alone: an input that did not exist when the stage completed is in no recorded hash.
-def test_a_prior_appearing_after_approval_stops_a_stage_that_would_have_been_skipped(
+def _revise_prior(run_dir: Path) -> None:
+    """Change the prior's judgement. Through json, not a string replace: the fixture is written with
+    ensure_ascii, so 低い is stored escaped and a literal replace silently matches nothing — a
+    mutation test that mutates nothing passes for the wrong reason."""
+    import json
+
+    path = run_dir / "research/framing_prior.json"
+    record = json.loads(path.read_text())
+    record["prior_level"] = "高い"
+    path.write_text(json.dumps(record))
+
+
+def test_a_prior_edited_after_approval_stops_a_stage_that_would_have_been_skipped(
     run_dir: Path,
 ) -> None:
+    """Since plan_search CONSUMES the prior, a prior cannot appear after approval any more — the
+    search could not have run without one. What is still reachable, and still fatal, is editing it
+    afterwards: the strategies were approved by comparison with the prior they were built against.
+
+    The manifest cannot catch this alone, which is the reason the check lives in _guard_inputs: a
+    complete stage is skipped before its adapter ever looks at the approval.
+    """
     from dr2_podcast.artifacts import ArtifactError
 
     _stub("framing", FRAMING_OUTPUTS)
@@ -413,18 +432,34 @@ def test_a_prior_appearing_after_approval_stops_a_stage_that_would_have_been_ski
     run_stage(run_dir, "research")
     assert "skipped" in run_stage(run_dir, "research"), "the control: it really is current"
 
-    (run_dir / "research/framing_prior.json").write_text('{"prior_level": "低い"}')
-    with pytest.raises(ArtifactError, match="did not exist when the strategies were approved"):
+    _revise_prior(run_dir)
+    with pytest.raises(ArtifactError, match="framing_prior.json has changed"):
         run_stage(run_dir, "research")
 
 
-def test_re_approving_lets_the_run_continue(run_dir: Path) -> None:
+def test_the_search_cannot_be_planned_before_a_prior_exists(run_dir: Path) -> None:
+    """Declaration order is not execution order. Without the prior in `consumes`, a run could plan,
+    approve a bundle recording the prior as absent, and finish research before anything authored
+    it — defeating the one guarantee the artifact has."""
+    _stub("framing", FRAMING_OUTPUTS)
+    run_stage(run_dir, "framing")
+    calls = _stub("plan_search", {a: "{}" for a in stage_mod.get_stage("plan_search").produces})
+
+    with pytest.raises(StageError, match="framing_prior.json"):
+        run_stage(run_dir, "plan_search")
+    assert calls == [], "and nothing was planned"
+
+
+def test_a_revised_prior_re_runs_the_chain_rather_than_wedging_it(run_dir: Path) -> None:
     """The gate has to be passable, or it gets bypassed rather than satisfied.
 
-    It re-RUNS rather than skipping, and that is right: the approval is itself a declared input, so
-    a new approval is new input, and research should search against the state the reviewer just
-    signed off — not skip on the strength of a run made before the prior existed."""
-    from tests._stage_fixtures import approve
+    Passing it means re-running the stage that OWNS the prior, not just re-approving: a prior edited
+    by hand leaves its producer stale, and re-approving an artifact nobody re-derived would be the
+    approval blessing a file with no author. So the chain re-runs, and research runs against the
+    state the reviewer signed off."""
+    import json
+
+    from tests._stage_fixtures import PRIOR, STRATEGY, approve
 
     _stub("framing", FRAMING_OUTPUTS)
     run_stage(run_dir, "framing")
@@ -432,10 +467,19 @@ def test_re_approving_lets_the_run_continue(run_dir: Path) -> None:
     calls = _stub("research", {a: f"contents of {a}" for a in stage_mod.get_stage("research").produces})
     run_stage(run_dir, "research")
 
-    (run_dir / "research/framing_prior.json").write_text('{"prior_level": "低い"}')
+    # The prior is reconsidered — through its stage, which is the only thing that may write it.
+    _stub("framing_prior", {"research/framing_prior.json": json.dumps({**PRIOR, "prior_level": "高い"})})
+    run_stage(run_dir, "framing_prior")
+    _stub("plan_search", {a: json.dumps(STRATEGY) for a in stage_mod.get_stage("plan_search").produces})
+    run_stage(run_dir, "plan_search", force=True)
     approve(run_dir)
-    assert "complete" in run_stage(run_dir, "research")
-    assert len(calls) == 2
+
+    # Skipped, and that is the right answer rather than a missed re-run: research does not consume
+    # the prior — plan_search does — and the strategies came out byte-identical, so research's
+    # artifacts still ARE what this configuration produces. What matters is that it no longer
+    # REFUSES: the gate is passable, which is what stops it being bypassed instead of satisfied.
+    assert "skipped" in run_stage(run_dir, "research")
+    assert len(calls) == 1
 
 
 def test_a_stage_that_consumes_no_approval_is_unaffected(run_dir: Path) -> None:

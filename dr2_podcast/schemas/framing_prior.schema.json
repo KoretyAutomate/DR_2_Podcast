@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dr2-podcast.local/schemas/framing_prior.schema.json",
+  "title": "FramingPrior",
+  "description": "What we believed before searching. Authored by Claude at stage 1 and frozen there, because a prior computed after the evidence is in is hindsight in costume — and the confirmation-bias argument the episodes teach is exactly the thing it would break. Every component carries its BASIS: a prior without one is a number somebody made up, and step 9's update would then be arithmetic over an invention. Nothing here is checked against the literature this run finds; the honest check is that it was written first, which is what the approval bundle freezes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "authored_by",
+    "prior_level",
+    "plausibility",
+    "known_mechanism",
+    "class_effect",
+    "base_rate",
+    "topic",
+    "frozen_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "authored_by": {
+      "const": "claude",
+      "description": "Under the allocation table the prior is Claude's judgement. A Smart-authored prior would be the transitional authorship this artifact exists to avoid."
+    },
+    "prior_level": {
+      "enum": [
+        "まだ分からない",
+        "低い",
+        "中程度",
+        "高い",
+        "ほぼ確実"
+      ],
+      "description": "The ladder value step 9 checks the posterior against, ordinally."
+    },
+    "plausibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stated",
+        "basis"
+      ],
+      "properties": {
+        "stated": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What is claimed. null means 'nothing is known', which is itself an answer."
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 1,
+          "description": "WHY this is believed, before any of this run's evidence was read."
+        }
+      }
+    },
+    "known_mechanism": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stated",
+        "basis"
+      ],
+      "properties": {
+        "stated": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What is claimed. null means 'nothing is known', which is itself an answer."
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 1,
+          "description": "WHY this is believed, before any of this run's evidence was read."
+        }
+      }
+    },
+    "class_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stated",
+        "basis"
+      ],
+      "properties": {
+        "stated": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What is claimed. null means 'nothing is known', which is itself an answer."
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 1,
+          "description": "WHY this is believed, before any of this run's evidence was read."
+        }
+      }
+    },
+    "base_rate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stated",
+        "basis"
+      ],
+      "properties": {
+        "stated": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What is claimed. null means 'nothing is known', which is itself an answer."
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 1,
+          "description": "WHY this is believed, before any of this run's evidence was read."
+        }
+      }
+    },
+    "topic": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The proposition this prior is about. Required, and checked against the run config: a prior that does not name what it judged is a number with no question."
+    },
+    "frozen_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(?:[T ]\\d{2}:\\d{2}(?::\\d{2})?(?:Z|[+-]\\d{2}:?\\d{2})?)?$",
+      "description": "ISO 8601 date, optionally with a time. Pattern-constrained because a non-empty string accepted \"today\" and \"unknown\" — and 'written before the search' is the ONE property this artifact has, so a value that names no instant cannot assert it."
+    }
+  }
+}
