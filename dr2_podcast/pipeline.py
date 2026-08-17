@@ -5,6 +5,7 @@ import httpx
 import time
 import random
 import sys
+import hashlib
 import json
 import argparse
 import logging
@@ -20,11 +21,12 @@ from crewai.tools import tool
 from markdown_it import MarkdownIt
 import weasyprint
 from dr2_podcast.tools.link_validator import LinkValidatorTool
+from dr2_podcast.tools.publish_sheet import PublishSheetError, write_publish_sheet
 import wave
 from dr2_podcast.audio.engine import generate_audio_from_script, clean_script_for_tts, post_process_audio
 from dr2_podcast.utils import strip_think_blocks, QWEN3_NO_THINK_EXTRA_BODY
 from dataclasses import dataclass, fields as dc_fields
-from typing import Any
+from typing import Any, cast
 
 from dr2_podcast.config import EVIDENCE_LIMITED_THRESHOLD, OUTPUT_DIR_OVERRIDE
 
@@ -279,6 +281,8 @@ _FILE_SUBDIR_MAP = {
     "source_of_truth.md": "research",
     "SOURCE_OF_TRUTH.md": "research",
     "research_sources.json": "research",
+    "research_sources_validated.json": "research",
+    "research_sources_validated.sha256": "research",
     "research_framing.md": "research",
     "affirmative_case.md": "research",
     "falsification_case.md": "research",
@@ -431,13 +435,25 @@ def _restore_wide_net_record(d):
 
 
 def _restore_deep_extraction(d):
-    from dr2_podcast.research.clinical import DeepExtraction
+    from dr2_podcast.research.clinical import DeepExtraction, Finding, FundingBlock
 
     if not isinstance(d, dict):
         return d
     pm = _restore_paper_metadata(d.get("paper_metadata"))
     valid_keys = {f.name for f in dc_fields(DeepExtraction)}
     kwargs = {k: v for k, v in d.items() if k in valid_keys and k != "paper_metadata"}
+    # Step 9a. _serialize_dataclass flattens the nested records to plain dicts, and a resumed run
+    # would hand those dicts to consumers that call finding.to_dict() and read
+    # finding.control_event_rate — so the clinical math would raise, or silently compute nothing,
+    # on exactly the runs that already cost the most (prepush codex 2026-08-13).
+    kwargs["findings"] = [
+        f if isinstance(f, Finding) else Finding.from_dict(f)
+        for f in (kwargs.get("findings") or [])
+        if isinstance(f, (Finding, dict))
+    ]
+    funding = kwargs.get("funding")
+    if isinstance(funding, dict):
+        kwargs["funding"] = FundingBlock.from_dict(funding)
     # Required positional args that to_dict() may have dropped when None/empty
     kwargs.setdefault("pmid", None)
     kwargs.setdefault("doi", None)
@@ -1072,6 +1088,17 @@ SMART_MODEL = os.environ.get("MODEL_NAME") or None
 SMART_BASE_URL = os.environ.get("LLM_BASE_URL") or None
 
 
+class BackendUnavailable(RuntimeError):
+    """The LLM backend did not answer.
+
+    It used to be ``sys.exit(1)`` inside ``get_final_model_string``, which is fine for a script and
+    wrong for anything a library calls: ``SystemExit`` derives from ``BaseException``, so it walks
+    straight through ``except Exception`` — a staged run whose backend was down would die without
+    the stage runner ever recording the failure, leaving a manifest that says the stage is still
+    running. ``__main__`` catches this and exits 1, so the command-line behaviour is unchanged.
+    """
+
+
 def get_final_model_string():
     model = SMART_MODEL
     base_url = SMART_BASE_URL
@@ -1088,9 +1115,7 @@ def get_final_model_string():
                 logger.warning(f"Waiting for Ollama server... ({i}s) - {e}")
             time.sleep(1)
 
-    logger.error("Error: Could not connect to Ollama server. Check if it is running.")
-    logger.error("Start Ollama with: ollama serve")
-    sys.exit(1)
+    raise BackendUnavailable(f"no response from the LLM backend at {base_url} after 10 attempts")
 
 
 final_model_string = None  # initialized in __main__
@@ -1395,7 +1420,7 @@ def list_research_sources(role: str) -> str:
     Returns a numbered index with title, URL, and research goal for each source.
     Use ReadResearchSource to read the full summary of any specific source.
     """
-    sources_file = output_path(output_dir, "research_sources.json")
+    sources_file = research_sources_file()
     if not sources_file.exists():
         return "No research library available. Deep research pre-scan may not have run."
     try:
@@ -1427,7 +1452,7 @@ def read_research_source(role_and_index: str) -> str:
     Returns the full extracted summary for that source, including URL, title,
     research goal, and all extracted facts.
     """
-    sources_file = output_path(output_dir, "research_sources.json")
+    sources_file = research_sources_file()
     if not sources_file.exists():
         return "No research library available."
     try:
@@ -1648,6 +1673,139 @@ translation_task = None
 polish_task = None
 audit_task = None
 blueprint_task = None
+
+
+def initialise_run_globals(
+    *, language_code: str, length_mode: str = "long", target_minutes: int | None = None
+) -> dict:
+    """Set the module-level run state every Crew builder reads, and return the derived locals.
+
+    Extracted verbatim from the ``__main__`` block so that a staged run —
+    ``python -m dr2_podcast.stage <name> --run <dir>``, a fresh process with no caller holding any
+    of this — can reproduce it exactly. Duplicating sixty lines of initialisation in the stage
+    adapters would guarantee they drift from the monolithic runner, and the two producing
+    different episodes from the same inputs is precisely the failure that makes a staged pipeline
+    untrustworthy.
+
+    ``topic_name``, ``SESSION_ROLES`` and ``output_dir`` are NOT set here: the caller owns them,
+    because the monolithic runner takes them from argv while a staged run reads them from
+    ``meta/run_config.json`` and the run directory it was pointed at.
+
+    ``target_minutes`` overrides the ``length_mode`` lookup. The monolithic runner selects a mode
+    from ``PODCAST_LENGTH``; a staged run carries an explicit minute count in its run config, and
+    that count is part of the stage identity, so it has to be the value that actually applies.
+    """
+    global language, language_config, english_instruction, target_instruction
+    global target_length_int, target_script, target_unit_singular, target_unit_plural
+    global channel_intro, core_target, channel_mission, _target_min
+    global ACCESSIBILITY_LEVEL, accessibility_instruction
+    global dgx_llm_strict, dgx_llm_creative
+    global SMART_MODEL, SMART_BASE_URL
+
+    # Refreshed HERE, and this is not cosmetic (prepush codex 2026-08-13). Line 1086 reads
+    # MODEL_NAME at IMPORT time, while the monolithic runner calls load_dotenv() inside __main__ —
+    # so for anyone whose model settings live only in .env, the module globals are None when the
+    # module loads and nothing set them afterwards. The extraction that created this function moved
+    # the two assignments that used to do it out of __main__ and dropped them, which left the CLI
+    # probing "None/models" and reporting the backend down on every run.
+    from dr2_podcast import config as _config
+
+    SMART_MODEL = os.environ.get("MODEL_NAME") or SMART_MODEL or _config.SMART_MODEL or None
+    SMART_BASE_URL = os.environ.get("LLM_BASE_URL") or SMART_BASE_URL or _config.SMART_BASE_URL or None
+
+    language = language_code
+    language_config = SUPPORTED_LANGUAGES[language]
+    english_instruction = "Write all content in English."
+    target_instruction = language_config["instruction"]
+
+    # SUPPORTED_LANGUAGES is a dict of mixed value types, so this reads as `object`.
+    speech_rate = cast(int, language_config["speech_rate"])
+    if target_minutes is None:
+        target_minutes = TARGET_MINUTES.get(length_mode) or TARGET_MINUTES["long"]
+    # _target_min is read directly by _create_agents_and_tasks and three more CrewBuildConfig sites.
+    # Left at its sentinel 0, every staged draft and polish prompt would ask for a 0-minute episode
+    # while target_script carried the right character count — the two disagreeing silently.
+    _target_min = target_minutes
+    target_length_int = target_minutes * speech_rate
+    target_script = f"{target_length_int:,}"
+    target_unit_singular = language_config["prompt_unit"]
+    target_unit_plural = language_config["length_unit"]
+
+    channel_intro = os.getenv("PODCAST_CHANNEL_INTRO", "").strip()
+    core_target = os.getenv("PODCAST_CORE_TARGET", "").strip()
+    channel_mission = os.getenv("PODCAST_CHANNEL_MISSION", "").strip()
+
+    ACCESSIBILITY_LEVEL = os.getenv("ACCESSIBILITY_LEVEL", "technical").lower()
+    if ACCESSIBILITY_LEVEL not in ("simple", "moderate", "technical"):
+        logger.warning(f"Warning: Unknown ACCESSIBILITY_LEVEL '{ACCESSIBILITY_LEVEL}', falling back to 'technical'")
+        ACCESSIBILITY_LEVEL = "technical"
+    logger.info(f"Accessibility level: {ACCESSIBILITY_LEVEL}")
+    accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL][language]
+
+    # The RESOLVED value, not a raw environment lookup. config.py supplies
+    # "http://localhost:8000/v1" when LLM_BASE_URL is unset, and get_final_model_string() probes
+    # that endpoint happily — then this line raised KeyError and no LLM-backed stage could run
+    # under a configuration the central config explicitly supports (prepush codex 2026-08-13).
+    smart_base_url = SMART_BASE_URL
+    final_model_string = get_final_model_string()
+    dgx_llm_strict = LLM(
+        model=final_model_string,
+        base_url=smart_base_url,
+        api_key="NA",
+        provider="openai",
+        timeout=600,
+        temperature=0.1,
+        max_tokens=8000,
+        stop=["<|im_end|>", "<|endoftext|>"],
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    dgx_llm_creative = LLM(
+        model=final_model_string,
+        base_url=smart_base_url,
+        api_key="NA",
+        provider="openai",
+        timeout=600,
+        temperature=0.7,
+        max_tokens=16000,
+        frequency_penalty=0.15,
+        stop=["<|im_end|>", "<|endoftext|>"],
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    return {
+        "language_instruction": language_config["instruction"],
+        "length_mode": length_mode,
+        "target_minutes": target_minutes,
+        "duration_label": f"{length_mode.capitalize()} ({target_minutes} min)",
+    }
+
+
+def research_sources_file(run_dir=None):
+    """The sources library the agents should read: the VALIDATED one when it exists.
+
+    The staged `url_validation` stage writes `research_sources_validated.json` rather than editing
+    `research_sources.json` in place, because a stage that rewrites another stage's output makes the
+    producer permanently stale. That only helps if the consumers actually read it — otherwise the
+    filtering happens and nothing downstream notices, and rejected URLs reach the blueprint anyway.
+    The monolithic phase edits in place, so for it both names resolve to the same content.
+    """
+    directory = run_dir if run_dir is not None else output_dir
+    raw = output_path(directory, "research_sources.json")
+    validated = output_path(directory, "research_sources_validated.json")
+    stamp = output_path(directory, "research_sources_validated.sha256")
+    if not validated.exists() or not stamp.exists() or not raw.exists():
+        return raw
+    # The validated copy is used only while it was derived from THIS raw library, proven by hash.
+    # An earlier version compared mtimes, which is not a fact about derivation: atomic replacement
+    # can preserve coarse or non-monotonic timestamps, and copying or restoring a run reorders them
+    # freely — either way the tools would quietly fall back to unvalidated URLs, or serve sources
+    # from a previous research result. The legacy runner regenerates research_sources.json in place
+    # and writes no stamp, so it simply never matches.
+    try:
+        expected = stamp.read_text(encoding="utf-8").strip()
+        actual = hashlib.sha256(raw.read_bytes()).hexdigest()
+    except OSError:
+        return raw
+    return validated if expected == actual else raw
 
 
 def _create_agents_and_tasks():
@@ -2164,13 +2322,22 @@ def _finalize_script(polished_text, polish_task, language, language_config, outp
         for _issue in validate_grade_consistency(script_text, str(_grade), str(_sot)):
             logger.warning(f"  GRADE_CHECK: {_issue}")
     except Exception as exc:
-        logger.debug("GRADE consistency check skipped: %s", exc)
+        # Was logger.debug. A check that skips itself in silence is a check nobody knows they lost:
+        # pointing finalisation at a directory without research/ turned this into a no-op and
+        # nothing said so (prepush codex 2026-08-13). The skip is still not fatal here — the live
+        # Prefect path gates on the same validator — but it is now audible.
+        logger.warning("GRADE_CHECK skipped, so script/GRADE contradictions went unchecked: %s", exc)
 
     logger.info("\nAdding reaction/emotion guidance to script...")
     script_text = _add_reaction_guidance(script_text, language_config)
 
-    with open(output_path(output_dir, "script_final.md"), "w", encoding="utf-8") as f:
-        f.write(script_text)
+    # Atomic, not a bare open(): this file is what audio renders, and a write interrupted partway
+    # replaces the previous accepted script with a truncated one that looks finished. Doing it here
+    # rather than in the caller keeps the validation reads above and the write pointed at the SAME
+    # directory — redirecting the write to a scratch tree is what silently disabled the GRADE check.
+    from dr2_podcast.artifacts import write_atomic
+
+    write_atomic(Path(output_path(output_dir, "script_final.md")), script_text)
 
     return script_text
 
@@ -2249,7 +2416,30 @@ def _run_audio_pipeline(script_text, output_dir, language_config):
         except Exception as exc:
             logger.debug("audio duration probe failed: %s", exc)
 
+        # Publishing is manual through RedCircle (no public API), so the run's
+        # last deliverable is the sheet that upload is filled from. Never fatal:
+        # the episode is finished either way.
+        #
+        # NOT under the staged runner. The audio adapter renders into meta/.stage_staging and
+        # promotes afterwards, so a sheet written here would record an absolute audio path inside a
+        # directory that is about to be deleted — a sheet whose one job is to point at the file to
+        # upload, pointing at nothing (prepush codex 2026-08-14). The adapter writes it after the
+        # promotion, against the real run directory.
+        if not _is_staging_dir(output_dir):
+            try:
+                sheet = write_publish_sheet(Path(output_dir))
+                logger.info(f"✓ Publish sheet: {sheet}")
+            except (PublishSheetError, OSError) as exc:
+                logger.warning(f"⚠ Publish sheet not written: {exc}")
+
     return audio_file, duration_minutes
+
+
+def _is_staging_dir(output_dir) -> bool:
+    """Whether this path is a stage's scratch tree rather than the run itself."""
+    from dr2_podcast.adapters._common import STAGING_DIRNAME
+
+    return Path(output_dir).name == STAGING_DIRNAME
 
 
 def _translate_and_inject_sot(ctx: ScriptRunContext, sot_path, sot_summary, grade_injection, refs: Crew3Refs):
@@ -2424,59 +2614,18 @@ if __name__ == "__main__":
     check_tts_dependencies()
 
     language = get_language(args)
-    language_config = SUPPORTED_LANGUAGES[language]
-    english_instruction = "Write all content in English."
-    target_instruction = language_config["instruction"]
-    language_instruction = language_config["instruction"]
-
-    length_mode = os.getenv("PODCAST_LENGTH", "long").lower()
-    _speech_rate = language_config["speech_rate"]
-    _target_min = TARGET_MINUTES.get(length_mode, TARGET_MINUTES["long"])
-    target_length_int = _target_min * _speech_rate
-    target_script = f"{target_length_int:,}"
-    target_unit_singular = language_config["prompt_unit"]
-    target_unit_plural = language_config["length_unit"]
-    duration_label = f"{length_mode.capitalize()} ({_target_min} min)"
-
-    channel_intro = os.getenv("PODCAST_CHANNEL_INTRO", "").strip()
-    core_target = os.getenv("PODCAST_CORE_TARGET", "").strip()
-    channel_mission = os.getenv("PODCAST_CHANNEL_MISSION", "").strip()
-
-    ACCESSIBILITY_LEVEL = os.getenv("ACCESSIBILITY_LEVEL", "technical").lower()
-    if ACCESSIBILITY_LEVEL not in ("simple", "moderate", "technical"):
-        logger.warning(f"Warning: Unknown ACCESSIBILITY_LEVEL '{ACCESSIBILITY_LEVEL}', falling back to 'technical'")
-        ACCESSIBILITY_LEVEL = "technical"
-    logger.info(f"Accessibility level: {ACCESSIBILITY_LEVEL}")
-    accessibility_instruction = ACCESSIBILITY_INSTRUCTIONS[ACCESSIBILITY_LEVEL][language]
-
-    SMART_MODEL = os.environ["MODEL_NAME"]
-    SMART_BASE_URL = os.environ["LLM_BASE_URL"]
-
-    final_model_string = get_final_model_string()
-
-    dgx_llm_strict = LLM(
-        model=final_model_string,
-        base_url=SMART_BASE_URL,
-        api_key="NA",
-        provider="openai",
-        timeout=600,
-        temperature=0.1,
-        max_tokens=8000,
-        stop=["<|im_end|>", "<|endoftext|>"],
-        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-    )
-    dgx_llm_creative = LLM(
-        model=final_model_string,
-        base_url=SMART_BASE_URL,
-        api_key="NA",
-        provider="openai",
-        timeout=600,
-        temperature=0.7,
-        max_tokens=16000,
-        frequency_penalty=0.15,
-        stop=["<|im_end|>", "<|endoftext|>"],
-        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-    )
+    try:
+        _init = initialise_run_globals(
+            language_code=language, length_mode=os.getenv("PODCAST_LENGTH", "long").lower()
+        )
+    except BackendUnavailable as exc:
+        logger.error("Error: %s", exc)
+        logger.error("Check that vLLM is running: bash start_vllm_docker.sh")
+        sys.exit(1)
+    language_instruction = _init["language_instruction"]
+    length_mode = _init["length_mode"]
+    _target_min = _init["target_minutes"]
+    duration_label = _init["duration_label"]
 
     # Construct all Agent/Task objects with correct runtime values
     logger.info(f"Podcast Length Mode: {duration_label}")

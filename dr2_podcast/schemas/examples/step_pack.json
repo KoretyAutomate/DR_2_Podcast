@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "sot_domain": "clinical",
+  "steps": {
+    "1": {
+      "step": 1,
+      "question_ja": "この話題について、証拠を見る前の見込みはどれくらいですか",
+      "answer": {
+        "prior_level": "中程度",
+        "known_mechanism": true,
+        "class_effect": true,
+        "base_rate_note": "骨折予防の栄養介入は小〜中程度の効果にとどまることが多い"
+      },
+      "sot_sections": [],
+      "locators": [
+        {
+          "fields": ["answer.prior_level"],
+          "source_artifact_id": "framing_prior.json",
+          "char_offset": 0,
+          "quoted_span": "{\"prior_level\": \"中程度\""
+        }
+      ],
+      "verdict_contribution": "neutral",
+      "sufficiency": "complete"
+    },
+    "3": {
+      "step": 3,
+      "question_ja": "その根拠になっている研究は、どういう設計ですか",
+      "answer": { "rct": 12, "cohort": 6, "cross_sectional": 2, "randomized": 12, "blinded": 9 },
+      "sot_sections": ["4.1"],
+      "locators": [
+        {
+          "fields": ["answer.rct"],
+          "source_artifact_id": "pmid:12345678#fulltext",
+          "char_offset": 210,
+          "quoted_span": "we conducted a double-blind, placebo-controlled randomised trial"
+        }
+      ],
+      "verdict_contribution": "support",
+      "sufficiency": "complete"
+    },
+    "4": {
+      "step": 4,
+      "question_ja": "その数字は、どれくらいの大きさですか",
+      "answer": { "arr_pct": 5.0, "nnt": 20.0, "direction": "benefit", "studies_with_cer_eer": 14 },
+      "sot_sections": ["3.3", "4.2"],
+      "locators": [
+        {
+          "fields": ["answer.arr_pct"],
+          "source_artifact_id": "pmid:12345678#fulltext",
+          "char_offset": 1234,
+          "quoted_span": "absolute risk reduction 5.0% (95% CI 2.0 to 8.0), p=0.03"
+        }
+      ],
+      "verdict_contribution": "support",
+      "sufficiency": "complete"
+    },
+    "5": {
+      "step": 5,
+      "question_ja": "誰がその研究にお金を出しましたか",
+      "answer": {
+        "n_total": 20,
+        "industry": 3,
+        "government": 9,
+        "mixed": 2,
+        "none_declared": 1,
+        "undisclosed": 4,
+        "unknown": 1,
+        "from_api_metadata": 6
+      },
+      "sot_sections": ["4.1"],
+      "locators": [
+        {
+          "fields": ["answer.industry"],
+          "source_artifact_id": "pmid:12345678#fulltext",
+          "char_offset": 8801,
+          "quoted_span": "Supported by grant R01-AG000000 from the National Institute on Aging; study drug donated by Acme Pharma."
+        }
+      ],
+      "verdict_contribution": "neutral",
+      "sufficiency": "partial"
+    },
+    "9": {
+      "step": 9,
+      "question_ja": "証拠を見て、見込みはどう変わりましたか",
+      "answer": {
+        "prior_level": "中程度",
+        "posterior_level": "中程度",
+        "net_direction": -1,
+        "jump_reason": null
+      },
+      "sot_sections": ["5.1"],
+      "locators": [
+        {
+          "fields": ["answer.posterior_level"],
+          "source_artifact_id": "grade.json",
+          "char_offset": 0,
+          "quoted_span": "{\n  \"schema_version\": 1,\n  \"level\": \"moderate\""
+        }
+      ],
+      "verdict_contribution": "neutral",
+      "sufficiency": "complete"
+    },
+    "10": {
+      "step": 10,
+      "question_ja": "結局、どれくらい確からしいと言えますか",
+      "answer": { "grade_level": "moderate", "confidence_ja": "中程度" },
+      "sot_sections": ["5.2"],
+      "locators": [
+        {
+          "fields": ["answer.grade_level"],
+          "source_artifact_id": "grade.json",
+          "char_offset": 0,
+          "quoted_span": "{\n  \"schema_version\": 1,\n  \"level\": \"moderate\""
+        }
+      ],
+      "verdict_contribution": "neutral",
+      "sufficiency": "complete"
+    }
+  }
+}

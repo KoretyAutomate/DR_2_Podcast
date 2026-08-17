@@ -218,8 +218,13 @@ _REPORT_FILENAMES = {
 }
 
 
+class AccuracyGateFailure(RuntimeError):
+    """The accuracy gate rejected the script and the correction pass could not repair it."""
+
+
 def _save_research_reports(deep_reports: dict, output_dir_path: Path, run_logger) -> None:
     from dr2_podcast import pipeline as _pipeline
+    from dr2_podcast.artifacts import write_atomic
 
     for role_name, filename in _REPORT_FILENAMES.items():
         report = deep_reports.get(role_name)
@@ -227,26 +232,34 @@ def _save_research_reports(deep_reports: dict, output_dir_path: Path, run_logger
             run_logger.warning("%s report missing — skipping save", role_name.capitalize())
             continue
         report_file = _pipeline.output_path(output_dir_path, filename)
-        report_file.write_text(report.report)
+        # Atomic: these are the `research` stage's declared outputs, and an interrupted rerun
+        # otherwise truncates the last coherent result of a forty-minute stage.
+        write_atomic(Path(report_file), report.report)
         run_logger.info("%s report saved: %s (%d sources)", role_name.capitalize(), filename, report.total_summaries)
 
 
 def _save_sources_json(deep_reports: dict, output_dir_path: Path, run_logger) -> None:
     """Write research_sources.json, dropping sources that carry no usable summary."""
     from dr2_podcast import pipeline as _pipeline
+    from dr2_podcast.artifacts import write_atomic
 
     sources_json = {}
     for role_name in ("lead", "counter"):
         report = deep_reports[role_name]
-        role_sources = []
-        for idx, src in enumerate(report.sources):
+        role_sources: list[dict] = []
+        for src in report.sources:
             if src.error or not src.summary or src.summary.strip().upper() == "NO RELEVANT DATA":
                 continue
             if not src.url:
                 continue
             role_sources.append(
                 {
-                    "index": idx,
+                    # The position in the list AS SAVED, not in report.sources. Every skipped
+                    # source above left a gap between the index pipeline.py:1440 shows an agent and
+                    # the position read_research_source resolves, so asking for the source it was
+                    # shown returned a different one — the same defect the validator's filter had
+                    # (prepush codex 2026-08-13), one step earlier in the same file's life.
+                    "index": len(role_sources),
                     "url": src.url,
                     "title": src.title,
                     "query": src.query,
@@ -257,7 +270,7 @@ def _save_sources_json(deep_reports: dict, output_dir_path: Path, run_logger) ->
             )
         sources_json[role_name] = role_sources
     sources_file = _pipeline.output_path(output_dir_path, "research_sources.json")
-    sources_file.write_text(json.dumps(sources_json, indent=2, ensure_ascii=False))
+    write_atomic(Path(sources_file), json.dumps(sources_json, indent=2, ensure_ascii=False))
     run_logger.info(
         "Research library saved: %d lead, %d counter sources",
         len(sources_json.get("lead", [])),
@@ -790,7 +803,11 @@ def phase_7_audit(
     auditor_agent_ref,
     translation_task_ref,
 ):
-    """Phase 7: Accuracy audit (advisory)."""
+    """Phase 7: Accuracy audit. BLOCKING — see the correction path below.
+
+    It was docstring'd "advisory" while being the only thing standing between a drifted script and
+    the audio render (PLAN.md Step 5). A gate whose failure path continues is decorative.
+    """
     from dr2_podcast import pipeline as _pipeline
 
     run_logger = get_run_logger()
@@ -1328,9 +1345,15 @@ def run_pipeline_flow(
             flow_logger,
         )
         if corrected_script_text is None:
-            flow_logger.warning(
-                "Correction pass produced no valid script — finalizing the "
-                "UNCORRECTED script; MANUAL REVIEW NEEDED (see accuracy_audit.md)"
+            # STOPS. It used to log "MANUAL REVIEW NEEDED" and finalise the uncorrected script
+            # anyway, which meant the accuracy gate's failure path was to ship what it rejected —
+            # to audio, unattended, at 3am (PLAN.md Step 5: "or the gate is decorative"). "Manual
+            # review needed" means a human has to look, and a run that continues has ensured
+            # nobody will. The staged audit adapter already refused this; now both paths agree.
+            raise AccuracyGateFailure(
+                "the accuracy gate fired and the correction pass produced no valid script. See "
+                "research/accuracy_audit.md and ACCURACY_CORRECTIONS.md; the script this run "
+                "produced is not one this pipeline is willing to render."
             )
 
     # -------------------------------------------------------------------
@@ -1387,6 +1410,20 @@ def run_pipeline_flow(
 # ---------------------------------------------------------------------------
 
 
+def flow_or_module_logger():
+    """Prefect's run logger inside a flow, the module logger outside one.
+
+    ``get_run_logger()`` raises ``MissingContextError`` when there is no flow context, and the
+    staged runner calls these helpers from a plain process. Reaching for the run logger
+    unconditionally would make correction unreachable outside Prefect for no reason connected to
+    what it does.
+    """
+    try:
+        return get_run_logger()
+    except Exception:
+        return logger
+
+
 def _run_inline_correction(
     audit_output: str,
     polished_text: str,
@@ -1399,7 +1436,7 @@ def _run_inline_correction(
     from dr2_podcast import pipeline as _pipeline
     from crewai import Crew, Task
 
-    flow_logger = get_run_logger()
+    flow_logger = flow_or_module_logger()
     orig_transitions = polished_text.count("[TRANSITION]") + polished_text.count("[INTRO_END]")
     corrected_script_text = None
     last_rejection_reason = ""

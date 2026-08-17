@@ -65,7 +65,13 @@ class TestApplyGlossary:
         assert apply_tts_glossary(once) == once
 
     def test_acronyms(self):
-        assert apply_tts_glossary("NMNとBMI") == "エヌエムエヌとボディマスインデックス"
+        assert apply_tts_glossary("NMNとNIH") == "エヌエムエヌとアメリカ国立衛生研究所"
+
+    def test_bmi_is_left_alone(self):
+        # 2026-08-12 (ep14 listening): BMI→ボディマスインデックス was an expansion,
+        # not a misreading fix. AivisSpeech says ビイエムアイ for a bare BMI, which
+        # is what the user wants spoken.
+        assert apply_tts_glossary("たとえばBMIが正常な人") == "たとえばBMIが正常な人"
 
     # Ep09 listening round 2026-07-24: 五つ目→「ごつめ」, 建前→「けんまえ」,
     # 放っておけない→「はなっておけない」. Same family as the 2026-07-24 ep08
@@ -115,6 +121,37 @@ class TestApplyGlossary:
     def test_juubun_ka_does_not_overreach(self, src):
         # No 十分か substring -> the entry must not fire. 週百五十分 is 150 MINUTES
         # (correctly ジュップン) and must never be rewritten.
+        assert apply_tts_glossary(src) == src
+
+    # Ep02/Ep03 listening round 2026-08-15: 二つめ→ニツメ、鏡写し→キョオウツシ.
+    # Both confirmed via /audio_query on the REAL turn, at the voice that speaks it —
+    # ep02 turn#130「だから二つめの質問」→ ...ダカラ|ニツメノ|シツモン... and
+    # ep03 turn#59「ほとんど鏡写しになる」→ ...ホトンドキョオ|ウツシニ|ナルンデス...
+    @pytest.mark.parametrize(
+        "src,want",
+        [
+            ("だから二つめの質問、", "だからふたつめの質問、"),
+            (
+                "二つのグループはほとんど鏡写しになるんです。",
+                "二つのグループはほとんどカガミウツシになるんです。",
+            ),
+        ],
+    )
+    def test_ep02_ep03_listening_round(self, src, want):
+        assert apply_tts_glossary(src) == want
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            "二つ目、症例対照研究。",
+            "二つ目の質問",
+            "二つのグループ",
+        ],
+    )
+    def test_kanji_ordinal_not_widened(self, src):
+        # Only the PARTIAL-HIRAGANA 二つめ is keyed. The kanji 二つ目 reads フタツメ
+        # correctly (all 3 ep03 occurrences probed), and 二つ目の is already a guard on
+        # the 目の rule — widening the key would flatten a correct reading's pitch accent.
         assert apply_tts_glossary(src) == src
 
     def test_ordinal_longest_first(self):

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dr2-podcast.local/schemas/step_pack.schema.json",
+  "title": "StepPack",
+  "description": "The nine-step interrogation view of the evidence, DERIVED and never authored. Built by Python from pipeline_data + extractions + clinical_math.md + the structured GRADE record, with no LLM. It is a projection, not a second source of truth, so it cannot drift: change the SOT, regenerate the pack. Step 7 (メディア歪曲チェック) is dropped — this pipeline reads primary literature rather than press coverage of it, so that step has no subject and no evidence artifact. The pack must never pass through summarize_report: it is small and structured, and the blueprint reads it directly.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "sot_domain", "steps"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "sot_domain": {
+      "description": "Which SOT builder produced the sections referenced below. There are two, clinical and social_science, with different section numbering (2.x vs 3.x) — a domain-blind sot_sections reference cites the wrong section.",
+      "enum": ["clinical", "social_science"]
+    },
+    "steps": {
+      "description": "Keyed by step number AS A STRING, not an array. The blueprint references a step as 'step_pack.json#/steps/3'; against an array that JSON Pointer resolves to the FOURTH element, and the step numbers skip 7, so an array silently mis-resolves every reference after step 6. Steps 1, 4, 9 and 10 are mandatory — prior, numbers, update, verdict.",
+      "type": "object",
+      "required": ["1", "4", "9", "10"],
+      "propertyNames": { "enum": ["1", "2", "3", "4", "5", "6", "8", "9", "10"] },
+      "additionalProperties": { "$ref": "#/$defs/step" }
+    }
+  },
+  "$defs": {
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step",
+        "question_ja",
+        "answer",
+        "sot_sections",
+        "locators",
+        "verdict_contribution",
+        "sufficiency"
+      ],
+      "properties": {
+        "step": {
+          "description": "Must equal the key this object is stored under; Python enforces the agreement.",
+          "type": "integer",
+          "enum": [1, 2, 3, 4, 5, 6, 8, 9, 10]
+        },
+        "question_ja": { "type": "string", "minLength": 1 },
+        "answer": {
+          "description": "Step-specific structured answer, e.g. {\"rct\": 12, \"cohort\": 6, \"blinded\": 9} for step 3. Shape varies by step; what does not vary is that it is computed, not written. Per-step answer schemas are NOT defined here — see the note in PLAN.md Step S: only step 3's shape is specified anywhere, and the honest check that an answer is derived rather than authored is regenerating the pack from its inputs and comparing, which belongs to the Step 9b generator. What this schema can require is that an answer has content at all.",
+          "type": "object",
+          "minProperties": 1
+        },
+        "sot_sections": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "locators": {
+          "description": "May be empty only when sufficiency is 'absent' — Python enforces that. An answer with no provenance and a non-absent sufficiency is a fabricated answer that would pass a presence check.",
+          "type": "array",
+          "items": { "$ref": "locator.schema.json" }
+        },
+        "verdict_contribution": {
+          "description": "Closed enum, used for blueprint consistency checks ONLY. It never feeds the posterior — net_direction comes from the structured GRADE record, because counting step-pack rows weights a finding by how often the episode mentions it.",
+          "enum": ["support", "downgrade", "neutral"]
+        },
+        "sufficiency": {
+          "description": "Load-bearing. If funding is undisclosed on 15 of 20 studies, step 5's honest answer is 'mostly undisclosed' and the episode says so. 'absent' does not always mean the episode skips the step — where the absence IS the finding, the step runs and states it.",
+          "enum": ["complete", "partial", "absent"]
+        }
+      }
+    }
+  }
+}

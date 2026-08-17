@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dr2-podcast.local/schemas/grade.schema.json",
+  "title": "StructuredGradeRecord",
+  "description": "The GRADE verdict as structured output rather than prose. Today GRADE is model-authored prose that pipeline_sot.py:43 regex-scrapes with a permissive 'Not Determined' default; this record replaces that with a fail-closed contract. Produced by Claude (the GRADE verdict is Claude's under the allocation table), validated by Python. It is the input the 確信度 lookup needs, what makes the step-8 bias rollup countable, and the ONLY source of net_direction — the step pack must never feed the posterior, because it is a presentation projection where one finding referenced by three steps would be weighted three times.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "level", "downgrades", "upgrades"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "level": {
+      "description": "Certainty of the body of evidence.",
+      "enum": ["high", "moderate", "low", "very_low"]
+    },
+    "downgrades": {
+      "description": "At most ONE entry per domain — aggregate before writing. Uniqueness is enforced in Python (JSON Schema cannot express uniqueness by property): without it sum(downgrades[].steps) double-counts and net_direction is wrong, which is why 'deduplicated by construction' was an unearned claim.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/downgrade" }
+    },
+    "upgrades": {
+      "description": "At most ONE entry per domain, same reason.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/upgrade" }
+    }
+  },
+  "$defs": {
+    "steps": {
+      "description": "GRADE rates down or up by one level (serious) or two (very serious). Anything else is a data error.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2
+    },
+    "evidence": {
+      "description": "Why this modifier applies. A quoted locator when the reason is stated in a paper; a derived record when it is computed from the data — an imprecision downgrade read off a confidence interval exists in no paper as text.",
+      "oneOf": [
+        { "$ref": "locator.schema.json" },
+        { "$ref": "derived.schema.json" }
+      ]
+    },
+    "downgrade": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "steps", "reason", "locator"],
+      "properties": {
+        "domain": {
+          "enum": ["risk_of_bias", "inconsistency", "indirectness", "imprecision", "publication_bias"]
+        },
+        "steps": { "$ref": "#/$defs/steps" },
+        "reason": { "type": "string", "minLength": 1 },
+        "locator": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "upgrade": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "steps", "reason", "locator"],
+      "properties": {
+        "domain": {
+          "enum": ["large_effect", "dose_response", "plausible_confounding"]
+        },
+        "steps": { "$ref": "#/$defs/steps" },
+        "reason": { "type": "string", "minLength": 1 },
+        "locator": { "$ref": "#/$defs/evidence" }
+      }
+    }
+  }
+}

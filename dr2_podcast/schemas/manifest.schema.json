@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dr2-podcast.local/schemas/manifest.schema.json",
+  "title": "RunManifest",
+  "description": "meta/manifest.json — what each stage of a run consumed, produced and ran under. It exists because the first draft of the plan asserted that the existing --resume and Prefect caching 'stay valid' for independently re-runnable stages, and that is not true as written: session_metadata.txt records no completed-phase list (pipeline.py:590), Prefect caching is keyed around whole-phase tasks, and legacy checkpoint read errors already fall back to empty state (pipeline.py:502). Re-running one stage would leave every downstream artifact falsely current. The manifest makes staleness derivable instead of assumed: a stage is current only if every input it recorded still hashes to what it recorded. Legacy and staged runs keep SEPARATE manifests so the two modes cannot collide on filenames.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "mode", "stages"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "mode": {
+      "description": "'staged' = driven by `python -m dr2_podcast.stage`. 'legacy' = the monolithic runner, which keeps working throughout this plan (--legacy-smart-author) and writes its own manifest file.",
+      "enum": ["staged", "legacy"]
+    },
+    "stages": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/stage_record" }
+    }
+  },
+  "$defs": {
+    "artifact_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact", "sha256"],
+      "properties": {
+        "artifact": {
+          "description": "Path relative to the run directory, e.g. 'research/research_framing.md'.",
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "outcome", "at"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "outcome": {
+          "description": "'transport' is a malformed or empty response that was retried. It is recorded separately from a revision round on purpose: conflating them silently shortens a loop bounded at 3 rounds.",
+          "enum": ["complete", "failed", "transport"]
+        },
+        "at": { "type": "string", "minLength": 1 },
+        "detail": { "type": ["string", "null"] }
+      }
+    },
+    "stage_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "inputs", "outputs", "identity", "attempts"],
+      "properties": {
+        "status": {
+          "description": "'stale' is set on a downstream stage when an input it recorded no longer hashes to what it recorded — never silently reused.",
+          "enum": ["pending", "running", "complete", "failed", "stale"]
+        },
+        "inputs": { "type": "array", "items": { "$ref": "#/$defs/artifact_ref" } },
+        "outputs": { "type": "array", "items": { "$ref": "#/$defs/artifact_ref" } },
+        "identity": {
+          "description": "Model and configuration the stage ran under. A change here is an input change: the same inputs under a different model are not the same run.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["model", "config_sha256"],
+          "properties": {
+            "model": { "type": "string", "minLength": 1 },
+            "config_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        },
+        "attempts": { "type": "array", "items": { "$ref": "#/$defs/attempt" } },
+        "started_at": { "type": ["string", "null"] },
+        "finished_at": { "type": ["string", "null"] },
+        "stale_reason": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

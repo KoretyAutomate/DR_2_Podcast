@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dr2-podcast.local/schemas/run_config.schema.json",
+  "title": "RunConfig",
+  "description": "meta/run_config.json — the parameters of one run, on disk. A staged run has no caller holding them in memory: `python -m dr2_podcast.stage draft --run <dir>` is a fresh process that has to reconstruct everything the stage needs from the run directory alone. Today those values are function arguments threaded between Prefect tasks (topic_name, language, language_config, target_length_int), which is exactly why the phases cannot be invoked independently.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "topic", "language", "target_length_minutes"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "topic": { "type": "string", "minLength": 1 },
+    "language": {
+      "description": "Episode language. Drives translation, TTS engine and voice selection. Enumerated rather than any string, because initialise_run_globals indexes SUPPORTED_LANGUAGES with it: a free string let `--language fr` overwrite the run config and only then fail the stage with a KeyError. Rejecting it here means the invalid configuration is never committed. Kept in step with pipeline.SUPPORTED_LANGUAGES by test_the_language_enum_matches_the_supported_languages.",
+      "enum": ["en", "ja"]
+    },
+    "target_length_minutes": { "type": "integer", "minimum": 1, "maximum": 180 },
+    "created_at": { "type": ["string", "null"] },
+    "notes": { "type": ["string", "null"] }
+  }
+}

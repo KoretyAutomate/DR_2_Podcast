@@ -49,11 +49,16 @@ class TestCalculateImpact:
         assert result is None
 
     def test_zero_cer(self):
-        """CER=0 edge case: avoid division by zero in RRR."""
+        """CER=0: RRR is UNDEFINED, not zero.
+
+        Changed 2026-08-12. It used to assert 0.0 "by guard", but a zero-event control arm is a
+        real situation and reporting 0% relative reduction there is a quantitative claim the data
+        does not support. dr2_podcast/schemas requires null for any derived record built from it.
+        """
         result = calculate_impact("Study-7", cer=0.0, eer=0.05)
         assert result is not None
         assert result.direction == "harm"
-        assert result.rrr == 0.0  # CER is 0, so RRR = ARR/0 = 0 by guard
+        assert result.rrr is None
 
     def test_very_small_effect(self):
         """Very small effect near epsilon threshold."""
@@ -76,11 +81,69 @@ class TestCalculateImpact:
 
 
 class TestBatchCalculate:
-    def _make_extraction(self, pmid, title, cer, eer):
-        """Helper to create a mock DeepExtraction-like object."""
+    def _make_extraction(self, pmid, title, cer, eer, *, endpoint="hip fracture", timepoint=None):
+        """A DeepExtraction-like object whose rates live where they now live: on a finding.
+
+        Step 9a slice 2 moved CER/EER out of the paper-level record, because a paper reporting
+        benefit on one endpoint and no effect on another has two of them.
+        """
         from types import SimpleNamespace
 
-        return SimpleNamespace(pmid=pmid, title=title, control_event_rate=cer, experimental_event_rate=eer)
+        from dr2_podcast.research.clinical import Finding
+
+        finding = Finding(
+            population="adults",
+            intervention="drug",
+            comparator="placebo",
+            endpoint=endpoint,
+            timepoint=timepoint,
+            control_event_rate=cer,
+            experimental_event_rate=eer,
+            outcome_is_adverse=True,
+            finding_key=f"{pmid}:{endpoint}",
+        )
+        return SimpleNamespace(pmid=pmid, title=title, findings=[finding])
+
+    def test_a_legacy_extraction_still_computes_its_numbers(self):
+        """A checkpoint written before findings[] existed keeps its rates at the paper level, and a
+        resumed run must not silently downgrade to "Data Insufficient"."""
+        from types import SimpleNamespace
+
+        legacy = SimpleNamespace(
+            pmid="9", title="Old study", findings=[],
+            control_event_rate=0.20, experimental_event_rate=0.10, outcome_is_adverse=True,
+        )
+        [impact] = batch_calculate([legacy])
+        assert impact.study_id == "9"
+        assert impact.arr == pytest.approx(0.10)
+        assert impact.finding_key is None, "there is no finding to key it by, and inventing one lies"
+
+    def test_a_modern_extraction_with_no_verified_finding_still_contributes_nothing(self):
+        """The legacy fallback must not reopen what slice 1 closed: since then, a paper whose
+        findings all failed verification has None rates, so it computes nothing either way."""
+        from types import SimpleNamespace
+
+        modern = SimpleNamespace(
+            pmid="10", title="New study", findings=[],
+            control_event_rate=None, experimental_event_rate=None, outcome_is_adverse=None,
+        )
+        assert batch_calculate([modern]) == []
+
+    def test_a_paper_with_two_endpoints_produces_two_rows(self):
+        """The whole reason the math moved to findings[]: one polarity per endpoint, and rows a
+        reader can tell apart."""
+        from types import SimpleNamespace
+
+        paper = self._make_extraction("1", "Study A", 0.20, 0.10)
+        second = self._make_extraction("1", "Study A", 0.10, 0.10, endpoint="falls", timepoint="12 months")
+        combined = SimpleNamespace(pmid="1", title="Study A", findings=paper.findings + second.findings)
+
+        results = batch_calculate([combined])
+        assert [r.endpoint for r in results] == ["hip fracture", "falls"]
+        assert results[1].row_label == "1 — falls @ 12 months"
+        assert results[0].direction == "benefit"
+        assert results[1].direction == "no_effect"
+        assert len({r.finding_key for r in results}) == 2, "each row must be groupable on its own key"
 
     def test_mixed_batch(self):
         """Batch with some having CER/EER and some not."""

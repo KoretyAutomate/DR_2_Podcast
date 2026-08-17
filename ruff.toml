@@ -128,10 +128,15 @@ max-nested-blocks = 4
 # scheme is a literal in the f-string, so no file:/custom scheme is reachable.
 "dr2_podcast/evaluation/telegram_report.py" = ["S310"]
 
-# S301 — a one-time migration that unpickles the user's OWN youtube_token.pickle
-# from disk and immediately deletes it, replacing it with JSON. Not untrusted
-# input; the pickle path is a module constant, not caller-supplied.
-"dr2_podcast/tools/upload_utils.py" = ["S301"]
+# S310 — check_byte_range() issues one ranged GET against the episode's own
+# enclosure URL to prove the CDN answers 206 rather than 200 (Apple validates
+# byte-range support, and every app needs it to seek). The URL is built by
+# Episode.enclosure_url() from show.base_url + audio_key, both of which live in
+# podcast/episodes.json, which is committed to git; audio_key is additionally
+# constrained to `^[A-Za-z0-9][A-Za-z0-9/_.-]*$` by Manifest.validate(), and
+# feed.validate_feed_bytes() refuses any enclosure URL that is not https://.
+# There is no path by which a `file:` or custom scheme reaches urlopen here.
+"dr2_podcast/publish/storage.py" = ["S310"]
 
 # S608 — lookup_study builds `WHERE ...` by joining code-owned predicate
 # fragments ("study_citation LIKE ? COLLATE NOCASE"). Every user value is bound

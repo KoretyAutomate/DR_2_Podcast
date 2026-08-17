@@ -28,7 +28,7 @@ from pathlib import Path
 
 import requests
 
-from dr2_podcast.tools.tts_reading_check import _norm
+from dr2_podcast.tools.tts_readings import _norm
 
 JUDGE_MODEL = os.environ.get("TTS_JUDGE_MODEL", "Intel/Qwen3.5-122B-A10B-int4-AutoRound")
 JUDGE_BASE_URL = os.environ.get("TTS_JUDGE_BASE_URL", "http://localhost:8000/v1")

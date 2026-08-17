@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from dr2_podcast.config import SMART_MODEL
+from dr2_podcast.research.clinical_math import format_rrr
 from dr2_podcast.utils import strip_think_blocks
 
 
@@ -19,16 +20,38 @@ def _smart_model_display() -> str:
     return SMART_MODEL.split("/", 1)[-1] if SMART_MODEL else "Smart LLM"
 
 
-def _extract_conclusion_status(grade_report: str, domain: str = "clinical", language: str = "en") -> tuple:
+#: The record's enum, spelled the way the status map and the prose have always spelled it.
+_GRADE_RECORD_LEVELS = {"high": "High", "moderate": "Moderate", "low": "Low", "very_low": "Very Low"}
+
+
+def _extract_conclusion_status(
+    grade_report: str,
+    domain: str = "clinical",
+    language: str = "en",
+    grade_record: dict | None = None,
+) -> tuple:
     """Extract evidence level, conclusion status, and executive summary.
 
     Supports both GRADE (clinical) and Evidence Quality (social science) levels.
     Uses i18n status_map when language != 'en'.
+
+    ``grade_record`` is the structured record step 7 now produces, and when it is present the level
+    is READ from it rather than scraped out of the prose. The regex below survives for runs that
+    predate the record — but it is why the record exists: a pattern that misses yields
+    "Not Determined", which the status map turns into a mild "Under Evaluation" and the episode goes
+    out speaking a confidence nobody computed. A structured record cannot miss; it either says what
+    the level is or it fails validation upstream where someone can see it.
     """
     from dr2_podcast.sot_i18n import get_templates
 
     tmpl = get_templates(language)
     tmpl_status = tmpl["status_map"]
+
+    if grade_record and domain != "social_science":
+        grade = _GRADE_RECORD_LEVELS.get(str(grade_record.get("level", "")).lower(), "Not Determined")
+        status = tmpl_status.get("clinical", {}).get(grade, tmpl_status.get("default_status", "Under Evaluation"))
+        m2 = re.search(r"Executive\s+Summary[#\s:]*\n+(.+?)(?:\n\n|\n#)", grade_report, re.DOTALL)
+        return grade, status, (m2.group(1).strip() if m2 else "")
 
     if domain == "social_science":
         # Social science evidence quality levels
@@ -108,7 +131,7 @@ def _format_study_characteristics_table(extractions: list) -> str:
             f"| {ext.sample_size_total or 'N/A'} "
             f"| {(ext.demographics or 'N/A')[:40]} "
             f"| {ext.follow_up_period or 'N/A'} "
-            f"| {(ext.funding_source or 'N/A')[:30]} "
+            f"| {_funding_cell(ext)} "
             f"| {ext.risk_of_bias or 'N/A'} "
         )
         if has_metadata:
@@ -119,6 +142,60 @@ def _format_study_characteristics_table(extractions: list) -> str:
         base += f"| {tier_label} |"
         rows.append(base)
     return "\n".join(rows) + "\n"
+
+
+def _funding_cell(ext) -> str:
+    """The funding column: category, disclosure state, and whether anyone can check it.
+
+    undisclosed (the paper is silent) is NOT unknown (we failed to extract) — Ep09's thesis makes
+    that distinction the finding, so the two never collapse into one 'N/A'. The API-derived variant
+    is flagged because it exists nowhere in the paper and cannot be verified against it.
+    """
+    funding = getattr(ext, "funding", None)
+    if funding is None or funding.funding_disclosure == "unknown":
+        legacy = getattr(ext, "funding_source", None)
+        return (legacy or "unknown")[:30]
+    if funding.funding_disclosure == "undisclosed":
+        return "undisclosed (paper silent)"
+    flag = "" if funding.funding_source_type == "extracted_text" else " (API, unverified)"
+    return f"{(funding.funding_raw or '')[:30]} — {funding.funding_category}{flag}"
+
+
+def _format_rollups(extractions: list, grade_record: dict | None) -> str:
+    """Funding, replication and bias over the whole extracted set, as n of N.
+
+    Rendered from the same functions the step pack projects, so the document and the projection
+    cannot disagree about what they counted. Every line names its denominator, and `unknown` is
+    stated rather than folded away — a rollup whose denominator quietly shrinks turns a missing
+    disclosure into silence, which is the opposite of what Ep09's thesis needs it to do.
+    """
+    from dr2_podcast.research.rollups import bias_rollup, funding_rollup, replication_rollup
+
+    if not extractions:
+        return ""
+    funding = funding_rollup(extractions)
+    replication = replication_rollup(extractions)
+    bias = bias_rollup(extractions, grade_record)
+    total = funding["studies_total"]
+
+    named = [f"{name} {count}" for name, count in funding["by_category"].items() if count]
+    lines = [
+        "\n#### Funding, replication and bias (aggregate)\n",
+        f"- Funding, n={total}: {', '.join(named) if named else 'nothing extracted'}"
+        f" — undisclosed {funding['undisclosed']}, unknown {funding['unknown']},"
+        f" API-sourced and unverifiable against the paper {funding['from_api_metadata_unverified']}\n",
+        f"- Replication, {replication['findings_total']} distinct finding(s):"
+        f" {replication['findings_replicated']} reproduced by two or more independent groups on"
+        f" separate cohorts; {replication['findings_cohorts_unknown']} reported by two or more groups"
+        f" whose cohorts cannot be told apart; {replication['findings_single_group']} reported once\n",
+        f"- Risk of bias, n={bias['studies_total']}: "
+        + ", ".join(f"{name} {count}" for name, count in bias["risk_of_bias"].items())
+        + "\n",
+    ]
+    if bias["grade_downgrades"]:
+        spelled = ", ".join(f"{domain} −{steps}" for domain, steps in bias["grade_downgrades"].items())
+        lines.append(f"- GRADE downgraded for: {spelled}\n")
+    return "".join(lines)
 
 
 def _format_references(extractions: list, wide_net_records: list) -> str:
@@ -655,13 +732,17 @@ def _imrad_clinical_impact(c: _ImradCtx) -> list[str]:
     elif c.impacts:
         rows = [tmpl["results"]["impact_table_header"]]
         for i in c.impacts:
+            # row_label, not study_id: one paper can contribute a row per endpoint, and keying the
+            # table by the study alone renders them as duplicate rows nobody can tell apart.
+            # EffectSizeImpact has no such split, so it falls back to its study_id.
+            label = getattr(i, "row_label", None) or i.study_id
             rows.append(
-                f"| {i.study_id} | {i.cer:.3f} | {i.eer:.3f} | "
-                f"{i.arr:+.4f} | {i.rrr:+.2%} | {i.nnt:.1f} | {i.direction} |"
+                f"| {label} | {i.cer:.3f} | {i.eer:.3f} | "
+                f"{i.arr:+.4f} | {format_rrr(i.rrr)} | {i.nnt:.1f} | {i.direction} |"
             )
         out.append("\n".join(rows) + "\n\n")
         for i in c.impacts:
-            out.append(f"- **{i.study_id}**: {i.nnt_interpretation}\n")
+            out.append(f"- **{getattr(i, 'row_label', None) or i.study_id}**: {i.nnt_interpretation}\n")
     else:
         out.append(t(tmpl, "results", "no_impact_data"))
     return out
@@ -692,6 +773,10 @@ def _imrad_results(c: _ImradCtx) -> list[str]:
     # 3.2 Study Characteristics
     out.append(t(tmpl, "results", "study_chars_header"))
     out.append(_format_study_characteristics_table(c.all_extractions))
+    # The aggregates the table's own columns cannot state (PLAN.md Step 9b item 3). Per-study
+    # funding and bias have always been in the table above; "14 of 20 industry-funded, 5
+    # undisclosed" is a different fact, and it is the one steps 5 and 8 ask for.
+    out.append(_format_rollups(c.all_extractions, c.pd.get("grade_record")))
 
     # 3.3 Clinical Impact
     out += _imrad_clinical_impact(c)
@@ -833,7 +918,9 @@ def build_imrad_sot(
             )
         )
 
-    grade_level, conclusion_status, exec_summary = _extract_conclusion_status(audit_text, language=language)
+    grade_level, conclusion_status, exec_summary = _extract_conclusion_status(
+        audit_text, language=language, grade_record=pd.get("grade_record")
+    )
 
     ctx = _ImradCtx(
         tmpl=tmpl,

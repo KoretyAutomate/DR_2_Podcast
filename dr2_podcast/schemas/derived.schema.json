@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dr2-podcast.local/schemas/derived.schema.json",
+  "title": "DerivedValue",
+  "description": "The carve-out for values that are computed rather than quoted (PLAN.md, 'Python-derived values have no span'). ARR/NNT/effect sizes from clinical_math.py and effect_size_math.py, and GRADE modifiers such as an imprecision downgrade read off a confidence interval, exist in no paper as text — a literal-substring rule would reject them. PLAN.md's sentence is 'the check recomputes the arithmetic', so `operation` is a CLOSED ENUM and not the free-text `formula` the plan sketched: prose can only be validated for shape, which would leave the recomputation promise unearned. The enum covers exactly what this repo's two deterministic calculators compute, and nothing speculative. Every operand carries its own provenance, and a derived value may be an operand of another — RRR consumes a computed ARR and NNT consumes 1/|ARR| (clinical_math.py:45), so a scheme where operands must all be quoted from a paper could not express the pipeline's own arithmetic.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "operation", "operands", "result"],
+  "properties": {
+    "kind": { "const": "derived" },
+    "operation": {
+      "description": "clinical_math.py: difference = minuend - subtrahend (ARR); negate = -value (the outcome_is_adverse polarity flip at clinical_math.py:47); ratio = numerator / denominator (RRR); reciprocal_abs = 1 / |value| (NNT). effect_size_math.py: hedges_g = cohens_d * (1 - 3/(4*sample_size - 9)), uncorrected below n=4; odds_ratio_to_d = ln(OR) * sqrt(3) / pi; r_to_d = 2r / sqrt(1 - r^2); d_to_r = d / sqrt(d^2 + 4). GRADE: ci_includes_null / ci_excludes_null = whether null_value lies inside [ci_low, ci_high].",
+      "enum": [
+        "difference",
+        "negate",
+        "ratio",
+        "reciprocal_abs",
+        "hedges_g",
+        "odds_ratio_to_d",
+        "r_to_d",
+        "d_to_r",
+        "ci_includes_null",
+        "ci_excludes_null"
+      ]
+    },
+    "operands": {
+      "description": "Named inputs. The set of names is fixed per operation and enforced in Python, as is which operands may be constants.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/operand" }
+    },
+    "result": {
+      "description": "The stated result. Recomputed and compared — a number for the arithmetic operations, a boolean for the confidence-interval ones, and null where the quantity has no finite value. That last case is real and not an error state: calculate_impact returns nnt = inf when CER equals EER (clinical_math.py:52-58), and JSON cannot carry infinity, so null is how an infinite NNT or a ratio over a zero rate is written down. Python requires null exactly there and forbids it everywhere else.",
+      "type": ["number", "boolean", "null"]
+    }
+  },
+  "$defs": {
+    "operand": {
+      "description": "A value plus exactly one account of where it came from: `quoted` (a literal span in a paper), `computed` (another derived value, whose own result must equal this value), or `constant` (a stated mathematical constant such as the null a confidence interval is compared against). Three ways in, no fourth — an operand with no account of itself is the hole the locator contract exists to close.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value"],
+      "properties": {
+        "value": { "type": "number" },
+        "quoted": { "$ref": "locator.schema.json" },
+        "computed": { "$ref": "#" },
+        "constant": { "const": true }
+      },
+      "oneOf": [
+        { "title": "quoted from a paper", "required": ["quoted"] },
+        { "title": "computed by an earlier derivation", "required": ["computed"] },
+        { "title": "a stated constant", "required": ["constant"] }
+      ]
+    }
+  }
+}

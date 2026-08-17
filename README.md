@@ -74,7 +74,7 @@ A FastAPI-based web interface (`web_ui.py`) for managing podcast production:
 - **Live progress tracking**: phase name, progress bar, ETA, artifact count, studies scanned
 - **Task queue**: submit multiple requests — confirmation dialog shows queue position, running task progress stays visible
 - **Production History**: collapsible list of past runs with download links
-- **Upload integration**: optional Buzzsprout (draft) and YouTube (private) publishing
+- **Publish sheet**: each finished run writes `publish_sheet.md` beside its metadata — the fields the RedCircle form asks for, in form order, ready to copy across
 - **Research reuse**: reuse previous research artifacts with optional LLM-assessed supplemental research
 - **Stop button**: cancel a running task mid-pipeline
 - **System status**: checks vLLM availability before submission
@@ -360,11 +360,6 @@ export VOICE_DUCKING_DB="-20"         # BGM ducking in dB during speech
 # Web UI authentication (auto-generated if not set)
 export PODCAST_WEB_USER="admin"
 export PODCAST_WEB_PASSWORD="your_password"
-
-# Upload integration (optional)
-export BUZZSPROUT_API_KEY="your_buzzsprout_api_key"
-export BUZZSPROUT_ACCOUNT_ID="your_account_id"
-export YOUTUBE_CLIENT_SECRET_PATH="/path/to/client_secret.json"
 ```
 
 ## Usage
@@ -457,12 +452,55 @@ research_outputs/YYYY-MM-DD_HH-MM-SS/
     ├── research_framing.pdf          PDF export of research framing
     ├── source_of_truth.pdf           PDF export of IMRaD SOT
     ├── source_of_truth_ja.pdf        PDF export of translated SOT (Japanese only)
-    └── accuracy_audit.pdf            PDF export of accuracy audit
+    ├── accuracy_audit.pdf            PDF export of accuracy audit
+    └── publish_sheet.md              Fields for the manual RedCircle upload, in form order
 
 research_outputs/
 ├── run_scorecard.json                Run quality scorecard (evaluation module)
 ├── topic_index.json                  Cross-run topic index (used by reuse workflow)
 └── extraction_cache.json             Step 4 — persistent PMID-keyed extraction cache (shared across all runs)
+```
+
+## Publishing
+
+The show is moving off RedCircle onto a **self-hosted RSS feed** served from one Cloudflare R2 bucket. `dr2_podcast/publish/` is that publisher; it is built and tested, and waiting on a domain and R2 credentials before it can upload anything.
+
+```bash
+python -m dr2_podcast.publish add <run_dir> [--season N] [--episode N]  # register; mints the GUID, once
+python -m dr2_podcast.publish stage --all-draft [--no-upload]           # encode → tag → upload
+python -m dr2_podcast.publish release <guid>                            # mark published
+python -m dr2_podcast.publish sync [--dry-run]                          # rebuild and upload both feeds
+python -m dr2_podcast.publish check [guid]                              # do the live URLs serve byte ranges?
+python -m dr2_podcast.publish ship <run_dir>                            # the four above, in order
+```
+
+`podcast/episodes.json` is the source of truth for the feed — committed to git, because it holds the GUIDs. **A GUID is minted once and never changes:** change one and every subscribed app treats the episode as new and re-downloads it, so `add` refuses to re-register a run and `save_manifest` refuses any write that would lose or rewrite one.
+
+Audio is 128 kbps mono MP3 encoded with PyAV (there is no `ffmpeg` on this machine), tagged with mutagen, and uploaded with boto3. The feed is built by hand with `xml.etree.ElementTree`.
+
+**The preview feed.** `stage` uploads before `release` publishes, so a finished episode sits at a public URL while it is still a draft. Every `sync` therefore writes two documents: `feed.xml`, carrying only what is published and due, and `preview-<token>.xml` at an unguessable URL, carrying everything staged — drafts included. Subscribing to the second in a podcast app is how an episode gets listened to on a phone before anyone else can see it. The preview is marked `<itunes:block>Yes</itunes:block>` and both its channel and item titles are visibly flagged, so there is never a question about which feed is playing.
+
+Both feeds' enclosures are checked against the bucket before either is uploaded, not just the public one: `stage --no-upload` writes real bytes and duration into the manifest without uploading anything, which is enough to list the draft in the preview feed, and a preview feed whose one episode 404s is a preview feed that has lost its only purpose.
+
+`check` is separate from that because byte-range support is a property of the deployment — the custom domain in front of the bucket — rather than of anything in this repository, so it can only be established by asking the live URL. A 200 instead of a 206 means playback from the start works, nobody can scrub, and Apple's validation refuses the feed at submission.
+
+Set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` in `.env` (see `.env.example`) to enable the uploads. Everything before the upload — `add`, `artwork`, `stage --no-upload`, `sync --dry-run` — runs without them.
+
+### The publish sheet
+
+Independently of the feed, every finished run writes a **publish sheet** next to its metadata (`meta/publish_sheet.md`, or the folder root for the flat educational layout). It lists the fields the RedCircle form asks for, in the order it asks for them: the absolute path of `audio_mixed.wav` and its duration, then title, description/show notes (with the run's sources), tags, publish date and episode number.
+
+Anything the run does not actually record is written as `(要記入)` for a human to fill in — never guessed. Titles, descriptions, tags and publish dates do not exist as data anywhere in a run, so those are blanks by design.
+
+`publish add` seeds the manifest from this same module, and treats either sentinel as "not set" rather than copying it across. `release` then refuses an episode whose title or description is still empty — a placeholder that reached the feed would be the episode's name in every podcast app.
+
+```bash
+# Write sheets for existing episode folders without re-running anything
+python -m dr2_podcast.tools.publish_sheet research_outputs/Ep001_*
+
+# An existing sheet is kept, so hand-filled fields survive a re-render.
+# Pass --force to regenerate it.
+python -m dr2_podcast.tools.publish_sheet --force research_outputs/2026-08-14_09-00-00
 ```
 
 ## Source of Truth (IMRaD Format)
@@ -511,12 +549,21 @@ dr2_podcast/                          # Main package
 │   ├── lesson_generator.py           # LLM-assisted observation extraction from scorecards
 │   ├── lesson_reviewer.py            # Lesson review and validation
 │   └── telegram_report.py           # Telegram delivery of evaluation reports
+├── publish/                          # Self-hosted RSS publishing (Cloudflare R2)
+│   ├── manifest.py                   # podcast/episodes.json — the feed's source of truth; GUIDs
+│   ├── encode.py                     # WAV → 128kbps mono MP3 via PyAV; ID3 tags via mutagen
+│   ├── artwork.py                    # Show cover, sized and compressed to Apple's spec
+│   ├── storage.py                    # R2 uploads over boto3; byte-range check
+│   ├── feed.py                       # manifest → RSS XML, public and private preview
+│   └── cli.py                        # add / artwork / stage / release / sync / check / ship
 ├── web/
-│   └── web_ui.py                     # FastAPI web UI (progress tracking, queue, uploads)
+│   └── web_ui.py                     # FastAPI web UI (progress tracking, queue)
 └── tools/
     ├── link_validator.py              # URL validation via HEAD requests
-    └── upload_utils.py                # Buzzsprout and YouTube upload utilities
-tests/                                # Test suite (25 files, 455 tests)
+    ├── tts_readings.py                # What each G2P source says a line is pronounced as
+    ├── tts_reading_check.py           # TTS misreading detector over those readings
+    └── publish_sheet.py               # Per-episode publish sheet (human-facing crib)
+tests/                                # Test suite (1766 tests)
 ```
 
 | Support Files | Purpose |

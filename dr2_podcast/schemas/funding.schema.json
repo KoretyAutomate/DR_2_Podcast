@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dr2-podcast.local/schemas/funding.schema.json",
+  "title": "FundingBlock",
+  "description": "Paper-level funding, replacing the single free-text funding_source. Funding has TWO provenances and only one of them can satisfy the locator contract: clinical.py:2483-2485 falls back to paper_metadata.funding_sources from API metadata, ', '.join-ed, which exists nowhere in the paper text. undisclosed (the paper is silent) is NOT unknown (we failed to extract) — Ep09's thesis makes that distinction the finding, so the two states are represented separately and rolled up separately. The oneOf below IS the legal-combination table; any combination outside it is a validation failure, not a warning.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "funding_raw",
+    "funding_category",
+    "funding_disclosure",
+    "funding_source_type",
+    "funding_locator"
+  ],
+  "properties": {
+    "funding_raw": {
+      "description": "Verbatim funder text as printed, when funding_source_type is extracted_text. When it is api_metadata this is whatever paper_metadata.funding_sources returned, ', '.join-ed — NOT a quotation from the paper. null when there is nothing to attribute.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "funding_category": {
+      "description": "Normalised category, and the value every step-5 rollup counts. Multi-funder rule: any industry money alongside any non-industry money is 'mixed', and mixed is its own category — never double-counted into industry and government.",
+      "enum": [
+        "industry",
+        "government",
+        "foundation",
+        "institutional",
+        "mixed",
+        "none_declared",
+        "undisclosed",
+        "unknown"
+      ]
+    },
+    "funding_disclosure": {
+      "description": "disclosed = the paper states its funding. undisclosed = the paper is silent. unknown = we failed to extract.",
+      "enum": [
+        "disclosed",
+        "undisclosed",
+        "unknown"
+      ]
+    },
+    "funding_source_type": {
+      "description": "Where the funding statement came from. 'none' means there is nothing to attribute, which is what makes the undisclosed and unknown states representable at all.",
+      "enum": [
+        "extracted_text",
+        "api_metadata",
+        "none"
+      ]
+    },
+    "funding_locator": {
+      "description": "Required iff funding_source_type is extracted_text; null otherwise. Its fields list must name funding_raw.",
+      "oneOf": [
+        {
+          "$ref": "locator.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "title": "disclosed, quoted from the paper text",
+      "properties": {
+        "funding_disclosure": {
+          "const": "disclosed"
+        },
+        "funding_source_type": {
+          "const": "extracted_text"
+        },
+        "funding_raw": {
+          "type": "string",
+          "minLength": 1
+        },
+        "funding_locator": {
+          "$ref": "locator.schema.json"
+        },
+        "funding_category": {
+          "enum": [
+            "industry",
+            "government",
+            "foundation",
+            "institutional",
+            "mixed",
+            "none_declared"
+          ]
+        }
+      }
+    },
+    {
+      "title": "disclosed, but only via API metadata — no locator, cannot be verified against the paper. Its category MAY be unknown: the API proves a funder exists without saying what kind it is, and the two questions are separate ones.",
+      "properties": {
+        "funding_disclosure": {
+          "const": "disclosed"
+        },
+        "funding_source_type": {
+          "const": "api_metadata"
+        },
+        "funding_raw": {
+          "type": "string",
+          "minLength": 1
+        },
+        "funding_locator": {
+          "type": "null"
+        },
+        "funding_category": {
+          "enum": [
+            "industry",
+            "government",
+            "foundation",
+            "institutional",
+            "mixed",
+            "none_declared",
+            "unknown"
+          ]
+        }
+      }
+    },
+    {
+      "title": "the paper is silent about funding — a finding, not a gap",
+      "properties": {
+        "funding_disclosure": {
+          "const": "undisclosed"
+        },
+        "funding_source_type": {
+          "const": "none"
+        },
+        "funding_raw": {
+          "type": "null"
+        },
+        "funding_locator": {
+          "type": "null"
+        },
+        "funding_category": {
+          "const": "undisclosed"
+        }
+      }
+    },
+    {
+      "title": "extraction failed — we do not know what the paper says",
+      "properties": {
+        "funding_disclosure": {
+          "const": "unknown"
+        },
+        "funding_source_type": {
+          "const": "none"
+        },
+        "funding_raw": {
+          "type": "null"
+        },
+        "funding_locator": {
+          "type": "null"
+        },
+        "funding_category": {
+          "const": "unknown"
+        }
+      }
+    }
+  ]
+}

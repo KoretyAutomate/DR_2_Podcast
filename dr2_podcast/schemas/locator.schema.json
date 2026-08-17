@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dr2-podcast.local/schemas/locator.schema.json",
+  "title": "Locator",
+  "description": "Field-level provenance. Names WHICH fields of the enclosing record this quoted span sources, and where the span sits in an immutable source artifact. PLAN.md 'What this proves and what it does not': a locator proves provenance (the text exists in a document we fetched); it does NOT prove attribution (right PMID, right arm, right direction). Claude's entailment check is separate and neither alone is sufficient.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["fields", "source_artifact_id", "char_offset", "quoted_span"],
+  "properties": {
+    "fields": {
+      "description": "Field names of the enclosing record that this span substantiates. Locators are field-level, not record-level: one span cannot substantiate facts scattered across a methods paragraph, a results table and the abstract.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "source_artifact_id": {
+      "description": "Immutable id of the exact text the span was quoted from. clinical.py:2372 falls back from full text to abstract and clinical.py:2388 truncates content, so a span validated against a truncated artifact is only valid against THAT artifact — the id must pin which one was used.",
+      "type": "string",
+      "minLength": 1
+    },
+    "char_offset": {
+      "description": "0-based character offset of quoted_span within the artifact identified by source_artifact_id.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "quoted_span": {
+      "description": "Literal substring of the artifact at char_offset. Verified by Python (schemas.verify_locator_span), never by an LLM.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

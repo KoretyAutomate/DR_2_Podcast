@@ -44,6 +44,7 @@ from dr2_podcast.utils import (
     gated_create,
     strip_think_blocks,
     is_safe_url,
+    safe_bool,
     safe_float,
     safe_int,
     safe_str,
@@ -251,6 +252,153 @@ class WideNetRecord:
     paper_metadata: Optional["PaperMetadata"] = None
 
 
+def _findings_block(ex: "DeepExtraction") -> str:
+    """Every finding a paper reported, one line each, for the case-synthesis prompt."""
+    lines = []
+    for f in ex.findings or []:
+        parts = [f.endpoint or "unnamed endpoint"]
+        if f.timepoint:
+            parts.append(f"@ {f.timepoint}")
+        if f.direction:
+            parts.append(f.direction)
+        if f.value is not None:
+            parts.append(f"{f.value}{f.unit or ''}")
+        if f.ci_low is not None and f.ci_high is not None:
+            parts.append(f"95% CI {f.ci_low} to {f.ci_high}")
+        if f.p_value is not None:
+            parts.append(f"p={f.p_value}")
+        if f.control_event_rate is not None and f.experimental_event_rate is not None:
+            parts.append(f"CER {f.control_event_rate} / EER {f.experimental_event_rate}")
+        if f.is_primary:
+            parts.append("[primary]")
+        lines.append(f"  Finding: {' | '.join(parts)}\n")
+    if lines:
+        return "".join(lines)
+    # No findings and no rates is a legacy record; saying nothing is better than implying a null
+    # result the paper never reported.
+    if ex.control_event_rate is not None and ex.experimental_event_rate is not None:
+        return f"  CER: {ex.control_event_rate}\n  EER: {ex.experimental_event_rate}\n"
+    return ""
+
+
+def _funding_line(ex: "DeepExtraction") -> str:
+    """Funding as the block states it, with the provenance the reader needs to weigh it."""
+    funding = ex.funding
+    if funding is None or funding.funding_disclosure == "unknown":
+        return f"  Funding: {ex.funding_source}\n" if ex.funding_source else ""
+    if funding.funding_disclosure == "undisclosed":
+        return "  Funding: the paper does not state its funding (not the same as unknown)\n"
+    verified = "quoted from the paper" if funding.funding_source_type == "extracted_text" else "API metadata, unverified"
+    return f"  Funding: {funding.funding_raw} [{funding.funding_category}; {verified}]\n"
+
+
+def locate_span(text: str, span: str) -> tuple[int, str] | None:
+    """Where ``span`` occurs in ``text``, as ``(offset, literal_text)``, or None if it does not.
+
+    The model supplies the QUOTED SPAN; Python finds the offset. Asking a model for a character
+    offset would be asking it to count, and a number it invented would satisfy the locator contract
+    while pointing nowhere — the contract's whole value is that a Python check can refute it. A span
+    that cannot be found is a fabricated quote, and the finding carrying it is dropped.
+
+    Whitespace is normalised for the SEARCH, because extracted full text re-wraps lines and a model
+    quoting it will not reproduce the wrap. But the second element is the LITERAL substring of
+    ``text`` that matched, not the model's version of it, and that is what a caller must store:
+    ``verify_locator_span`` asserts ``text[offset:offset + len(span)] == span``, so storing the
+    model's spaces against an offset into line-wrapped source builds a locator that cannot verify.
+    """
+    if not span or not text:
+        return None
+    direct = text.find(span)
+    if direct >= 0:
+        return direct, span
+    collapsed = " ".join(span.split())
+    if not collapsed:
+        return None
+    pattern = re.compile(r"\s+".join(re.escape(word) for word in collapsed.split()))
+    match = pattern.search(text)
+    if not match:
+        return None
+    return match.start(), match.group(0)
+
+
+def _primary_flag(raw_value: Any, endpoint: str) -> bool:
+    """Whether the model actually said this finding is the primary one."""
+    stated = safe_bool(raw_value)
+    if stated is None and raw_value is not None:
+        logger.warning(
+            "is_primary for %r was %r, not a JSON boolean — treating it as not primary",
+            endpoint[:60],
+            raw_value,
+        )
+    return stated is True
+
+
+@dataclass
+class FundingBlock:
+    """Paper-level funding, as five fields rather than one free-text line.
+
+    Funding has two provenances and only one can satisfy the locator contract: the extractor falls
+    back to ``paper_metadata.funding_sources`` from API metadata, which exists nowhere in the paper
+    text. ``undisclosed`` (the paper is silent) is NOT ``unknown`` (extraction failed) — Ep09's
+    thesis makes that distinction the finding, so they are counted separately.
+    """
+
+    funding_raw: str | None = None
+    funding_category: str = "unknown"
+    funding_disclosure: str = "unknown"
+    funding_source_type: str = "none"
+    funding_locator: dict | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "funding_raw": self.funding_raw,
+            "funding_category": self.funding_category,
+            "funding_disclosure": self.funding_disclosure,
+            "funding_source_type": self.funding_source_type,
+            "funding_locator": self.funding_locator,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "FundingBlock":
+        return cls(**{k: v for k, v in (d or {}).items() if k in {f.name for f in fields(cls)}})
+
+
+@dataclass
+class Finding:
+    """One result: a (population, intervention, comparator, endpoint, timepoint) tuple.
+
+    A PAPER IS NOT A FINDING. The extraction prompt already asks for a primary outcome, a
+    secondary_outcomes list and 3-5 key findings, so one paper routinely reports benefit on one
+    endpoint and a null result on another. Hanging a singular direction off the paper forces an
+    arbitrary pick and silently discards the rest, which breaks replication grouping.
+    """
+
+    population: str
+    intervention: str
+    comparator: str
+    endpoint: str
+    timepoint: str | None = None
+    direction: str = "null_result"
+    value: float | None = None
+    unit: str | None = None
+    ci_low: float | None = None
+    ci_high: float | None = None
+    p_value: float | None = None
+    is_primary: bool = False
+    control_event_rate: float | None = None
+    experimental_event_rate: float | None = None
+    outcome_is_adverse: bool | None = None
+    finding_key: str = ""
+    locators: list = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {f.name: getattr(self, f.name) for f in fields(self)}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Finding":
+        return cls(**{k: v for k, v in d.items() if k in {f.name for f in fields(cls)}})
+
+
 @dataclass
 class DeepExtraction:
     """Clinical variable extraction from full-text articles (Step 4)."""
@@ -282,16 +430,33 @@ class DeepExtraction:
     research_tier: int | None = None  # 1=folk 2=synonym 3=compound
     raw_facts: str = ""
     paper_metadata: Optional["PaperMetadata"] = None
+    # --- Step 9a ---------------------------------------------------------
+    # findings[] is the real result set; the paper-level effect fields above are DERIVED from the
+    # primary finding so every existing consumer keeps working until they are migrated.
+    findings: list = field(default_factory=list)
+    funding: Optional["FundingBlock"] = None
+    trial_registration: str | None = None  # NCT/UMIN — a trial has exactly one, so paper-level
+    author_group: str | None = None  # normalised, for counting DISTINCT groups per finding_key
 
     def to_dict(self) -> dict:
+        """Every field, INCLUDING the null ones.
+
+        It used to drop anything None or empty. Absent cannot distinguish "we looked and the paper
+        does not say" from "this producer version does not set the field", and the extraction
+        contract in dr2_podcast/schemas requires the key to be present and explicitly null. Nested
+        records serialise through their own to_dict rather than being handed out as objects.
+        """
         d = {}
         for f in fields(self):
             v = getattr(self, f.name)
-            if v is not None and v != "" and v != []:
-                if f.name == "paper_metadata" and v is not None:
-                    d[f.name] = v.to_dict()
-                else:
-                    d[f.name] = v
+            if f.name == "paper_metadata":
+                d[f.name] = v.to_dict() if v is not None else None
+            elif f.name == "funding":
+                d[f.name] = v.to_dict() if v is not None else FundingBlock().to_dict()
+            elif f.name == "findings":
+                d[f.name] = [finding.to_dict() for finding in (v or [])]
+            else:
+                d[f.name] = v
         return d
 
 
@@ -1081,6 +1246,10 @@ class ResearchAgent:
     6. Writes a final report
     """
 
+    # Set by the Orchestrator once the domain is classified, and read through getattr in three
+    # places. Declared here so it is a real attribute rather than one mypy has to guess at.
+    _domain: str = "clinical"
+
     def __init__(
         self,
         deps: "AgentDeps",
@@ -1360,8 +1529,14 @@ class ResearchAgent:
                     return text[: i + 1]
         return text  # unclosed — return as-is for downstream repair
 
-    def _parse_json_response(self, raw: str) -> Any:
-        """Parse JSON from smart model output, handling code blocks and LLM noise."""
+    @staticmethod
+    def _parse_json_response(raw: str) -> Any:
+        """Parse JSON from smart model output, handling code blocks and LLM noise.
+
+        Static because the Orchestrator needs the same repair logic for the GRADE record and
+        borrowing a bound method chains into whatever else `self` happens to carry — which it did,
+        and the tests caught it.
+        """
         if not raw or not raw.strip():
             raise ValueError("Empty response from LLM")
         # Strip <think>...</think> blocks (Qwen3 thinking mode safety net)
@@ -1378,7 +1553,7 @@ class ResearchAgent:
         if starts:
             raw = raw[min(starts) :]
         # Truncate trailing text after JSON object closes (handles "extra data" errors)
-        raw = self._truncate_after_json(raw)
+        raw = ResearchAgent._truncate_after_json(raw)
         # Try parsing as-is
         try:
             data = json.loads(raw)
@@ -1726,15 +1901,19 @@ class ResearchAgent:
                 plan.auditor_notes = feedback
                 return plan
 
-        # Max revisions exhausted — warn and proceed
-        logger.warning(
-            f"Tier plan not approved after {MAX_REVISIONS} revisions "
-            f"({role}) — proceeding with last draft. Notes: {feedback[:200]}"
-        )
-        log(f"    [Auditor] WARNING: proceeding with unapproved plan after {MAX_REVISIONS} revisions")
+        # STOPS. It used to warn and search on the unapproved plan, which made the auditor gate a
+        # log line: the whole point of the tier plan is that a wrong strategy produces a healthy hit
+        # count and a useless corpus, and that is precisely what the auditor was asked to catch
+        # (PLAN.md sequencing item 11). Failing here costs one run; proceeding costs an episode
+        # built on the wrong literature, and nobody downstream can tell.
+        from dr2_podcast.artifacts import ArtifactError
+
         plan.auditor_approved = False
         plan.auditor_notes = f"Not approved after {MAX_REVISIONS} revisions: {feedback}"
-        return plan
+        raise ArtifactError(
+            f"the {role} search strategy was not approved after {MAX_REVISIONS} revisions, so there "
+            f"is no strategy to search with. The auditor's last notes: {feedback[:300]}"
+        )
 
     def _build_tier_query(self, tier: TierKeywords, extra_filters: str = "") -> str:
         """Deterministic PubMed Boolean builder — no LLM. AND between groups, OR within groups."""
@@ -2294,6 +2473,204 @@ class ResearchAgent:
             json.dump(cache, f, indent=2)
 
     @staticmethod
+    def _build_findings(data: dict, source_text: str, artifact_id: str) -> list:
+        """Turn the model's findings into records Python vouches for.
+
+        Three things the model does NOT get to decide. The ``finding_key`` is computed here from the
+        normalised identity tuple — a model-authored key makes replication grouping a semantic task
+        again, which is the one thing the key exists to remove. The ``char_offset`` is found by
+        searching the source, because a model asked for an offset would be asked to count, and an
+        invented number satisfies the contract while pointing nowhere. And a quote that cannot be
+        found in the source **drops the finding**: an unverifiable quote is not evidence.
+        """
+        from dr2_podcast.schemas import compute_finding_key, finding_errors
+
+        built = []
+        for raw in data.get("findings") or []:
+            if not isinstance(raw, dict):
+                continue
+            identity = {
+                "population": safe_str(raw.get("population")) or "",
+                "intervention": safe_str(raw.get("intervention")) or "",
+                "comparator": safe_str(raw.get("comparator")) or "",
+                "endpoint": safe_str(raw.get("endpoint")) or "",
+                "timepoint": safe_str(raw.get("timepoint")),
+            }
+            if not identity["endpoint"]:
+                logger.debug("dropping a finding with no endpoint")
+                continue
+            quote = safe_str(raw.get("quote")) or ""
+            identity_quote = safe_str(raw.get("identity_quote")) or ""
+            result_hit = locate_span(source_text, quote) if quote else None
+            identity_hit = locate_span(source_text, identity_quote) if identity_quote else None
+            if result_hit is None or identity_hit is None:
+                logger.warning(
+                    "dropping finding %r: a quote is not in the source text", identity["endpoint"][:60]
+                )
+                continue
+
+            values = {
+                "direction": safe_str(raw.get("direction")) or "null_result",
+                "value": safe_float(raw.get("value")),
+                "unit": safe_str(raw.get("unit")),
+                "ci_low": safe_float(raw.get("ci_low")),
+                "ci_high": safe_float(raw.get("ci_high")),
+                "p_value": safe_float(raw.get("p_value")),
+                "control_event_rate": safe_float(raw.get("control_event_rate")),
+                "experimental_event_rate": safe_float(raw.get("experimental_event_rate")),
+                "outcome_is_adverse": safe_bool(raw.get("outcome_is_adverse")),
+            }
+            # Field-level coverage, which is why there are two quotes: every claim-bearing field the
+            # record actually carries must be named by a locator, and one span cannot honestly
+            # substantiate both who was studied and what happened to them.
+            identity_fields = [name for name in ("population", "intervention", "comparator", "timepoint")
+                               if identity.get(name)]
+            result_fields = ["endpoint"] + [name for name, value in values.items() if value is not None]
+            finding = Finding(
+                **identity,
+                **values,
+                # safe_bool, not bool(): the model returns JSON, and a JSON string "false" is
+                # truthy (prepush codex 2026-08-13). Getting this wrong picks the wrong finding as
+                # the paper's primary result at clinical.py:2789, and its CER/EER are what the
+                # deterministic ARR/NNT math is computed from. safe_bool refuses to coerce, so only
+                # a real boolean true counts; anything else is "not stated", and said out loud
+                # rather than silently demoting every finding a string-emitting model produced.
+                is_primary=_primary_flag(raw.get("is_primary"), identity["endpoint"]),
+                locators=[
+                    {
+                        "fields": identity_fields,
+                        "source_artifact_id": artifact_id,
+                        "char_offset": identity_hit[0],
+                        # The LITERAL source substring, not the model's rendering of it: the source
+                        # may be line-wrapped where the model used a space, and the locator contract
+                        # is an exact-substring check at the offset.
+                        "quoted_span": identity_hit[1],
+                    },
+                    {
+                        "fields": result_fields,
+                        "source_artifact_id": artifact_id,
+                        "char_offset": result_hit[0],
+                        "quoted_span": result_hit[1],
+                    },
+                ],
+            )
+            finding.finding_key = compute_finding_key(identity)
+            # The contract is enforced HERE, on the production path, or it is not enforced at all
+            # (prepush codex 2026-08-13): schemas/ was written and then only ever called by its own
+            # tests, so an unknown `direction`, an empty population, one of CER/EER without the
+            # other or a rate outside [0, 1] would flow into primary-result selection, the
+            # deterministic ARR/NNT math and the v2 cache. A finding that fails is DROPPED, which is
+            # what this function already does with a quote it cannot find in the source — one bad
+            # record must not cost the paper its good ones.
+            problems = finding_errors(finding.to_dict(), {artifact_id: source_text})
+            if problems:
+                logger.warning(
+                    "dropping finding %r: it does not satisfy the finding contract (%s)",
+                    identity["endpoint"][:60],
+                    "; ".join(problems[:3]),
+                )
+                continue
+            built.append(finding)
+        return built
+
+    @staticmethod
+    def _build_funding(data: dict, record: WideNetRecord, source_text: str, artifact_id: str) -> FundingBlock:
+        """The five-field funding block, with its provenance stated rather than assumed.
+
+        The extractor already falls back to ``paper_metadata.funding_sources`` when the model finds
+        nothing in the text. That fallback is real information and worth keeping — but it is API
+        metadata, it appears nowhere in the paper, and it therefore cannot carry a locator. Saying
+        which of the two a value came from is the whole point of the split.
+        """
+        from dr2_podcast.schemas import funding_errors
+
+        raw = safe_str(data.get("funding_raw"))
+        quote = safe_str(data.get("funding_quote")) or ""
+        category = safe_str(data.get("funding_category")) or "unknown"
+        disclosure = safe_str(data.get("funding_disclosure")) or "unknown"
+
+        hit = locate_span(source_text, quote) if (raw and quote) else None
+        if raw and hit is not None:
+            block = FundingBlock(
+                funding_raw=raw,
+                funding_category=category if category not in ("undisclosed", "unknown") else "unknown",
+                funding_disclosure="disclosed",
+                funding_source_type="extracted_text",
+                funding_locator={
+                    "fields": ["funding_raw"],
+                    "source_artifact_id": artifact_id,
+                    "char_offset": hit[0],
+                    "quoted_span": hit[1],
+                },
+            )
+            # Same reason as the findings above: the contract has to run where the model's output
+            # actually enters the pipeline. A block that fails it is not silently downgraded to
+            # api_metadata — that would fabricate provenance — it falls through to "unknown".
+            problems = funding_errors(block.to_dict(), {artifact_id: source_text})
+            if not problems:
+                return block
+            logger.warning(
+                "discarding extracted funding: it does not satisfy the funding contract (%s)",
+                "; ".join(problems[:3]),
+            )
+        if raw:
+            # The model produced a funder but no quote that is actually in the paper. It is NOT
+            # api_metadata — nothing from an API produced it — and calling it that would fabricate
+            # exactly the provenance this split exists to guarantee. The value is discarded; what
+            # follows is the real API fallback, or nothing.
+            logger.warning("discarding unverifiable funding text %r: its quote is not in the source", raw[:60])
+
+        api = getattr(record.paper_metadata, "funding_sources", None) if record.paper_metadata else None
+        if api:
+            # The API names a funder, which settles DISCLOSURE. It does not settle CATEGORY, and the
+            # model's guess about a statement it could not quote is not evidence of one, so an
+            # unusable category stays 'unknown' — a state funding.schema.json now admits on this
+            # branch specifically, because the two questions have different answers here.
+            block = FundingBlock(
+                funding_raw=", ".join(api[:3]),
+                # ALWAYS unknown. The category the model returned describes a funding statement it
+                # could not quote — the one discarded a few lines above — so carrying it here would
+                # attach an unverifiable 'industry' or 'government' label, the exact conflict-of-
+                # interest classification the episode reasons about, to a name an API supplied
+                # (prepush codex 2026-08-13). The API gives names, not categories.
+                funding_category="unknown",
+                funding_disclosure="disclosed",
+                funding_source_type="api_metadata",
+                funding_locator=None,
+            )
+            problems = funding_errors(block.to_dict(), {artifact_id: source_text})
+            if not problems:
+                return block
+            logger.warning(
+                "discarding API funding metadata %r: it does not satisfy the funding contract (%s)",
+                (block.funding_raw or "")[:60],
+                "; ".join(problems[:3]),
+            )
+        if disclosure == "undisclosed":
+            return FundingBlock(funding_category="undisclosed", funding_disclosure="undisclosed")
+        return FundingBlock()
+
+    @staticmethod
+    def _cache_entry_still_verifies(cached: DeepExtraction, text: str, artifact_id: str) -> bool:
+        """Whether everything a cache entry claims still holds against the text fetched this run.
+
+        Findings AND funding: an ``extracted_text`` funding block carries a locator into the same
+        source, and checking only the findings would let a stale, unquotable funder — the conflict
+        of interest the episode reasons about — ride through on a cache hit.
+        """
+        from dr2_podcast.schemas import finding_errors, funding_errors
+
+        if not text.strip():
+            # Nothing to check it against. The cached record is all there is, and refusing it would
+            # only trade a verified-when-written extraction for no extraction at all.
+            return True
+        artifacts = {artifact_id: text}
+        if any(finding_errors(f.to_dict(), artifacts) for f in cached.findings):
+            return False
+        funding = cached.funding
+        return not (funding is not None and funding_errors(funding.to_dict(), artifacts))
+
+    @staticmethod
     def _extraction_from_cache(record: WideNetRecord, cached: dict) -> DeepExtraction:
         """Reconstruct a DeepExtraction from cached data."""
         return DeepExtraction(
@@ -2323,6 +2700,18 @@ class ResearchAgent:
             risk_of_bias=cached.get("risk_of_bias"),
             research_tier=record.research_tier,
             raw_facts=cached.get("raw_facts", ""),
+            # Step 9a. Rebuilt, not skipped: a cache hit that dropped these would silently lose the
+            # structured findings and provenance the first run paid to extract, and the paper would
+            # contribute nothing on every subsequent run — the exact failure the v2 key was for.
+            findings=[Finding.from_dict(f) for f in (cached.get("findings") or []) if isinstance(f, dict)],
+            funding=FundingBlock.from_dict(cached.get("funding")),
+            trial_registration=cached.get("trial_registration"),
+            author_group=cached.get("author_group"),
+            paper_metadata=(
+                PaperMetadata.from_dict(cached["paper_metadata"])
+                if isinstance(cached.get("paper_metadata"), dict)
+                else record.paper_metadata
+            ),
         )
 
     @staticmethod
@@ -2350,20 +2739,35 @@ class ResearchAgent:
         # Load extraction cache
         extraction_cache = self._load_extraction_cache(output_dir)
         cache_hits = 0
-        new_cache_entries = {}
 
         async def extract_one(article, record: WideNetRecord) -> DeepExtraction:
             nonlocal cache_hits
             # Check cache first (PMID-keyed)
-            cache_key = record.pmid or record.doi or ""
-            if cache_key and cache_key in extraction_cache:
-                cache_hits += 1
-                log(f"    [Cache hit] {record.title[:50]}...")
-                return self._extraction_from_cache(record, extraction_cache[cache_key])
+            # v2 — Step 9a. Without the prefix, a cached v1 entry deserialises into a record with
+            # no findings[] and no funding block, silently, and the paper simply contributes nothing.
+            cache_key = f"v2:{record.pmid or record.doi or ''}" if (record.pmid or record.doi) else ""
             text = getattr(article, "full_text", "") or ""
             # Fall back to abstract if full-text is empty or too short
             if len(text.strip()) < 200 and record.abstract:
                 text = record.abstract
+            artifact_id = f"pmid:{record.pmid}" if record.pmid else (record.doi or record.url or record.title)
+            if cache_key and cache_key in extraction_cache:
+                cached = self._extraction_from_cache(record, extraction_cache[cache_key])
+                # A locator is a claim about THIS text. The cache is keyed by PMID/DOI, and the same
+                # paper fetched from a different provider — PMC one run, a publisher scrape the next
+                # — is a different string, so the stored offsets can point at the wrong words or
+                # nowhere at all while their CER/EER keep feeding the ARR/NNT math (prepush codex
+                # 2026-08-13). Re-checked against what this run actually fetched; an entry that no
+                # longer verifies is not this paper's extraction, and the paper is re-extracted.
+                if self._cache_entry_still_verifies(cached, text, artifact_id):
+                    cache_hits += 1
+                    log(f"    [Cache hit] {record.title[:50]}...")
+                    return cached
+                logger.warning(
+                    "cache entry for %r no longer verifies against the text fetched this run; "
+                    "re-extracting",
+                    (record.title or record.pmid or "")[:60],
+                )
             if not text.strip():
                 return DeepExtraction(
                     pmid=record.pmid,
@@ -2436,8 +2840,45 @@ class ResearchAgent:
                             '  "sample_size_control": 500,\n'
                             '  "study_design": "parallel RCT | crossover RCT | meta-analysis | cohort | etc.",\n'
                             '  "risk_of_bias": "low | some concerns | high | unclear",\n'
-                            '  "raw_facts": "3-5 key findings as bullet points"\n'
-                            "}"
+                            '  "raw_facts": "3-5 key findings as bullet points",\n'
+                            '  "trial_registration": "NCT/UMIN identifier or null",\n'
+                            '  "author_group": "first author + institution, e.g. Tanaka H; Osaka University",\n'
+                            # One JSON string per line. Wrapping a description across source lines
+                            # renders as two adjacent quoted fragments in the prompt the model
+                            # actually reads — `"...or null" " if the paper is silent"` — which is
+                            # not valid JSON, and a model copying the template's shape returns
+                            # something the parser rejects (prepush codex 2026-08-13).
+                            '  "funding_raw": "verbatim funding statement as printed, or null if silent",\n'
+                            '  "funding_category": "industry | government | foundation | institutional '
+                            '| mixed | none_declared | undisclosed | unknown",\n'
+                            '  "funding_disclosure": "disclosed | undisclosed | unknown",\n'
+                            '  "funding_quote": "the exact sentence the funding statement appears in, or null",\n'
+                            '  "findings": [\n'
+                            "    {\n"
+                            '      "population": "who was studied",\n'
+                            '      "intervention": "what they received",\n'
+                            '      "comparator": "what it was compared against",\n'
+                            '      "endpoint": "the outcome measured",\n'
+                            '      "timepoint": "when it was measured, or null",\n'
+                            '      "direction": "increase | decrease | null_result",\n'
+                            '      "value": 5.0, "unit": "%", "ci_low": 2.0, "ci_high": 8.0, "p_value": 0.03,\n'
+                            '      "is_primary": true,\n'
+                            '      "control_event_rate": 0.15, "experimental_event_rate": 0.10,\n'
+                            '      "outcome_is_adverse": true,\n'
+                            '      "identity_quote": "the exact sentence establishing WHO was studied, '
+                            'what they received and what it was compared against",\n'
+                            '      "quote": "the exact sentence from the paper that states this result"\n'
+                            "    }\n"
+                            "  ]\n"
+                            "}\n\n"
+                            "ONE ENTRY IN findings PER (population, intervention, comparator, endpoint, timepoint).\n"
+                            "A paper that reports benefit on one endpoint and no effect on another has TWO entries. "
+                            "Do NOT collapse them, and do NOT invent an entry for an endpoint\n"
+                            "the paper does not report.\n"
+                            "BOTH quotes MUST be copied VERBATIM from the study text above. Each is checked "
+                            "against the source, and a finding whose quotes cannot be found there is DISCARDED. "
+                            "Two quotes because the facts live in two places: who was studied is in the "
+                            "methods, what happened to them is in the results."
                         )
 
                     # Extraction has always run on the Smart model: a 9B was judged too
@@ -2480,24 +2921,33 @@ class ResearchAgent:
                     raw = safe_message_text(resp)
                     data = self._parse_json_response(raw)
 
-                    def safe_bool(v):
-                        if v is None or v == "null":
-                            return None
-                        if isinstance(v, bool):
-                            return v
-                        return None
-
                     def safe_list(v):
                         if isinstance(v, list):
                             return v
                         return None
 
-                    # Supplement funding_source with API data if LLM returned None
-                    llm_funding = safe_str(data.get("funding_source"))
-                    if not llm_funding and record.paper_metadata and record.paper_metadata.funding_sources:
-                        llm_funding = ", ".join(record.paper_metadata.funding_sources[:3])
+                    # Step 9a. findings[] is the real result set; the paper-level effect fields below
+                    # are DERIVED from the primary finding so every consumer keeps working until it
+                    # is migrated. Deriving rather than parsing them twice is what keeps the two from
+                    # disagreeing about the same paper.
+                    findings = self._build_findings(data, text, artifact_id)
+                    funding = self._build_funding(data, record, text, artifact_id)
+                    primary = next((f for f in findings if f.is_primary), findings[0] if findings else None)
+                    # extraction.schema.json requires at least one finding and calls a paper with
+                    # none an extraction FAILURE. That is the clinical contract; the social-science
+                    # prompt does not ask for findings at all, so only the clinical path is judged
+                    # by it. Not raising here — the record's narrative fields are still usable and
+                    # dropping the paper outright would shrink the corpus on a model hiccup — but it
+                    # is said out loud, it contributes no rates (above), and it is not cached, so a
+                    # rerun retries instead of inheriting the failure.
+                    if not is_social and not findings:
+                        logger.warning(
+                            "no verified finding survived extraction for %r; it contributes no "
+                            "event rates to the clinical math",
+                            (record.title or record.pmid or "")[:60],
+                        )
 
-                    return DeepExtraction(
+                    extraction = DeepExtraction(
                         pmid=record.pmid,
                         doi=record.doi,
                         title=record.title,
@@ -2506,12 +2956,23 @@ class ResearchAgent:
                         effect_size=safe_str(data.get("effect_size")),
                         demographics=safe_str(data.get("demographics")),
                         follow_up_period=safe_str(data.get("follow_up_period")),
-                        funding_source=llm_funding,
+                        # From the VALIDATED block, never from data["funding_source"]. _build_case
+                        # injects this legacy field into the synthesis prompt as "Funding", so
+                        # reading the raw model response here handed the episode exactly the
+                        # unverifiable claim _build_funding had just discarded (prepush codex
+                        # 2026-08-13). Slice 2 removes the field; until then it mirrors the block.
+                        funding_source=funding.funding_raw,
                         conflicts_of_interest=safe_str(data.get("conflicts_of_interest")),
                         biological_mechanism=safe_str(data.get("biological_mechanism")),
-                        control_event_rate=safe_float(data.get("control_event_rate")),
-                        experimental_event_rate=safe_float(data.get("experimental_event_rate")),
-                        outcome_is_adverse=safe_bool(data.get("outcome_is_adverse")),
+                        # ONLY from a verified finding. The fallback these three used to have read
+                        # the model's paper-level numbers directly — no quote, no locator, nothing
+                        # a Python check could refute — and fed them to the deterministic ARR/NNT
+                        # math, which is the one place in this pipeline where an unverified number
+                        # becomes a number the episode states out loud (prepush codex 2026-08-13).
+                        # A paper whose every finding failed verification contributes no rates.
+                        control_event_rate=primary.control_event_rate if primary else None,
+                        experimental_event_rate=primary.experimental_event_rate if primary else None,
+                        outcome_is_adverse=primary.outcome_is_adverse if primary else None,
                         primary_outcome=safe_str(data.get("primary_outcome")),
                         secondary_outcomes=safe_list(data.get("secondary_outcomes")),
                         blinding=safe_str(data.get("blinding")),
@@ -2525,7 +2986,12 @@ class ResearchAgent:
                         research_tier=record.research_tier,
                         raw_facts=safe_str(data.get("raw_facts")) or "",
                         paper_metadata=record.paper_metadata,
+                        findings=findings,
+                        funding=funding,
+                        trial_registration=safe_str(data.get("trial_registration")),
+                        author_group=safe_str(data.get("author_group")),
                     )
+                    return extraction
                 except Exception as e:
                     logger.warning(f"Deep extraction failed for {record.title[:50]}: {e}")
                     return DeepExtraction(
@@ -2542,17 +3008,37 @@ class ResearchAgent:
         good = sum(1 for r in results if r.raw_facts and "failed" not in r.raw_facts.lower())
         log(f"    [Step 4] Extracted data from {good}/{len(results)} articles (cache hits: {cache_hits})")
 
-        # Save new extractions to cache
+        self._persist_new_extractions(
+            list(results), extraction_cache, output_dir, log, findings_required=not is_social
+        )
+        return list(results)
+
+    def _persist_new_extractions(
+        self, results, extraction_cache: dict, output_dir, log, *, findings_required: bool
+    ) -> None:
+        """Remember the extractions worth remembering, and only those.
+
+        ``findings_required`` is the contract the batch ran under — the clinical prompt asks for
+        findings and the social-science prompt does not — and it arrives as an argument rather than
+        riding on each record, because it describes the extraction, not the paper.
+        """
+        new_cache_entries: dict[str, Any] = {}
         for r in results:
-            cache_key = r.pmid or r.doi or ""
-            if cache_key and cache_key not in extraction_cache and "failed" not in (r.raw_facts or "").lower():
+            cache_key = f"v2:{r.pmid or r.doi or ''}" if (r.pmid or r.doi) else ""
+            # A clinical extraction that produced no verified finding is not a result worth
+            # remembering: caching it would make the next run inherit the failure without retrying.
+            unverified = findings_required and not r.findings
+            if (
+                cache_key
+                and cache_key not in extraction_cache
+                and "failed" not in (r.raw_facts or "").lower()
+                and not unverified
+            ):
                 new_cache_entries[cache_key] = self._cache_extraction(r)
         if new_cache_entries:
             extraction_cache.update(new_cache_entries)
             self._save_extraction_cache(extraction_cache, output_dir)
             log(f"    [Step 4] Saved {len(new_cache_entries)} new extractions to cache")
-
-        return list(results)
 
     async def _build_case(
         self, topic: str, strategy: TieredSearchPlan, extractions: list[DeepExtraction], case_type: str, log=logger.info
@@ -2572,10 +3058,11 @@ class ResearchAgent:
                 block += f"  N: {ex.sample_size_total}\n"
             if ex.effect_size:
                 block += f"  Effect: {ex.effect_size}\n"
-            if ex.control_event_rate is not None:
-                block += f"  CER: {ex.control_event_rate}\n"
-            if ex.experimental_event_rate is not None:
-                block += f"  EER: {ex.experimental_event_rate}\n"
+            # Per FINDING, not per paper. Serialising one CER/EER pair meant the case synthesis
+            # only ever saw the primary endpoint: a study reporting benefit on fractures and no
+            # effect on falls presented as unambiguous support, and the secondary result — the one
+            # a falsification case most needs — never reached the model at all.
+            block += _findings_block(ex)
             if ex.demographics:
                 block += f"  Demographics: {ex.demographics}\n"
             if ex.follow_up_period:
@@ -2584,8 +3071,7 @@ class ResearchAgent:
                 block += f"  Blinding: {ex.blinding}\n"
             if ex.risk_of_bias:
                 block += f"  Risk of bias: {ex.risk_of_bias}\n"
-            if ex.funding_source:
-                block += f"  Funding: {ex.funding_source}\n"
+            block += _funding_line(ex)
             if ex.raw_facts:
                 block += f"  Key findings: {ex.raw_facts}\n"
             extraction_blocks.append(block)
@@ -2685,6 +3171,10 @@ class Orchestrator:
     Step 6: Deterministic math (ARR/NNT from Python, no LLM)
     Step 7: GRADE synthesis (Smart Model)
     """
+
+    #: The structured GRADE record, set at step 7. None until then, and None for social science,
+    #: which has an evidence-quality ladder rather than GRADE's modifiers.
+    grade_record: dict | None = None
 
     def __init__(self, config: "ResearchConfig | None" = None):
         config = config or ResearchConfig()
@@ -2808,7 +3298,9 @@ class Orchestrator:
         log(f"  Falsification: {len(fal.extractions)} studies from {fal.wide_net_total} candidates")
         math_label = "Effect size math" if self.domain == "social_science" else "Clinical math"
         math_detail = "effect size data" if self.domain == "social_science" else "NNT data"
-        log(f"  {math_label}: {len(impacts)} studies with {math_detail}")
+        # "findings", not "studies": since slice 2 the math is computed per finding, so a paper
+        # reporting two endpoints contributes two rows and this count is no longer a study count.
+        log(f"  {math_label}: {len(impacts)} findings with {math_detail}")
         log(f"  Total articles analyzed: {len(all_extractions)}")
         log(f"{rule}\n")
 
@@ -2844,10 +3336,46 @@ class Orchestrator:
             ),
         )
 
+    async def _plan_track(self, spec: _TrackSpec, topic: str, framing_context: str, decomposition, log):
+        """Step 1 alone: the tiered keyword strategy, and nothing that spends a search.
+
+        Separated so there is a point in the pipeline where a strategy exists and no search has run
+        (PLAN.md Step 10). There was no such point: `_run_research_track` did plan → search → screen
+        → extract in one call, both tracks fired together under `asyncio.gather`, and the strategy
+        JSON was not written until after GRADE had finished — so "read the strategy before the
+        search" was not a thing anyone could do, however much they wanted to.
+        """
+        log(f"\n{'=' * 70}")
+        log(f"STEP 1{spec.step_suffix}: TIERED KEYWORD GENERATION + AUDITOR GATE ({spec.label})")
+        log("=" * 70)
+        researcher = getattr(self, spec.researcher_attr)
+        return await researcher._formulate_tiered_strategy(
+            topic, spec.strategy_role, framing_context, decomposition, log=log
+        )
+
+    async def plan_both_tracks(self, topic: str, framing_context: str = "", log=logger.info) -> dict[str, Any]:
+        """Both tracks' strategies, and NO search. The stopping point Step 10 needs.
+
+        Returns the two plans and the decomposition they were built from. Whoever calls this writes
+        the strategy files and stops; the search is a separate invocation that will not proceed
+        without an approval covering these exact artifacts.
+        """
+        decomposition = await self.lead_researcher._decompose_topic(topic, framing_context)
+        aff_plan, fal_plan = await asyncio.gather(
+            self._plan_track(_AFFIRMATIVE_TRACK, topic, framing_context, decomposition, log),
+            self._plan_track(_FALSIFICATION_TRACK, topic, framing_context, decomposition, log),
+        )
+        return {"decomposition": decomposition, "aff_plan": aff_plan, "fal_plan": fal_plan}
+
     async def _run_research_track(
-        self, spec: _TrackSpec, topic: str, framing_context: str, decomposition, output_dir, log
+        self, spec: _TrackSpec, topic: str, plan, output_dir, log
     ) -> _TrackResult:
-        """Steps 1-5 for one track.
+        """Steps 2-5 for one track, against a plan made earlier.
+
+        The plan is an ARGUMENT rather than something this method makes, so that every caller has to
+        have one in hand before a search runs — which is the boundary Step 10 is about. A method
+        that could plan for itself would leave "search without an approved strategy" one default
+        argument away.
 
         The affirmative and falsification tracks are the same five steps; only
         the researcher, the two role strings and the log labels differ, which is
@@ -2856,13 +3384,6 @@ class Orchestrator:
         researcher = getattr(self, spec.researcher_attr)
         n, label = spec.step_suffix, spec.label
         rule = "=" * 70
-
-        log(f"\n{rule}")
-        log(f"STEP 1{n}: TIERED KEYWORD GENERATION + AUDITOR GATE ({label})")
-        log(rule)
-        plan = await researcher._formulate_tiered_strategy(
-            topic, spec.strategy_role, framing_context, decomposition, log=log
-        )
 
         log(f"\n{rule}")
         log(f"STEP 2{n}: TIERED CASCADE SEARCH ({label})")
@@ -2914,9 +3435,18 @@ class Orchestrator:
         )
 
     async def run(
-        self, topic: str, framing_context: str = "", progress_callback=None, output_dir: str = None
+        self,
+        topic: str,
+        framing_context: str = "",
+        progress_callback=None,
+        output_dir: str = None,
+        plans: dict[str, Any] | None = None,
     ) -> dict[str, ResearchReport]:
         """Run the full 7-step clinical research pipeline.
+
+        ``plans`` are strategies made earlier by :meth:`plan_both_tracks` and approved since. Passing
+        them skips step 1, so the search runs against exactly the strategies somebody signed off —
+        replanning here would search against a strategy nobody read (PLAN.md Step 10).
 
         Args:
             topic: Research topic
@@ -2951,7 +3481,10 @@ class Orchestrator:
         log(f"\n{'=' * 70}")
         log("PHASE 0: CONCEPT DECOMPOSITION")
         log(f"{'=' * 70}")
-        decomposition = await self.lead_researcher._decompose_topic(topic, framing_context)
+        supplied_plans = plans is not None
+        if plans is None:
+            plans = await self.plan_both_tracks(topic, framing_context=framing_context, log=log)
+        decomposition = plans.get("decomposition") or {}
         if decomposition.get("canonical_terms"):
             log(f"  Canonical terms: {', '.join(decomposition['canonical_terms'])}")
         if decomposition.get("related_concepts"):
@@ -2963,8 +3496,8 @@ class Orchestrator:
         log(f"{'=' * 70}")
 
         aff, fal = await asyncio.gather(
-            self._run_research_track(_AFFIRMATIVE_TRACK, topic, framing_context, decomposition, output_dir, log),
-            self._run_research_track(_FALSIFICATION_TRACK, topic, framing_context, decomposition, output_dir, log),
+            self._run_research_track(_AFFIRMATIVE_TRACK, topic, plans["aff_plan"], output_dir, log),
+            self._run_research_track(_FALSIFICATION_TRACK, topic, plans["fal_plan"], output_dir, log),
         )
 
         aff_strategy, fal_strategy = aff.plan, fal.plan
@@ -2980,7 +3513,9 @@ class Orchestrator:
         audit_text = await self._run_step7_grade(topic, aff, fal, math_report, search_date, log)
 
         if output_dir:
-            self._save_artifacts(output_dir, aff, fal, math_report)
+            # The strategies belong to whoever made them. When they were handed in, they are on
+            # disk already and an approval covers those exact bytes.
+            self._save_artifacts(output_dir, aff, fal, math_report, write_strategies=not supplied_plans)
 
         # --- Build backward-compatible return ---
         # Convert extractions to SummarizedSource for compatibility
@@ -3033,6 +3568,9 @@ class Orchestrator:
                 "impacts": impacts,
                 "framing_context": framing_context,
                 "search_date": search_date,
+                # The structured record behind grade_synthesis.md. It travels with the prose, so a
+                # consumer never has to scrape the prose to learn what the prose decided.
+                "grade_record": self.grade_record,
                 "aff_highest_tier": aff.highest_tier,
                 "fal_highest_tier": fal.highest_tier,
                 "metrics": {
@@ -3139,7 +3677,16 @@ class Orchestrator:
                 "   Start at HIGH for RCTs, LOW for observational. Then apply modifiers:\n"
                 "   DOWNGRADE for: Risk of bias, Inconsistency, Indirectness, Imprecision, Publication bias\n"
                 "   UPGRADE for: Large effect, Dose-response, Plausible confounders would reduce effect\n"
-                "   FINAL GRADE: HIGH | MODERATE | LOW | VERY LOW\n\n"
+                "   FINAL GRADE: HIGH | MODERATE | LOW | VERY LOW\n"
+                "   Then close the section with this block, exactly in this form, listing every\n"
+                "   modifier you APPLIED and nothing else. A domain you considered and did not apply\n"
+                "   does not belong here. Steps are 1 (serious) or 2 (very serious).\n"
+                "   APPLIED MODIFIERS:\n"
+                "   - DOWNGRADE risk_of_bias 1 — reason\n"
+                "   - UPGRADE large_effect 1 — reason\n"
+                "   Write the single word NONE on its own line under APPLIED MODIFIERS if you applied\n"
+                "   no modifier at all. Domains: risk_of_bias, inconsistency, indirectness,\n"
+                "   imprecision, publication_bias, large_effect, dose_response, plausible_confounding.\n\n"
                 "4. Clinical Impact (from deterministic math)\n"
                 "   - Include the NNT table directly (do NOT recalculate — use the exact numbers provided)\n"
                 "   - Interpret the NNT in clinical context\n\n"
@@ -3202,13 +3749,204 @@ class Orchestrator:
                 extra_body=QWEN3_NO_THINK_EXTRA_BODY,
             )
             audit_text = safe_message_text(resp)
-            log(f"    [Step 7] GRADE synthesis complete ({len(audit_text)} chars)")
-            return audit_text
+            log(f"    [Step 7] {synthesis_label} synthesis complete ({len(audit_text)} chars)")
         except Exception as e:
-            logger.error(f"GRADE synthesis failed: {e}")
+            logger.error(f"{synthesis_label} synthesis failed: {e}")
             return (
                 f"# GRADE Synthesis: {topic}\n\n*GRADE synthesis failed ({e}). Raw inputs below.*\n\n{combined_input}"
             )
+
+        # OUTSIDE the handler above, and that placement is the fail-closed contract (prepush codex
+        # 2026-08-13). Inside it, a GRADE record that could not be grounded became fallback prose,
+        # the adapter saw grade_record=None, treated grade_synthesis.json as an absent optional
+        # output — it is optional for social science — and completed a clinical stage with no
+        # grounded assessment at all. The prose call has a degraded mode; the record does not.
+        self.grade_record = await self._grade_record(
+            audit_text, {"case:affirmative": aff_case, "case:falsification": fal_case}, log
+        )
+        return audit_text
+
+
+    #: How many times the auditor may be asked again for a record that will not validate. Bounded
+    #: because the alternative to a bound is a forty-minute stage looping on a model that has
+    #: decided it cannot ground its own reasoning.
+    GRADE_RECORD_ATTEMPTS = 2
+
+    async def _grade_record(self, prose: str, artifacts: dict[str, str], log=logger.info) -> dict | None:
+        """The GRADE prose, read back as the structured record `grade.schema.json` describes.
+
+        A SECOND pass over what the auditor just wrote, rather than asking for prose and JSON in one
+        response: the prose is the human-readable artifact and the record is a structured reading of
+        it, which is exactly what ``pipeline_sot.py``'s regex was doing — only complete, grounded,
+        and fail-closed instead of defaulting to "Not Determined" when the pattern misses.
+
+        Every modifier must quote the case report it comes from. The model supplies the span, Python
+        finds the offset (asking a model to count characters produces a number that satisfies the
+        contract while pointing nowhere), and a record whose quotes are not in the cases does not
+        validate. Returns None only for the social-science domain, which has no GRADE ladder.
+        """
+        if self.domain == "social_science":
+            return None
+
+        from dr2_podcast.schemas import SCHEMA_VERSION, grade_errors
+
+        instruction = (
+            "/no_think\n"
+            "Read the GRADE synthesis below — which you just wrote — and state its assessment as JSON.\n"
+            "Report ONLY what the synthesis says. You are transcribing a judgement, not making a new one.\n\n"
+            "{\n"
+            '  "level": "high | moderate | low | very_low",\n'
+            '  "downgrades": [{"domain": "risk_of_bias | inconsistency | indirectness | imprecision '
+            '| publication_bias", "steps": 1, "reason": "why it applies", '
+            '"artifact_id": "case:affirmative | case:falsification", "quote": "the exact sentence"}],\n'
+            '  "upgrades": [{"domain": "large_effect | dose_response | plausible_confounding", '
+            '"steps": 1, "reason": "why it applies", "artifact_id": "case:affirmative | '
+            'case:falsification", "quote": "the exact sentence"}]\n'
+            "}\n\n"
+            "AT MOST ONE ENTRY PER DOMAIN. Two imprecision downgrades are one entry of 2 steps, never "
+            "two entries — the steps are summed, and a repeated domain counts its evidence twice.\n"
+            "steps is 1 (serious) or 2 (very serious). Nothing else is a GRADE step.\n"
+            "Every quote MUST be copied VERBATIM from the case named in artifact_id. Each is checked "
+            "against that text, and a record whose quotes cannot be found there is rejected.\n"
+            "A modifier the synthesis does not apply is simply absent. Do not invent one to fill the list."
+        )
+        user = "\n\n".join(
+            [f"=== GRADE SYNTHESIS ===\n{prose}"]
+            + [f"=== {name} ===\n{text}" for name, text in artifacts.items()]
+        )
+
+        problems: list[str] = []
+        for attempt in range(1, self.GRADE_RECORD_ATTEMPTS + 1):
+            retry_note = (
+                ""
+                if not problems
+                else "\n\nYour previous answer was rejected:\n" + "\n".join(f"- {p}" for p in problems[:6])
+            )
+            try:
+                resp = await gated_create(
+                    self.smart_client,
+                    model=self.smart_model,
+                    messages=[
+                        {"role": "system", "content": instruction + retry_note},
+                        {"role": "user", "content": user[:80000]},
+                    ],
+                    max_tokens=2000,
+                    temperature=0.1,
+                    timeout=180,
+                    extra_body=QWEN3_NO_THINK_EXTRA_BODY,
+                )
+                raw = ResearchAgent._parse_json_response(safe_message_text(resp)) or {}
+            except Exception as exc:
+                problems = [f"the call itself failed: {exc}"]
+                logger.warning("GRADE record attempt %d failed: %s", attempt, exc)
+                continue
+
+            record: dict[str, Any] = {
+                "schema_version": SCHEMA_VERSION,
+                "level": safe_str(raw.get("level")) or "",
+                "downgrades": self._grade_modifiers(raw.get("downgrades"), artifacts),
+                "upgrades": self._grade_modifiers(raw.get("upgrades"), artifacts),
+            }
+            problems = grade_errors(record, artifacts)
+            # Grounded is not the same as complete. grade_errors checks the modifiers that are
+            # there; this checks that the ones the synthesis applied are all there, because a
+            # dropped downgrade flips net_direction and moves the confidence the wrong way.
+            problems += self._transcription_errors(record, prose) if not problems else []
+            if not problems:
+                log(
+                    f"    [Step 7] GRADE record: {record['level']} "
+                    f"({len(record['downgrades'])} down, {len(record['upgrades'])} up)"
+                )
+                return record
+            logger.warning("GRADE record attempt %d did not validate: %s", attempt, "; ".join(problems[:3]))
+
+        from dr2_podcast.artifacts import ArtifactError
+
+        raise ArtifactError(
+            "the GRADE assessment could not be stated as a record that validates after "
+            f"{self.GRADE_RECORD_ATTEMPTS} attempts: {'; '.join(problems[:5])}. The regex scrape this "
+            "replaces defaulted to 'Not Determined' and let the episode speak a confidence nobody computed."
+        )
+
+    #: The APPLIED MODIFIERS block the GRADE prompt asks for, one line per applied modifier.
+    _APPLIED_LINE = re.compile(
+        r"^\s*[-*]?\s*(DOWNGRADE|UPGRADE)\s+([a-z_]+)\s+([12])\b", re.IGNORECASE | re.MULTILINE
+    )
+
+    @staticmethod
+    def declared_modifiers(prose: str) -> set[tuple[str, str, int]] | None:
+        """What the synthesis SAYS it applied, as ``{(kind, domain, steps)}``.
+
+        None means the prose never declared a block, which is not the same as declaring none — the
+        first cannot be checked and the second can. The distinction is the whole point: a record
+        that quietly drops a downgrade still validates, because ``grade_errors`` only checks the
+        modifiers that ARE there, and the missing one changes ``net_direction`` and therefore which
+        way the evidence moved the confidence (prepush codex 2026-08-13).
+        """
+        marker = re.search(r"APPLIED\s+MODIFIERS\s*:?", prose, re.IGNORECASE)
+        if not marker:
+            return None
+        block = prose[marker.end() :]
+        # Stop at the next numbered section heading, so a later section's prose cannot add modifiers.
+        end = re.search(r"\n\s*(?:#{1,6}\s|\d+\.\s+[A-Z])", block)
+        if end:
+            block = block[: end.start()]
+        if re.match(r"\s*NONE\b", block, re.IGNORECASE):
+            return set()
+        return {
+            (kind.lower(), domain.lower(), int(steps))
+            for kind, domain, steps in Orchestrator._APPLIED_LINE.findall(block)
+        }
+
+    @staticmethod
+    def _record_modifiers(record: dict) -> set[tuple[str, str, int]]:
+        return {("downgrade", e["domain"], e["steps"]) for e in record["downgrades"]} | {
+            ("upgrade", e["domain"], e["steps"]) for e in record["upgrades"]
+        }
+
+    @classmethod
+    def _transcription_errors(cls, record: dict, prose: str) -> list[str]:
+        """Whether the record is the WHOLE of what the prose said it applied."""
+        declared = cls.declared_modifiers(prose)
+        if declared is None:
+            return [
+                "the synthesis did not close its GRADE Assessment with an APPLIED MODIFIERS block, "
+                "so there is nothing to check the record against"
+            ]
+        transcribed = cls._record_modifiers(record)
+        errors = []
+        for kind, domain, steps in sorted(declared - transcribed):
+            errors.append(f"the synthesis applied {kind} {domain} {steps}, and the record does not")
+        for kind, domain, steps in sorted(transcribed - declared):
+            errors.append(f"the record claims {kind} {domain} {steps}, which the synthesis did not apply")
+        return errors
+
+    @staticmethod
+    def _grade_modifiers(raw_list: Any, artifacts: dict[str, str]) -> list[dict]:
+        """Model-supplied modifiers with Python-found offsets. A quote that is not in its artifact
+        keeps its (unfindable) locator, so validation rejects the record rather than the modifier
+        disappearing — a dropped downgrade silently changes net_direction."""
+        built = []
+        for raw in raw_list or []:
+            if not isinstance(raw, dict):
+                continue
+            artifact_id = safe_str(raw.get("artifact_id")) or ""
+            quote = safe_str(raw.get("quote")) or ""
+            hit = locate_span(artifacts.get(artifact_id, ""), quote)
+            built.append(
+                {
+                    "domain": safe_str(raw.get("domain")) or "",
+                    "steps": safe_int(raw.get("steps")) or 1,
+                    "reason": safe_str(raw.get("reason")) or "",
+                    "locator": {
+                        "fields": ["reason"],
+                        "source_artifact_id": artifact_id,
+                        "char_offset": hit[0] if hit else -1,
+                        "quoted_span": hit[1] if hit else quote,
+                    },
+                }
+            )
+        return built
 
     @staticmethod
     def _extractions_to_sources(extractions: list[DeepExtraction], role: str) -> list[SummarizedSource]:
@@ -3355,7 +4093,9 @@ class Orchestrator:
         return "\n".join(lines) if lines else ""
 
     @staticmethod
-    def _save_artifacts(output_dir: str, aff: _TrackResult, fal: _TrackResult, math_report: str):
+    def _save_artifacts(
+        output_dir: str, aff: _TrackResult, fal: _TrackResult, math_report: str, write_strategies: bool = True
+    ):
         """Save intermediate pipeline artifacts to output directory.
 
         Writes into research/ subdirectory if it exists (M9 layout).
@@ -3376,11 +4116,23 @@ class Orchestrator:
         research_dir = out / "research"
         _out = research_dir if research_dir.is_dir() else out
 
-        # Strategy files — TieredSearchPlan serialized via dataclasses.asdict
-        with open(_out / "search_strategy_aff.json", "w") as f:
-            json.dump(dataclasses.asdict(aff_strategy), f, indent=2)
-        with open(_out / "search_strategy_neg.json", "w") as f:
-            json.dump(dataclasses.asdict(fal_strategy), f, indent=2)
+        # write_atomic, not a bare open(): these are the `research` stage's DECLARED outputs, and a
+        # rerun interrupted partway — Ctrl-C, SIGKILL, power loss — truncated the last coherent
+        # result of a forty-minute stage with a half-written file that reads as finished (prepush
+        # codex 2026-08-13). Fixed here rather than by staging the stage, because run_deep_research
+        # also loads and saves the extraction cache from this directory, and staging that would
+        # make every rerun re-extract every paper.
+        from dr2_podcast.artifacts import write_atomic
+
+        # Strategy files — TieredSearchPlan serialized via dataclasses.asdict. Written only when
+        # THIS run produced them. Under the staged runner they are `plan_search`'s outputs and the
+        # artifacts an approval was made against, so rewriting them here changed their bytes on
+        # every successful run: plan_search went non-current, the transitive guard then refused
+        # blueprint, and a healthy pipeline stopped itself (prepush codex 2026-08-13). It is also
+        # the rule this branch already had — a stage must not rewrite another stage's output.
+        if write_strategies:
+            write_atomic(_out / "search_strategy_aff.json", json.dumps(dataclasses.asdict(aff_strategy), indent=2))
+            write_atomic(_out / "search_strategy_neg.json", json.dumps(dataclasses.asdict(fal_strategy), indent=2))
 
         # Screening decisions (one file per track) — full candidate list for debugging
         def _record_to_dict(r, selected: bool) -> dict:
@@ -3419,17 +4171,31 @@ class Orchestrator:
                 "all_candidates": [_record_to_dict(r, id(r) in selected_set) for r in records],
             }
 
-        with open(_out / "screening_results_aff.json", "w") as f:
-            json.dump(_screening_payload(aff_records, aff_top, aff_highest_tier), f, indent=2, ensure_ascii=False)
-        with open(_out / "screening_results_neg.json", "w") as f:
-            json.dump(_screening_payload(fal_records, fal_top, fal_highest_tier), f, indent=2, ensure_ascii=False)
-
-        # Math report
-        with open(_out / "clinical_math.md", "w") as f:
-            f.write(math_report)
+        write_atomic(
+            _out / "screening_results_aff.json",
+            json.dumps(_screening_payload(aff_records, aff_top, aff_highest_tier), indent=2, ensure_ascii=False),
+        )
+        write_atomic(
+            _out / "screening_results_neg.json",
+            json.dumps(_screening_payload(fal_records, fal_top, fal_highest_tier), indent=2, ensure_ascii=False),
+        )
+        # allow_empty: a run with no studies to compute on has an empty math report, and refusing to
+        # write it would fail the stage over the honest answer.
+        write_atomic(_out / "clinical_math.md", math_report, allow_empty=True)
 
 
 # --- Convenience functions ---
+
+
+async def plan_search(
+    topic: str,
+    config: "ResearchConfig | None" = None,
+    framing_context: str = "",
+    log=logger.info,
+) -> dict[str, Any]:
+    """Both tracks' search strategies, and nothing that spends a search (PLAN.md Step 10)."""
+    orchestrator = Orchestrator(config or ResearchConfig())
+    return await orchestrator.plan_both_tracks(topic, framing_context=framing_context, log=log)
 
 
 async def run_deep_research(
@@ -3437,6 +4203,7 @@ async def run_deep_research(
     config: "ResearchConfig | None" = None,
     framing_context: str = "",
     output_dir: str = None,
+    plans: dict[str, Any] | None = None,
 ) -> "DeepResearchResult":
     """Entry point for the 7-step pipeline.
 
@@ -3444,7 +4211,7 @@ async def run_deep_research(
     module's configured smart model with a clinical domain.
     """
     orchestrator = Orchestrator(config or ResearchConfig())
-    return await orchestrator.run(topic, framing_context=framing_context, output_dir=output_dir)
+    return await orchestrator.run(topic, framing_context=framing_context, output_dir=output_dir, plans=plans)
 
 
 async def main():

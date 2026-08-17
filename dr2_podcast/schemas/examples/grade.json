@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "level": "moderate",
+  "downgrades": [
+    {
+      "domain": "risk_of_bias",
+      "steps": 1,
+      "reason": "8 of 20 included trials were open-label with subjective outcome assessment.",
+      "locator": {
+        "fields": ["reason"],
+        "source_artifact_id": "pmid:12345678#fulltext",
+        "char_offset": 5120,
+        "quoted_span": "participants and outcome assessors were not blinded to treatment allocation"
+      }
+    },
+    {
+      "domain": "imprecision",
+      "steps": 1,
+      "reason": "The pooled 95% CI includes the null, so the direction of effect is not settled.",
+      "locator": {
+        "kind": "derived",
+        "operation": "ci_includes_null",
+        "operands": {
+          "ci_low": {
+            "value": -0.4,
+            "quoted": {
+              "fields": ["ci_low"],
+              "source_artifact_id": "meta:pooled#results",
+              "char_offset": 640,
+              "quoted_span": "pooled absolute risk reduction 1.2% (95% CI -0.4 to 2.8)"
+            }
+          },
+          "ci_high": {
+            "value": 2.8,
+            "quoted": {
+              "fields": ["ci_high"],
+              "source_artifact_id": "meta:pooled#results",
+              "char_offset": 640,
+              "quoted_span": "pooled absolute risk reduction 1.2% (95% CI -0.4 to 2.8)"
+            }
+          },
+          "null_value": { "value": 0, "constant": true }
+        },
+        "result": true
+      }
+    }
+  ],
+  "upgrades": [
+    {
+      "domain": "dose_response",
+      "steps": 1,
+      "reason": "Fracture risk fell monotonically across 400, 800 and 2000 IU/day arms.",
+      "locator": {
+        "fields": ["reason"],
+        "source_artifact_id": "pmid:23456789#fulltext",
+        "char_offset": 3300,
+        "quoted_span": "a monotonic dose-response relationship was observed across the three dose strata"
+      }
+    }
+  ]
+}
