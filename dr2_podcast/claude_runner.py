@@ -10,9 +10,16 @@ Three constraints shape it, and all three are recorded decisions rather than pre
 * **A plain-text prompt, not a slash command.** `claude -p "<text>"` treats the message as literal
   text, so `/skillname` never reaches the skill resolver. The skill has to be model-invocable and
   the prompt has to be prose that triggers it.
-* **No permission prompt can ever fire.** An unattended run has nobody to answer at minute 40, so
-  the tool list is explicit and closed. A stage that needs a tool outside it fails loudly instead of
-  hanging forever on a question nobody will read.
+* **No permission prompt can ever fire, and the tool list is genuinely closed.** An unattended
+  run has nobody to answer at minute 40, so every turn names its tools explicitly. That takes two
+  flags, not one: `--allowedTools` pre-approves, which is what keeps a turn from stopping to ask,
+  but it does not take anything away — Read, Glob and Grep never ask in the first place, so a turn
+  granted only `Write` still held them, absolute paths included (prepush codex 2026-08-20).
+  `--tools` is the half that removes: a tool outside that list is not available to the turn at all.
+  Nor is the built-in set the whole set — this machine's user config carries MCP servers (codex,
+  codebase-memory, localcrew, claude-memory), and a turn restricted to `Write` still asked one of
+  them to read a file for it, verified. So every turn also starts with MCP emptied. A stage that
+  needs a tool outside its list fails loudly instead of hanging forever on a question nobody reads.
 * **Outcome comes from the turn's completion, never from the spawn.** `web_ui.py` marks a task
   running the moment `Popen` returns; a run that no-ops on its first turn would log as success.
   MulmoTerminal shipped exactly that bug. Here, success means the declared artifacts exist and
@@ -58,6 +65,10 @@ CLAUDE_BINARY = os.environ.get("DR2_CLAUDE_BINARY", "claude")
 #: wrong for a pipeline, so an unset value is hashed as unset and a later pin invalidates.
 CLAUDE_MODEL = os.environ.get("DR2_CLAUDE_MODEL", "")
 
+#: The MCP configuration an authoring turn is launched with: none. Passed with --strict-mcp-config
+#: so the user's own servers are ignored rather than merged — see _command().
+_NO_MCP_SERVERS = '{"mcpServers": {}}'
+
 
 def resolve_binary() -> str:
     """The absolute path of the CLI that will be invoked, or a failure naming what was looked for."""
@@ -99,7 +110,17 @@ def _command(prompt: str, allowed_tools: tuple[str, ...], binary: str | None = N
     then be launched from somewhere else entirely, so the executable validated and logged would not
     be the one that ran (prepush codex 2026-08-17).
     """
-    argv = [binary or CLAUDE_BINARY, "-p", prompt, "--allowedTools", ",".join(allowed_tools)]
+    tools = ",".join(allowed_tools)
+    # Both flags carry the SAME closed list, because they answer different questions and only one
+    # of them is a guarantee: --tools decides what exists for this turn, --allowedTools decides
+    # what runs without asking. Availability without approval would hang; approval without
+    # availability limiting is what let a write-only turn read (prepush codex 2026-08-20).
+    argv = [binary or CLAUDE_BINARY, "-p", prompt, "--tools", tools, "--allowedTools", tools]
+    # And the closed list is only closed if it is the whole list. Measured on this machine the same
+    # day: a turn given --tools Write reached the codex MCP server and had it read the file the
+    # stage was supposed to be blind to. An empty --mcp-config plus --strict-mcp-config is what
+    # actually leaves the turn holding nothing but the tools named above.
+    argv += ["--strict-mcp-config", "--mcp-config", _NO_MCP_SERVERS]
     if CLAUDE_MODEL:
         argv += ["--model", CLAUDE_MODEL]
     return argv
@@ -115,6 +136,11 @@ def run_turn(
     """One authoring turn. Returns what happened; decides nothing about whether it worked."""
     if not prompt.strip():
         raise ClaudeUnavailable("refusing to spawn an authoring turn with an empty prompt")
+    if not allowed_tools:
+        # `--tools ""` is the CLI's way of saying "no tools at all", so an empty list would spawn a
+        # turn that cannot write the artifact it is being spawned to write. Say so now rather than
+        # after the wall-clock ceiling.
+        raise ClaudeUnavailable("refusing to spawn an authoring turn with an empty tool list")
     binary = resolve_binary()
     logger.info("authoring turn via %s", binary)
     try:

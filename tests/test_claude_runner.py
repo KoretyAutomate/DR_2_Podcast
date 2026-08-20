@@ -67,6 +67,45 @@ def test_the_tool_list_is_explicit_and_closed() -> None:
     assert granted == set(DEFAULT_ALLOWED_TOOLS)
 
 
+# prepush codex 2026-08-20 [P1]. Checked against the CLI itself before it was believed: a turn run
+# with `--allowedTools Write` in a scratch cwd read /tmp/.../findings.txt by absolute path and
+# echoed its contents; the same turn with `--tools Write` answered CANNOT_READ, and still wrote its
+# artifact. Pre-approval is not restriction — Read, Glob and Grep never ask for approval, so a list
+# that only grants takes nothing away.
+def test_the_closed_list_removes_tools_and_does_not_merely_approve_them() -> None:
+    argv = _command("anything", ("Write",))
+    assert "--tools" in argv, "only --allowedTools was passed, which grants without restricting"
+    available = set(argv[argv.index("--tools") + 1].split(","))
+    assert available == {"Write"}
+    for reader in ("Read", "Glob", "Grep", "Bash"):
+        assert reader not in available
+
+
+def test_availability_and_approval_carry_the_same_list() -> None:
+    """Available-but-unapproved would hang an unattended turn; approved-but-unlisted is the bug
+    above. The two flags only make sense as one list."""
+    argv = _command("anything", DEFAULT_ALLOWED_TOOLS)
+    assert argv[argv.index("--tools") + 1] == argv[argv.index("--allowedTools") + 1]
+
+
+# Measured the same day, from a scratch cwd: a turn given `--tools Write` listed the machine's MCP
+# servers and had one of them read the file it was supposed to be blind to. The built-in set is not
+# the whole set, so restricting it is not by itself a restriction.
+def test_the_turn_starts_with_no_mcp_servers() -> None:
+    import json
+
+    argv = _command("anything", ("Write",))
+    assert "--strict-mcp-config" in argv, "the user's own MCP servers would be merged in"
+    assert json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
+
+
+def test_a_turn_with_no_tools_at_all_is_refused(tmp_path: Path) -> None:
+    """`--tools ""` disables every tool, so an empty list spawns a turn that cannot possibly write
+    the artifact it was spawned to write. Fail now, not after the wall-clock ceiling."""
+    with pytest.raises(ClaudeUnavailable, match="empty tool list"):
+        run_turn("write the prior", cwd=tmp_path, allowed_tools=())
+
+
 def test_bash_is_not_granted() -> None:
     """A stage that needs to run a command is a stage Python should be running, and an unattended
     shell is the one permission nobody can take back."""
@@ -446,10 +485,11 @@ def test_the_prior_turn_can_only_write(run_dir: Path, monkeypatch) -> None:
     monkeypatch.setattr(subprocess, "run", _write_then)
     research_stages.framing_prior(run_dir, {"topic": "ビタミンDと骨折", "language": "ja"})
 
-    granted = set(seen["argv"][seen["argv"].index("--allowedTools") + 1].split(","))
-    assert granted == {"Write"}, granted
-    for reader in ("Read", "Glob", "Grep"):
-        assert reader not in granted
+    for flag in ("--tools", "--allowedTools"):
+        granted = set(seen["argv"][seen["argv"].index(flag) + 1].split(","))
+        assert granted == {"Write"}, (flag, granted)
+        for reader in ("Read", "Glob", "Grep"):
+            assert reader not in granted, flag
 
 
 def test_the_framing_is_in_the_prompt_so_nothing_needs_reading() -> None:

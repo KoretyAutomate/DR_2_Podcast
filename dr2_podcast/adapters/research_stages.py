@@ -110,10 +110,12 @@ def framing_prior(run_dir: Path, run_config: dict[str, Any]) -> None:
             _PRIOR_PROMPT.format(topic=topic, artifact=artifact, framing=framing),
             run_dir=isolated,
             expected=(artifact,),
-            # WRITE ONLY. A scratch cwd does not sandbox Read, Glob or Grep — they still take
-            # absolute paths — so isolation by directory was isolation by hope (prepush codex
-            # 2026-08-20). The framing is already in the prompt, so the turn needs to read nothing
-            # at all, and a capability it does not hold is the only kind it cannot use.
+            # WRITE ONLY, and write-only in the sense of not having a reader rather than not
+            # being allowed one. A scratch cwd does not sandbox Read, Glob or Grep — they still
+            # take absolute paths — and neither does a permission list they never consult, which is
+            # why claude_runner passes this list to `--tools` as well (prepush codex 2026-08-20).
+            # The framing is already in the prompt, so the turn needs to read nothing at all, and a
+            # capability it does not hold is the only kind it cannot use.
             allowed_tools=PRIOR_ALLOWED_TOOLS,
         )
         authored = (isolated / artifact).read_text(encoding="utf-8")
