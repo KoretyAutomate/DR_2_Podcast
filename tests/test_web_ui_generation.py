@@ -8,6 +8,8 @@ subprocess environment, and the error-output cleaner — none of which had any
 coverage before.
 """
 
+import subprocess
+
 import pytest
 
 from dr2_podcast.web import web_ui
@@ -112,3 +114,88 @@ class TestCleanErrorOutput:
 
     def test_empty_input_gives_empty_string(self):
         assert web_ui._clean_error_output([]) == ""
+
+
+class TestSpawnAndStream:
+    """The one place web_ui spawns the pipeline.
+
+    It was two copies — full generation and subprocess reuse — each spawning, registering the pid,
+    streaming and unregistering in the same order. What the copies did not do is survive a stream
+    that raises: the pid stayed registered (so /api/stop would signal a pid the OS may have
+    reassigned) and the child kept running with nobody holding it — a 40-minute generation still
+    on the GPU, still writing into a run the UI had already marked failed.
+    """
+
+    class _FakeProc:
+        def __init__(self, returncode=0, stubborn=False):
+            self.pid = 4242
+            self.returncode = returncode
+            self.terminated = False
+            self.killed = False
+            self.reaped = False
+            self._alive = True
+            self._stubborn = stubborn
+
+        def poll(self):
+            return None if self._alive else self.returncode
+
+        def wait(self, timeout=None):
+            if self._stubborn and timeout is not None and not self.killed:
+                raise subprocess.TimeoutExpired("pipeline", timeout)
+            self._alive = False
+            self.reaped = True
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            if not self._stubborn:
+                self._alive = False
+
+        def kill(self):
+            self.killed = True
+            self._alive = False
+
+    def _spawning(self, monkeypatch, proc, streamer):
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: proc)
+        monkeypatch.setattr(web_ui, "_stream_process_output", streamer)
+        web_ui._running_pids.pop("t1", None)
+
+    def test_it_returns_the_outcome_and_drops_the_pid(self, monkeypatch):
+        proc = self._FakeProc(returncode=0)
+        seen = {}
+
+        def _stream(p, task_id):
+            seen["pid_while_running"] = web_ui._running_pids.get(task_id)
+            return ["line\n"]
+
+        self._spawning(monkeypatch, proc, _stream)
+        returncode, lines = web_ui._spawn_and_stream("t1", ["echo", "hi"], {})
+
+        assert (returncode, lines) == (0, ["line\n"])
+        assert seen["pid_while_running"] == 4242, "/api/stop could not have found it"
+        assert "t1" not in web_ui._running_pids
+
+    def test_a_stream_that_raises_kills_the_child_and_drops_the_pid(self, monkeypatch):
+        proc = self._FakeProc()
+
+        def _explodes(p, task_id):
+            raise RuntimeError("the log line was unparseable")
+
+        self._spawning(monkeypatch, proc, _explodes)
+        with pytest.raises(RuntimeError, match="unparseable"):
+            web_ui._spawn_and_stream("t1", ["echo", "hi"], {})
+
+        assert proc.terminated, "a 40-minute generation would have kept running unwatched"
+        assert "t1" not in web_ui._running_pids, "/api/stop would signal a reassigned pid"
+
+    def test_a_child_that_ignores_sigterm_is_killed(self, monkeypatch):
+        proc = self._FakeProc(stubborn=True)
+
+        def _explodes(p, task_id):
+            raise RuntimeError("boom")
+
+        self._spawning(monkeypatch, proc, _explodes)
+        with pytest.raises(RuntimeError):
+            web_ui._spawn_and_stream("t1", ["echo", "hi"], {})
+
+        assert proc.terminated and proc.killed and proc.reaped

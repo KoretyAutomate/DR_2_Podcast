@@ -85,45 +85,39 @@ def framing_prior(run_dir: Path, run_config: dict[str, Any]) -> None:
     """
     import tempfile
 
-    from dr2_podcast.artifacts import read_json_strict, read_text_strict
-    from dr2_podcast.claude_runner import author_artifacts
+    from dr2_podcast.artifacts import read_text_strict
+    from dr2_podcast.claude_runner import ask_for_json
     from dr2_podcast.schemas import validate_framing_prior
 
     framing = read_text_strict(run_dir / "research/research_framing.md")
     artifact = "research/framing_prior.json"
     topic = run_config["topic"]
 
-    # Authored in a directory that contains ONLY the framing, and that is a guarantee rather than an
-    # instruction. The prompt says not to look at the evidence, but the turn holds Read, Glob and
-    # Grep — and on a re-run (framing edited after research) the run directory is full of search
-    # results, so a prohibition is all that stood between the prior and the evidence it is supposed
-    # to precede (prepush codex 2026-08-20). A prior that COULD have read the findings is not
-    # demonstrably a pre-search prior, whatever it says.
+    # The turn ANSWERS; Python writes. It holds no tools at all — not a write-only list, none — so
+    # the isolation this artifact depends on is a capability the turn does not have rather than an
+    # instruction it is asked to respect. Two rounds of review got here, and both steps were needed:
+    # a permission list takes nothing away (Read, Glob and Grep never ask), and `Write` takes
+    # ABSOLUTE paths, so a scratch cwd bounds it not at all — while this prompt carries a topic
+    # somebody typed into the Web UI and a framing an LLM generated from it, either of which can
+    # carry an instruction (prepush codex 2026-08-20). A cwd is still given, and it is an empty
+    # scratch directory: nothing about this run is reachable from it even by accident.
     with tempfile.TemporaryDirectory(prefix="dr2-prior-") as scratch:
-        isolated = Path(scratch)
-        (isolated / "research").mkdir()
-        (isolated / "research/research_framing.md").write_text(framing, encoding="utf-8")
-        author_artifacts(
+        record = ask_for_json(
             # The WHOLE framing. A prefix silently drops the questions and scope constraints that
             # come after it, and the prior would still be recorded as applying to the full topic —
             # the same silent-truncation class Step 0 made loud everywhere else in this pipeline.
-            _PRIOR_PROMPT.format(topic=topic, artifact=artifact, framing=framing),
-            run_dir=isolated,
-            expected=(artifact,),
-            # WRITE ONLY, and write-only in the sense of not having a reader rather than not
-            # being allowed one. A scratch cwd does not sandbox Read, Glob or Grep — they still
-            # take absolute paths — and neither does a permission list they never consult, which is
-            # why claude_runner passes this list to `--tools` as well (prepush codex 2026-08-20).
-            # The framing is already in the prompt, so the turn needs to read nothing at all, and a
-            # capability it does not hold is the only kind it cannot use.
-            allowed_tools=PRIOR_ALLOWED_TOOLS,
+            _PRIOR_PROMPT.format(topic=topic, framing=framing),
+            cwd=Path(scratch),
         )
-        authored = (isolated / artifact).read_text(encoding="utf-8")
-    write_atomic(run_dir / artifact, authored)
 
-    # Fail closed on the shape. A prior that will not validate is worse than none: step 9 would do
-    # ordinal arithmetic over it and the episode would state the result.
-    record = read_json_strict(run_dir / artifact)
+    # Fail closed on the shape, BEFORE anything reaches the run directory. A prior that will not
+    # validate is worse than none: step 9 would do ordinal arithmetic over it and the episode would
+    # state the result. Validating what the turn said rather than what it wrote is the other half of
+    # the answer above — nothing untrusted decides a path, and nothing unvalidated lands on one.
+    if not isinstance(record, dict):
+        raise ArtifactError(
+            f"the frozen prior came back as {type(record).__name__}, not a JSON object"
+        )
     validate_framing_prior(record)
     if record["topic"].strip() != topic.strip():
         # A prior about a different question is worse than none: step 9 would update it against
@@ -131,12 +125,8 @@ def framing_prior(run_dir: Path, run_config: dict[str, Any]) -> None:
         raise ArtifactError(
             f"the prior says it judged {record['topic']!r}, but this run is about {topic!r}"
         )
+    write_json_atomic(run_dir / artifact, record, schema="framing_prior")
     logger.info("frozen prior: %s (authored before any search ran)", record["prior_level"])
-
-
-#: The prior turn writes and does nothing else. Every input it needs is in the prompt, so read
-#: capability would only be an opportunity to see the evidence this artifact must precede.
-PRIOR_ALLOWED_TOOLS: tuple[str, ...] = ("Write",)
 
 
 #: Prose, not a slash command — `claude -p` passes the message as literal text, so a slash command
@@ -151,19 +141,22 @@ Topic: {topic}
 The research framing for this episode:
 {framing}
 
-Write {artifact} as JSON with exactly these keys:
+Answer with a single JSON object with exactly these keys:
   schema_version: 1
   authored_by: "claude"
   prior_level: one of まだ分からない / 低い / 中程度 / 高い / ほぼ確実
-  plausibility, known_mechanism, class_effect, base_rate: each an object
+  plausibility, known_mechanism, class_effect, base_rate: each an object with EXACTLY two keys
       {{"stated": "<what you believe, or null if nothing is known>",
         "basis": "<WHY you believe it, from background knowledge only>"}}
   topic: the topic above
   frozen_at: today's date in ISO 8601
 
 Rules. Use background knowledge only — do NOT search, and do not read anything in this run \
-directory other than the framing above. "Nothing is known" is a real answer: write null for \
-`stated` and say so in `basis`. Every `basis` must be non-empty. Write the file and nothing else."""
+directory. "Nothing is known" is a real answer: write null for `stated` and say so in `basis`. \
+Every `basis` must be non-empty. Add no key that is not listed above, at any level — the record is \
+checked against a strict schema and one extra key rejects the whole judgement (measured \
+2026-08-20: a `_note` added inside `plausibility` failed the run). You have no tools: reply with \
+the JSON object and nothing else."""
 
 
 @register("plan_search")

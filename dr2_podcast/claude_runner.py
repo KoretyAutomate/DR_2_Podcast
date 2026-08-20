@@ -20,6 +20,13 @@ Three constraints shape it, and all three are recorded decisions rather than pre
   codebase-memory, localcrew, claude-memory), and a turn restricted to `Write` still asked one of
   them to read a file for it, verified. So every turn also starts with MCP emptied. A stage that
   needs a tool outside its list fails loudly instead of hanging forever on a question nobody reads.
+* **A turn that only has to judge holds no tools at all.** `Write` takes ABSOLUTE paths, so the
+  scratch cwd a stage runs in confines nothing — and these prompts carry a topic somebody typed
+  into the Web UI plus text an LLM generated from it, either of which can carry an instruction
+  (prepush codex 2026-08-20). So the default shape here is `ask_for_json`: the turn ANSWERS, Python
+  parses and validates the answer, and Python decides what path it lands on. Granting `Write` is
+  for a stage that genuinely must produce files, and it grants writing ANYWHERE this process can
+  reach.
 * **Outcome comes from the turn's completion, never from the spawn.** `web_ui.py` marks a task
   running the moment `Popen` returns; a run that no-ops on its first turn would log as success.
   MulmoTerminal shipped exactly that bug. Here, success means the declared artifacts exist and
@@ -28,11 +35,14 @@ Three constraints shape it, and all three are recorded decisions rather than pre
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from dr2_podcast.artifacts import ArtifactError
 
@@ -41,6 +51,13 @@ from dr2_podcast.artifacts import ArtifactError
 #: that needs to run a command is a stage Python should be running, and an unattended shell is the
 #: one permission nobody can take back.
 DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = ("Read", "Write", "Edit", "Glob", "Grep")
+
+#: The tool list for a turn that only has to ANSWER — empty, and `--tools ""` is the CLI's way of
+#: saying "no tools at all" (`claude --help`: `Use "" to disable all tools`). Verified against the
+#: real CLI on 2026-08-20: a turn under these flags returns its JSON and holds no filesystem
+#: capability whatsoever, so there is no path by which an instruction hidden in the prompt reaches
+#: a file. This is what a judgement stage gets.
+NO_TOOLS: tuple[str, ...] = ()
 
 #: Wall-clock ceiling for one authoring turn. Generous, because reading a source of truth and
 #: writing a judgement about it is not fast — but finite, because a hung turn in an unattended run
@@ -136,11 +153,6 @@ def run_turn(
     """One authoring turn. Returns what happened; decides nothing about whether it worked."""
     if not prompt.strip():
         raise ClaudeUnavailable("refusing to spawn an authoring turn with an empty prompt")
-    if not allowed_tools:
-        # `--tools ""` is the CLI's way of saying "no tools at all", so an empty list would spawn a
-        # turn that cannot write the artifact it is being spawned to write. Say so now rather than
-        # after the wall-clock ceiling.
-        raise ClaudeUnavailable("refusing to spawn an authoring turn with an empty tool list")
     binary = resolve_binary()
     logger.info("authoring turn via %s", binary)
     try:
@@ -169,12 +181,25 @@ def author_artifacts(
 ) -> ClaudeTurn:
     """Ask Claude to write ``expected`` into ``run_dir``, and verify it actually did.
 
+    **Granting ``Write`` grants writing ANYWHERE this process can reach.** The CLI's `Write` takes
+    absolute paths, so neither ``run_dir`` nor a scratch cwd bounds it, and the prompt of a stage
+    like this one carries text a user typed and text a model generated (prepush codex 2026-08-20).
+    Use :func:`ask_for_json` unless the stage genuinely has to put files on disk itself; that one
+    hands the answer back through stdout and lets Python choose the path.
+
     ``expected`` is what makes this safe to run unattended. The exit code says the process ended;
     it does not say the work happened, and a turn that reads for ten minutes and writes nothing
     exits 0. So the artifacts are snapshotted before and compared after: each one must exist, be
     non-empty, and — if it was already there — have changed. Anything less is a failure with a
     reason, never a silent pass.
     """
+    if not any(tool in allowed_tools for tool in ("Write", "Edit")):
+        # An empty list means `--tools ""`, which disables everything; a list without a writing tool
+        # is the same outcome by a different route. Either way the turn cannot produce what it is
+        # being spawned to produce, so say so now rather than after the wall-clock ceiling.
+        raise ClaudeUnavailable(
+            f"refusing to spawn an artifact-authoring turn holding no writing tool: {allowed_tools!r}"
+        )
     before = {name: _fingerprint(run_dir / name) for name in expected}
     turn = run_turn(prompt, cwd=run_dir, allowed_tools=allowed_tools, timeout=timeout)
 
@@ -203,6 +228,60 @@ def author_artifacts(
                else f". The turn exited {turn.returncode} and said nothing at all.")
         )
     return turn
+
+
+def ask_for_json(
+    prompt: str,
+    *,
+    cwd: Path,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> Any:
+    """Ask Claude a question whose answer is a JSON document, and get it back through stdout.
+
+    The turn holds NO tools (see :data:`NO_TOOLS`), which is the whole point: a judgement stage
+    needs no filesystem capability, and a capability it does not hold is the only kind an
+    instruction smuggled into the prompt cannot use. Python parses what comes back, the caller
+    validates it against a schema, and the caller — never the model — decides where it is written.
+
+    The same rule as :func:`author_artifacts` decides the outcome, in the only form available to a
+    turn that writes nothing: the answer must BE a JSON document. A turn that exits 0 having said
+    nothing, or having said something plausible in prose, did not do the work.
+    """
+    turn = run_turn(prompt, cwd=cwd, allowed_tools=NO_TOOLS, timeout=timeout)
+    if turn.timed_out:
+        raise ClaudeUnavailable(
+            f"the authoring turn did not finish within {timeout}s. Nothing it may have half-said is "
+            f"trusted; re-run the stage."
+        )
+    if not turn.spoke:
+        raise ArtifactError(
+            f"the Claude-authored stage said nothing at all (exit {turn.returncode}), so there is no "
+            f"judgement to record."
+        )
+    try:
+        return json.loads(_json_payload(turn.stdout))
+    except ValueError as exc:
+        raise ArtifactError(
+            f"the Claude-authored stage did not answer with JSON ({exc}). It exited "
+            f"{turn.returncode} and said: {turn.stdout.strip()[:300]}"
+        ) from exc
+
+
+#: A fenced block, which is how the CLI actually replies — measured 2026-08-20, the answer came back
+#: as ```json …``` even under "output the JSON and nothing else".
+_FENCED = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+
+
+def _json_payload(stdout: str) -> str:
+    """The JSON document inside a reply that may also carry a fence or a sentence around it."""
+    text = stdout.strip()
+    fenced = _FENCED.search(text)
+    if fenced:
+        text = fenced.group(1).strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError("no JSON object in the reply")
+    return text[start : end + 1]
 
 
 def _fingerprint(path: Path) -> tuple[int, int] | None:

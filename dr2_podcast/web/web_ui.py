@@ -2029,6 +2029,50 @@ def _preflight_check() -> str | None:
     return "; ".join(errors) if errors else None
 
 
+def _spawn_and_stream(task_id: str, cmd: list[str], env: dict[str, str]) -> tuple[int, list]:
+    """Run the pipeline as a child process, stream its output into the task, and return its outcome.
+
+    The ONE place this module spawns the pipeline. It was two copies — full generation and
+    subprocess reuse — each spawning, registering the pid, streaming and unregistering in the same
+    order, which is exactly the shape where the second copy quietly stops matching the first.
+
+    Two properties the copies did not have, both about the child outliving the code that watches it:
+
+    * The pid is dropped in a ``finally``. A stream that raised left a stale pid registered, and
+      ``/api/stop`` would then signal a pid the OS may have already reassigned.
+    * A stream that raises TERMINATES the child before it propagates. Otherwise a 40-minute
+      generation kept running with nobody holding its pid — invisible to ``/api/stop``, still
+      holding the GPU, and still writing artifacts into a run the UI had already marked failed.
+    """
+    proc = subprocess.Popen(
+        cmd, cwd=SCRIPT_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env
+    )
+    _running_pids[task_id] = proc.pid
+    try:
+        output_lines = _stream_process_output(proc, task_id)
+        proc.wait()
+    except BaseException:
+        _terminate_child(proc)
+        raise
+    finally:
+        _running_pids.pop(task_id, None)
+    return proc.returncode, output_lines
+
+
+def _terminate_child(proc) -> None:
+    """SIGTERM, then SIGKILL if it is still there ten seconds later. Always reaped."""
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    except OSError as exc:  # already gone between poll() and terminate()
+        logger.debug("could not terminate the pipeline child: %s", exc)
+
+
 def _stream_process_output(proc, task_id: str) -> list:
     """Stream subprocess stdout, parse phase markers and sources, discover output_dir."""
     output_lines = []
@@ -2231,28 +2275,19 @@ def run_podcast_generation(task_id: str, req: GenerationRequest):
 
         _mark_task_running(task_id)
 
-        proc = subprocess.Popen(
+        returncode, output_lines = _spawn_and_stream(
+            task_id,
             [str(PODCAST_ENV_PYTHON), "-m", "dr2_podcast.pipeline", "--topic", req.topic, "--language", req.language],
-            cwd=SCRIPT_DIR,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=_build_generation_env(req),
+            _build_generation_env(req),
         )
-        _running_pids[task_id] = proc.pid
-
-        output_lines = _stream_process_output(proc, task_id)
-
-        proc.wait()
-        _running_pids.pop(task_id, None)
 
         if tasks_db[task_id].get("status") == "stopped":
             return
 
-        if proc.returncode != 0:
+        if returncode != 0:
             tasks_db[task_id]["status"] = "failed"
             error_text = _clean_error_output(output_lines)
-            tasks_db[task_id]["error"] = error_text or f"Process exited with code {proc.returncode}"
+            tasks_db[task_id]["error"] = error_text or f"Process exited with code {returncode}"
             save_tasks()
             return
 
@@ -2510,25 +2545,12 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
     elif reuse_mode == "check_supplemental":
         cmd.append("--check-supplemental")
 
-    proc = subprocess.Popen(
-        cmd,
-        cwd=SCRIPT_DIR,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=env,
-    )
-    _running_pids[task_id] = proc.pid
-
-    output_lines = _stream_process_output(proc, task_id)
-
-    proc.wait()
-    _running_pids.pop(task_id, None)
+    returncode, output_lines = _spawn_and_stream(task_id, cmd, env)
 
     if tasks_db[task_id].get("status") == "stopped":
         return
 
-    if proc.returncode != 0:
+    if returncode != 0:
         raw_lines = output_lines[-100:]
         clean_lines = []
         for line in raw_lines:
@@ -2537,7 +2559,7 @@ def _run_subprocess_reuse(task_id: str, task_data: dict, reuse_dir: Path):
             if msg.strip() and msg.strip().replace("^", "").strip():
                 clean_lines.append(msg)
         error_text = "\n".join(clean_lines[-50:])
-        raise RuntimeError(error_text or f"Process exited with code {proc.returncode}")
+        raise RuntimeError(error_text or f"Process exited with code {returncode}")
 
     # The same rule as the full-generation path, because it is the same failure: a reuse that exits
     # 0 without emitting [OUTPUT_DIR] produced nothing, and attaching it to whichever directory is
