@@ -313,6 +313,27 @@ def test_an_unpinned_model_passes_no_flag(monkeypatch) -> None:
     assert "--model" not in claude_runner._command("anything", DEFAULT_ALLOWED_TOOLS)
 
 
+def test_the_smart_backend_does_not_restale_a_claude_authored_stage() -> None:
+    """framing_prior never touches vLLM, so changing MODEL_NAME must not restale a frozen prior —
+    and with it the whole research chain behind it (prepush codex 2026-08-20)."""
+    from dr2_podcast.manifest import config_fingerprint
+
+    values = {"env:DR2_CLAUDE_MODEL": "claude-opus-5", "env:MODEL_NAME": "m", "SMART_MODEL": "m"}
+    assert config_fingerprint(values, None, "framing_prior") == config_fingerprint(
+        {**values, "env:MODEL_NAME": "another", "SMART_MODEL": "another"}, None, "framing_prior"
+    )
+
+
+def test_the_smart_backend_still_restales_a_smart_stage() -> None:
+    """The control: the group split must not make the Smart stages blind to their own model."""
+    from dr2_podcast.manifest import config_fingerprint
+
+    values = {"env:MODEL_NAME": "m", "SMART_MODEL": "m"}
+    assert config_fingerprint(values, None, "research") != config_fingerprint(
+        {**values, "SMART_MODEL": "another"}, None, "research"
+    )
+
+
 def test_the_authoring_model_is_part_of_stage_identity() -> None:
     from dr2_podcast.manifest import CONTENT_ENV_KEYS, config_fingerprint
 
@@ -352,3 +373,87 @@ def test_the_whole_framing_reaches_the_authoring_turn(run_dir: Path, monkeypatch
 
     research_stages.framing_prior(run_dir, {"topic": "ビタミンDと骨折", "language": "ja"})
     assert tail in seen["argv"][2], "the constraint at the end never reached the judgement"
+
+
+# prepush codex 2026-08-20, and it is the deepest one: the prompt says not to look at the evidence,
+# but the turn holds Read, Glob and Grep — and on a re-run the run directory is full of search
+# results. A prior that COULD have read the findings is not demonstrably a pre-search prior,
+# whatever it says. So the turn gets a directory containing only the framing.
+def test_the_prior_is_authored_where_the_evidence_is_not(run_dir: Path, monkeypatch) -> None:
+    import json
+
+    from dr2_podcast.adapters import research_stages
+
+    (run_dir / "research/research_framing.md").write_text("# Framing\n\nQuestions.\n")
+    # A re-run: the previous search is still sitting there.
+    (run_dir / "research/source_of_truth.md").write_text("ARR was 5.0% for hip fracture.\n")
+    (run_dir / "research/research_sources.json").write_text('{"lead": []}')
+
+    saw: dict = {}
+
+    def _record_and_write(argv, **kwargs):
+        cwd = Path(kwargs["cwd"])
+        saw["visible"] = sorted(p.name for p in cwd.rglob("*") if p.is_file())
+        (cwd / "research").mkdir(parents=True, exist_ok=True)
+        (cwd / "research/framing_prior.json").write_text(json.dumps(_prior()))
+        return subprocess.CompletedProcess(argv, 0, "written", "")
+
+    monkeypatch.setattr(subprocess, "run", _record_and_write)
+    research_stages.framing_prior(run_dir, {"topic": "ビタミンDと骨折", "language": "ja"})
+
+    assert saw["visible"] == ["research_framing.md"], saw["visible"]
+    assert (run_dir / "research/framing_prior.json").exists(), "and the prior still lands in the run"
+
+
+def test_the_authored_prior_reaches_the_run_directory(run_dir: Path, monkeypatch) -> None:
+    import json
+
+    from dr2_podcast.adapters import research_stages
+
+    (run_dir / "research/research_framing.md").write_text("# Framing\n")
+
+    def _write_in_scratch(argv, **kwargs):
+        cwd = Path(kwargs["cwd"])
+        (cwd / "research").mkdir(parents=True, exist_ok=True)
+        (cwd / "research/framing_prior.json").write_text(json.dumps(_prior(prior_level="中程度")))
+        return subprocess.CompletedProcess(argv, 0, "written", "")
+
+    monkeypatch.setattr(subprocess, "run", _write_in_scratch)
+    research_stages.framing_prior(run_dir, {"topic": "ビタミンDと骨折", "language": "ja"})
+
+    assert json.loads((run_dir / "research/framing_prior.json").read_text())["prior_level"] == "中程度"
+
+
+# prepush codex 2026-08-20 [P1]: a scratch cwd does not sandbox Read, Glob or Grep — they take
+# absolute paths — so isolating the prior by directory was isolating it by hope. The framing is
+# already in the prompt, so the turn needs to read nothing, and a capability it does not hold is
+# the only kind it cannot use.
+def test_the_prior_turn_can_only_write(run_dir: Path, monkeypatch) -> None:
+    import json
+
+    from dr2_podcast.adapters import research_stages
+
+    (run_dir / "research/research_framing.md").write_text("# Framing\n")
+    seen = _spawning(monkeypatch, writes={})
+
+    def _write_then(argv, **kwargs):
+        cwd = Path(kwargs["cwd"])
+        (cwd / "research").mkdir(parents=True, exist_ok=True)
+        (cwd / "research/framing_prior.json").write_text(json.dumps(_prior()))
+        seen["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, "written", "")
+
+    monkeypatch.setattr(subprocess, "run", _write_then)
+    research_stages.framing_prior(run_dir, {"topic": "ビタミンDと骨折", "language": "ja"})
+
+    granted = set(seen["argv"][seen["argv"].index("--allowedTools") + 1].split(","))
+    assert granted == {"Write"}, granted
+    for reader in ("Read", "Glob", "Grep"):
+        assert reader not in granted
+
+
+def test_the_framing_is_in_the_prompt_so_nothing_needs_reading() -> None:
+    """The reason write-only is sufficient rather than merely strict."""
+    from dr2_podcast.adapters.research_stages import _PRIOR_PROMPT
+
+    assert "{framing}" in _PRIOR_PROMPT

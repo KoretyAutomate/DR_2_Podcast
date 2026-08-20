@@ -118,7 +118,7 @@ def run_turn(
     binary = resolve_binary()
     logger.info("authoring turn via %s", binary)
     try:
-        completed = subprocess.run(  # noqa: S603 - argv list, shell=False, binary is a module constant
+        completed = subprocess.run(
             _command(prompt, allowed_tools, binary),
             cwd=str(cwd),
             capture_output=True,

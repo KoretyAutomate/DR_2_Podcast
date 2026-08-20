@@ -83,6 +83,8 @@ def framing_prior(run_dir: Path, run_config: dict[str, Any]) -> None:
     It does NOT call _prepare_run: this stage needs no Crew and no vLLM handle, and building them
     would make the prior unwritable whenever the Smart backend happens to be down.
     """
+    import tempfile
+
     from dr2_podcast.artifacts import read_json_strict, read_text_strict
     from dr2_podcast.claude_runner import author_artifacts
     from dr2_podcast.schemas import validate_framing_prior
@@ -91,14 +93,31 @@ def framing_prior(run_dir: Path, run_config: dict[str, Any]) -> None:
     artifact = "research/framing_prior.json"
     topic = run_config["topic"]
 
-    author_artifacts(
-        # The WHOLE framing. A prefix silently drops the questions and scope constraints that come
-        # after it, and the prior would still be recorded as applying to the full topic — the same
-        # silent-truncation class Step 0 made loud everywhere else in this pipeline.
-        _PRIOR_PROMPT.format(topic=topic, artifact=artifact, framing=framing),
-        run_dir=run_dir,
-        expected=(artifact,),
-    )
+    # Authored in a directory that contains ONLY the framing, and that is a guarantee rather than an
+    # instruction. The prompt says not to look at the evidence, but the turn holds Read, Glob and
+    # Grep — and on a re-run (framing edited after research) the run directory is full of search
+    # results, so a prohibition is all that stood between the prior and the evidence it is supposed
+    # to precede (prepush codex 2026-08-20). A prior that COULD have read the findings is not
+    # demonstrably a pre-search prior, whatever it says.
+    with tempfile.TemporaryDirectory(prefix="dr2-prior-") as scratch:
+        isolated = Path(scratch)
+        (isolated / "research").mkdir()
+        (isolated / "research/research_framing.md").write_text(framing, encoding="utf-8")
+        author_artifacts(
+            # The WHOLE framing. A prefix silently drops the questions and scope constraints that
+            # come after it, and the prior would still be recorded as applying to the full topic —
+            # the same silent-truncation class Step 0 made loud everywhere else in this pipeline.
+            _PRIOR_PROMPT.format(topic=topic, artifact=artifact, framing=framing),
+            run_dir=isolated,
+            expected=(artifact,),
+            # WRITE ONLY. A scratch cwd does not sandbox Read, Glob or Grep — they still take
+            # absolute paths — so isolation by directory was isolation by hope (prepush codex
+            # 2026-08-20). The framing is already in the prompt, so the turn needs to read nothing
+            # at all, and a capability it does not hold is the only kind it cannot use.
+            allowed_tools=PRIOR_ALLOWED_TOOLS,
+        )
+        authored = (isolated / artifact).read_text(encoding="utf-8")
+    write_atomic(run_dir / artifact, authored)
 
     # Fail closed on the shape. A prior that will not validate is worse than none: step 9 would do
     # ordinal arithmetic over it and the episode would state the result.
@@ -111,6 +130,11 @@ def framing_prior(run_dir: Path, run_config: dict[str, Any]) -> None:
             f"the prior says it judged {record['topic']!r}, but this run is about {topic!r}"
         )
     logger.info("frozen prior: %s (authored before any search ran)", record["prior_level"])
+
+
+#: The prior turn writes and does nothing else. Every input it needs is in the prompt, so read
+#: capability would only be an opportunity to see the evidence this artifact must precede.
+PRIOR_ALLOWED_TOOLS: tuple[str, ...] = ("Write",)
 
 
 #: Prose, not a slash command — `claude -p` passes the message as literal text, so a slash command

@@ -150,7 +150,11 @@ CONFIG_GROUPS: dict[str, tuple[str, ...]] = {
     "research": ("SCREENING_TOP_N", "TIER_CASCADE_THRESHOLD", "MIN_TIER3_STUDIES", "MAX_TIER3_RATIO",
                  "EVIDENCE_LIMITED_THRESHOLD", "SEARXNG_URL", "PUBMED_TIMEOUT", "SCRAPING_TIMEOUT",
                  "VALIDATION_TIMEOUT", "USER_AGENT", "env:SEARXNG_URL"),
-    "prompt": ("env:DR2_CLAUDE_MODEL", "env:PODCAST_CHANNEL_INTRO", "env:PODCAST_CHANNEL_MISSION",
+    # Its OWN group, not "llm". A Claude-authored stage never touches the Smart/vLLM backend, so
+    # changing MODEL_NAME or LLM_BASE_URL would restale a frozen prior — and the whole research
+    # chain behind it — over a setting it does not read (prepush codex 2026-08-20).
+    "claude": ("env:DR2_CLAUDE_MODEL",),
+    "prompt": ("env:PODCAST_CHANNEL_INTRO", "env:PODCAST_CHANNEL_MISSION",
                "env:PODCAST_CORE_TARGET",
                "env:ACCESSIBILITY_LEVEL", "env:PODCAST_HOSTS", "env:PODCAST_LENGTH"),
     "tts": (),  # every TTS_* setting plus the ducking level; matched by prefix below
@@ -158,9 +162,9 @@ CONFIG_GROUPS: dict[str, tuple[str, ...]] = {
 
 STAGE_CONFIG_GROUPS: dict[str, tuple[str, ...]] = {
     "framing": ("llm", "prompt"),
-    # The prior is Claude's judgement from background knowledge; the research settings that decide
-    # what gets searched have no bearing on what we believed before searching.
-    "framing_prior": ("llm", "prompt"),
+    # The prior is Claude's judgement from background knowledge: the Claude model that made it and
+    # the channel prompt settings, and nothing about the Smart backend or the search parameters.
+    "framing_prior": ("claude", "prompt"),
     # The strategy comes from the model and the framing prompt, and from the research settings that
     # decide what a tier is — not from anything TTS or audio touches.
     "plan_search": ("llm", "research", "prompt"),

@@ -150,5 +150,11 @@ max-nested-blocks = 4
 # of its own forced config, which is the one thing it must not do.
 "scripts_smoke/**" = ["E402", "S101"]
 
+# S603 — claude_runner.py runs the Claude CLI. The argv is a LIST with shell=False; the executable
+# is resolved through shutil.which() from a module constant before it is launched, and the only
+# caller-supplied element is the prompt, which reaches the process as its own argv entry and never
+# through a shell. House rule: the exception lives here with its reason, never as an inline noqa.
+"dr2_podcast/claude_runner.py" = ["S603"]
+
 # S311 in utils.py — retry backoff jitter, same reasoning as above.
 "dr2_podcast/utils.py" = ["S311"]
