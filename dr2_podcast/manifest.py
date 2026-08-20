@@ -59,7 +59,9 @@ CONFIG_IDENTITY_EXCLUDE = frozenset(
 CONTENT_ENV_KEYS = (
     "ACCESSIBILITY_LEVEL",
     # The model a Claude-authored stage runs on. Its output is a judgement, so the model that made
-    # it is part of what the artifact IS — not a detail of how it was produced.
+    # it is part of what the artifact IS — not a detail of how it was produced. Required rather
+    # than optional (claude_runner.resolve_model): an unset value hashes the same before and after
+    # a CLI default changes, so hashing it would only LOOK like recording the authoring model.
     "DR2_CLAUDE_MODEL",
     "PODCAST_CHANNEL_INTRO",
     "PODCAST_CHANNEL_MISSION",

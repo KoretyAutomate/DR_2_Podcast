@@ -20,9 +20,15 @@ from pathlib import Path
 import pytest
 
 from dr2_podcast.artifacts import ArtifactError
-from dr2_podcast.claude_runner import ClaudeUnavailable, ask_for_json
+from dr2_podcast.claude_runner import CLAUDE_MODEL_ENV, ClaudeUnavailable, ask_for_json
 
 ANSWER = {"prior_level": "低い", "topic": "ビタミンDと骨折"}
+
+
+@pytest.fixture(autouse=True)
+def _configured_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The authoring model is required configuration — a judgement records who made it."""
+    monkeypatch.setenv(CLAUDE_MODEL_ENV, "claude-opus-5")
 
 
 def _replying(monkeypatch: pytest.MonkeyPatch, stdout: str, *, returncode: int = 0) -> dict:

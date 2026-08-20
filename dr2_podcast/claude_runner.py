@@ -27,6 +27,10 @@ Three constraints shape it, and all three are recorded decisions rather than pre
   parses and validates the answer, and Python decides what path it lands on. Granting `Write` is
   for a stage that genuinely must produce files, and it grants writing ANYWHERE this process can
   reach.
+* **The model is configuration, never an inheritance.** A judgement's identity includes who made
+  it, so `DR2_CLAUDE_MODEL` is required and every turn passes `--model`. Letting it fall back to
+  the CLI's current default records the same empty value before and after that default changes,
+  which is a fingerprint that cannot see the one thing it claims to (prepush codex 2026-08-20).
 * **Outcome comes from the turn's completion, never from the spawn.** `web_ui.py` marks a task
   running the moment `Popen` returns; a run that no-ops on its first turn would log as success.
   MulmoTerminal shipped exactly that bug. Here, success means the declared artifacts exist and
@@ -74,17 +78,40 @@ logger = logging.getLogger(__name__)
 
 CLAUDE_BINARY = os.environ.get("DR2_CLAUDE_BINARY", "claude")
 
-#: The model the authoring turn runs on, pinned rather than inherited. Without this the stage used
-#: whichever default the CLI or the account currently selects — so a changed default would change
-#: the authored prior while the manifest, fingerprinting only Smart/vLLM settings, still called the
-#: old output current (prepush codex 2026-08-17). It IS part of stage identity: see
-#: manifest.CONTENT_ENV_KEYS. Unset means "whatever the CLI picks", which is honest for a laptop and
-#: wrong for a pipeline, so an unset value is hashed as unset and a later pin invalidates.
-CLAUDE_MODEL = os.environ.get("DR2_CLAUDE_MODEL", "")
+#: The environment variable naming the model an authoring turn runs on. REQUIRED — see
+#: :func:`resolve_model` for why there is deliberately no fallback.
+CLAUDE_MODEL_ENV = "DR2_CLAUDE_MODEL"
 
 #: The MCP configuration an authoring turn is launched with: none. Passed with --strict-mcp-config
 #: so the user's own servers are ignored rather than merged — see _command().
 _NO_MCP_SERVERS = '{"mcpServers": {}}'
+
+
+def resolve_model() -> str:
+    """The model this turn is pinned to, or a failure saying so — never an inherited default.
+
+    Two rounds of review landed on requiring it. The first pinned the model when the variable
+    happened to be set and passed no ``--model`` when it did not (prepush codex 2026-08-17); the
+    second pointed out that this only looks like a fix (prepush codex 2026-08-20). An unset value
+    means the frozen prior is authored by whichever model the CLI or the account currently
+    defaults to, and the manifest fingerprints the variable — so it records the same empty string
+    before and after a CLI upgrade, and a judgement made by a different model reads as current.
+
+    A stage whose output is a JUDGEMENT cannot have "whichever model happened to be default" in
+    its identity. So this is configuration, it is required, and its absence is loud: `.env.example`
+    carries it, and a machine that has not set it fails here rather than authoring something no
+    later run can reproduce.
+    """
+    model = os.environ.get(CLAUDE_MODEL_ENV, "").strip()
+    if not model:
+        raise ClaudeUnavailable(
+            f"{CLAUDE_MODEL_ENV} is not set, so an authoring turn would run on whichever model the "
+            f"Claude CLI currently defaults to. The stage's output is a judgement and the run "
+            f"manifest fingerprints the model that made it, so an inherited default would let a CLI "
+            f"or account change author a different judgement while existing artifacts still read as "
+            f"current. Set {CLAUDE_MODEL_ENV} in .env (see .env.example)."
+        )
+    return model
 
 
 def resolve_binary() -> str:
@@ -119,14 +146,22 @@ class ClaudeTurn:
         return bool(self.stdout.strip())
 
 
-def _command(prompt: str, allowed_tools: tuple[str, ...], binary: str | None = None) -> list[str]:
+def _command(
+    prompt: str, allowed_tools: tuple[str, ...], model: str, binary: str | None = None
+) -> list[str]:
     """The argv. A list, never a shell string — the prompt carries a topic a user typed.
+
+    ``model`` is required rather than defaulted, which is the whole point: there is no way to build
+    an argv here that leaves the model to the CLI. :func:`resolve_model` is where an unset value
+    becomes a failure, and this refuses an empty one so a future caller cannot route around it.
 
     ``binary`` is the RESOLVED path when there is one. It matters because the turn runs with cwd set
     to the run directory: a relative DR2_CLAUDE_BINARY would resolve against the pipeline's cwd and
     then be launched from somewhere else entirely, so the executable validated and logged would not
     be the one that ran (prepush codex 2026-08-17).
     """
+    if not model.strip():
+        raise ClaudeUnavailable("refusing to build an authoring turn with no model pinned")
     tools = ",".join(allowed_tools)
     # Both flags carry the SAME closed list, because they answer different questions and only one
     # of them is a guarantee: --tools decides what exists for this turn, --allowedTools decides
@@ -138,8 +173,7 @@ def _command(prompt: str, allowed_tools: tuple[str, ...], binary: str | None = N
     # stage was supposed to be blind to. An empty --mcp-config plus --strict-mcp-config is what
     # actually leaves the turn holding nothing but the tools named above.
     argv += ["--strict-mcp-config", "--mcp-config", _NO_MCP_SERVERS]
-    if CLAUDE_MODEL:
-        argv += ["--model", CLAUDE_MODEL]
+    argv += ["--model", model]
     return argv
 
 
@@ -153,11 +187,12 @@ def run_turn(
     """One authoring turn. Returns what happened; decides nothing about whether it worked."""
     if not prompt.strip():
         raise ClaudeUnavailable("refusing to spawn an authoring turn with an empty prompt")
+    model = resolve_model()
     binary = resolve_binary()
-    logger.info("authoring turn via %s", binary)
+    logger.info("authoring turn via %s on %s", binary, model)
     try:
         completed = subprocess.run(
-            _command(prompt, allowed_tools, binary),
+            _command(prompt, allowed_tools, model, binary),
             cwd=str(cwd),
             capture_output=True,
             text=True,

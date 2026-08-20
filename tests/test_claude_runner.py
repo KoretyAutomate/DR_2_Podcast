@@ -14,6 +14,7 @@ import pytest
 
 from dr2_podcast.artifacts import ArtifactError
 from dr2_podcast.claude_runner import (
+    CLAUDE_MODEL_ENV,
     DEFAULT_ALLOWED_TOOLS,
     ClaudeTurn,
     ClaudeUnavailable,
@@ -21,6 +22,15 @@ from dr2_podcast.claude_runner import (
     author_artifacts,
     run_turn,
 )
+
+#: What the tests pin. The runner refuses to spawn without one, so every test that spawns supplies
+#: it — and the tests that check the refusal delete it explicitly.
+MODEL = "claude-opus-5"
+
+
+@pytest.fixture(autouse=True)
+def _configured_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(CLAUDE_MODEL_ENV, MODEL)
 
 
 @pytest.fixture()
@@ -62,14 +72,14 @@ def _answering(monkeypatch: pytest.MonkeyPatch, payload, *, returncode=0):
 def test_the_prompt_is_plain_text_not_a_slash_command() -> None:
     """`claude -p "<text>"` treats the message as literal text, so a slash command never reaches
     the skill resolver. The skill is model-invocable and the prompt is prose."""
-    argv = _command("Write the framing prior for this run.", DEFAULT_ALLOWED_TOOLS)
+    argv = _command("Write the framing prior for this run.", DEFAULT_ALLOWED_TOOLS, MODEL)
     assert argv[1] == "-p"
     assert not argv[2].startswith("/"), argv[2]
 
 
 def test_the_tool_list_is_explicit_and_closed() -> None:
     """An unattended run has nobody to answer a permission prompt at minute 40."""
-    argv = _command("anything", DEFAULT_ALLOWED_TOOLS)
+    argv = _command("anything", DEFAULT_ALLOWED_TOOLS, MODEL)
     assert "--allowedTools" in argv
     granted = set(argv[argv.index("--allowedTools") + 1].split(","))
     assert granted == set(DEFAULT_ALLOWED_TOOLS)
@@ -81,7 +91,7 @@ def test_the_tool_list_is_explicit_and_closed() -> None:
 # artifact. Pre-approval is not restriction — Read, Glob and Grep never ask for approval, so a list
 # that only grants takes nothing away.
 def test_the_closed_list_removes_tools_and_does_not_merely_approve_them() -> None:
-    argv = _command("anything", ("Write",))
+    argv = _command("anything", ("Write",), MODEL)
     assert "--tools" in argv, "only --allowedTools was passed, which grants without restricting"
     available = set(argv[argv.index("--tools") + 1].split(","))
     assert available == {"Write"}
@@ -92,7 +102,7 @@ def test_the_closed_list_removes_tools_and_does_not_merely_approve_them() -> Non
 def test_availability_and_approval_carry_the_same_list() -> None:
     """Available-but-unapproved would hang an unattended turn; approved-but-unlisted is the bug
     above. The two flags only make sense as one list."""
-    argv = _command("anything", DEFAULT_ALLOWED_TOOLS)
+    argv = _command("anything", DEFAULT_ALLOWED_TOOLS, MODEL)
     assert argv[argv.index("--tools") + 1] == argv[argv.index("--allowedTools") + 1]
 
 
@@ -102,7 +112,7 @@ def test_availability_and_approval_carry_the_same_list() -> None:
 def test_the_turn_starts_with_no_mcp_servers() -> None:
     import json
 
-    argv = _command("anything", ("Write",))
+    argv = _command("anything", ("Write",), MODEL)
     assert "--strict-mcp-config" in argv, "the user's own MCP servers would be merged in"
     assert json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
 
@@ -135,7 +145,7 @@ def test_bash_is_not_granted() -> None:
 
 def test_the_prompt_is_an_argv_element_never_a_shell_string() -> None:
     """It carries a topic a user typed."""
-    argv = _command("vitamin D; rm -rf ~", DEFAULT_ALLOWED_TOOLS)
+    argv = _command("vitamin D; rm -rf ~", DEFAULT_ALLOWED_TOOLS, MODEL)
     assert "vitamin D; rm -rf ~" in argv
 
 
@@ -354,21 +364,53 @@ def test_a_real_timestamp_is_accepted(stamp: str) -> None:
 # prepush codex 2026-08-17: the turn passed no model, so it used whichever default the CLI or the
 # account currently selects — and a changed default would change the authored prior while the
 # manifest, fingerprinting only Smart/vLLM settings, still called the old output current.
-def test_the_model_is_pinned_when_configured(monkeypatch) -> None:
-    from dr2_podcast import claude_runner
+def test_the_model_is_pinned(run_dir: Path, monkeypatch) -> None:
+    monkeypatch.setenv(CLAUDE_MODEL_ENV, "claude-opus-5")
+    seen = _spawning(monkeypatch, writes={"research/framing_prior.json": "{}"})
 
-    monkeypatch.setattr(claude_runner, "CLAUDE_MODEL", "claude-opus-5")
-    argv = claude_runner._command("anything", DEFAULT_ALLOWED_TOOLS)
+    author_artifacts("write it", run_dir=run_dir, expected=("research/framing_prior.json",))
+    argv = seen["argv"]
     assert argv[argv.index("--model") + 1] == "claude-opus-5"
 
 
-def test_an_unpinned_model_passes_no_flag(monkeypatch) -> None:
-    """Honest for a laptop, wrong for a pipeline — so it is hashed as unset and a later pin
-    invalidates the stage rather than silently changing what it authored."""
-    from dr2_podcast import claude_runner
+# prepush codex 2026-08-20 [P1]. The first fix passed --model when the variable happened to be set
+# and nothing when it did not — so an unset variable meant the frozen prior was authored by
+# whichever model the CLI currently defaults to, while the manifest hashed the same empty string
+# before and after that default moved. A judgement whose author is unrecorded is not reproducible,
+# so the variable is required and its absence stops the run before anything is spawned.
+@pytest.mark.parametrize("unset", ["", "   "])
+def test_an_unconfigured_model_refuses_to_spawn_at_all(run_dir: Path, monkeypatch, unset) -> None:
+    import subprocess as _subprocess
 
-    monkeypatch.setattr(claude_runner, "CLAUDE_MODEL", "")
-    assert "--model" not in claude_runner._command("anything", DEFAULT_ALLOWED_TOOLS)
+    monkeypatch.setenv(CLAUDE_MODEL_ENV, unset)
+
+    def _must_not_run(*args, **kwargs):  # pragma: no cover - the assertion is that it is not called
+        raise AssertionError("a turn was spawned with no model pinned")
+
+    monkeypatch.setattr(_subprocess, "run", _must_not_run)
+    with pytest.raises(ClaudeUnavailable, match=CLAUDE_MODEL_ENV):
+        run_turn("judge this", cwd=run_dir)
+
+
+def test_a_missing_variable_is_the_same_refusal(run_dir: Path, monkeypatch) -> None:
+    monkeypatch.delenv(CLAUDE_MODEL_ENV, raising=False)
+    with pytest.raises(ClaudeUnavailable, match=CLAUDE_MODEL_ENV):
+        run_turn("judge this", cwd=run_dir)
+
+
+def test_no_argv_can_be_built_without_a_model() -> None:
+    """The refusal lives in the argv builder too, so a future caller cannot route around
+    resolve_model() and hand the CLI its own default."""
+    with pytest.raises(ClaudeUnavailable, match="no model pinned"):
+        _command("anything", DEFAULT_ALLOWED_TOOLS, "")
+
+
+def test_the_required_model_is_documented_in_the_repository_configuration() -> None:
+    """Half of the finding was that no corresponding setting existed anywhere in the repo, which
+    would make the requirement discoverable only by hitting it."""
+    example = (Path(__file__).resolve().parent.parent / ".env.example").read_text()
+    assert f"{CLAUDE_MODEL_ENV}=" in example
+    assert "DR2_CLAUDE_BINARY" in example
 
 
 def test_the_smart_backend_does_not_restale_a_claude_authored_stage() -> None:
